@@ -113,7 +113,10 @@ public:
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
-    int    audioDeviceIndex() const { return deviceIndex_; }
+    // Output-list index: 0 = HL2 audio jack, 1..N = PC devices.
+    int    audioDeviceIndex() const {
+        return hl2Out_ ? 0 : deviceIndex_ + 1;
+    }
     double zoom() const { return zoom_.load(std::memory_order_relaxed); }
     int    spanHz() const {
         const double z = zoom_.load(std::memory_order_relaxed);
@@ -152,6 +155,11 @@ public:
     Q_INVOKABLE void setBandwidth(int hz);
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
+    // Wire the HL2 onboard-codec audio path (reverse of setIqSink):
+    // `push` hands decoded stereo int16 to the stream's EP2 writer;
+    // `enable` turns EP2 audio injection on/off.  Set once at startup.
+    void setHl2AudioSink(std::function<void(const qint16 *, int)> push,
+                         std::function<void(bool)> enable);
 
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
@@ -241,6 +249,12 @@ private:
     std::vector<float> specCache_;
     QList<QAudioDevice> devices_;       // operator's PC output devices
     int                 deviceIndex_ = 0;
+    // Output routing: HL2 onboard codec (default — old Lyra's HL2 path)
+    // vs a PC sound device.  When hl2Out_ the QAudioSink is not used;
+    // audio goes to the EP2 writer via hl2AudioPush_.
+    bool                hl2Out_ = true;
+    std::function<void(const qint16 *, int)> hl2AudioPush_;
+    std::function<void(bool)>                hl2AudioEnable_;
 };
 
 } // namespace lyra::dsp

@@ -18,12 +18,14 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <timeapi.h>     // timeBeginPeriod / timeEndPeriod (winmm)
 
 #include <QByteArray>
 #include <QMetaObject>
 #include <QSettings>
 #include <Qt>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -519,6 +521,36 @@ void HL2Stream::updateOcPattern() {
 }
 
 // ----------------------------------------------------------------
+// Step 5: producer — the DSP engine hands decoded 48 kHz stereo int16
+// here (from the RX worker thread).  Lazily sizes a ~100 ms ring; on
+// overflow it drops the oldest frame (the EP2 writer is the clock, so
+// a transient producer burst can't stall it).
+void HL2Stream::pushAudio(const qint16 *lr, int nframes) {
+    {
+        std::lock_guard<std::mutex> lk(audioMtx_);
+        if (audioCap_ == 0) {
+            audioCap_ = 4800;                   // 100 ms @ 48 kHz
+            audioBuf_.assign(static_cast<size_t>(audioCap_) * 2, 0);
+            audioRd_ = audioWr_ = audioCount_ = 0;
+        }
+        for (int f = 0; f < nframes; ++f) {
+            if (audioCount_ >= audioCap_) {      // overflow: drop oldest
+                audioRd_ = (audioRd_ + 1) % audioCap_;
+                --audioCount_;
+            }
+            audioBuf_[static_cast<size_t>(audioWr_) * 2 + 0] = lr[f * 2 + 0];
+            audioBuf_[static_cast<size_t>(audioWr_) * 2 + 1] = lr[f * 2 + 1];
+            audioWr_ = (audioWr_ + 1) % audioCap_;
+            ++audioCount_;
+        }
+    }
+    // Wake the EP2 writer — it sends a datagram as soon as a full 126-
+    // frame chunk is ready, so the send cadence follows the HL2 crystal
+    // (the audio is derived from the HL2's own IQ) instead of a free-
+    // running PC timer.  Single-crystal = no two-clock drift = no pops.
+    audioCv_.notify_one();
+}
+
 // TX worker — dedicated OS thread, sends one START packet on
 // entry then a 1032-byte EP2 keepalive every 2.6 ms (380 Hz)
 // using a Win32 HIGH_RESOLUTION waitable timer with drift-
@@ -555,83 +587,54 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
             "EP2 keepalive engaging @380 Hz"));
     }, Qt::QueuedConnection);
 
-    // High-resolution waitable timer (Win10 1803+ — operator is on
-    // Windows 11 so supported).  Falls back to the legacy timer if
-    // somehow unavailable; legacy granularity is ~1 ms which is
-    // still plenty for the 13-sec gateware watchdog window.
-    HANDLE timer = ::CreateWaitableTimerExW(
-        nullptr, nullptr,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-        TIMER_ALL_ACCESS);
-    if (!timer) {
-        timer = ::CreateWaitableTimerW(nullptr, FALSE, nullptr);
-    }
-    if (!timer) {
-        QMetaObject::invokeMethod(this, [this]() {
-            onFatalError(QStringLiteral(
-                "EP2 timer create failed"));
-        }, Qt::QueuedConnection);
-        return;
-    }
+    // EP2 writer pacing — Thetis's sendProtocol1Samples model: sends are
+    // driven by AUDIO PRODUCTION, not a free-running PC timer.  RX audio
+    // is decoded from the HL2's own IQ (its crystal), so sending one
+    // datagram per 126-frame chunk AS IT'S PRODUCED locks the EP2 cadence
+    // to the HL2 clock — single crystal, no two-clock drift, no codec
+    // FIFO under/overrun (the crackle/pop the timer approach caused).
+    // When no audio flows (PC-output mode, or a real underrun) a silence
+    // keepalive maintains the gateware's EP2 watchdog.
+    //
+    // HIGHEST priority + a 1 ms scheduler tick keep send jitter low
+    // (Thetis runs this thread at MMCSS "Pro Audio").
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    ::timeBeginPeriod(1);
 
-    LARGE_INTEGER qpcFreq;
-    ::QueryPerformanceFrequency(&qpcFreq);
-    const LONGLONG periodTicks = qpcFreq.QuadPart / kEp2RateHz;
-    LARGE_INTEGER nextFire;
-    ::QueryPerformanceCounter(&nextFire);
-    nextFire.QuadPart += periodTicks;  // first fire 2.6 ms from now
-
-    // Pre-allocated template — only seq bytes [4..7] change per send.
+    // Pre-allocated template — per-send we patch seq + freq + OC + audio.
     QByteArray pkt = buildEp2KeepaliveTemplate();
     auto *pktBytes = reinterpret_cast<std::uint8_t*>(pkt.data());
 
-    while (!stop.stop_requested()) {
-        LARGE_INTEGER now;
-        ::QueryPerformanceCounter(&now);
-        const LONGLONG remainTicks = nextFire.QuadPart - now.QuadPart;
-
-        if (remainTicks > 0) {
-            // Convert QPC ticks → 100ns timer ticks.
-            const LONGLONG remain100ns =
-                remainTicks * 10000000LL / qpcFreq.QuadPart;
-            // Cap the wait at 100 ms so stop_token has bounded
-            // latency even if remainTicks somehow blows up.
-            const LONGLONG wait100ns =
-                std::min<LONGLONG>(remain100ns, 1000000LL);
-            LARGE_INTEGER due;
-            due.QuadPart = -wait100ns;
-            ::SetWaitableTimer(timer, &due, 0,
-                               nullptr, nullptr, FALSE);
-            ::WaitForSingleObject(timer, INFINITE);
-            // Re-check time — if we capped the wait, loop back
-            // and wait the remaining slice.
-            ::QueryPerformanceCounter(&now);
-            if (now.QuadPart < nextFire.QuadPart) continue;
-        }
-        if (stop.stop_requested()) break;
-
-        // Update the sequence number bytes in-place (BE u32).
-        const quint32 seq =
-            txSeq_.fetch_add(1, std::memory_order_relaxed);
+    // Pack the per-datagram fields and send one EP2 datagram.  `audio` is
+    // 126 stereo frames, or nullptr for a silence keepalive.
+    auto sendDatagram = [&](const qint16 *audio) {
+        const quint32 seq = txSeq_.fetch_add(1, std::memory_order_relaxed);
         pktBytes[4] = static_cast<std::uint8_t>((seq >> 24) & 0xFF);
         pktBytes[5] = static_cast<std::uint8_t>((seq >> 16) & 0xFF);
         pktBytes[6] = static_cast<std::uint8_t>((seq >>  8) & 0xFF);
         pktBytes[7] = static_cast<std::uint8_t>( seq        & 0xFF);
 
-        // Step 4: refresh the addr-2 (RX1 VFO) C&C freq bytes in USB
-        // frame 2 [524..527] from the live atomic, big-endian.  Sent
-        // every datagram so a tune takes effect within one period.
+        // RX1 VFO freq (frame 2 C&C [524..527]) — live, every datagram.
         const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
         pktBytes[524] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
         pktBytes[525] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
         pktBytes[526] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
         pktBytes[527] = static_cast<std::uint8_t>( f        & 0xFF);
 
-        // Frame-0 C2 (USB frame 1, byte offset 8+5 = 13): external filter
-        // board OC pins.  Default 0 (no pins) until the operator enables
-        // the board; updated atomically on band change.
+        // Frame-0 C2 [13]: external filter-board OC pins.
         pktBytes[13] = static_cast<std::uint8_t>(
             ocC2_.load(std::memory_order_relaxed));
+
+        // Audio L/R into the 126 LRIQ tuples (BE 16-bit); TX I/Q stay 0.
+        for (int i = 0; i < 126; ++i) {
+            const qint16 L = audio ? audio[i * 2 + 0] : 0;
+            const qint16 R = audio ? audio[i * 2 + 1] : 0;
+            const int base = (i < 63) ? (16 + i * 8) : (528 + (i - 63) * 8);
+            pktBytes[base + 0] = static_cast<std::uint8_t>((L >> 8) & 0xFF);
+            pktBytes[base + 1] = static_cast<std::uint8_t>( L       & 0xFF);
+            pktBytes[base + 2] = static_cast<std::uint8_t>((R >> 8) & 0xFF);
+            pktBytes[base + 3] = static_cast<std::uint8_t>( R       & 0xFF);
+        }
 
         const int n = ::sendto(s, pkt.constData(), pkt.size(), 0,
                                reinterpret_cast<sockaddr*>(&dest),
@@ -642,20 +645,47 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
             txTotalDg_.fetch_add(1, std::memory_order_relaxed);
             txWindowDg_.fetch_add(1, std::memory_order_relaxed);
         }
+    };
 
-        // Schedule next fire — drift-corrected, NOT now+period.
-        nextFire.QuadPart += periodTicks;
-
-        // Resync if we've fallen way behind (e.g. system suspend,
-        // ≥10 periods late).  Avoids a catch-up burst that would
-        // saturate the gateware on resume from a long stall.
-        ::QueryPerformanceCounter(&now);
-        if (now.QuadPart - nextFire.QuadPart > periodTicks * 10) {
-            nextFire.QuadPart = now.QuadPart + periodTicks;
+    qint16 chunk[126 * 2];
+    while (!stop.stop_requested()) {
+        const bool injecting = injectAudio_.load(std::memory_order_relaxed);
+        bool haveChunk = false;
+        {
+            std::unique_lock<std::mutex> lk(audioMtx_);
+            // When injecting, wait up to 10 ms — LONGER than the ~5.3 ms
+            // gap between DSP audio blocks, so a normal inter-block gap
+            // never trips a (silence) keepalive into the stream; only a
+            // genuine underrun does.  When NOT injecting (PC out / idle),
+            // wait ~2.6 ms so the silence keepalive holds ~380 Hz.
+            audioCv_.wait_for(
+                lk,
+                injecting ? std::chrono::microseconds(10000)
+                          : std::chrono::microseconds(2600),
+                [&] {
+                    return stop.stop_requested() ||
+                           (injectAudio_.load(std::memory_order_relaxed) &&
+                            audioCount_ >= 126);
+                });
+            if (stop.stop_requested()) break;
+            if (injectAudio_.load(std::memory_order_relaxed) &&
+                audioCount_ >= 126) {
+                for (int i = 0; i < 126; ++i) {
+                    chunk[i * 2 + 0] =
+                        audioBuf_[static_cast<size_t>(audioRd_) * 2 + 0];
+                    chunk[i * 2 + 1] =
+                        audioBuf_[static_cast<size_t>(audioRd_) * 2 + 1];
+                    audioRd_ = (audioRd_ + 1) % audioCap_;
+                    --audioCount_;
+                }
+                haveChunk = true;
+            }
         }
+        // Audio chunk (producer-paced) or silence keepalive (timeout).
+        sendDatagram(haveChunk ? chunk : nullptr);
     }
 
-    ::CloseHandle(timer);
+    ::timeEndPeriod(1);
 }
 
 } // namespace lyra::ipc

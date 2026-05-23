@@ -186,6 +186,15 @@ int main(int argc, char *argv[])
         wdspEngine->feedIq(iq, n);
     });
 
+    // Step 5: route decoded RX audio the other way — engine → stream's
+    // EP2 writer — so it plays out the HL2 onboard codec (AK4951) jack
+    // when "HL2 audio jack" is the selected output (old Lyra's default).
+    // pushAudio runs on the RX worker thread (inline after feedIq);
+    // setInjectAudio toggles the EP2 L/R payload on/off.
+    wdspEngine->setHl2AudioSink(
+        [stream](const qint16 *lr, int n) { stream->pushAudio(lr, n); },
+        [stream](bool on) { stream->setInjectAudio(on); });
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still

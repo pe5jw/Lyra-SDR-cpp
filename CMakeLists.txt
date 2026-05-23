@@ -136,7 +136,9 @@ target_link_libraries(lyra PRIVATE
 # cadence).  Link ws2_32 for WinSock2.  CreateWaitableTimerExW is
 # in kernel32 which the MSVC toolchain links by default.
 if(WIN32)
-    target_link_libraries(lyra PRIVATE ws2_32)
+    # ws2_32: WinSock2.  winmm: timeBeginPeriod (1 ms scheduler tick for
+    # the EP2 keepalive cadence when no audio is flowing).
+    target_link_libraries(lyra PRIVATE ws2_32 winmm)
 endif()
 
 # Step 3a: bundle the WDSP DSP engine DLLs (`wdsp.dll` +

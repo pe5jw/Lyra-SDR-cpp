@@ -72,10 +72,13 @@
 #include <QString>
 #include <QTimer>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <stop_token>
+#include <vector>
 
 namespace lyra::ipc {
 
@@ -151,6 +154,19 @@ public:
     // set before open() spawns the worker; not changed while running.
     void setIqSink(std::function<void(const double *, int)> sink) {
         iqSink_ = std::move(sink);
+    }
+
+    // Step 5: RX audio out via the HL2 onboard codec (AK4951).  The DSP
+    // engine pushes decoded 48 kHz stereo int16 here (from the RX worker
+    // thread, inline after fexchange0); the EP2 writer thread drains 126
+    // frames per datagram into the LRIQ tuple L/R fields so it plays out
+    // the radio's headphone jack — old Lyra's default HL2 audio path.
+    // Thread-safe (brief mutex hold, a few hundred int16 per call).
+    void pushAudio(const qint16 *lr, int nframes);
+    // Enable/disable EP2 audio injection.  When off, the EP2 frames
+    // carry silence (zero L/R) — the keepalive still flows.
+    void setInjectAudio(bool on) {
+        injectAudio_.store(on, std::memory_order_relaxed);
     }
 
 public slots:
@@ -230,6 +246,18 @@ private:
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
     // read on the RX worker thread.  Default-empty = no DSP wired.
     std::function<void(const double *, int)> iqSink_;
+    // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).
+    // Producer = RX worker (pushAudio, via the DSP engine); consumer =
+    // EP2 TX writer thread (drains 126 frames/datagram).  audioMtx_
+    // guards the ring indices (hold time = a short memcpy).
+    std::mutex            audioMtx_;
+    std::condition_variable audioCv_;         // EP2 writer waits on this
+    std::vector<qint16>   audioBuf_;          // 2*audioCap_ samples (L,R)
+    int                   audioCap_   = 0;    // capacity in frames
+    int                   audioRd_    = 0;
+    int                   audioWr_    = 0;
+    int                   audioCount_ = 0;    // frames currently buffered
+    std::atomic<bool>     injectAudio_{false};
     double               dgPerSec_   = 0.0;
     double               txDgPerSec_ = 0.0;
     QString              targetIp_;

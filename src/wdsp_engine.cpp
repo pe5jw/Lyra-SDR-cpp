@@ -102,6 +102,12 @@ double posToGain(double pos) {
     return std::pow(10.0, posToDb(pos) / 20.0);
 }
 
+// The HL2 AK4951 codec output runs hotter than the PC sound-card chain,
+// so the SAME volume slider was much louder on the HL2 jack (operator:
+// "13 on PC ≈ 35 on HL2" → ~8.8 dB).  Attenuate the HL2-jack path so
+// both outputs read roughly the same at a given slider position.
+constexpr double kHl2OutAtten = 0.30;   // ≈ -10.5 dB
+
 // Demod-mode name -> WDSP RxaMode int (matches the bench-proven Python
 // wdsp_native.py RxaMode enum).  Unknown -> USB.
 int modeToWdsp(const QString &m) {
@@ -267,6 +273,10 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
             }
         }
     }
+    // Output routing: HL2 onboard codec (default — old Lyra's HL2 path)
+    // unless the operator previously chose a PC device.
+    hl2Out_ = s.value(QStringLiteral("audio/output"),
+                      QStringLiteral("hl2")).toString() != QLatin1String("pc");
 }
 
 WdspEngine::~WdspEngine()
@@ -592,6 +602,17 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
 
 bool WdspEngine::startAudio()
 {
+    // HL2 onboard-codec output: no QAudioSink — audio is injected into
+    // the EP2 stream instead.  Just arm injection.
+    if (hl2Out_) {
+        if (hl2AudioEnable_) hl2AudioEnable_(true);
+        emitLog(QStringLiteral(
+            "[wdsp] audio: HL2 audio jack (AK4951) — EP2 injection, "
+            "MUTED, volume %1 dB")
+            .arg(static_cast<int>(posToDb(volume_.load()))));
+        return true;
+    }
+
     QAudioFormat fmt;
     fmt.setSampleRate(cfg_.outRate);
     fmt.setChannelCount(2);
@@ -644,6 +665,8 @@ bool WdspEngine::startAudio()
 
 void WdspEngine::stopAudio()
 {
+    // Always disarm EP2 audio injection (no-op if it was never armed).
+    if (hl2AudioEnable_) hl2AudioEnable_(false);
     // sink->stop() quiesces Qt's audio thread (no more readData) before
     // we delete the ring; audioMtx_ blocks the RX worker's push().
     std::lock_guard<std::mutex> lk(audioMtx_);
@@ -681,9 +704,20 @@ void WdspEngine::setMuted(bool m)
                     .arg(static_cast<int>(posToDb(volume_.load()))));
 }
 
+void WdspEngine::setHl2AudioSink(
+        std::function<void(const qint16 *, int)> push,
+        std::function<void(bool)> enable)
+{
+    hl2AudioPush_   = std::move(push);
+    hl2AudioEnable_ = std::move(enable);
+}
+
 QStringList WdspEngine::audioOutputDevices() const
 {
+    // Index 0 is always the HL2 onboard codec (old Lyra's default HL2
+    // path); the operator's PC output devices follow.
     QStringList names;
+    names << QStringLiteral("HL2 audio jack (AK4951)");
     for (const QAudioDevice &d : devices_) {
         names << d.description();
     }
@@ -692,17 +726,39 @@ QStringList WdspEngine::audioOutputDevices() const
 
 void WdspEngine::setAudioOutputDevice(int index)
 {
-    if (index < 0 || index >= devices_.size() || index == deviceIndex_) {
+    if (index == 0) {
+        // HL2 onboard codec: stop the PC sink, route audio to EP2.
+        if (!hl2Out_) {
+            hl2Out_ = true;
+            QSettings().setValue(QStringLiteral("audio/output"),
+                                 QStringLiteral("hl2"));
+            if (running_) stopAudio();          // drop the QAudioSink
+            if (hl2AudioEnable_) hl2AudioEnable_(true);
+            emit audioDeviceChanged();
+            emitLog(QStringLiteral(
+                "[wdsp] audio: output -> HL2 audio jack (AK4951)"));
+        }
         return;
     }
-    deviceIndex_ = index;
+    const int devIdx = index - 1;   // PC device list is offset by 1
+    if (devIdx < 0 || devIdx >= devices_.size()) {
+        return;
+    }
+    const bool wasHl2 = hl2Out_;
+    if (!wasHl2 && devIdx == deviceIndex_) {
+        return;   // no change
+    }
+    hl2Out_      = false;
+    deviceIndex_ = devIdx;
+    if (hl2AudioEnable_) hl2AudioEnable_(false);   // stop EP2 injection
+    QSettings().setValue(QStringLiteral("audio/output"),
+                         QStringLiteral("pc"));
     QSettings().setValue(QStringLiteral("audio/deviceName"),
-                         devices_[index].description());
+                         devices_[devIdx].description());
     emit audioDeviceChanged();
     emitLog(QStringLiteral("[wdsp] audio: output device -> %1")
-                .arg(devices_[index].description()));
-    // Live switch: tear the sink down and rebuild on the new device.
-    // (stopAudio/startAudio each take audioMtx_; no nesting here.)
+                .arg(devices_[devIdx].description()));
+    // Live switch: (re)build the sink on the chosen device.
     if (running_) {
         stopAudio();
         startAudio();
@@ -750,30 +806,36 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         const double db = (peak > 0.0) ? 20.0 * std::log10(peak) : -200.0;
         audioDbFs_.store(db, std::memory_order_relaxed);
 
-        // Step 3e: apply the operator volume/mute gain, convert to
-        // int16 stereo, and push to the sound-card ring.  audioMtx_
-        // guards audioRing_ against a main-thread device switch /
-        // teardown.  gain = 0 when muted (SAFETY default at startup).
+        // Step 3e/5: apply the operator volume/mute gain, convert to
+        // int16 stereo, and route to the active output — the HL2 codec
+        // (EP2 injection) or the PC sound card.  gain = 0 when muted
+        // (SAFETY default at startup) — applies to BOTH paths.
         {
-            std::lock_guard<std::mutex> lk(audioMtx_);
-            if (audioRing_) {
-                const double gain =
-                    muted_.load(std::memory_order_relaxed)
-                        ? 0.0
-                        : posToGain(volume_.load(std::memory_order_relaxed));
-                for (int f = 0; f < outSize_; ++f) {
-                    double l = std::clamp(
-                        outBuf_[static_cast<size_t>(2 * f + 0)] * gain,
-                        -1.0, 1.0);
-                    double r = std::clamp(
-                        outBuf_[static_cast<size_t>(2 * f + 1)] * gain,
-                        -1.0, 1.0);
-                    pcm16_[static_cast<size_t>(2 * f + 0)] =
-                        static_cast<qint16>(l * 32767.0);
-                    pcm16_[static_cast<size_t>(2 * f + 1)] =
-                        static_cast<qint16>(r * 32767.0);
-                }
-                audioRing_->push(pcm16_.data(), outSize_);
+            double gain =
+                muted_.load(std::memory_order_relaxed)
+                    ? 0.0
+                    : posToGain(volume_.load(std::memory_order_relaxed));
+            if (hl2Out_) {
+                gain *= kHl2OutAtten;   // tame the hotter AK4951 output
+            }
+            for (int f = 0; f < outSize_; ++f) {
+                double l = std::clamp(
+                    outBuf_[static_cast<size_t>(2 * f + 0)] * gain, -1.0, 1.0);
+                double r = std::clamp(
+                    outBuf_[static_cast<size_t>(2 * f + 1)] * gain, -1.0, 1.0);
+                pcm16_[static_cast<size_t>(2 * f + 0)] =
+                    static_cast<qint16>(l * 32767.0);
+                pcm16_[static_cast<size_t>(2 * f + 1)] =
+                    static_cast<qint16>(r * 32767.0);
+            }
+            if (hl2Out_) {
+                // HL2 onboard codec — hand to the EP2 writer's ring.
+                if (hl2AudioPush_) hl2AudioPush_(pcm16_.data(), outSize_);
+            } else {
+                // PC sound card — audioMtx_ guards audioRing_ against a
+                // main-thread device switch / teardown.
+                std::lock_guard<std::mutex> lk(audioMtx_);
+                if (audioRing_) audioRing_->push(pcm16_.data(), outSize_);
             }
         }
 
