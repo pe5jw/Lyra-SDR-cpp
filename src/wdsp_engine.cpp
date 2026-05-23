@@ -255,11 +255,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     }
 
     // Radio memory: restore the operator's volume + output device.
-    // muted_ is DELIBERATELY NOT restored — we always start muted so
-    // auto-connect can never auto-blast (operator speaker-damage
-    // history).  Device matched by description; falls back to the
-    // system default (set above) if it's no longer present.
+    // Restore the operator's last mute state (default UNMUTED — the
+    // audio path is now level-matched and the volume taper keeps the
+    // startup level moderate).  Device matched by description; falls
+    // back to the system default (set above) if it's no longer present.
     QSettings s;
+    muted_.store(s.value(QStringLiteral("audio/muted"), false).toBool(),
+                 std::memory_order_relaxed);
     volume_.store(std::clamp(
         s.value(QStringLiteral("audio/volume"), 0.65).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
@@ -698,6 +700,7 @@ void WdspEngine::setVolume(double v)
 void WdspEngine::setMuted(bool m)
 {
     muted_.store(m, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("audio/muted"), m);
     emit mutedChanged();
     emitLog(m ? QStringLiteral("[wdsp] audio: muted")
               : QStringLiteral("[wdsp] audio: unmuted (volume %1 dB)")

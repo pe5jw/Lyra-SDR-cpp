@@ -228,10 +228,11 @@ private:
     AudioRing          *audioRing_ = nullptr;
     QAudioSink         *audioSink_ = nullptr;
     std::vector<qint16> pcm16_;
-    // SAFETY defaults: muted, slider at 0.65 (≈ -21 dB taper) —
-    // comfortable on first unmute, still well below a blast.
+    // Slider defaults to 0.65 (≈ -14 dB taper, plus the HL2 path's extra
+    // ~-10.5 dB) — a moderate, non-blast startup level.  muted_ is
+    // restored from QSettings in the ctor (default UNMUTED).
     std::atomic<double> volume_{0.65};
-    std::atomic<bool>   muted_{true};
+    std::atomic<bool>   muted_{false};
     // Panadapter zoom (1.0 = full span).  Written from the UI/main
     // thread; read by spanHz() (UI) + copySpectrum() (crop).
     std::atomic<double> zoom_{1.0};

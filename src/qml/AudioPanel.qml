@@ -62,13 +62,8 @@ Rectangle {
             font.family: "Consolas"
             Layout.preferredWidth: 56
         }
+        // Output device chooser moved to Settings → Audio (old-Lyra
+        // layout); this panel keeps the mid-QSO controls: mute + volume.
         Item { Layout.fillWidth: true }
-        Label { text: qsTr("Out"); color: "#999" }
-        ComboBox {
-            Layout.preferredWidth: 300
-            model: WdspEngine.audioOutputDevices()
-            currentIndex: WdspEngine.audioDeviceIndex
-            onActivated: WdspEngine.setAudioOutputDevice(currentIndex)
-        }
     }
 }

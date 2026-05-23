@@ -8,6 +8,7 @@
 #include "palettes.h"
 #include "prefs.h"
 #include "usb_bcd.h"
+#include "wdsp_engine.h"
 
 #include <QCheckBox>
 #include <QGroupBox>
@@ -39,14 +40,18 @@ namespace lyra::ui {
 
 SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::ipc::HL2Discovery *discovery,
-                               UsbBcd *bcd, QWidget *parent)
+                               UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
+                               QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
-      discovery_(discovery), bcd_(bcd) {
+      discovery_(discovery), bcd_(bcd), engine_(engine) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
     tabs_ = new QTabWidget(this);
     tabs_->addTab(buildVisualsTab(), tr("Visuals"));
+    if (engine_) {
+        tabs_->addTab(buildAudioTab(), tr("Audio"));
+    }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(buildHardwareTab(), tr("Hardware"));
     }
@@ -59,6 +64,43 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     auto *root = new QVBoxLayout(this);
     root->addWidget(tabs_);
     root->addWidget(buttons);
+}
+
+QWidget *SettingsDialog::buildAudioTab() {
+    auto *page = new QWidget(this);
+    auto *form = new QFormLayout(page);
+
+    // RX audio output device chooser — moved here from the Audio panel
+    // (old-Lyra layout: the device picker lives in Settings; the panel
+    // keeps mute + volume).  Index 0 = HL2 onboard codec (AK4951);
+    // 1..N = the operator's PC sound devices.
+    auto *outCombo = new QComboBox(page);
+    outCombo->addItems(engine_->audioOutputDevices());
+    outCombo->setCurrentIndex(engine_->audioDeviceIndex());
+    connect(outCombo, &QComboBox::activated, engine_,
+            [this](int idx) { engine_->setAudioOutputDevice(idx); });
+    // Reflect an external change back into the combo.
+    connect(engine_, &lyra::dsp::WdspEngine::audioDeviceChanged, outCombo,
+            [this, outCombo]() {
+                const int i = engine_->audioDeviceIndex();
+                if (outCombo->currentIndex() != i) {
+                    outCombo->blockSignals(true);
+                    outCombo->setCurrentIndex(i);
+                    outCombo->blockSignals(false);
+                }
+            });
+    form->addRow(tr("Output"), outCombo);
+
+    auto *note = new QLabel(
+        tr("“HL2 audio jack (AK4951)” plays out the radio's "
+           "headphone jack (single-crystal, lowest latency).  Choose a PC "
+           "device to use the computer's sound card instead.  Volume and "
+           "mute stay on the Audio panel."), page);
+    note->setWordWrap(true);
+    note->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+    form->addRow(note);
+
+    return page;
 }
 
 QWidget *SettingsDialog::buildHardwareTab() {
@@ -302,8 +344,9 @@ void SettingsDialog::selectTopic(const QString &topic) {
         {QStringLiteral("display"),    QStringLiteral("Visuals")},
         {QStringLiteral("hardware"),   QStringLiteral("Hardware")},
         {QStringLiteral("radio"),      QStringLiteral("Hardware")},
-        // tuning / audio have no dedicated tab yet -> fall through to the
-        // first tab so the dialog still opens somewhere sensible.
+        {QStringLiteral("audio"),      QStringLiteral("Audio")},
+        // tuning has no dedicated tab yet -> falls through to the first
+        // tab so the dialog still opens somewhere sensible.
     };
     const QString want = kTabFor.value(topic);
     if (!want.isEmpty()) {

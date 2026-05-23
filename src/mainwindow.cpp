@@ -7,6 +7,7 @@
 #include "helpdialog.h"
 #include "hl2_discovery.h"
 #include "hl2_stream.h"
+#include "wdsp_engine.h"
 #include "prefs.h"
 #include "settingsdialog.h"
 #include "usb_bcd.h"
@@ -332,7 +333,8 @@ void MainWindow::openSettings() {
         settingsDlg_ = new SettingsDialog(
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
-            usbBcd_, this);
+            usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
+            this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
