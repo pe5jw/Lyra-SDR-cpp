@@ -404,7 +404,12 @@ Item {
                     height: 4               // 4px dash + 4px gap (8px pitch)
                     color: "#ffaa50"
                     opacity: 0.86
-                    x: Math.round(spectrumArea.width / 2)
+                    // Carrier marker: centre in non-CW; offset by the CW
+                    // pitch (markerOffsetHz) so it sits on the carrier the
+                    // operator hears (which is +pitch above the DDS centre).
+                    x: Math.round(spectrumArea.width
+                                  * (0.5 + WdspEngine.markerOffsetHz
+                                           / Math.max(1, WdspEngine.spanHz)))
                     y: index * 8
                 }
             }
@@ -500,8 +505,11 @@ Item {
                 }
                 onReleased: (mouse) => {
                     if (dbMode === "" && tuning && !dragged) {
-                        // plain click → literal tune to the press freq
-                        Stream.setRx1FreqHz(Math.round(freqAtX(startX)))
+                        // plain click → tune the CARRIER to the clicked RF
+                        // point; in CW the DDS is offset by the pitch so
+                        // the clicked signal lands in the filter.
+                        Stream.setRx1FreqHz(Math.round(
+                            freqAtX(startX) - WdspEngine.markerOffsetHz))
                     }
                     dbMode = ""
                     tuning = false
@@ -543,6 +551,61 @@ Item {
                     var dir = wheel.angleDelta.y > 0 ? 1 : -1
                     Stream.setRx1FreqHz(Stream.rx1FreqHz + dir * wheelStepHz)
                     wheel.accepted = true
+                }
+            }
+
+            // ---- RX filter passband overlay (drag an edge to resize) ----
+            // Translucent box over the tuned signal showing the current
+            // RX filter; the edges are draggable to widen/narrow the
+            // bandwidth, which updates Prefs.rxBandwidth (→ engine filter
+            // + the Mode+Filter RX BW readout, persisted per mode).
+            Item {
+                id: passband
+                anchors.fill: parent
+                z: 4
+                readonly property real spanHz: Math.max(1, WdspEngine.spanHz)
+                function xOf(offHz) {
+                    return spectrumArea.width * (0.5 + offHz / spanHz)
+                }
+                readonly property real loX: xOf(WdspEngine.passbandLowHz)
+                readonly property real hiX: xOf(WdspEngine.passbandHighHz)
+
+                Rectangle {            // translucent fill
+                    x: Math.min(passband.loX, passband.hiX)
+                    width: Math.abs(passband.hiX - passband.loX)
+                    y: 0; height: spectrumArea.height
+                    color: "#3aa0ff"
+                    opacity: 0.13
+                }
+                Repeater {             // two draggable edges
+                    model: 2
+                    delegate: Item {
+                        required property int index
+                        readonly property bool isLo: index === 0
+                        x: (isLo ? passband.loX : passband.hiX) - width / 2
+                        y: 0; width: 9; height: spectrumArea.height
+                        Rectangle {    // visible edge line
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            y: 0; width: 2; height: parent.height
+                            color: "#8fd0ff"; opacity: 0.75
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.SizeHorCursor
+                            preventStealing: true
+                            property double lastMs: 0
+                            onPositionChanged: (m) => {
+                                var nowMs = Date.now()
+                                if (nowMs - lastMs < 33) return
+                                lastMs = nowMs
+                                var px = mapToItem(spectrumArea, m.x, m.y).x
+                                var off = (px / Math.max(1, spectrumArea.width)
+                                           - 0.5) * passband.spanHz
+                                Prefs.rxBandwidth =
+                                    WdspEngine.bandwidthForEdge(off)
+                            }
+                        }
+                    }
                 }
             }
         }

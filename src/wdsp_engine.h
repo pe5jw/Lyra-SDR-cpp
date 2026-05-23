@@ -99,6 +99,20 @@ class WdspEngine : public QObject {
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(int bandwidth READ bandwidth WRITE setBandwidth
                NOTIFY bandwidthChanged)
+    // Current RX filter passband edges (Hz OFFSET from the tuned centre)
+    // for the panadapter overlay — derived from mode + bandwidth (+ CW
+    // pitch) by the same rules applyModeFilter pushes to WDSP.
+    Q_PROPERTY(double passbandLowHz  READ passbandLowHz  NOTIFY passbandChanged)
+    Q_PROPERTY(double passbandHighHz READ passbandHighHz NOTIFY passbandChanged)
+    // CW tone pitch (Hz).  In CW the displayed VFO is the signal CARRIER;
+    // the DDS is offset by ±pitch so the carrier lands in the pitch-
+    // centred filter (old-Lyra / Thetis convention).
+    Q_PROPERTY(int cwPitchHz READ cwPitchHz WRITE setCwPitchHz
+               NOTIFY cwPitchChanged)
+    // VFO − DDS, Hz: +pitch in CWU, −pitch in CWL, 0 otherwise.  The
+    // tuning layer uses it (VFO = DDS + markerOffset) and the panadapter
+    // draws the carrier marker offset by it.
+    Q_PROPERTY(int markerOffsetHz READ markerOffsetHz NOTIFY markerOffsetChanged)
 
 public:
     explicit WdspEngine(WdspNative *wdsp, QObject *parent = nullptr);
@@ -153,6 +167,15 @@ public:
     Q_INVOKABLE void setMode(const QString &m);
     int  bandwidth() const { return bw_; }
     Q_INVOKABLE void setBandwidth(int hz);
+    double passbandLowHz()  const { return passbandLowHz_; }
+    double passbandHighHz() const { return passbandHighHz_; }
+    int  cwPitchHz() const { return static_cast<int>(cwPitchHz_ + 0.5); }
+    Q_INVOKABLE void setCwPitchHz(int hz);
+    int  markerOffsetHz() const;     // VFO − DDS (CW carrier convention)
+    // Bandwidth (Hz) that results from dragging a passband edge to
+    // `edgeOffsetHz` (offset from the tuned centre) in the current mode.
+    // The panadapter edge-drag calls this, then writes Prefs.rxBandwidth.
+    Q_INVOKABLE int bandwidthForEdge(double edgeOffsetHz) const;
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
     // Wire the HL2 onboard-codec audio path (reverse of setIqSink):
@@ -189,6 +212,9 @@ signals:
     void spanChanged();   // displayed span changed (rate OR zoom)
     void modeChanged();
     void bandwidthChanged();
+    void passbandChanged();
+    void cwPitchChanged();
+    void markerOffsetChanged();
     void logLine(QString line);
 
 private:
@@ -198,6 +224,9 @@ private:
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
+    // Passband edges (Hz offsets from centre) for mode_ + bw_ + pitch.
+    void computePassband(double *lo, double *hi) const;
+    void recomputePassband();   // store + emit passbandChanged
 
     WdspNative *wdsp_    = nullptr;
     RxConfig    cfg_;
@@ -241,6 +270,8 @@ private:
     QString mode_       = QStringLiteral("USB");
     int     bw_         = 2400;
     double  cwPitchHz_  = 600.0;
+    double  passbandLowHz_  = 200.0;    // edges for the panadapter overlay
+    double  passbandHighHz_ = 2400.0;
     // Last good full-resolution spectrum (kAnPixels dB points).  WDSP's
     // GetPixels resets its ready-flag on read, so with TWO consumers
     // (panadapter + waterfall) the second sees no data; caching here lets

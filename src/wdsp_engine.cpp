@@ -279,6 +279,9 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // unless the operator previously chose a PC device.
     hl2Out_ = s.value(QStringLiteral("audio/output"),
                       QStringLiteral("hl2")).toString() != QLatin1String("pc");
+    cwPitchHz_ = std::clamp(
+        s.value(QStringLiteral("dsp/cwPitchHz"), 600).toInt(), 200, 1500);
+    recomputePassband();   // seed passband edges from the loaded mode/bw/pitch
 }
 
 WdspEngine::~WdspEngine()
@@ -491,6 +494,37 @@ void WdspEngine::setZoom(double z)
     emit spanChanged();
 }
 
+void WdspEngine::computePassband(double *lo, double *hi) const
+{
+    // Per-mode passband edges (offsets from the tuned centre), matching
+    // old Lyra's _wdsp_filter_for.  These map onto the HL2 mirrored
+    // baseband so the sideband comes out correct (§14.2).
+    const double bw   = static_cast<double>(bw_);
+    const double half = bw / 2.0;
+    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
+        *lo = 200.0;              *hi = bw;
+    } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
+        *lo = -bw;                *hi = -200.0;
+    } else if (mode_ == QLatin1String("CWU")) {
+        *lo = cwPitchHz_ - half;  *hi = cwPitchHz_ + half;
+    } else if (mode_ == QLatin1String("CWL")) {
+        *lo = -cwPitchHz_ - half; *hi = -cwPitchHz_ + half;
+    } else {                       // AM / DSB / FM (symmetric around DC)
+        *lo = -half;              *hi = half;
+    }
+}
+
+void WdspEngine::recomputePassband()
+{
+    double lo, hi;
+    computePassband(&lo, &hi);
+    if (lo != passbandLowHz_ || hi != passbandHighHz_) {
+        passbandLowHz_  = lo;
+        passbandHighHz_ = hi;
+        emit passbandChanged();
+    }
+}
+
 void WdspEngine::applyModeFilter()
 {
     if (!opened_) {
@@ -500,26 +534,52 @@ void WdspEngine::applyModeFilter()
     if (api.SetRXAMode) {
         api.SetRXAMode(channel_, modeToWdsp(mode_));
     }
-    // Per-mode passband edges (offsets from the tuned centre), matching
-    // old Lyra's _wdsp_filter_for.  These map onto the HL2 mirrored
-    // baseband so the sideband comes out correct (§14.2).
-    const double bw   = static_cast<double>(bw_);
-    const double half = bw / 2.0;
     double lo, hi;
-    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
-        lo = 200.0;          hi = bw;
-    } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
-        lo = -bw;            hi = -200.0;
-    } else if (mode_ == QLatin1String("CWU")) {
-        lo = cwPitchHz_ - half;   hi = cwPitchHz_ + half;
-    } else if (mode_ == QLatin1String("CWL")) {
-        lo = -cwPitchHz_ - half;  hi = -cwPitchHz_ + half;
-    } else {                       // AM / DSB / FM (symmetric around DC)
-        lo = -half;          hi = half;
-    }
+    computePassband(&lo, &hi);
     if (api.RXASetPassband) {
         api.RXASetPassband(channel_, lo, hi);
     }
+}
+
+int WdspEngine::bandwidthForEdge(double edgeOffsetHz) const
+{
+    const double a = std::abs(edgeOffsetHz);
+    double bw;
+    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU") ||
+        mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
+        bw = a;                                   // asymmetric: edge = cutoff
+    } else if (mode_ == QLatin1String("CWU")) {
+        bw = 2.0 * std::abs(edgeOffsetHz - cwPitchHz_);
+    } else if (mode_ == QLatin1String("CWL")) {
+        bw = 2.0 * std::abs(edgeOffsetHz + cwPitchHz_);
+    } else {                                       // symmetric around DC
+        bw = 2.0 * a;
+    }
+    return std::clamp(static_cast<int>(bw + 0.5), 50, 12000);
+}
+
+int WdspEngine::markerOffsetHz() const
+{
+    // VFO − DDS: the carrier sits +pitch above the DDS in CWU, −pitch
+    // below in CWL; identity for every other mode.
+    const int p = static_cast<int>(cwPitchHz_ + 0.5);
+    if (mode_ == QLatin1String("CWU")) return  p;
+    if (mode_ == QLatin1String("CWL")) return -p;
+    return 0;
+}
+
+void WdspEngine::setCwPitchHz(int hz)
+{
+    hz = std::clamp(hz, 200, 1500);
+    if (hz == static_cast<int>(cwPitchHz_ + 0.5)) {
+        return;
+    }
+    cwPitchHz_ = static_cast<double>(hz);
+    QSettings().setValue(QStringLiteral("dsp/cwPitchHz"), hz);
+    recomputePassband();   // CW filter recentres on the new pitch
+    applyModeFilter();
+    emit cwPitchChanged();
+    emit markerOffsetChanged();   // VFO↔DDS offset changed (CW modes)
 }
 
 void WdspEngine::setMode(const QString &m)
@@ -528,8 +588,10 @@ void WdspEngine::setMode(const QString &m)
         return;
     }
     mode_ = m;
-    applyModeFilter();   // SetRXAMode + new passband (no-op if closed)
+    recomputePassband();   // overlay edges (even when closed)
+    applyModeFilter();     // SetRXAMode + new passband (no-op if closed)
     emit modeChanged();
+    emit markerOffsetChanged();   // CW carrier offset flips with mode
 }
 
 void WdspEngine::setBandwidth(int hz)
@@ -539,7 +601,8 @@ void WdspEngine::setBandwidth(int hz)
         return;
     }
     bw_ = hz;
-    applyModeFilter();   // re-push passband for the new bandwidth
+    recomputePassband();   // overlay edges
+    applyModeFilter();     // re-push passband for the new bandwidth
     emit bandwidthChanged();
 }
 

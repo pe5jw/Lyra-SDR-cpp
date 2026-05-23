@@ -98,6 +98,8 @@ qt_add_qml_module(lyra
         src/qml/ModeFilterPanel.qml
     RESOURCES
         src/assets/watermarks/lyra-watermark.jpg
+        src/assets/logo/lyra-icon-128.png
+        src/assets/logo/lyra-icon-256.png
 )
 
 # In-app User Guide: bundle the markdown so the HelpDialog can load it
