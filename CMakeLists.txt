@@ -63,6 +63,8 @@ qt_add_executable(lyra
     src/panadapter.cpp
     src/waterfall.h
     src/waterfall.cpp
+    src/freqdisplay.h
+    src/freqdisplay.cpp
     src/autoscale.h
     src/mainwindow.h
     src/mainwindow.cpp

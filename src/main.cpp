@@ -11,6 +11,7 @@
 #include "hl2_stream.h"
 #include "panadapter.h"
 #include "waterfall.h"
+#include "freqdisplay.h"
 #include "wdsp_engine.h"
 #include "wdsp_native.h"
 
@@ -209,6 +210,7 @@ int main(int argc, char *argv[])
     // module's auto-registration).  Main.qml: `import LyraUI`.
     qmlRegisterType<lyra::ui::Panadapter>("LyraUI", 1, 0, "Panadapter");
     qmlRegisterType<lyra::ui::Waterfall>("LyraUI", 1, 0, "Waterfall");
+    qmlRegisterType<lyra::ui::FreqDisplay>("LyraUI", 1, 0, "FreqDisplay");
 
     // The app shell is a QtWidgets QMainWindow (dock framework +
     // menu bar + toolbar + layout persistence).  It embeds the Quick
