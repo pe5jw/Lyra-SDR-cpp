@@ -22,6 +22,7 @@ class QAction;
 class QDockWidget;
 class QLabel;
 class QQuickWidget;
+class QTimer;
 
 namespace lyra::ui {
 
@@ -31,6 +32,7 @@ class Help;
 class HelpDialog;
 class Bands;
 class UsbBcd;
+class UpdateChecker;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -75,6 +77,16 @@ private:
     // the first found) when stopped; close the stream when running.
     void onStartStop();
     void updateConnState();   // reflect stream running state into the UI
+    void tickClocks();        // 1 Hz: refresh the header local + UTC clocks
+    // GitHub update notification.  manual=true (Help → Check for Updates)
+    // always reports a result; manual=false (startup) is quiet unless an
+    // unseen, non-skipped newer release exists (then a once-per-version
+    // modal + a persistent toolbar indicator).
+    void checkForUpdates(bool manual);
+    void onUpdateAvailable(const QString &tag, const QString &url,
+                           const QString &body);
+    void onNoUpdate();
+    void onUpdateCheckFailed(const QString &reason);
     void applyPanelLock(bool locked);
     void saveLayout();                 // session auto-save (on close)
     void restoreLayout();              // session auto-restore (on launch)
@@ -97,6 +109,13 @@ private:
     QAction                    *lockAction_ = nullptr;
     QAction                    *startStopAction_ = nullptr;   // header Start/Stop
     QLabel                     *connStatus_ = nullptr;        // header conn status
+    QLabel                     *clockLocal_ = nullptr;        // header local clock
+    QLabel                     *clockUtc_   = nullptr;        // header UTC/Zulu clock
+    QTimer                     *clockTimer_ = nullptr;        // 1 Hz clock tick
+    UpdateChecker              *updateChecker_ = nullptr;     // GitHub release check
+    QAction                    *updateAction_ = nullptr;      // toolbar "update available"
+    QString                     pendingUpdateUrl_;            // release page to open
+    bool                        updateCheckManual_ = false;   // manual vs startup check
     QMetaObject::Connection     scanConn_;                    // one-shot scan→open
     // Drag-move state for a FLOATING dock via its custom title bar
     // (QDockWidget's built-in title drag is bypassed by the custom bar).

@@ -32,6 +32,13 @@
 #include <QStyle>
 #include <QToolBar>
 #include <QToolButton>
+#include <QDateTime>
+#include <QTimer>
+#include <QDesktopServices>
+#include <QPushButton>
+#include <QUrl>
+
+#include "updatechecker.h"
 
 #include <utility>
 
@@ -301,9 +308,11 @@ void MainWindow::buildMenus() {
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&User Guide…"), QKeySequence(QKeySequence::HelpContents),
                         this, [this]() { showHelp(QString()); });
+    helpMenu->addAction(tr("Check for &Updates…"), this,
+                        [this]() { checkForUpdates(true); });
     helpMenu->addSeparator();
     helpMenu->addAction(tr("&About Lyra…"), this, [this]() {
-        const QString ver = QStringLiteral("0.0.4");
+        const QString ver = QStringLiteral(LYRA_VERSION);
         QMessageBox::about(
             this, tr("About Lyra"),
             tr("<h2 style='margin-bottom:2px'>Lyra "
@@ -317,8 +326,8 @@ void MainWindow::buildMenus() {
                "the constellation Lyra — home of Vega. (See the User "
                "Guide for the full story.)</i></p>"
                "<p>Author: <b>Rick Langford (N8SDR)</b><br>"
-               "Repository: <a href='https://github.com/N8SDR1/Lyra-SDR'>"
-               "github.com/N8SDR1/Lyra-SDR</a><br>"
+               "Repository: <a href='https://github.com/N8SDR1/Lyra-SDR-cpp'>"
+               "github.com/N8SDR1/Lyra-SDR-cpp</a><br>"
                "License: <b>GPL v3 or later</b></p>"
                "<p style='color:#8a9aac;font-size:11px'>"
                "DSP engine: WDSP (Warren Pratt, NR0V), GPL v3+.<br>"
@@ -369,10 +378,49 @@ void MainWindow::buildToolbar() {
     connect(startStopAction_, &QAction::triggered,
             this, &MainWindow::onStartStop);
 
+    // Update-available indicator — hidden until a newer release is found.
+    updateAction_ = tb->addAction(tr("⬆  Update"));
+    updateAction_->setVisible(false);
+    updateAction_->setToolTip(tr("A newer Lyra release is available — "
+                                 "click to open the release page."));
+    connect(updateAction_, &QAction::triggered, this, [this]() {
+        if (!pendingUpdateUrl_.isEmpty())
+            QDesktopServices::openUrl(QUrl(pendingUpdateUrl_));
+    });
+
     tb->addSeparator();
     connStatus_ = new QLabel(tr("Disconnected"), tb);
     connStatus_->setContentsMargins(8, 0, 8, 0);
     tb->addWidget(connStatus_);
+
+    // ---- Local + UTC clocks (old-Lyra header layout) ----
+    // A flexible spacer pushes the clocks toward the right of the strip,
+    // matching old Lyra's "menu/notifications … [Local] [UTC]" placement.
+    auto *clockSpacer = new QWidget(tb);
+    clockSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(clockSpacer);
+
+    clockLocal_ = new QLabel(QStringLiteral("--:--:--"), tb);
+    clockLocal_->setContentsMargins(8, 0, 4, 0);
+    clockLocal_->setStyleSheet(QStringLiteral(
+        "QLabel{color:#ffd54f;font-family:Consolas,monospace;"
+        "font-weight:700;font-size:18px;}"));     // amber = PC local
+    clockLocal_->setToolTip(tr("PC local time"));
+    tb->addWidget(clockLocal_);
+
+    clockUtc_ = new QLabel(QStringLiteral("--:--:--Z"), tb);
+    clockUtc_->setContentsMargins(4, 0, 8, 0);
+    clockUtc_->setStyleSheet(QStringLiteral(
+        "QLabel{color:#80d8ff;font-family:Consolas,monospace;"
+        "font-weight:700;font-size:18px;}"));      // cyan = UTC/Zulu
+    clockUtc_->setToolTip(tr("UTC / Zulu time"));
+    tb->addWidget(clockUtc_);
+
+    clockTimer_ = new QTimer(this);
+    clockTimer_->setInterval(1000);
+    connect(clockTimer_, &QTimer::timeout, this, &MainWindow::tickClocks);
+    clockTimer_->start();
+    tickClocks();   // paint immediately, don't wait 1 s
 
     // Reflect the live stream state into the button + status label.
     if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
@@ -380,6 +428,116 @@ void MainWindow::buildToolbar() {
                 this, &MainWindow::updateConnState);
     }
     updateConnState();
+
+    // ---- GitHub update checker ----
+    updateChecker_ = new UpdateChecker(this);
+    connect(updateChecker_, &UpdateChecker::updateAvailable,
+            this, &MainWindow::onUpdateAvailable);
+    connect(updateChecker_, &UpdateChecker::noUpdate,
+            this, &MainWindow::onNoUpdate);
+    connect(updateChecker_, &UpdateChecker::checkFailed,
+            this, &MainWindow::onUpdateCheckFailed);
+    // Quiet startup check ~5 s after launch (operator opt-out via the
+    // update_check/check_on_startup setting), matching old Lyra.
+    QSettings st2;
+    if (st2.value(QStringLiteral("update_check/check_on_startup"), true).toBool()) {
+        QTimer::singleShot(5000, this, [this]() { checkForUpdates(false); });
+    }
+}
+
+void MainWindow::checkForUpdates(bool manual) {
+    if (!updateChecker_) return;
+    updateCheckManual_ = manual;
+    updateChecker_->check();
+}
+
+void MainWindow::onUpdateAvailable(const QString &tag, const QString &url,
+                                   const QString &body) {
+    pendingUpdateUrl_ = url;
+    if (updateAction_) {
+        updateAction_->setText(tr("⬆  %1").arg(tag));
+        updateAction_->setVisible(true);
+    }
+    QSettings s;
+    s.setValue(QStringLiteral("update_check/latest_tag"), tag);
+    s.setValue(QStringLiteral("update_check/latest_url"), url);
+
+    // Manual check → always show the result.  Startup check → modal only
+    // the FIRST time per version, and never for a version the operator
+    // chose to skip.
+    if (!updateCheckManual_) {
+        const QStringList skipped =
+            s.value(QStringLiteral("update_check/skipped_versions"))
+                .toStringList();
+        if (skipped.contains(tag)) return;          // silenced this version
+        const QStringList seen =
+            s.value(QStringLiteral("update_check/modal_seen_versions"))
+                .toStringList();
+        if (seen.contains(tag)) return;             // already modalled; indicator only
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Lyra update available"));
+    box.setTextFormat(Qt::RichText);
+    box.setText(tr("<b>Lyra %1</b> is available "
+                   "(you're running %2).")
+                    .arg(tag, QStringLiteral(LYRA_VERSION)));
+    if (!body.trimmed().isEmpty()) {
+        QString notes = body.trimmed();
+        if (notes.size() > 600) notes = notes.left(600) + QStringLiteral("…");
+        box.setInformativeText(notes);
+    }
+    QPushButton *openBtn = box.addButton(tr("Open release page"),
+                                         QMessageBox::AcceptRole);
+    box.addButton(tr("Remind me later"), QMessageBox::RejectRole);
+    QPushButton *skipBtn = box.addButton(tr("Skip this version"),
+                                         QMessageBox::DestructiveRole);
+    box.exec();
+
+    if (box.clickedButton() == openBtn) {
+        QDesktopServices::openUrl(QUrl(url));
+    } else if (box.clickedButton() == skipBtn) {
+        QStringList skipped =
+            s.value(QStringLiteral("update_check/skipped_versions"))
+                .toStringList();
+        if (!skipped.contains(tag)) skipped << tag;
+        s.setValue(QStringLiteral("update_check/skipped_versions"), skipped);
+    }
+    // Record that we've shown the modal for this version (so a later
+    // startup check shows only the quiet toolbar indicator).
+    QStringList seen =
+        s.value(QStringLiteral("update_check/modal_seen_versions"))
+            .toStringList();
+    if (!seen.contains(tag)) seen << tag;
+    s.setValue(QStringLiteral("update_check/modal_seen_versions"), seen);
+}
+
+void MainWindow::onNoUpdate() {
+    if (updateCheckManual_) {
+        QMessageBox::information(
+            this, tr("Check for Updates"),
+            tr("You're running the latest Lyra (%1).")
+                .arg(QStringLiteral(LYRA_VERSION)));
+    }
+}
+
+void MainWindow::onUpdateCheckFailed(const QString &reason) {
+    if (updateCheckManual_) {
+        QMessageBox::warning(
+            this, tr("Check for Updates"),
+            tr("Couldn't check for updates:\n%1").arg(reason));
+    }
+}
+
+void MainWindow::tickClocks() {
+    // Re-read the system clock each tick (never increment) so the
+    // display can't drift from the OS time.
+    const QDateTime now = QDateTime::currentDateTime();
+    if (clockLocal_)
+        clockLocal_->setText(now.toString(QStringLiteral("HH:mm:ss")));
+    if (clockUtc_)
+        clockUtc_->setText(now.toUTC().toString(QStringLiteral("HH:mm:ss")) +
+                           QStringLiteral("Z"));
 }
 
 void MainWindow::onStartStop() {

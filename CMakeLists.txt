@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -82,6 +82,8 @@ qt_add_executable(lyra
     src/help.cpp
     src/helpdialog.h
     src/helpdialog.cpp
+    src/updatechecker.h
+    src/updatechecker.cpp
 )
 
 # QML module — keeps Main.qml inside the binary as a Qt resource so
@@ -132,6 +134,16 @@ target_link_libraries(lyra PRIVATE
     Qt6::Multimedia
     Qt6::Widgets
     Qt6::QuickWidgets
+)
+
+# Single source of truth for the app version + release repo: the
+# project(... VERSION ...) above flows to code as LYRA_VERSION, and the
+# GitHub repo coordinates as LYRA_REPO_OWNER/LYRA_REPO_NAME.  The About
+# dialog and the update checker both read these (no hardcoded strings).
+target_compile_definitions(lyra PRIVATE
+    LYRA_VERSION="${PROJECT_VERSION}"
+    LYRA_REPO_OWNER="N8SDR1"
+    LYRA_REPO_NAME="Lyra-SDR-cpp"
 )
 
 # Step 2b: HL2Stream uses raw WinSock2 (sendto/recvfrom from
