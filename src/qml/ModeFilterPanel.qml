@@ -17,7 +17,7 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     implicitHeight: 50
-    implicitWidth: 420
+    implicitWidth: 540
     color: "#101820"
     border.color: "#2a4a5a"
 
@@ -54,6 +54,23 @@ Rectangle {
         return best
     }
 
+    // IQ sample rates (96/192/384 k — 48 k excluded, EP2 cadence).
+    readonly property var rateVals: [96000, 192000, 384000]
+    function rateIndex(r) {
+        var i = rateVals.indexOf(r)
+        return i < 0 ? 1 : i
+    }
+    // A rate switch touches three places: Prefs (persist), the HL2 wire
+    // speed bits (Stream), and the WDSP channel + analyzer (Engine).
+    function applyRate(r) {
+        Prefs.sampleRate = r
+        Stream.setSampleRate(r)
+        WdspEngine.setSampleRate(r)
+    }
+    // Push the persisted rate to the wire + DSP at startup (before the
+    // channel opens on Start, so it comes up at the right rate).
+    Component.onCompleted: applyRate(Prefs.sampleRate)
+
     // Both controls are the single source of truth via Prefs; the engine
     // follows.  (Engine pushes SetRXAMode + RXASetPassband on change.)
     Binding { target: WdspEngine; property: "mode";      value: Prefs.mode }
@@ -64,6 +81,22 @@ Rectangle {
         anchors.leftMargin: 12
         anchors.rightMargin: 12
         spacing: 8
+
+        Label { text: qsTr("Rate"); color: "#cccccc"; font.bold: true }
+        ComboBox {
+            id: rateCombo
+            Layout.preferredWidth: 76
+            model: ["96 k", "192 k", "384 k"]
+            currentIndex: root.rateIndex(Prefs.sampleRate)
+            onActivated: root.applyRate(root.rateVals[currentIndex])
+        }
+
+        Rectangle {   // divider
+            Layout.preferredWidth: 1
+            Layout.topMargin: 10; Layout.bottomMargin: 10
+            Layout.fillHeight: true
+            color: "#2a4a5a"
+        }
 
         Label { text: qsTr("Mode"); color: "#cccccc"; font.bold: true }
         ComboBox {

@@ -188,6 +188,13 @@ public slots:
     // apply post-priming RX-freq updates (CLAUDE.md §3.2).  Thread-safe.
     void setRx1FreqHz(quint32 hz);
 
+    // Set the IQ sample rate (96 / 192 / 384 kHz).  Updates the frame-0
+    // C1 speed bits the EP2 writer sends each datagram; takes effect on
+    // the next send.  The DSP-side rate switch (WDSP channel reopen) is
+    // driven separately via WdspEngine::setSampleRate.  Thread-safe
+    // (atomic).  Ignores 48 k (EP2 cadence, like old Lyra).
+    void setSampleRate(int hz);
+
     // Enable/disable the external N2ADR filter board.  When on, the
     // per-band OC pattern is driven on frame-0 C2 and re-applied on every
     // band change; when off, C2 OC pins are cleared (0).  Persisted to
@@ -241,6 +248,9 @@ private:
     // filterBoardEnabled_ / ocPattern_ are main-thread state (the
     // Q_PROPERTY getters + Settings UI); ocC2_ is the atomic wire value.
     std::atomic<std::uint8_t> ocC2_{0};
+    // Frame-0 C1 IQ speed bits [1:0]: 1=96k, 2=192k(default), 3=384k.
+    // Read by the EP2 writer each send.
+    std::atomic<std::uint8_t> sampleRateBits_{0x02};
     bool                 filterBoardEnabled_ = false;
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();

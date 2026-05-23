@@ -606,6 +606,41 @@ void WdspEngine::setBandwidth(int hz)
     emit bandwidthChanged();
 }
 
+void WdspEngine::setSampleRate(int hz)
+{
+    // HL2 P1 IQ rates only.  48k is intentionally excluded (EP2 cadence
+    // — the same reason old Lyra dropped it).
+    if (hz != 96000 && hz != 192000 && hz != 384000) {
+        return;
+    }
+    if (hz == cfg_.inRate) {
+        return;
+    }
+    // Hold channelMtx_ across the whole reopen so feedIq (RX worker)
+    // can't run fexchange0 on a half-torn-down channel / stale outBuf_.
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    const bool wasOpen = opened_;
+    if (wasOpen) {
+        closeRx1();          // blocking flush + close channel/analyzer/audio
+    }
+    cfg_.inRate = hz;
+    // Re-size the fexchange0 output + int16 scratch for the new rate
+    // (out_size = in_size * out_rate / in_rate).
+    if (cfg_.inRate >= cfg_.outRate) {
+        outSize_ = cfg_.inSize / (cfg_.inRate / cfg_.outRate);
+    } else {
+        outSize_ = cfg_.inSize * (cfg_.outRate / cfg_.inRate);
+    }
+    outBuf_.assign(static_cast<size_t>(2 * outSize_), 0.0);
+    pcm16_.assign(static_cast<size_t>(2 * outSize_), 0);
+    accum_.clear();
+    if (wasOpen) {
+        openRx1();           // reopen at the new rate (recreates analyzer)
+    }
+    emit spanChanged();      // panadapter span = inRate / zoom
+    emitLog(QStringLiteral("[wdsp] IQ sample rate -> %1 kHz").arg(hz / 1000));
+}
+
 int WdspEngine::spectrumPixelCount() const
 {
     return kAnPixels;
@@ -841,6 +876,15 @@ void WdspEngine::feedIq(const double *iq, int nframes)
     }
     const WdspApi &api = wdsp_->api();
     if (!api.fexchange0) {
+        return;
+    }
+
+    // Serialise against a main-thread channel reopen (sample-rate
+    // switch): hold channelMtx_ for the whole process so the channel +
+    // outBuf_ can't be torn down / resized mid-fexchange0.  Re-check the
+    // state under the lock (a reopen may have just toggled it).
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!running_ || !opened_) {
         return;
     }
 

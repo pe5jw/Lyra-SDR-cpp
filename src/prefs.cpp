@@ -41,6 +41,7 @@ constexpr auto kZoom   = "panadapter/zoom";
 constexpr auto kRxMode = "modefilter/mode";
 constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
 constexpr auto kWfCollapse = "panadapter/waterfallCollapsed";
+constexpr auto kSampRate = "radio/sampleRate";
 // Modes whose per-mode bandwidth we persist/restore.
 const QStringList kModes = {
     QStringLiteral("LSB"),  QStringLiteral("USB"),
@@ -90,6 +91,9 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         }
     }
     waterfallCollapsed_ = s.value(kWfCollapse, false).toBool();
+    sampleRate_ = s.value(kSampRate, 192000).toInt();
+    if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
+        sampleRate_ = 192000;
 }
 
 int Prefs::defaultBandwidthFor(const QString &mode) {
@@ -351,6 +355,17 @@ void Prefs::setRxBandwidth(int hz) {
     bwByMode_.insert(mode_, hz);
     QSettings().setValue(QString(kBwPrefix) + mode_, hz);
     emit rxBandwidthChanged();
+}
+
+void Prefs::setSampleRate(int hz) {
+    if (hz != 96000 && hz != 192000 && hz != 384000) {
+        return;
+    }
+    if (hz != sampleRate_) {
+        sampleRate_ = hz;
+        QSettings().setValue(kSampRate, hz);
+        emit sampleRateChanged();
+    }
 }
 
 void Prefs::setWaterfallCollapsed(bool v) {

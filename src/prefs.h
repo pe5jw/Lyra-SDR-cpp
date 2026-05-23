@@ -86,6 +86,10 @@ class Prefs : public QObject {
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(int rxBandwidth READ rxBandwidth WRITE setRxBandwidth
                NOTIFY rxBandwidthChanged)
+    // IQ sample rate (Hz): 96000 / 192000 / 384000.  Drives the HL2 wire
+    // speed bits + the WDSP channel rate (panadapter span follows).
+    Q_PROPERTY(int sampleRate READ sampleRate WRITE setSampleRate
+               NOTIFY sampleRateChanged)
     // Waterfall collapsed (old-Lyra triangle toggle) — when true the
     // waterfall pane is hidden and the panadapter takes the full height.
     Q_PROPERTY(bool waterfallCollapsed READ waterfallCollapsed
@@ -163,6 +167,8 @@ public:
     void    setMode(const QString &m);
     int  rxBandwidth() const;            // bandwidth for the current mode
     void setRxBandwidth(int hz);
+    int  sampleRate() const { return sampleRate_; }
+    void setSampleRate(int hz);
     bool waterfallCollapsed() const { return waterfallCollapsed_; }
     void setWaterfallCollapsed(bool v);
     // Built-in default RX bandwidth for a mode (first run / unset).
@@ -198,6 +204,7 @@ signals:
     void zoomChanged();
     void modeChanged();
     void rxBandwidthChanged();
+    void sampleRateChanged();
     void waterfallCollapsedChanged();
 
 private:
@@ -230,6 +237,7 @@ private:
     double  zoom_;
     QString mode_;
     QHash<QString, int> bwByMode_;   // per-mode RX bandwidth memory
+    int     sampleRate_;
     bool    waterfallCollapsed_;
 };
 

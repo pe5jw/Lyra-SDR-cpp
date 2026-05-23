@@ -489,6 +489,19 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
     }
 }
 
+void HL2Stream::setSampleRate(int hz) {
+    std::uint8_t bits;
+    switch (hz) {
+    case 96000:  bits = 0x01; break;
+    case 192000: bits = 0x02; break;
+    case 384000: bits = 0x03; break;
+    default:     return;   // 48k excluded (EP2 cadence)
+    }
+    sampleRateBits_.store(bits, std::memory_order_relaxed);
+    emit logLine(QStringLiteral("IQ sample rate -> %1 kHz (wire C1)")
+                 .arg(hz / 1000));
+}
+
 void HL2Stream::setFilterBoardEnabled(bool on) {
     if (on == filterBoardEnabled_) {
         return;
@@ -625,6 +638,9 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         pktBytes[13] = static_cast<std::uint8_t>(
             ocC2_.load(std::memory_order_relaxed));
 
+        // Frame-0 C1 [12]: IQ speed bits (96/192/384 k).
+        pktBytes[12] = sampleRateBits_.load(std::memory_order_relaxed);
+
         // Audio L/R into the 126 LRIQ tuples (BE 16-bit); TX I/Q stay 0.
         for (int i = 0; i < 126; ++i) {
             const qint16 L = audio ? audio[i * 2 + 0] : 0;
@@ -653,14 +669,18 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         bool haveChunk = false;
         {
             std::unique_lock<std::mutex> lk(audioMtx_);
-            // When injecting, wait up to 10 ms — LONGER than the ~5.3 ms
-            // gap between DSP audio blocks, so a normal inter-block gap
-            // never trips a (silence) keepalive into the stream; only a
-            // genuine underrun does.  When NOT injecting (PC out / idle),
-            // wait ~2.6 ms so the silence keepalive holds ~380 Hz.
+            // When injecting, wait LONGER than the gap between DSP audio
+            // blocks so a normal inter-block gap never trips a (silence)
+            // keepalive into the stream — only a genuine underrun does.
+            // That gap is rate-dependent: a 1024-frame IQ block arrives
+            // every ~10.7 ms at 96 k (worst case), ~5.3 ms at 192 k,
+            // ~2.7 ms at 384 k.  22 ms clears the 96 k gap with margin
+            // (was 10 ms → 96 k injected silence every block = clicks).
+            // When NOT injecting (PC out / idle), wait ~2.6 ms so the
+            // silence keepalive holds ~380 Hz.
             audioCv_.wait_for(
                 lk,
-                injecting ? std::chrono::microseconds(10000)
+                injecting ? std::chrono::microseconds(22000)
                           : std::chrono::microseconds(2600),
                 [&] {
                     return stop.stop_requested() ||

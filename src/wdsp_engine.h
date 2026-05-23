@@ -167,6 +167,11 @@ public:
     Q_INVOKABLE void setMode(const QString &m);
     int  bandwidth() const { return bw_; }
     Q_INVOKABLE void setBandwidth(int hz);
+    // IQ sample rate (Hz).  Switching reopens the WDSP channel +
+    // analyzer at the new rate (panadapter span follows).  Safe to call
+    // while running — serialised against feedIq via channelMtx_.
+    int  sampleRate() const { return cfg_.inRate; }
+    Q_INVOKABLE void setSampleRate(int hz);
     double passbandLowHz()  const { return passbandLowHz_; }
     double passbandHighHz() const { return passbandHighHz_; }
     int  cwPitchHz() const { return static_cast<int>(cwPitchHz_ + 0.5); }
@@ -230,6 +235,11 @@ private:
 
     WdspNative *wdsp_    = nullptr;
     RxConfig    cfg_;
+    // Serialises the WDSP channel lifecycle (open/close on the main
+    // thread, e.g. a sample-rate switch) against feedIq()'s fexchange0
+    // on the RX worker thread — so a rate change can't tear the channel
+    // down mid-process.
+    std::mutex  channelMtx_;
     int         channel_ = 0;
     int         outSize_ = 0;
     bool        opened_  = false;
