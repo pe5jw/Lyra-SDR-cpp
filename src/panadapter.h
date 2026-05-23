@@ -121,6 +121,11 @@ class Panadapter : public QQuickItem {
     // {frac: 0..1 across width, db: value}.  Rendered as QML Text in
     // PanadapterPanel (text in the scene graph is impractical here).
     Q_PROPERTY(QVariantList peakLabels READ peakLabels NOTIFY peakLabelsChanged)
+    // Rolling noise-floor estimate (~20th percentile of the displayed
+    // spectrum, EWMA-smoothed) in dBFS.  Drives the panadapter's
+    // noise-floor reference line; the line's colour + on/off are Prefs
+    // (Settings → Visuals) and the line itself is drawn in QML.
+    Q_PROPERTY(double noiseFloorDb READ noiseFloorDb NOTIFY noiseFloorChanged)
 
 public:
     explicit Panadapter(QQuickItem *parent = nullptr);
@@ -185,6 +190,7 @@ public:
     bool peakShowDb() const { return peakShowDb_; }
     void setPeakShowDb(bool v);
     QVariantList peakLabels() const { return peakLabels_; }
+    double noiseFloorDb() const { return noiseFloorDb_; }
 
 signals:
     void engineChanged();
@@ -208,6 +214,7 @@ signals:
     void peakColorChanged();
     void peakShowDbChanged();
     void peakLabelsChanged();
+    void noiseFloorChanged();
 
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode,
@@ -259,6 +266,11 @@ private:
     std::vector<double>    peakUpdated_;  // per-bin last-updated (seconds)
     double                 peakLastS_ = -1.0;  // last hold/decay tick (seconds)
     std::vector<float>     peakColDb_;    // per-column reduced peak curve (scratch)
+
+    // ---- rolling noise-floor estimate (for the reference line) ----
+    double                 noiseFloorDb_ = -150.0;
+    bool                   noiseFloorSeeded_ = false;
+    std::vector<float>     nfScratch_;
 
     // Per-frame scratch (reused to avoid per-frame allocation): the
     // peak-per-column curve, then the spatially-smoothed curve.

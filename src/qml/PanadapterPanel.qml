@@ -456,6 +456,49 @@ Item {
                 }
             }
 
+            // ---- noise-floor reference line + NF label ----
+            // Dashed line at the rolling ~20th-percentile floor
+            // (pan.noiseFloorDb), mapped to the live effective dB range,
+            // with an "NF -NN dBFS" label.  Colour + on/off from Prefs.
+            Item {
+                id: nfLine
+                anchors.fill: parent
+                z: 4
+                readonly property real nfNorm:
+                    (pan.noiseFloorDb - root.effMin)
+                    / Math.max(1, root.effMax - root.effMin)
+                visible: Prefs.noiseFloorEnabled
+                         && nfNorm >= 0 && nfNorm <= 1
+                readonly property real nfY:
+                    Math.max(0, Math.min(spectrumArea.height - 1,
+                             (1 - nfNorm) * spectrumArea.height))
+                Repeater {                 // 5 px dash + 5 px gap
+                    model: nfLine.visible
+                           ? Math.max(1, Math.ceil(spectrumArea.width / 10)) : 0
+                    delegate: Rectangle {
+                        required property int index
+                        x: index * 10
+                        y: nfLine.nfY
+                        width: 5; height: 1
+                        color: Prefs.noiseFloorColor
+                        opacity: 0.7
+                    }
+                }
+                Text {
+                    visible: nfLine.visible
+                    text: "NF " + (pan.noiseFloorDb >= 0 ? "+" : "")
+                          + Math.round(pan.noiseFloorDb) + qsTr(" dBFS")
+                    color: Prefs.noiseFloorColor
+                    font.pixelSize: 11
+                    font.family: "Consolas"
+                    style: Text.Outline
+                    styleColor: "#cc000000"
+                    // Sit just left of the right-edge dB scale numbers.
+                    x: Math.max(2, spectrumArea.width - width - 46)
+                    y: Math.max(0, nfLine.nfY - height - 1)
+                }
+            }
+
             // ---- cursor frequency readout (floats near the pointer) ----
             // Operator-toggleable (Settings → Visuals → Cursor readout).
             // Follows the cursor instead of pinning to the top, so it

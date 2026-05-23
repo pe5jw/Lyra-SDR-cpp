@@ -63,6 +63,13 @@ class Prefs : public QObject {
                NOTIFY peakColorChanged)
     Q_PROPERTY(bool peakShowDb READ peakShowDb WRITE setPeakShowDb
                NOTIFY peakShowDbChanged)
+    // Noise-floor reference line on the panadapter (old-Lyra parity):
+    // a dashed line at the rolling ~20th-percentile floor + an
+    // "NF -NN dBFS" label.  On/off + colour are operator-tunable.
+    Q_PROPERTY(bool noiseFloorEnabled READ noiseFloorEnabled
+               WRITE setNoiseFloorEnabled NOTIFY noiseFloorEnabledChanged)
+    Q_PROPERTY(QString noiseFloorColor READ noiseFloorColor
+               WRITE setNoiseFloorColor NOTIFY noiseFloorColorChanged)
     Q_PROPERTY(bool watermark READ watermark WRITE setWatermark
                NOTIFY watermarkChanged)
     Q_PROPERTY(bool meteors READ meteors WRITE setMeteors NOTIFY meteorsChanged)
@@ -171,6 +178,10 @@ public:
     void    setPeakColor(const QString &hex);
     bool peakShowDb() const { return peakShowDb_; }
     void setPeakShowDb(bool v);
+    bool noiseFloorEnabled() const { return noiseFloorEnabled_; }
+    void setNoiseFloorEnabled(bool v);
+    QString noiseFloorColor() const { return noiseFloorColor_; }
+    void    setNoiseFloorColor(const QString &hex);
     bool watermark() const { return watermark_; }
     void setWatermark(bool v);
     bool meteors() const { return meteors_; }
@@ -230,6 +241,8 @@ signals:
     void peakColorChanged();
     void peakShowDbChanged();
     void peakClearRequested();
+    void noiseFloorEnabledChanged();
+    void noiseFloorColorChanged();
     void watermarkChanged();
     void meteorsChanged();
     void meteorGapChanged();
@@ -269,6 +282,8 @@ private:
     int     peakStyle_;
     QString peakColor_;
     bool    peakShowDb_;
+    bool    noiseFloorEnabled_;
+    QString noiseFloorColor_;
     bool    watermark_;
     bool    meteors_;
     int     meteorGap_;

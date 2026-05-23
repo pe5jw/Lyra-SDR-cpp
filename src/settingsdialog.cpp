@@ -839,6 +839,47 @@ QWidget *SettingsDialog::buildVisualsTab() {
         form->addRow(tr("Peak markers"), pbox);
     }
 
+    // --- Noise-floor reference line (dashed line at the rolling
+    // ~20th-percentile floor + an "NF -NN dBFS" label) ---
+    {
+        auto *nbox = new QWidget(page);
+        auto *nh = new QHBoxLayout(nbox);
+        nh->setContentsMargins(0, 0, 0, 0);
+        nh->setSpacing(8);
+
+        auto *nfEn = new QCheckBox(tr("Show noise-floor line"), nbox);
+        nfEn->setChecked(prefs_->noiseFloorEnabled());
+        connect(nfEn, &QCheckBox::toggled, prefs_, &Prefs::setNoiseFloorEnabled);
+        connect(prefs_, &Prefs::noiseFloorEnabledChanged, nbox, [this, nfEn]() {
+            if (nfEn->isChecked() != prefs_->noiseFloorEnabled())
+                nfEn->setChecked(prefs_->noiseFloorEnabled());
+        });
+        nh->addWidget(nfEn);
+
+        nh->addWidget(new QLabel(tr("Colour:"), nbox));
+        auto *nfSwatch = new QPushButton(nbox);
+        nfSwatch->setFixedSize(44, 22);
+        nfSwatch->setToolTip(tr("Noise-floor line colour"));
+        auto nfSet = [nfSwatch](const QString &hex) {
+            nfSwatch->setStyleSheet(QStringLiteral(
+                "QPushButton{background:%1;border:1px solid #2a3a4a;"
+                "border-radius:3px;}").arg(hex));
+        };
+        nfSet(prefs_->noiseFloorColor());
+        connect(nfSwatch, &QPushButton::clicked, nbox, [this, nbox]() {
+            const QColor c = QColorDialog::getColor(
+                QColor(prefs_->noiseFloorColor()), nbox,
+                tr("Noise-floor line colour"));
+            if (c.isValid()) prefs_->setNoiseFloorColor(c.name());
+        });
+        connect(prefs_, &Prefs::noiseFloorColorChanged, nbox,
+                [this, nfSet]() { nfSet(prefs_->noiseFloorColor()); });
+        nh->addWidget(nfSwatch);
+        nh->addStretch(1);
+
+        form->addRow(tr("Noise floor"), nbox);
+    }
+
     // --- Trace smoothing (temporal EWMA, 0 = off) ---
     auto *smooth = new QSpinBox(page);
     smooth->setRange(0, 10);

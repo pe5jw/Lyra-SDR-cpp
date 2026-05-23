@@ -17,7 +17,7 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     implicitHeight: 50
-    implicitWidth: 540
+    implicitWidth: 580
     color: "#101820"
     border.color: "#2a4a5a"
 
@@ -52,6 +52,34 @@ Rectangle {
         for (var i = 1; i < p.length; ++i)
             if (Math.abs(p[i] - bw) < Math.abs(p[best] - bw)) best = i
         return best
+    }
+    // The RX BW combo shows the ACTUAL bandwidth — including non-preset
+    // values from dragging the panadapter passband edge (old-Lyra parity):
+    // a value that isn't a preset is shown as a "(custom)" entry at the
+    // top of the list and selected.  Picking a real preset drops it.
+    function bwIsPreset(mode, bw) {
+        var p = presetsFor(mode)
+        for (var i = 0; i < p.length; ++i) if (p[i] === bw) return true
+        return false
+    }
+    function bwModel(mode, bw) {
+        var labels = presetsFor(mode).map(fmtBw)
+        if (bwIsPreset(mode, bw)) return labels
+        return [fmtBw(bw) + qsTr(" (custom)")].concat(labels)
+    }
+    function bwCurrentIndex(mode, bw) {
+        var p = presetsFor(mode)
+        if (!bwIsPreset(mode, bw)) return 0          // custom entry at front
+        for (var i = 0; i < p.length; ++i) if (p[i] === bw) return i
+        return 0
+    }
+    // Map the picked combo index back to a bandwidth (Hz).  `bw` is the
+    // CURRENT bandwidth the model was built from, so the index offset for
+    // the optional leading "(custom)" entry is consistent.
+    function bwValueAt(mode, bw, idx) {
+        var p = presetsFor(mode)
+        if (bwIsPreset(mode, bw)) return p[idx]
+        return idx === 0 ? bw : p[idx - 1]           // idx 0 = the custom entry
     }
 
     // IQ sample rates (96/192/384 k — 48 k excluded, EP2 cadence).
@@ -117,12 +145,13 @@ Rectangle {
         Label { text: qsTr("RX BW"); color: "#cccccc"; font.bold: true }
         ComboBox {
             id: bwCombo
-            Layout.preferredWidth: 90
-            // Rebuilds when the mode changes (presets are per-mode).
-            model: root.presetsFor(Prefs.mode).map(root.fmtBw)
-            currentIndex: root.bwIndex(Prefs.mode, Prefs.rxBandwidth)
+            Layout.preferredWidth: 120
+            // Rebuilds on mode change (per-mode presets) AND on bandwidth
+            // change, so a dragged non-preset BW shows as "(custom)".
+            model: root.bwModel(Prefs.mode, Prefs.rxBandwidth)
+            currentIndex: root.bwCurrentIndex(Prefs.mode, Prefs.rxBandwidth)
             onActivated: Prefs.rxBandwidth =
-                root.presetsFor(Prefs.mode)[currentIndex]
+                root.bwValueAt(Prefs.mode, Prefs.rxBandwidth, currentIndex)
         }
 
         Item { Layout.fillWidth: true }

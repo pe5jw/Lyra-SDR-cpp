@@ -31,6 +31,8 @@ constexpr auto kPkDecay = "panadapter/peakDecayDbps";
 constexpr auto kPkStyle = "panadapter/peakStyle";
 constexpr auto kPkColor = "panadapter/peakColor";
 constexpr auto kPkShow  = "panadapter/peakShowDb";
+constexpr auto kNfEn    = "panadapter/noiseFloorEnabled";
+constexpr auto kNfColor = "panadapter/noiseFloorColor";
 constexpr auto kWmark  = "panadapter/watermark";
 constexpr auto kMet    = "panadapter/meteors";
 constexpr auto kMetGap = "panadapter/meteorGap";
@@ -80,6 +82,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     peakStyle_     = std::clamp(s.value(kPkStyle, 1).toInt(), 0, 2);  // 1 dots
     peakColor_     = s.value(kPkColor, QStringLiteral("#ffbe5a")).toString();
     peakShowDb_    = s.value(kPkShow, false).toBool();
+    noiseFloorEnabled_ = s.value(kNfEn, true).toBool();
+    noiseFloorColor_   = s.value(kNfColor, QStringLiteral("#78c88c")).toString();
     watermark_   = s.value(kWmark, true).toBool();
     meteors_     = s.value(kMet, true).toBool();
     meteorGap_   = std::clamp(s.value(kMetGap, 30).toInt(), 5, 120);
@@ -291,6 +295,22 @@ void Prefs::setPeakShowDb(bool v) {
         peakShowDb_ = v;
         QSettings().setValue(kPkShow, v);
         emit peakShowDbChanged();
+    }
+}
+
+void Prefs::setNoiseFloorEnabled(bool v) {
+    if (v != noiseFloorEnabled_) {
+        noiseFloorEnabled_ = v;
+        QSettings().setValue(kNfEn, v);
+        emit noiseFloorEnabledChanged();
+    }
+}
+
+void Prefs::setNoiseFloorColor(const QString &hex) {
+    if (hex != noiseFloorColor_ && !hex.isEmpty()) {
+        noiseFloorColor_ = hex;
+        QSettings().setValue(kNfColor, hex);
+        emit noiseFloorColorChanged();
     }
 }
 

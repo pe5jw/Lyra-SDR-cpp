@@ -421,6 +421,27 @@ void Panadapter::onFrame() {
         emit peakLabelsChanged();
     }
 
+    // ---- rolling noise-floor estimate (old-Lyra reference line) ----
+    // ~20th percentile of the displayed spectrum, EWMA-smoothed so the
+    // line tracks the band without jittering.  Exposed as noiseFloorDb;
+    // the line + label are drawn in QML (Settings → Visuals colour/toggle).
+    if (n >= 4) {
+        nfScratch_.assign(pix_.begin(), pix_.end());
+        const int k = std::clamp(static_cast<int>(n * 0.20), 1, n - 1);
+        std::nth_element(nfScratch_.begin(), nfScratch_.begin() + k,
+                         nfScratch_.end());
+        const double nf = static_cast<double>(nfScratch_[static_cast<size_t>(k)]);
+        double v;
+        if (!noiseFloorSeeded_) { v = nf; noiseFloorSeeded_ = true; }
+        else                    { v = noiseFloorDb_ + 0.10 * (nf - noiseFloorDb_); }
+        if (std::abs(v - noiseFloorDb_) > 0.05) {
+            noiseFloorDb_ = v;
+            emit noiseFloorChanged();
+        } else {
+            noiseFloorDb_ = v;
+        }
+    }
+
     update();
 }
 
