@@ -618,6 +618,16 @@ QWidget *SettingsDialog::buildVisualsTab() {
     form->addRow(tr("Waterfall speed"), wspeed);
 
     // --- Waterfall dB range (INDEPENDENT of the panadapter scale) ---
+    // Auto-fit OR a manual floor/ceiling.  The manual spinboxes gray
+    // out while Auto is on.
+    auto *wfAuto = new QCheckBox(tr("Auto-fit the waterfall dB range"), page);
+    wfAuto->setChecked(prefs_->waterfallDbAuto());
+    wfAuto->setToolTip(tr("Track the band automatically (noise floor − 15 dB "
+                          "to peak + 15 dB). Off = use the floor/ceiling "
+                          "below."));
+    connect(wfAuto, &QCheckBox::toggled, prefs_, &Prefs::setWaterfallDbAuto);
+    form->addRow(tr("Waterfall dB"), wfAuto);
+
     // The waterfall's own floor/ceiling — tune these to make detail
     // pop in the heat map without changing the spectrum scale.
     auto *wfMin = new QDoubleSpinBox(page);
@@ -647,6 +657,19 @@ QWidget *SettingsDialog::buildVisualsTab() {
             wfMax->setValue(prefs_->waterfallDbMax());
     });
     form->addRow(tr("Waterfall dB — ceiling"), wfMax);
+
+    // Gray the manual floor/ceiling out while Auto is on.
+    auto applyWfAuto = [wfMin, wfMax](bool a) {
+        wfMin->setEnabled(!a);
+        wfMax->setEnabled(!a);
+    };
+    applyWfAuto(prefs_->waterfallDbAuto());
+    connect(prefs_, &Prefs::waterfallDbAutoChanged, page,
+            [this, wfAuto, applyWfAuto]() {
+                const bool a = prefs_->waterfallDbAuto();
+                if (wfAuto->isChecked() != a) wfAuto->setChecked(a);
+                applyWfAuto(a);
+            });
 
     // --- Spectrum fill on/off + fill colour ---
     // The fill colour applies in SOLID trace mode (lets the fill differ

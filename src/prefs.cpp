@@ -33,6 +33,7 @@ constexpr auto kWfCol  = "panadapter/waterfallColor";
 constexpr auto kWfSpd  = "panadapter/waterfallSpeed";
 constexpr auto kWfDbMin = "panadapter/waterfallDbMin";
 constexpr auto kWfDbMax = "panadapter/waterfallDbMax";
+constexpr auto kWfDbAuto = "panadapter/waterfallDbAuto";
 constexpr auto kPanSplit = "ui/panadapterSplit";
 constexpr auto kCursorRdt = "panadapter/cursorReadout";
 } // namespace
@@ -61,6 +62,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     waterfallSpeed_   = std::clamp(s.value(kWfSpd, 20).toInt(), 1, 120);
     waterfallDbMin_   = s.value(kWfDbMin, -120.0).toDouble();
     waterfallDbMax_   = s.value(kWfDbMax,  -20.0).toDouble();
+    waterfallDbAuto_  = s.value(kWfDbAuto, false).toBool();
     panadapterSplit_  = s.value(kPanSplit);   // invalid (= QML undefined) if unset
     cursorReadout_    = s.value(kCursorRdt, true).toBool();
 }
@@ -255,6 +257,14 @@ void Prefs::setWaterfallDbMax(double v) {
         waterfallDbMax_ = v;
         QSettings().setValue(kWfDbMax, v);
         emit waterfallDbMaxChanged();
+    }
+}
+
+void Prefs::setWaterfallDbAuto(bool v) {
+    if (v != waterfallDbAuto_) {
+        waterfallDbAuto_ = v;
+        QSettings().setValue(kWfDbAuto, v);
+        emit waterfallDbAutoChanged();
     }
 }
 

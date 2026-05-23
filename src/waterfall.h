@@ -25,6 +25,7 @@
 #include <QImage>
 #include <QQuickItem>
 
+#include "autoscale.h"
 #include "palettes.h"
 
 #include <vector>
@@ -51,6 +52,11 @@ class Waterfall : public QQuickItem {
     // pump still runs at targetFps; between row pushes incoming frames
     // are peak-held so brief signals survive even at slow speeds.
     Q_PROPERTY(int speed READ speed WRITE setSpeed NOTIFY speedChanged)
+    // Auto dB range: when true, the heat-map floor/ceiling track the
+    // band automatically (noise-floor − 15 dB .. peak + 15 dB, ≥50 dB
+    // span, smoothed) and dbMin/dbMax are ignored.
+    Q_PROPERTY(bool autoScale READ autoScale WRITE setAutoScale
+               NOTIFY autoScaleChanged)
 
 public:
     explicit Waterfall(QQuickItem *parent = nullptr);
@@ -75,6 +81,9 @@ public:
     int  speed() const { return speed_; }
     void setSpeed(int v);
 
+    bool autoScale() const { return autoScale_; }
+    void setAutoScale(bool v);
+
 signals:
     void engineChanged();
     void rangeChanged();
@@ -82,6 +91,7 @@ signals:
     void paletteChanged();
     void strengthColorChanged();
     void speedChanged();
+    void autoScaleChanged();
 
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode,
@@ -104,6 +114,9 @@ private:
     bool                 dirty_ = false;  // new row since last paint?
     double               dbMin_ = -130.0;
     double               dbMax_ = -20.0;
+    bool                 autoScale_ = false;  // auto-fit the dB range?
+    AutoScaler           autoScaler_;         // computes the auto range
+    qint64               lastAutoMs_ = -1;    // throttle auto-fit feed (~5 Hz)
     int                  targetFps_ = 60;
     int                  speed_ = 20;     // history rows per second
     int                  paletteIndex_ = 0;

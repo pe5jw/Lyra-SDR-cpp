@@ -65,6 +65,14 @@ void Waterfall::setSpeed(int v) {
     if (v != speed_) { speed_ = v; emit speedChanged(); }
 }
 
+void Waterfall::setAutoScale(bool v) {
+    if (v != autoScale_) {
+        autoScale_ = v;
+        if (v) { autoScaler_.reset(); lastAutoMs_ = -1; }   // fresh fit
+        emit autoScaleChanged();
+    }
+}
+
 void Waterfall::setPalette(int v) {
     if (v < 0) v = 0;
     if (v != paletteIndex_) {
@@ -142,6 +150,17 @@ void Waterfall::onFrame() {
     }
     engine_->copySpectrum(row_.data(), n);
 
+    // Auto-fit the dB range from the live spectrum (throttled to ~5 Hz),
+    // independent of scroll speed / fps.  Runs every frame (not just on a
+    // row push) so the range keeps tracking between rows.
+    if (autoScale_) {
+        const qint64 nowA = rowClock_.elapsed();
+        if (lastAutoMs_ < 0 || (nowA - lastAutoMs_) >= 200) {
+            lastAutoMs_ = nowA;
+            autoScaler_.feed(row_.data(), n);
+        }
+    }
+
     // Peak-hold every incoming frame into the pending row so that, at
     // slow scroll speeds, a brief signal between row pushes still shows.
     for (int x = 0; x < n; ++x) {
@@ -178,12 +197,15 @@ void Waterfall::onFrame() {
                      static_cast<size_t>(bpl) * (kHistory - rowsToPush));
     }
 
-    // Paint the peak-held frame into row 0 via the palette LUT.
-    const double span = (dbMax_ > dbMin_) ? (dbMax_ - dbMin_) : 1.0;
+    // Paint the peak-held frame into row 0 via the palette LUT, using
+    // the auto-fit range when enabled (else the operator's manual one).
+    const double effMin = autoScale_ ? autoScaler_.floorDb() : dbMin_;
+    const double effMax = autoScale_ ? autoScaler_.ceilDb()  : dbMax_;
+    const double span = (effMax > effMin) ? (effMax - effMin) : 1.0;
     uchar *row0 = base;   // scanLine(0)
     for (int x = 0; x < n; ++x) {
         double t = (static_cast<double>(pendingMax_[static_cast<size_t>(x)])
-                    - dbMin_) / span;
+                    - effMin) / span;
         t = std::clamp(t, 0.0, 1.0);
         const auto &c = lut_[static_cast<size_t>(int(t * 255.0 + 0.5))];
         uchar *px = row0 + x * 4;

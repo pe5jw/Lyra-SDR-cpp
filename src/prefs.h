@@ -66,6 +66,9 @@ class Prefs : public QObject {
                WRITE setWaterfallDbMin NOTIFY waterfallDbMinChanged)
     Q_PROPERTY(double waterfallDbMax READ waterfallDbMax
                WRITE setWaterfallDbMax NOTIFY waterfallDbMaxChanged)
+    // Auto-fit the waterfall dB range (ignores waterfallDbMin/Max).
+    Q_PROPERTY(bool waterfallDbAuto READ waterfallDbAuto
+               WRITE setWaterfallDbAuto NOTIFY waterfallDbAutoChanged)
     // Floating frequency readout that follows the cursor over the
     // panadapter (on by default; operator-toggleable).
     Q_PROPERTY(bool cursorReadout READ cursorReadout WRITE setCursorReadout
@@ -129,6 +132,8 @@ public:
     void   setWaterfallDbMin(double v);
     double waterfallDbMax() const { return waterfallDbMax_; }
     void   setWaterfallDbMax(double v);
+    bool waterfallDbAuto() const { return waterfallDbAuto_; }
+    void setWaterfallDbAuto(bool v);
     QVariant panadapterSplit() const { return panadapterSplit_; }
     void     setPanadapterSplit(const QVariant &v);
     bool cursorReadout() const { return cursorReadout_; }
@@ -157,6 +162,7 @@ signals:
     void waterfallSpeedChanged();
     void waterfallDbMinChanged();
     void waterfallDbMaxChanged();
+    void waterfallDbAutoChanged();
     void panadapterSplitChanged();
     void cursorReadoutChanged();
 
@@ -183,6 +189,7 @@ private:
     int     waterfallSpeed_;
     double  waterfallDbMin_;
     double  waterfallDbMax_;
+    bool    waterfallDbAuto_;
     QVariant panadapterSplit_;
     bool    cursorReadout_;
 };

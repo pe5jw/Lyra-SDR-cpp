@@ -482,6 +482,9 @@ Item {
             engine: WdspEngine
             // Independent waterfall dB range (Settings → Visuals) — NOT
             // the panadapter's dbMin/dbMax, so contrast tunes separately.
+            // When autoScale is on, dbMin/dbMax are ignored (the item
+            // auto-fits internally).
+            autoScale: Prefs.waterfallDbAuto
             dbMin: Prefs.waterfallDbMin
             dbMax: Prefs.waterfallDbMax
             targetFps: Prefs.targetFps
