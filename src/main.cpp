@@ -19,6 +19,7 @@
 #include <QGuiApplication>
 #include <QApplication>
 #include <QColor>
+#include <QIcon>
 #include <QPalette>
 #include <QSettings>
 #include <QString>
@@ -128,6 +129,10 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    // Window / taskbar icon (the embedded .exe icon comes from src/lyra.rc;
+    // this sets the running window + taskbar icon from the bundled PNG).
+    app.setWindowIcon(QIcon(QStringLiteral(
+        ":/qt/qml/Lyra/src/assets/logo/lyra-icon-256.png")));
     // Apply old-Lyra's dark cool-CRT theme to the whole QtWidgets shell
     // (menu bar, dock title bars, Settings dialog, tabs, controls).
     app.setStyleSheet(lyra::ui::lyraStyleSheet());

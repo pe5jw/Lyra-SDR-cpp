@@ -146,6 +146,12 @@ target_compile_definitions(lyra PRIVATE
     LYRA_REPO_NAME="Lyra-SDR-cpp"
 )
 
+# Embed the application icon into lyra.exe (Explorer / taskbar / shortcut
+# icon) via a Windows resource script.
+if(WIN32)
+    target_sources(lyra PRIVATE src/lyra.rc)
+endif()
+
 # Step 2b: HL2Stream uses raw WinSock2 (sendto/recvfrom from
 # dedicated OS threads -- one shared native socket) and Win32
 # CreateWaitableTimerExW (HIGH_RESOLUTION 380 Hz EP2 keepalive

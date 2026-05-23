@@ -1,0 +1,5 @@
+// Lyra — Windows resource: embeds the application icon into lyra.exe so
+// Explorer, the taskbar, and the installer's shortcut all show the Lyra
+// logo.  The first ICON entry in the .rc is what Windows uses as the
+// executable's icon.  Path is relative to this file (src/).
+IDI_ICON1 ICON "assets/logo/lyra.ico"
