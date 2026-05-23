@@ -37,6 +37,18 @@ constexpr auto kWfDbMax = "panadapter/waterfallDbMax";
 constexpr auto kWfDbAuto = "panadapter/waterfallDbAuto";
 constexpr auto kPanSplit = "ui/panadapterSplit";
 constexpr auto kCursorRdt = "panadapter/cursorReadout";
+constexpr auto kZoom   = "panadapter/zoom";
+constexpr auto kRxMode = "modefilter/mode";
+constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
+constexpr auto kWfCollapse = "panadapter/waterfallCollapsed";
+// Modes whose per-mode bandwidth we persist/restore.
+const QStringList kModes = {
+    QStringLiteral("LSB"),  QStringLiteral("USB"),
+    QStringLiteral("CWL"),  QStringLiteral("CWU"),
+    QStringLiteral("DSB"),  QStringLiteral("AM"),
+    QStringLiteral("FM"),   QStringLiteral("DIGU"),
+    QStringLiteral("DIGL"),
+};
 } // namespace
 
 Prefs::Prefs(QObject *parent) : QObject(parent) {
@@ -67,6 +79,28 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     waterfallDbAuto_  = s.value(kWfDbAuto, false).toBool();
     panadapterSplit_  = s.value(kPanSplit);   // invalid (= QML undefined) if unset
     cursorReadout_    = s.value(kCursorRdt, true).toBool();
+    zoom_             = std::clamp(s.value(kZoom, 1.0).toDouble(), 1.0, 32.0);
+    mode_             = s.value(kRxMode, QStringLiteral("USB")).toString();
+    // Per-mode RX bandwidth: load any persisted value; modes without a
+    // stored value fall back to defaultBandwidthFor() on read.
+    for (const QString &m : kModes) {
+        const QVariant v = s.value(QString(kBwPrefix) + m);
+        if (v.isValid()) {
+            bwByMode_.insert(m, v.toInt());
+        }
+    }
+    waterfallCollapsed_ = s.value(kWfCollapse, false).toBool();
+}
+
+int Prefs::defaultBandwidthFor(const QString &mode) {
+    if (mode == QStringLiteral("CWL") || mode == QStringLiteral("CWU"))
+        return 250;
+    if (mode == QStringLiteral("DSB")) return 5000;
+    if (mode == QStringLiteral("AM"))  return 6000;
+    if (mode == QStringLiteral("FM"))  return 10000;
+    if (mode == QStringLiteral("DIGL") || mode == QStringLiteral("DIGU"))
+        return 3000;
+    return 2400;   // SSB (USB/LSB) + anything else
 }
 
 QStringList Prefs::paletteNames() const {
@@ -283,6 +317,47 @@ void Prefs::setCursorReadout(bool v) {
         cursorReadout_ = v;
         QSettings().setValue(kCursorRdt, v);
         emit cursorReadoutChanged();
+    }
+}
+
+void Prefs::setZoom(double v) {
+    v = std::clamp(v, 1.0, 32.0);
+    if (v != zoom_) {
+        zoom_ = v;
+        QSettings().setValue(kZoom, v);
+        emit zoomChanged();
+    }
+}
+
+int Prefs::rxBandwidth() const {
+    return bwByMode_.value(mode_, defaultBandwidthFor(mode_));
+}
+
+void Prefs::setMode(const QString &m) {
+    if (m.isEmpty() || m == mode_) {
+        return;
+    }
+    mode_ = m;
+    QSettings().setValue(kRxMode, m);
+    emit modeChanged();
+    // The effective bandwidth is per-mode, so it changes with the mode.
+    emit rxBandwidthChanged();
+}
+
+void Prefs::setRxBandwidth(int hz) {
+    if (hz <= 0 || hz == rxBandwidth()) {
+        return;
+    }
+    bwByMode_.insert(mode_, hz);
+    QSettings().setValue(QString(kBwPrefix) + mode_, hz);
+    emit rxBandwidthChanged();
+}
+
+void Prefs::setWaterfallCollapsed(bool v) {
+    if (v != waterfallCollapsed_) {
+        waterfallCollapsed_ = v;
+        QSettings().setValue(kWfCollapse, v);
+        emit waterfallCollapsedChanged();
     }
 }
 

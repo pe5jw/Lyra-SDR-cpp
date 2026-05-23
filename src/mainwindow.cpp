@@ -14,6 +14,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QEvent>
 #include <QDir>
 #include <QFile>
 #include <QTextStream>
@@ -22,6 +23,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QMessageBox>
 #include <QQmlContext>
 #include <QQuickWidget>
@@ -154,6 +156,9 @@ QWidget *MainWindow::makeDockTitleBar(QDockWidget *dock,
                                       const QString &topic) {
     auto *bar = new QWidget(dock);
     bar->setObjectName(QStringLiteral("dockTitleBar"));
+    // Restore double-click-to-float (default QDockWidget gesture, lost
+    // when we replace the title bar with a custom widget).
+    bar->installEventFilter(this);
     auto *row = new QHBoxLayout(bar);
     row->setContentsMargins(8, 2, 4, 2);
     row->setSpacing(2);
@@ -189,20 +194,37 @@ QWidget *MainWindow::makeDockTitleBar(QDockWidget *dock,
     row->addWidget(helpBtn);
     row->addStretch(1);   // push float/close to the far right
 
-    // Float + close — reproduce the default dock buttons we replaced.
+    // Float + close — styled like the "?" badge (cyan, visible on the
+    // dark title bar; the old dark system icons were invisible).  Text
+    // glyphs instead of QStyle standard icons so they actually show.
+    const QString btnStyle = QStringLiteral(
+        "QToolButton{color:#00e5ff;border:1px solid #00e5ff;"
+        "border-radius:3px;min-width:16px;max-width:16px;"
+        "min-height:16px;max-height:16px;font-weight:700;padding:0;}"
+        "QToolButton:hover{background:rgba(0,229,255,40);color:#7ff7ff;}");
+
     auto *floatBtn = new QToolButton(bar);
     floatBtn->setObjectName(QStringLiteral("dockFloat"));
-    floatBtn->setAutoRaise(true);
-    floatBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarNormalButton));
-    floatBtn->setToolTip(tr("Float / dock this panel"));
-    connect(floatBtn, &QToolButton::clicked, dock,
-            [dock]() { dock->setFloating(!dock->isFloating()); });
+    floatBtn->setText(QStringLiteral("⧉"));   // ⧉ float/overlay glyph
+    floatBtn->setCursor(Qt::PointingHandCursor);
+    floatBtn->setStyleSheet(btnStyle);
+    floatBtn->setToolTip(tr("Float this panel (rest it on top) / re-dock "
+                            "— or double-click the title bar"));
+    connect(floatBtn, &QToolButton::clicked, dock, [dock]() {
+        const bool toFloat = !dock->isFloating();
+        dock->setFloating(toFloat);
+        if (toFloat) {           // make the popped-out window visible
+            dock->raise();
+            dock->activateWindow();
+        }
+    });
     row->addWidget(floatBtn);
 
     auto *closeBtn = new QToolButton(bar);
     closeBtn->setObjectName(QStringLiteral("dockClose"));
-    closeBtn->setAutoRaise(true);
-    closeBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
+    closeBtn->setText(QStringLiteral("✕"));   // ✕ close glyph
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    closeBtn->setStyleSheet(btnStyle);
     closeBtn->setToolTip(tr("Close this panel (View menu re-opens it)"));
     connect(closeBtn, &QToolButton::clicked, dock, &QDockWidget::close);
     row->addWidget(closeBtn);
@@ -221,6 +243,10 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("tuning"), tr("Tuning"),
                  QStringLiteral("TuningPanel.qml"),
                  QStringLiteral("tuning"), Qt::BottomDockWidgetArea);
+    // Mode + Filter — demod mode + RX filter bandwidth (per-mode memory).
+    addQuickDock(QStringLiteral("modefilter"), tr("Mode + Filter"),
+                 QStringLiteral("ModeFilterPanel.qml"),
+                 QStringLiteral("modes-filters"), Qt::BottomDockWidgetArea);
     addQuickDock(QStringLiteral("audio"), tr("Audio"),
                  QStringLiteral("AudioPanel.qml"),
                  QStringLiteral("audio"), Qt::BottomDockWidgetArea);
@@ -326,11 +352,149 @@ void MainWindow::openSettingsTopic(const QString &topic) {
 }
 
 void MainWindow::buildToolbar() {
-    // Minimal skeleton for now.  Start/Stop/Discover + indicators
-    // migrate here from the QML top bar in a later step.
+    // Header action strip — old Lyra's top section between the menu and
+    // the panels: Start/Stop first, then a connection-status readout.
+    // (Time + Lightning/Wind notifications slot in here later, matching
+    // old Lyra's layout.)
     QToolBar *tb = addToolBar(tr("Main"));
     tb->setObjectName(QStringLiteral("main_toolbar"));
     tb->setMovable(true);
+    tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
+
+    startStopAction_ = tb->addAction(tr("▶  Start"));
+    startStopAction_->setToolTip(
+        tr("Connect to the radio and start streaming (and stop it)."));
+    connect(startStopAction_, &QAction::triggered,
+            this, &MainWindow::onStartStop);
+
+    tb->addSeparator();
+    connStatus_ = new QLabel(tr("Disconnected"), tb);
+    connStatus_->setContentsMargins(8, 0, 8, 0);
+    tb->addWidget(connStatus_);
+
+    // Reflect the live stream state into the button + status label.
+    if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        connect(st, &lyra::ipc::HL2Stream::runningChanged,
+                this, &MainWindow::updateConnState);
+    }
+    updateConnState();
+}
+
+void MainWindow::onStartStop() {
+    auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+    if (!st) {
+        return;
+    }
+    if (st->isRunning()) {
+        st->close();
+        return;
+    }
+    // Stopped → connect.  Prefer the remembered radio; if none, scan and
+    // auto-open the first one found (old-Lyra "Start just connects").
+    auto *disc = qobject_cast<lyra::ipc::HL2Discovery *>(discovery_);
+    QString ip;
+    if (disc) {
+        ip = disc->savedRadio().value(QStringLiteral("ip")).toString();
+    }
+    if (!ip.isEmpty()) {
+        if (connStatus_) connStatus_->setText(tr("Connecting to %1…").arg(ip));
+        st->open(ip);
+        return;
+    }
+    if (!disc) {
+        if (connStatus_) connStatus_->setText(tr("No saved radio"));
+        return;
+    }
+    // One-shot: open the first radio the sweep reports, then disarm.
+    if (connStatus_) connStatus_->setText(tr("Scanning…"));
+    QObject::disconnect(scanConn_);
+    scanConn_ = connect(
+        disc, &lyra::ipc::HL2Discovery::radioFound, this,
+        [this, st, disc](const QString &fip, const QString &mac,
+                         const QString &board, int code, int beta,
+                         bool busy, int numRxs) {
+            QObject::disconnect(scanConn_);
+            disc->rememberRadio(fip, mac, board, code, beta, busy, numRxs);
+            if (connStatus_)
+                connStatus_->setText(tr("Connecting to %1…").arg(fip));
+            st->open(fip);
+        });
+    disc->scan(1.5, 2);
+}
+
+void MainWindow::updateConnState() {
+    auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+    const bool running = st && st->isRunning();
+    if (startStopAction_) {
+        startStopAction_->setText(running ? tr("■  Stop")
+                                          : tr("▶  Start"));
+    }
+    if (connStatus_) {
+        connStatus_->setText(running && st
+                                 ? tr("Connected to %1").arg(st->targetIp())
+                                 : tr("Disconnected"));
+    }
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
+    auto *w = qobject_cast<QWidget *>(obj);
+    const bool isTitle =
+        w && w->objectName() == QStringLiteral("dockTitleBar");
+    if (!isTitle) {
+        return QMainWindow::eventFilter(obj, event);
+    }
+    auto dockOf = [](QWidget *x) -> QDockWidget * {
+        for (QWidget *p = x->parentWidget(); p; p = p->parentWidget())
+            if (auto *d = qobject_cast<QDockWidget *>(p)) return d;
+        return nullptr;
+    };
+
+    switch (event->type()) {
+    case QEvent::MouseButtonDblClick: {
+        // Double-click toggles float/dock (standard QDockWidget gesture).
+        if (auto *dock = dockOf(w)) {
+            if (dock->features() & QDockWidget::DockWidgetFloatable)
+                dock->setFloating(!dock->isFloating());
+            return true;
+        }
+        break;
+    }
+    case QEvent::MouseButtonPress: {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            QDockWidget *dock = dockOf(w);
+            // Only take over the drag for a FLOATING dock — then we move
+            // it as a free window (no re-dock/snap).  A DOCKED panel
+            // falls through to QDockWidget's own drag (move / re-dock).
+            if (dock && dock->isFloating()) {
+                floatDragDock_   = dock;
+                floatDragOffset_ = me->globalPosition().toPoint()
+                                   - dock->frameGeometry().topLeft();
+                return true;
+            }
+        }
+        break;
+    }
+    case QEvent::MouseMove: {
+        if (floatDragDock_) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            floatDragDock_->move(me->globalPosition().toPoint()
+                                 - floatDragOffset_);
+            return true;
+        }
+        break;
+    }
+    case QEvent::MouseButtonRelease: {
+        if (floatDragDock_) {
+            floatDragDock_ = nullptr;
+            return true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return QMainWindow::eventFilter(obj, event);
 }
 
 void MainWindow::applyPanelLock(bool locked) {

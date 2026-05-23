@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 
 namespace lyra::dsp {
@@ -48,7 +49,11 @@ constexpr double kAgcThreshFftSize = 4096.0;
 constexpr int    kAnDisp        = 0;       // analyzer id (RX1)
 constexpr int    kAnMaxFft      = 32768;   // max fft (must be >= max_w)
 constexpr int    kAnFftSize     = 4096;
-constexpr int    kAnPixels      = 2048;    // dB output points
+// Full FFT resolution out of the analyzer (1 pixel per bin) so the
+// zoom CROP in copySpectrum has the same source detail old Lyra's raw
+// 4096-bin FFT had — cropping the centre 1/zoom of THIS stays smooth
+// (a 2048 pre-binned output cropped + stretched looked "chunky").
+constexpr int    kAnPixels      = 4096;    // dB output points
 constexpr int    kAnWindow      = 4;       // soft-knee window (ref default)
 constexpr double kAnKaiserPi    = 14.0;
 constexpr int    kAnFrameRate   = 60;      // display fps — drives overlap,
@@ -95,6 +100,21 @@ double posToGain(double pos) {
     if (pos <= 0.0) return 0.0;
     if (pos >= 1.0) return 1.0;
     return std::pow(10.0, posToDb(pos) / 20.0);
+}
+
+// Demod-mode name -> WDSP RxaMode int (matches the bench-proven Python
+// wdsp_native.py RxaMode enum).  Unknown -> USB.
+int modeToWdsp(const QString &m) {
+    if (m == QLatin1String("LSB"))  return 0;
+    if (m == QLatin1String("USB"))  return 1;
+    if (m == QLatin1String("DSB"))  return 2;
+    if (m == QLatin1String("CWL"))  return 3;
+    if (m == QLatin1String("CWU"))  return 4;
+    if (m == QLatin1String("FM"))   return 5;
+    if (m == QLatin1String("AM"))   return 6;
+    if (m == QLatin1String("DIGU")) return 7;
+    if (m == QLatin1String("DIGL")) return 9;
+    return 1;   // USB
 }
 
 } // namespace
@@ -299,14 +319,12 @@ bool WdspEngine::openRx1()
     // AM/FM/DSB right-channel-silent fix (CLAUDE.md §14.10).
     api.SetRXAPanelBinaural(channel_, 0);
 
-    // USB demod.
-    api.SetRXAMode(channel_, kRxaModeUSB);
-
-    // SSB passband.  RXASetPassband updates NBP0 (front-of-chain, where
-    // sideband selection lives + always runs) + BP1 + the SNBA filter
-    // in one call.  SetRXABandpassFreqs alone would only touch BP1,
-    // which is bypassed with all DSP off (§14.2).
-    api.RXASetPassband(channel_, kUsbLowHz, kUsbHighHz);
+    // Demod mode + passband from the operator's current selection
+    // (default USB 2.4 kHz; persisted via Prefs and applied before the
+    // channel started running).  RXASetPassband updates NBP0
+    // (front-of-chain, where sideband selection lives + always runs) +
+    // BP1 + the SNBA filter in one call (§14.2).
+    applyModeFilter();
 
     // AGC medium.
     api.SetRXAAGCMode(channel_, kAgcModeMed);
@@ -408,6 +426,7 @@ bool WdspEngine::openRx1()
     api.SetChannelState(channel_, 1, 0);
     running_ = true;
     emit runningChanged();
+    emit spanChanged();     // QML freq scale re-reads spanHz on start
     levelsTimer_.start();   // begin the 5 Hz audioDbFs UI poll
 
     emitLog(QStringLiteral(
@@ -447,6 +466,71 @@ void WdspEngine::closeRx1()
     emitLog(QStringLiteral("[wdsp] channel 0 closed"));
 }
 
+void WdspEngine::setZoom(double z)
+{
+    z = std::max(1.0, std::min(32.0, z));
+    if (std::abs(z - zoom_.load(std::memory_order_relaxed)) < 1e-6) {
+        return;
+    }
+    zoom_.store(z, std::memory_order_relaxed);
+    // No analyzer reconfiguration — the next copySpectrum() crops to the
+    // new zoom.  spanChanged() refreshes the QML frequency scale.
+    emit zoomChanged();
+    emit spanChanged();
+}
+
+void WdspEngine::applyModeFilter()
+{
+    if (!opened_) {
+        return;   // applied on the next openRx1()
+    }
+    const WdspApi &api = wdsp_->api();
+    if (api.SetRXAMode) {
+        api.SetRXAMode(channel_, modeToWdsp(mode_));
+    }
+    // Per-mode passband edges (offsets from the tuned centre), matching
+    // old Lyra's _wdsp_filter_for.  These map onto the HL2 mirrored
+    // baseband so the sideband comes out correct (§14.2).
+    const double bw   = static_cast<double>(bw_);
+    const double half = bw / 2.0;
+    double lo, hi;
+    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
+        lo = 200.0;          hi = bw;
+    } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
+        lo = -bw;            hi = -200.0;
+    } else if (mode_ == QLatin1String("CWU")) {
+        lo = cwPitchHz_ - half;   hi = cwPitchHz_ + half;
+    } else if (mode_ == QLatin1String("CWL")) {
+        lo = -cwPitchHz_ - half;  hi = -cwPitchHz_ + half;
+    } else {                       // AM / DSB / FM (symmetric around DC)
+        lo = -half;          hi = half;
+    }
+    if (api.RXASetPassband) {
+        api.RXASetPassband(channel_, lo, hi);
+    }
+}
+
+void WdspEngine::setMode(const QString &m)
+{
+    if (m.isEmpty() || m == mode_) {
+        return;
+    }
+    mode_ = m;
+    applyModeFilter();   // SetRXAMode + new passband (no-op if closed)
+    emit modeChanged();
+}
+
+void WdspEngine::setBandwidth(int hz)
+{
+    hz = std::clamp(hz, 10, 20000);
+    if (hz == bw_) {
+        return;
+    }
+    bw_ = hz;
+    applyModeFilter();   // re-push passband for the new bandwidth
+    emit bandwidthChanged();
+}
+
 int WdspEngine::spectrumPixelCount() const
 {
     return kAnPixels;
@@ -462,11 +546,47 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
         return 0;
     }
     const int n = std::min(maxN, kAnPixels);
-    int    flag = 0;
-    double ref  = 0.0;
-    // GetPixels writes kAnPixels floats (dB) into dst.  WDSP serialises
-    // this against the RX-worker Spectrum0 feed internally.
-    api.GetPixels(kAnDisp, 0, dst, &flag, &ref);
+
+    // Pull the latest full-resolution spectrum into the persistent cache.
+    // GetPixels memcpy's + clears its ready-flag on a fresh frame, and
+    // leaves the buffer UNTOUCHED when there's none (flag=0).  Because the
+    // panadapter AND the waterfall both call this each frame, the second
+    // caller always gets flag=0 — so reading into a cache that retains the
+    // last good frame is what keeps BOTH consumers fed with valid data
+    // (an uninitialised per-call buffer here is what produced the red
+    // waterfall garbage).  First-time init to a quiet floor.
+    if (static_cast<int>(specCache_.size()) != kAnPixels) {
+        specCache_.assign(kAnPixels, -200.0f);
+    }
+    int flag = 0; double ref = 0.0;
+    api.GetPixels(kAnDisp, 0, specCache_.data(), &flag, &ref);
+    const float *full = specCache_.data();
+
+    const double z = zoom_.load(std::memory_order_relaxed);
+    if (z <= 1.0) {
+        // Full span — hand the cached spectrum straight back.
+        std::memcpy(dst, full, static_cast<size_t>(n) * sizeof(float));
+        return n;
+    }
+
+    // Zoomed (old-Lyra method): crop the centre 1/zoom slice of the
+    // full-resolution spectrum and linearly resample it up to n display
+    // points.  Pure display-side crop — the analyzer is never
+    // reconfigured, so the trace can't be corrupted by a live re-setup.
+    const double keep = static_cast<double>(kAnPixels) / z;   // bins shown
+    const double lo   = (kAnPixels - keep) * 0.5;             // left edge
+    const double span = (keep > 1.0) ? (keep - 1.0) : 1.0;
+    const int    denom = std::max(1, n - 1);
+    for (int i = 0; i < n; ++i) {
+        const double srcf =
+            lo + (static_cast<double>(i) / denom) * span;
+        int    i0   = static_cast<int>(srcf);
+        double frac = srcf - i0;
+        if (i0 < 0)              { i0 = 0;             frac = 0.0; }
+        if (i0 >= kAnPixels - 1) { i0 = kAnPixels - 2; frac = 1.0; }
+        dst[i] = static_cast<float>(full[i0] * (1.0 - frac)
+                                    + full[i0 + 1] * frac);
+    }
     return n;
 }
 

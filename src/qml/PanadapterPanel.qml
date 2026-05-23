@@ -37,6 +37,16 @@ Item {
         function onRx1FreqChanged() { root.centerHz = Stream.rx1FreqHz }
     }
 
+    // Drive the engine's zoom from the shared Prefs (Display panel).  The
+    // engine crops the centre 1/zoom of the full-resolution spectrum;
+    // WdspEngine.spanHz reports inRate/zoom so the frequency scale,
+    // drag-pan and cursor readout all track the zoom for free.
+    Binding {
+        target: WdspEngine
+        property: "zoom"
+        value: Prefs.zoom
+    }
+
     // Effective dB range the panadapter is actually rendering with
     // (auto-fit when on, else the manual dbMin/dbMax).  Mirrored from
     // the panadapter's effRangeChanged SIGNAL into LOCAL properties so
@@ -319,6 +329,38 @@ Item {
             DbLabels { rightSide: true;  area: spectrumArea
                        dMax: root.effMax; dMin: root.effMin }
 
+            // ---- waterfall collapse toggle (old-Lyra triangle) ----
+            // ▼ = waterfall shown (click to collapse it away); ▲ =
+            // collapsed (click to bring it back).  Lives in the spectrum
+            // area so it stays reachable even when the waterfall is gone.
+            Rectangle {
+                id: wfToggle
+                z: 6
+                width: 20; height: 18; radius: 3
+                x: 4
+                y: spectrumArea.height - height - 20
+                color: wfToggleMA.containsMouse ? "#1f3a4a" : "#cc14202a"
+                border.color: "#2a4a5a"
+                Text {
+                    anchors.centerIn: parent
+                    text: Prefs.waterfallCollapsed ? "▲" : "▼"
+                    color: "#8fd0ff"
+                    font.pixelSize: 11
+                }
+                MouseArea {
+                    id: wfToggleMA
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Prefs.waterfallCollapsed =
+                                   !Prefs.waterfallCollapsed
+                    ToolTip.visible: containsMouse
+                    ToolTip.text: Prefs.waterfallCollapsed
+                                  ? qsTr("Show waterfall")
+                                  : qsTr("Collapse waterfall")
+                }
+            }
+
             // ---- frequency scale at the spectrum/waterfall boundary ----
             // MHz labels at the vertical grid divisions; shared X axis for
             // the spectrum above and the waterfall below.  Centre = RX1
@@ -508,6 +550,10 @@ Item {
         // ===== Waterfall (rolling spectrogram) =====
         Waterfall {
             id: wf
+            // Collapse toggle (old-Lyra triangle): when collapsed the
+            // pane is hidden and the SplitView gives the panadapter the
+            // full height.  Persisted via Prefs.
+            visible: !Prefs.waterfallCollapsed
             // Initial/factory height is set imperatively by
             // applyFromPrefs() (a live `root.height * 0.4` binding would
             // fight restoreState on every window resize).

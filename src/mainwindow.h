@@ -16,9 +16,11 @@
 
 #include <QHash>
 #include <QMainWindow>
+#include <QPoint>
 
 class QAction;
 class QDockWidget;
+class QLabel;
 class QQuickWidget;
 
 namespace lyra::ui {
@@ -43,6 +45,9 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Double-clicking a custom dock title bar toggles float/dock (the
+    // standard QDockWidget gesture, lost when we set a custom title bar).
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
     // Build a QQuickWidget that hosts <qmlFile> from the Lyra QML
@@ -66,6 +71,10 @@ private:
     void buildDocks();
     void buildMenus();
     void buildToolbar();
+    // Header Start/Stop: connect to the saved radio (or scan + auto-open
+    // the first found) when stopped; close the stream when running.
+    void onStartStop();
+    void updateConnState();   // reflect stream running state into the UI
     void applyPanelLock(bool locked);
     void saveLayout();                 // session auto-save (on close)
     void restoreLayout();              // session auto-restore (on launch)
@@ -86,6 +95,14 @@ private:
 
     QHash<QString, QDockWidget *> docks_;
     QAction                    *lockAction_ = nullptr;
+    QAction                    *startStopAction_ = nullptr;   // header Start/Stop
+    QLabel                     *connStatus_ = nullptr;        // header conn status
+    QMetaObject::Connection     scanConn_;                    // one-shot scan→open
+    // Drag-move state for a FLOATING dock via its custom title bar
+    // (QDockWidget's built-in title drag is bypassed by the custom bar).
+    QDockWidget                *floatDragDock_ = nullptr;
+    QPoint                      floatDragOffset_;
+
     SettingsDialog             *settingsDlg_ = nullptr;
     Help                       *help_    = nullptr;   // QML→C++ help bridge
     HelpDialog                 *helpDlg_ = nullptr;   // in-app User Guide

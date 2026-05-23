@@ -80,11 +80,25 @@ class WdspEngine : public QObject {
     Q_PROPERTY(double volumeDb    READ volumeDb    NOTIFY volumeChanged)
     Q_PROPERTY(bool   muted       READ muted       NOTIFY mutedChanged)
     Q_PROPERTY(int    audioDeviceIndex READ audioDeviceIndex NOTIFY audioDeviceChanged)
-    // Panadapter frequency span (Hz) = the IQ sample rate; the analyzer
-    // shows the full IQ bandwidth centred on the RX1 DDC frequency.
-    // Used by the QML frequency scale.  NOTIFY on running so it picks up
-    // a rate change (which restarts the channel).
-    Q_PROPERTY(int    spanHz READ spanHz NOTIFY runningChanged)
+    // Panadapter frequency span (Hz) = the IQ sample rate DIVIDED BY the
+    // zoom factor — the displayed bandwidth, centred on the RX1 DDC freq.
+    // Used by the QML frequency scale / drag-pan / cursor readout, which
+    // all track zoom for free because the displayed span shrinks as zoom
+    // rises.  NOTIFY spanChanged (emitted on a rate OR a zoom change).
+    Q_PROPERTY(int    spanHz READ spanHz NOTIFY spanChanged)
+    // Panadapter zoom: 1.0 = full IQ span; higher magnifies the band
+    // CENTRE.  Done old-Lyra-style — the analyzer always produces a
+    // full-span, full-resolution spectrum; copySpectrum crops the centre
+    // 1/zoom slice and resamples it to display width.  No live analyzer
+    // reconfiguration (that corrupts the trace), pure display-side crop.
+    Q_PROPERTY(double zoom READ zoom WRITE setZoom NOTIFY zoomChanged)
+    // Demod mode (USB/LSB/CWU/CWL/DSB/AM/FM/DIGU/DIGL) + RX filter
+    // bandwidth (Hz).  setMode/setBandwidth drive SetRXAMode +
+    // RXASetPassband live, using old Lyra's per-mode passband sign rules
+    // (sideband-correct against the HL2 mirrored baseband).
+    Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
+    Q_PROPERTY(int bandwidth READ bandwidth WRITE setBandwidth
+               NOTIFY bandwidthChanged)
 
 public:
     explicit WdspEngine(WdspNative *wdsp, QObject *parent = nullptr);
@@ -100,7 +114,11 @@ public:
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
     int    audioDeviceIndex() const { return deviceIndex_; }
-    int    spanHz() const { return cfg_.inRate; }
+    double zoom() const { return zoom_.load(std::memory_order_relaxed); }
+    int    spanHz() const {
+        const double z = zoom_.load(std::memory_order_relaxed);
+        return static_cast<int>(cfg_.inRate / (z > 1.0 ? z : 1.0));
+    }
 
     // Frames fexchange0 writes per process() call (= in_size *
     // out_rate / in_rate).  Step 3d sizes its output buffer to this.
@@ -122,6 +140,16 @@ public:
     // setAudioOutputDevice: switch output device live (restarts sink).
     Q_INVOKABLE void setVolume(double v);
     Q_INVOKABLE void setMuted(bool m);
+    // Set the panadapter zoom (1.0 = full span).  Stores the factor; the
+    // crop happens in copySpectrum.  No analyzer reconfiguration.
+    Q_INVOKABLE void setZoom(double z);
+    // Demod mode + RX bandwidth.  Stored when the channel is closed and
+    // applied on open; applied live (SetRXAMode + RXASetPassband) while
+    // running.
+    QString mode() const { return mode_; }
+    Q_INVOKABLE void setMode(const QString &m);
+    int  bandwidth() const { return bw_; }
+    Q_INVOKABLE void setBandwidth(int hz);
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
 
@@ -149,12 +177,19 @@ signals:
     void volumeChanged();
     void mutedChanged();
     void audioDeviceChanged();
+    void zoomChanged();
+    void spanChanged();   // displayed span changed (rate OR zoom)
+    void modeChanged();
+    void bandwidthChanged();
     void logLine(QString line);
 
 private:
     void emitLog(const QString &line);   // mirror logLine -> qInfo console
     bool startAudio();   // create + start the QAudioSink (Step 3e)
     void stopAudio();    // stop + tear down the QAudioSink
+    // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
+    // No-op when the channel isn't open (applied on the next openRx1).
+    void applyModeFilter();
 
     WdspNative *wdsp_    = nullptr;
     RxConfig    cfg_;
@@ -189,6 +224,21 @@ private:
     // comfortable on first unmute, still well below a blast.
     std::atomic<double> volume_{0.65};
     std::atomic<bool>   muted_{true};
+    // Panadapter zoom (1.0 = full span).  Written from the UI/main
+    // thread; read by spanHz() (UI) + copySpectrum() (crop).
+    std::atomic<double> zoom_{1.0};
+    // Demod mode + RX bandwidth (Hz) + CW pitch.  Main-thread only
+    // (UI setters + openRx1).  Default USB 2.4 kHz; CW centres on pitch.
+    QString mode_       = QStringLiteral("USB");
+    int     bw_         = 2400;
+    double  cwPitchHz_  = 600.0;
+    // Last good full-resolution spectrum (kAnPixels dB points).  WDSP's
+    // GetPixels resets its ready-flag on read, so with TWO consumers
+    // (panadapter + waterfall) the second sees no data; caching here lets
+    // both always read a consistent, valid frame (no uninitialised
+    // garbage feeding the zoom crop).  GUI-thread only (the QQuickWidget
+    // panadapter + waterfall reads are serialised).
+    std::vector<float> specCache_;
     QList<QAudioDevice> devices_;       // operator's PC output devices
     int                 deviceIndex_ = 0;
 };

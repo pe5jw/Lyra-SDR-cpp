@@ -22,9 +22,21 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     implicitHeight: 50
-    implicitWidth: 460
+    implicitWidth: 690
     color: "#101820"
     border.color: "#2a4a5a"
+
+    // Panadapter zoom presets (old-Lyra ZOOM_LEVELS).  Mirrors old Lyra's
+    // Zoom row: a preset COMBO for fast jumps + a FINE slider for
+    // in-between values + a live "N.Nx" readout.  All drive Prefs.zoom.
+    readonly property var zoomLevels: [1, 2, 4, 8, 16]
+    function zoomIndex(z) {
+        var best = 0
+        for (var i = 1; i < zoomLevels.length; ++i)
+            if (Math.abs(zoomLevels[i] - z) < Math.abs(zoomLevels[best] - z))
+                best = i
+        return best
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -83,6 +95,43 @@ Rectangle {
             text: Prefs.waterfallSpeed + qsTr(" rows/s")
             color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
             Layout.preferredWidth: 64
+        }
+
+        Rectangle {   // divider
+            Layout.preferredWidth: 1
+            Layout.topMargin: 10; Layout.bottomMargin: 10
+            Layout.fillHeight: true
+            color: "#2a4a5a"
+        }
+
+        // ----- Panadapter zoom (old-Lyra layout: preset combo + fine
+        //        slider + live N.Nx readout) -----
+        Label { text: qsTr("Zoom"); color: "#cccccc"; font.bold: true }
+        ComboBox {
+            id: zoomCombo
+            Layout.preferredWidth: 64
+            model: ["1x", "2x", "4x", "8x", "16x"]
+            currentIndex: root.zoomIndex(Prefs.zoom)
+            onActivated: Prefs.zoom = root.zoomLevels[currentIndex]
+        }
+        Slider {
+            id: zoomSlider
+            Layout.preferredWidth: 110
+            from: 10; to: 160; stepSize: 1     // slider int = zoom × 10
+            value: Prefs.zoom * 10
+            onMoved: Prefs.zoom = Math.round(value) / 10
+            WheelHandler {
+                onWheel: (ev) => {
+                    Prefs.zoom = Math.max(1.0, Math.min(16.0,
+                        Math.round(Prefs.zoom * 10
+                            + (ev.angleDelta.y > 0 ? 1 : -1)) / 10))
+                }
+            }
+        }
+        Label {
+            text: Prefs.zoom.toFixed(1) + qsTr("x")
+            color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
+            Layout.preferredWidth: 40
         }
 
         Item { Layout.fillWidth: true }

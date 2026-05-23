@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -75,6 +76,20 @@ class Prefs : public QObject {
     // panadapter (on by default; operator-toggleable).
     Q_PROPERTY(bool cursorReadout READ cursorReadout WRITE setCursorReadout
                NOTIFY cursorReadoutChanged)
+    // Panadapter zoom: 1.0 = full IQ span, higher magnifies the centre.
+    // Drives WdspEngine.zoom (display-side crop, old-Lyra method).
+    Q_PROPERTY(double zoom READ zoom WRITE setZoom NOTIFY zoomChanged)
+    // Demod mode (USB/LSB/CWU/…) + RX filter bandwidth (Hz) for the
+    // CURRENT mode.  Bandwidth is remembered per-mode (old-Lyra style):
+    // switching mode recalls that mode's last bandwidth.  Drives
+    // WdspEngine.mode / .bandwidth.
+    Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
+    Q_PROPERTY(int rxBandwidth READ rxBandwidth WRITE setRxBandwidth
+               NOTIFY rxBandwidthChanged)
+    // Waterfall collapsed (old-Lyra triangle toggle) — when true the
+    // waterfall pane is hidden and the panadapter takes the full height.
+    Q_PROPERTY(bool waterfallCollapsed READ waterfallCollapsed
+               WRITE setWaterfallCollapsed NOTIFY waterfallCollapsedChanged)
     // Opaque serialized state of the panadapter/waterfall SplitView
     // (the divider position).  QMainWindow.saveState() does NOT cover
     // splitters inside a dock's QML content, so it's persisted here as
@@ -142,6 +157,16 @@ public:
     void     setPanadapterSplit(const QVariant &v);
     bool cursorReadout() const { return cursorReadout_; }
     void setCursorReadout(bool v);
+    double zoom() const { return zoom_; }
+    void   setZoom(double v);
+    QString mode() const { return mode_; }
+    void    setMode(const QString &m);
+    int  rxBandwidth() const;            // bandwidth for the current mode
+    void setRxBandwidth(int hz);
+    bool waterfallCollapsed() const { return waterfallCollapsed_; }
+    void setWaterfallCollapsed(bool v);
+    // Built-in default RX bandwidth for a mode (first run / unset).
+    static int defaultBandwidthFor(const QString &mode);
 
 signals:
     void gridLevelChanged();
@@ -170,6 +195,10 @@ signals:
     void waterfallDbAutoChanged();
     void panadapterSplitChanged();
     void cursorReadoutChanged();
+    void zoomChanged();
+    void modeChanged();
+    void rxBandwidthChanged();
+    void waterfallCollapsedChanged();
 
 private:
     int     gridLevel_;
@@ -198,6 +227,10 @@ private:
     bool    waterfallDbAuto_;
     QVariant panadapterSplit_;
     bool    cursorReadout_;
+    double  zoom_;
+    QString mode_;
+    QHash<QString, int> bwByMode_;   // per-mode RX bandwidth memory
+    bool    waterfallCollapsed_;
 };
 
 } // namespace lyra::ui
