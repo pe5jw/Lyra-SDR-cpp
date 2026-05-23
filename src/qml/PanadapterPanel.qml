@@ -37,6 +37,13 @@ Item {
         function onRx1FreqChanged() { root.centerHz = Stream.rx1FreqHz }
     }
 
+    // Display panel "Clear" button → flush the peak-hold buffer (the
+    // panadapter lives in this dock, the button in another).
+    Connections {
+        target: Prefs
+        function onPeakClearRequested() { pan.clearPeaks() }
+    }
+
     // Drive the engine's zoom from the shared Prefs (Display panel).  The
     // engine crops the centre 1/zoom of the full-resolution spectrum;
     // WdspEngine.spanHz reports inRate/zoom so the frequency scale,
@@ -150,6 +157,13 @@ Item {
                 fillEnabled: Prefs.fillEnabled
                 fillColor: Prefs.fillColor
                 smoothing: Prefs.smoothing
+                // Peak-hold markers (Display panel + Settings → Visuals).
+                peakEnabled: Prefs.peakEnabled
+                peakHoldSecs: Prefs.peakHoldSecs
+                peakDecayDbps: Prefs.peakDecayDbps
+                peakStyle: Prefs.peakStyle
+                peakColor: Prefs.peakColor
+                peakShowDb: Prefs.peakShowDb
 
                 // Peak glow: render to a layer texture + additive-bloom
                 // ShaderEffect (off when glow == 0, so no GPU cost).
@@ -411,6 +425,34 @@ Item {
                                   * (0.5 + WdspEngine.markerOffsetHz
                                            / Math.max(1, WdspEngine.spanHz)))
                     y: index * 8
+                }
+            }
+
+            // ---- peak dB labels (strongest in-view peaks) ----
+            // Numeric readout for the top peaks the panadapter detected
+            // (peakLabels = [{frac, db}, …]); only populated when Peak
+            // Hold + "Show dB" are on.  Positioned by fraction-of-width
+            // and mapped to the live effective dB range.
+            Repeater {
+                model: pan.peakLabels
+                delegate: Text {
+                    required property var modelData
+                    readonly property real db: modelData.db
+                    readonly property real norm: Math.max(0, Math.min(1,
+                        (db - root.effMin)
+                        / Math.max(1, root.effMax - root.effMin)))
+                    z: 5
+                    text: (db >= 0 ? "+" : "") + Math.round(db)
+                    color: Prefs.peakColor
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.family: "Consolas"
+                    style: Text.Outline
+                    styleColor: "#cc000000"
+                    x: Math.max(0, Math.min(spectrumArea.width - width,
+                                 modelData.frac * spectrumArea.width + 4))
+                    y: Math.max(2, Math.min(spectrumArea.height - height - 2,
+                                 (1 - norm) * spectrumArea.height - height - 2))
                 }
             }
 

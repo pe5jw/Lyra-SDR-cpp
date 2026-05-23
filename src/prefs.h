@@ -46,6 +46,23 @@ class Prefs : public QObject {
     Q_PROPERTY(int glow READ glow WRITE setGlow NOTIFY glowChanged)
     Q_PROPERTY(int glassSheen READ glassSheen WRITE setGlassSheen
                NOTIFY glassSheenChanged)
+    // Peak-hold markers over the trace (old-Lyra parity).  peakHoldSecs
+    // encodes the mode: 0 = Off, -1 = Hold (infinite), -2 = Live,
+    // >0 = hold-then-decay seconds.  peakStyle: 0 line / 1 dots /
+    // 2 triangles.  peakShowDb toggles numeric dB labels at the
+    // strongest in-view peaks.
+    Q_PROPERTY(bool peakEnabled READ peakEnabled WRITE setPeakEnabled
+               NOTIFY peakEnabledChanged)
+    Q_PROPERTY(double peakHoldSecs READ peakHoldSecs WRITE setPeakHoldSecs
+               NOTIFY peakHoldSecsChanged)
+    Q_PROPERTY(double peakDecayDbps READ peakDecayDbps WRITE setPeakDecayDbps
+               NOTIFY peakDecayDbpsChanged)
+    Q_PROPERTY(int peakStyle READ peakStyle WRITE setPeakStyle
+               NOTIFY peakStyleChanged)
+    Q_PROPERTY(QString peakColor READ peakColor WRITE setPeakColor
+               NOTIFY peakColorChanged)
+    Q_PROPERTY(bool peakShowDb READ peakShowDb WRITE setPeakShowDb
+               NOTIFY peakShowDbChanged)
     Q_PROPERTY(bool watermark READ watermark WRITE setWatermark
                NOTIFY watermarkChanged)
     Q_PROPERTY(bool meteors READ meteors WRITE setMeteors NOTIFY meteorsChanged)
@@ -109,6 +126,11 @@ public:
     // — index-aligned with the palette/waterfallPalette int values.
     Q_INVOKABLE QStringList paletteNames() const;
 
+    // Fire-and-forget "clear the peak-hold buffer" request from the
+    // Display panel's Clear button — the panadapter (a different dock)
+    // listens on peakClearRequested and calls clearPeaks().
+    Q_INVOKABLE void requestClearPeaks() { emit peakClearRequested(); }
+
     int  gridLevel() const { return gridLevel_; }
     void setGridLevel(int v);
     int  targetFps() const { return targetFps_; }
@@ -137,6 +159,18 @@ public:
     void setGlow(int v);
     int  glassSheen() const { return glassSheen_; }
     void setGlassSheen(int v);
+    bool peakEnabled() const { return peakEnabled_; }
+    void setPeakEnabled(bool v);
+    double peakHoldSecs() const { return peakHoldSecs_; }
+    void   setPeakHoldSecs(double v);
+    double peakDecayDbps() const { return peakDecayDbps_; }
+    void   setPeakDecayDbps(double v);
+    int  peakStyle() const { return peakStyle_; }
+    void setPeakStyle(int v);
+    QString peakColor() const { return peakColor_; }
+    void    setPeakColor(const QString &hex);
+    bool peakShowDb() const { return peakShowDb_; }
+    void setPeakShowDb(bool v);
     bool watermark() const { return watermark_; }
     void setWatermark(bool v);
     bool meteors() const { return meteors_; }
@@ -189,6 +223,13 @@ signals:
     void smoothingChanged();
     void glowChanged();
     void glassSheenChanged();
+    void peakEnabledChanged();
+    void peakHoldSecsChanged();
+    void peakDecayDbpsChanged();
+    void peakStyleChanged();
+    void peakColorChanged();
+    void peakShowDbChanged();
+    void peakClearRequested();
     void watermarkChanged();
     void meteorsChanged();
     void meteorGapChanged();
@@ -222,6 +263,12 @@ private:
     int     smoothing_;
     int     glow_;
     int     glassSheen_;
+    bool    peakEnabled_;
+    double  peakHoldSecs_;
+    double  peakDecayDbps_;
+    int     peakStyle_;
+    QString peakColor_;
+    bool    peakShowDb_;
     bool    watermark_;
     bool    meteors_;
     int     meteorGap_;

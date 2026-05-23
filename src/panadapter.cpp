@@ -10,6 +10,7 @@
 #include <QSGGeometryNode>
 #include <QSGVertexColorMaterial>
 #include <QTimer>
+#include <QVariantMap>
 
 #include <algorithm>
 #include <chrono>
@@ -47,6 +48,9 @@ constexpr int kFillTopA  = 110;   // translucent fill body at the curve
 constexpr int kFillBotA  = 0;     // fill fades to nothing at baseline
 constexpr int kLineA     = 245;   // bright trace stroke
 constexpr float kLineWidth = 1.6f;
+// Peak-hold overlay alpha (old-Lyra used 230 so it stays distinct over
+// any hue).  Premultiplied like the rest of the scene.
+constexpr int kPeakA = 230;
 
 // Build a dark -> hue -> bright ramp colour from a base colour at
 // normalized strength t (0..1) — the generic form of what the Amber
@@ -183,6 +187,58 @@ void Panadapter::setFillColor(const QColor &c) {
     if (c != fillColor_) { fillColor_ = c; emit fillColorChanged(); update(); }
 }
 
+void Panadapter::setPeakEnabled(bool v) {
+    if (v != peakEnabled_) {
+        peakEnabled_ = v;
+        if (!v) {
+            peakDb_.clear();
+            peakUpdated_.clear();
+            if (!peakLabels_.isEmpty()) { peakLabels_.clear(); emit peakLabelsChanged(); }
+        }
+        emit peakEnabledChanged();
+        update();
+    }
+}
+
+void Panadapter::setPeakHoldSecs(double v) {
+    if (v != peakHoldSecs_) {
+        peakHoldSecs_ = v;
+        // Mode change → start the new mode from a clean buffer.
+        peakDb_.clear();
+        peakUpdated_.clear();
+        emit peakHoldSecsChanged();
+        update();
+    }
+}
+
+void Panadapter::setPeakDecayDbps(double v) {
+    if (v != peakDecayDbps_) { peakDecayDbps_ = v; emit peakDecayDbpsChanged(); }
+}
+
+void Panadapter::setPeakStyle(int v) {
+    v = std::clamp(v, 0, 2);
+    if (v != peakStyle_) { peakStyle_ = v; emit peakStyleChanged(); update(); }
+}
+
+void Panadapter::setPeakColor(const QColor &c) {
+    if (c != peakColor_) { peakColor_ = c; emit peakColorChanged(); update(); }
+}
+
+void Panadapter::setPeakShowDb(bool v) {
+    if (v != peakShowDb_) {
+        peakShowDb_ = v;
+        if (!v && !peakLabels_.isEmpty()) { peakLabels_.clear(); emit peakLabelsChanged(); }
+        emit peakShowDbChanged();
+    }
+}
+
+void Panadapter::clearPeaks() {
+    peakDb_.clear();
+    peakUpdated_.clear();
+    if (!peakLabels_.isEmpty()) { peakLabels_.clear(); emit peakLabelsChanged(); }
+    update();
+}
+
 void Panadapter::itemChange(ItemChange change, const ItemChangeData &value) {
     if (change == ItemSceneChange && frameTimer_) {
         // Run the repaint pump only while the item belongs to a scene.
@@ -193,6 +249,22 @@ void Panadapter::itemChange(ItemChange change, const ItemChangeData &value) {
         }
     }
     QQuickItem::itemChange(change, value);
+}
+
+void Panadapter::passbandPx(int W, int *lo, int *hi) const {
+    int l = 0, h = W;
+    if (engine_) {
+        const double span = static_cast<double>(engine_->spanHz());
+        if (span > 0.0 && W > 0) {
+            double xl = W * (0.5 + engine_->passbandLowHz()  / span);
+            double xh = W * (0.5 + engine_->passbandHighHz() / span);
+            if (xh < xl) std::swap(xl, xh);
+            l = std::clamp(static_cast<int>(xl), 0, W);
+            h = std::clamp(static_cast<int>(xh), 0, W);
+        }
+    }
+    *lo = l;
+    *hi = h;
 }
 
 void Panadapter::onFrame() {
@@ -241,6 +313,114 @@ void Panadapter::onFrame() {
         std::copy(rawPix_.begin(), rawPix_.end(), pix_.begin());
         smoothInit_ = true;
     }
+
+    // ---- peak-hold markers (old-Lyra port) ----
+    // Maintain the per-bin hold buffer over the DISPLAYED spectrum (pix_):
+    //   holdSecs == -2  Live   — buffer = live spectrum each tick.
+    //   holdSecs <   0  Hold   — infinite; only clamp up to live.
+    //   holdSecs >   0  timed  — hold N sec then decay at decay_dbps;
+    //                            always clamp up; reset the per-bin timer
+    //                            only when a fresh higher peak hits a bin
+    //                            already past its hold window.
+    if (peakEnabled_ && peakHoldSecs_ != 0.0 && n > 0) {
+        const double now = autoClock_.elapsed() / 1000.0;
+        if (peakHoldSecs_ == -2.0) {                       // Live
+            peakDb_.assign(pix_.begin(), pix_.end());
+            peakLastS_ = now;
+        } else if (static_cast<int>(peakDb_.size()) != n) { // (re)seed
+            peakDb_.assign(pix_.begin(), pix_.end());
+            peakUpdated_.assign(static_cast<size_t>(n), now);
+            peakLastS_ = now;
+        } else {
+            if (static_cast<int>(peakUpdated_.size()) != n)
+                peakUpdated_.assign(static_cast<size_t>(n), now);
+            const double dt = std::max(0.005, now - peakLastS_);
+            peakLastS_ = now;
+            if (peakHoldSecs_ < 0.0) {                     // Hold (infinite)
+                for (int i = 0; i < n; ++i) {
+                    const size_t si = static_cast<size_t>(i);
+                    if (pix_[si] > peakDb_[si]) {
+                        peakDb_[si] = pix_[si];
+                        peakUpdated_[si] = now;
+                    }
+                }
+            } else {                                       // hold-then-decay
+                const float dec = static_cast<float>(peakDecayDbps_ * dt);
+                for (int i = 0; i < n; ++i) {
+                    const size_t si = static_cast<size_t>(i);
+                    const bool decaying = (now - peakUpdated_[si]) > peakHoldSecs_;
+                    if (decaying) peakDb_[si] -= dec;
+                    if (pix_[si] > peakDb_[si]) {
+                        peakDb_[si] = pix_[si];
+                        if (decaying) peakUpdated_[si] = now;
+                    }
+                }
+            }
+        }
+    } else if (!peakDb_.empty()) {
+        peakDb_.clear();
+        peakUpdated_.clear();
+    }
+
+    // dB labels: top-3 in-view peaks ≥ 6 dB over the in-view minimum,
+    // separated by ≥ 16 px.  Computed here (GUI thread) and exposed for
+    // the QML Text overlay; each entry is {frac: 0..1, db: value}.
+    if (peakEnabled_ && peakShowDb_ && !peakDb_.empty()) {
+        const int W = static_cast<int>(width());
+        QVariantList labels;
+        int pbLo = 0, pbHi = W;
+        passbandPx(W, &pbLo, &pbHi);
+        // Only inside the RX passband (old-Lyra parity), like the overlay.
+        if (W >= 12 && (pbHi - pbLo) > 10) {
+            std::vector<float> col(static_cast<size_t>(W), -300.0f);
+            for (int x = pbLo; x < pbHi; ++x) {
+                int i0 = static_cast<int>(static_cast<qint64>(x) * n / W);
+                int i1 = static_cast<int>(static_cast<qint64>(x + 1) * n / W);
+                if (i1 <= i0) i1 = i0 + 1;
+                if (i1 > n) i1 = n;
+                float db = -300.0f;
+                for (int i = i0; i < i1; ++i)
+                    if (peakDb_[static_cast<size_t>(i)] > db)
+                        db = peakDb_[static_cast<size_t>(i)];
+                col[static_cast<size_t>(x)] = db;
+            }
+            float mn = col[static_cast<size_t>(pbLo)];
+            for (int x = pbLo; x < pbHi; ++x)
+                mn = std::min(mn, col[static_cast<size_t>(x)]);
+            const float thr = mn + 6.0f;
+            const int lo = std::max(pbLo + 1, 1);
+            const int hi = std::min(pbHi - 1, W - 1);
+            std::vector<std::pair<float, int>> cand;
+            for (int x = lo; x < hi; ++x) {
+                const float v = col[static_cast<size_t>(x)];
+                if (v > col[static_cast<size_t>(x - 1)] &&
+                    v >= col[static_cast<size_t>(x + 1)] && v >= thr)
+                    cand.emplace_back(v, x);
+            }
+            std::sort(cand.begin(), cand.end(),
+                      [](const auto &a, const auto &b) { return a.first > b.first; });
+            std::vector<int> chosen;
+            for (const auto &c : cand) {
+                bool far = true;
+                for (int cx : chosen)
+                    if (std::abs(c.second - cx) < 16) { far = false; break; }
+                if (far) {
+                    chosen.push_back(c.second);
+                    QVariantMap m;
+                    m[QStringLiteral("frac")] =
+                        static_cast<double>(c.second) / static_cast<double>(W);
+                    m[QStringLiteral("db")] = static_cast<double>(c.first);
+                    labels.push_back(m);
+                }
+                if (chosen.size() >= 3) break;
+            }
+        }
+        if (labels != peakLabels_) { peakLabels_ = labels; emit peakLabelsChanged(); }
+    } else if (!peakLabels_.isEmpty()) {
+        peakLabels_.clear();
+        emit peakLabelsChanged();
+    }
+
     update();
 }
 
@@ -259,6 +439,7 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
     QSGGeometryNode  *gridNode  = nullptr;
     QSGGeometryNode  *ribNode   = nullptr;
     QSGGeometryNode  *lineNode  = nullptr;
+    QSGGeometryNode  *peakNode  = nullptr;
 
     if (!root) {
         root = new QSGNode;
@@ -322,12 +503,27 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
         lineNode->setMaterial(new QSGVertexColorMaterial);
         lineNode->setFlag(QSGNode::OwnsMaterial);
         root->appendChildNode(lineNode);
+
+        // Peak-hold overlay: drawn ON TOP of the trace.  Drawing mode +
+        // vertex count are (re)set each frame from the chosen style
+        // (line strip / dot quads / triangles).
+        peakNode = new QSGGeometryNode;
+        auto *peakGeo = new QSGGeometry(
+            QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
+        peakGeo->setDrawingMode(QSGGeometry::DrawLineStrip);
+        peakGeo->setLineWidth(1.4f);
+        peakNode->setGeometry(peakGeo);
+        peakNode->setFlag(QSGNode::OwnsGeometry);
+        peakNode->setMaterial(new QSGVertexColorMaterial);
+        peakNode->setFlag(QSGNode::OwnsMaterial);
+        root->appendChildNode(peakNode);
     } else {
         bgNode    = static_cast<QSGGeometryNode *>(root->childAtIndex(0));
         sheenNode = static_cast<QSGGeometryNode *>(root->childAtIndex(1));
         gridNode  = static_cast<QSGGeometryNode *>(root->childAtIndex(2));
         ribNode   = static_cast<QSGGeometryNode *>(root->childAtIndex(3));
         lineNode  = static_cast<QSGGeometryNode *>(root->childAtIndex(4));
+        peakNode  = static_cast<QSGGeometryNode *>(root->childAtIndex(5));
     }
 
     // ---- glass background: multi-stop vertical gradient ----
@@ -499,6 +695,99 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
         }
         ribNode->markDirty(QSGNode::DirtyGeometry);
         lineNode->markDirty(QSGNode::DirtyGeometry);
+    }
+
+    // ---- peak-hold overlay (line / dots / triangles) ----
+    // Same per-column peak reduction + dB->y mapping as the trace, drawn
+    // in the operator's chosen style with a fixed-alpha peak colour.  The
+    // hold buffer (peakDb_) is maintained on the GUI thread in onFrame;
+    // Qt blocks the GUI thread during this sync, so reading it is safe.
+    {
+        QSGGeometry *pg = peakNode->geometry();
+        const int pn = static_cast<int>(peakDb_.size());
+        // Clip to the RX passband (old-Lyra parity) — peaks only render
+        // for the columns inside the tuned filter window.
+        int pbLo = 0, pbHi = W;
+        passbandPx(W, &pbLo, &pbHi);
+        const int pw = pbHi - pbLo;
+        const bool show = peakEnabled_ && peakHoldSecs_ != 0.0 && pn > 0 && pw >= 2;
+        if (!show) {
+            if (pg->vertexCount() != 0) {
+                pg->allocate(0);
+                peakNode->markDirty(QSGNode::DirtyGeometry);
+            }
+        } else {
+            peakColDb_.assign(static_cast<size_t>(W), -300.0f);
+            for (int x = pbLo; x < pbHi; ++x) {
+                int i0 = static_cast<int>(static_cast<qint64>(x) * pn / W);
+                int i1 = static_cast<int>(static_cast<qint64>(x + 1) * pn / W);
+                if (i1 <= i0) i1 = i0 + 1;
+                if (i1 > pn) i1 = pn;
+                float db = -300.0f;
+                for (int i = i0; i < i1; ++i)
+                    if (peakDb_[static_cast<size_t>(i)] > db)
+                        db = peakDb_[static_cast<size_t>(i)];
+                peakColDb_[static_cast<size_t>(x)] = db;
+            }
+            const double effMin = autoScale_ ? autoScaler_.floorDb() : dbMin_;
+            const double effMax = autoScale_ ? autoScaler_.ceilDb()  : dbMax_;
+            const double range = (effMax - effMin);
+            const double invRange = (range != 0.0) ? 1.0 / range : 1.0;
+            const int A  = kPeakA;
+            const int pr = peakColor_.red()   * A / 255;
+            const int pgc = peakColor_.green() * A / 255;
+            const int pb = peakColor_.blue()  * A / 255;
+            auto yOf = [&](int x) {
+                double t = (static_cast<double>(peakColDb_[static_cast<size_t>(x)])
+                            - effMin) * invRange;
+                t = std::clamp(t, 0.0, 1.0);
+                return static_cast<float>(H - t * H);
+            };
+            if (peakStyle_ == 0) {                     // Line (passband span)
+                pg->setDrawingMode(QSGGeometry::DrawLineStrip);
+                pg->setLineWidth(1.4f);
+                if (pg->vertexCount() != pw) pg->allocate(pw);
+                auto *v = pg->vertexDataAsColoredPoint2D();
+                int k = 0;
+                for (int x = pbLo; x < pbHi; ++x)
+                    v[k++].set(static_cast<float>(x), yOf(x), pr, pgc, pb, A);
+            } else if (peakStyle_ == 2) {              // Triangles (every 4 px)
+                pg->setDrawingMode(QSGGeometry::DrawTriangles);
+                const int step = 4;
+                const int cnt = (pw + step - 1) / step;
+                const int vc = cnt * 3;
+                if (pg->vertexCount() != vc) pg->allocate(vc);
+                auto *v = pg->vertexDataAsColoredPoint2D();
+                int k = 0;
+                for (int x = pbLo; x < pbHi; x += step) {
+                    const float xf = static_cast<float>(x);
+                    const float y = yOf(x);
+                    v[k++].set(xf - 3.0f, y - 4.0f, pr, pgc, pb, A);
+                    v[k++].set(xf + 3.0f, y - 4.0f, pr, pgc, pb, A);
+                    v[k++].set(xf,        y,        pr, pgc, pb, A);
+                }
+            } else {                                   // Dots (small quads, every 2 px)
+                pg->setDrawingMode(QSGGeometry::DrawTriangles);
+                const int step = 2;
+                const int cnt = (pw + step - 1) / step;
+                const int vc = cnt * 6;
+                if (pg->vertexCount() != vc) pg->allocate(vc);
+                auto *v = pg->vertexDataAsColoredPoint2D();
+                const float r = 1.8f;
+                int k = 0;
+                for (int x = pbLo; x < pbHi; x += step) {
+                    const float xf = static_cast<float>(x);
+                    const float y = yOf(x);
+                    v[k++].set(xf - r, y - r, pr, pgc, pb, A);
+                    v[k++].set(xf - r, y + r, pr, pgc, pb, A);
+                    v[k++].set(xf + r, y - r, pr, pgc, pb, A);
+                    v[k++].set(xf + r, y - r, pr, pgc, pb, A);
+                    v[k++].set(xf - r, y + r, pr, pgc, pb, A);
+                    v[k++].set(xf + r, y + r, pr, pgc, pb, A);
+                }
+            }
+            peakNode->markDirty(QSGNode::DirtyGeometry);
+        }
     }
 
     return root;

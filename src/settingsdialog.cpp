@@ -756,6 +756,89 @@ QWidget *SettingsDialog::buildVisualsTab() {
         form->addRow(tr("Spectrum fill"), fbox);
     }
 
+    // --- Peak-hold markers (mode/hold-time + Clear live on the Display
+    // panel; here are the look-and-feel knobs) ---
+    {
+        auto *pbox = new QWidget(page);
+        auto *pv = new QVBoxLayout(pbox);
+        pv->setContentsMargins(0, 0, 0, 0);
+        pv->setSpacing(4);
+
+        // Row 1: enable + style + show-dB + colour.
+        auto *r1 = new QHBoxLayout();
+        auto *pEn = new QCheckBox(tr("Show peak markers"), pbox);
+        pEn->setChecked(prefs_->peakEnabled());
+        connect(pEn, &QCheckBox::toggled, prefs_, &Prefs::setPeakEnabled);
+        connect(prefs_, &Prefs::peakEnabledChanged, pbox, [this, pEn]() {
+            if (pEn->isChecked() != prefs_->peakEnabled())
+                pEn->setChecked(prefs_->peakEnabled());
+        });
+        r1->addWidget(pEn);
+
+        r1->addWidget(new QLabel(tr("Style:"), pbox));
+        auto *pStyle = new QComboBox(pbox);
+        pStyle->addItems({tr("Line"), tr("Dots"), tr("Triangles")});
+        pStyle->setCurrentIndex(prefs_->peakStyle());
+        connect(pStyle, &QComboBox::currentIndexChanged,
+                prefs_, &Prefs::setPeakStyle);
+        connect(prefs_, &Prefs::peakStyleChanged, pbox, [this, pStyle]() {
+            if (pStyle->currentIndex() != prefs_->peakStyle())
+                pStyle->setCurrentIndex(prefs_->peakStyle());
+        });
+        r1->addWidget(pStyle);
+
+        auto *pShow = new QCheckBox(tr("Show dB"), pbox);
+        pShow->setChecked(prefs_->peakShowDb());
+        connect(pShow, &QCheckBox::toggled, prefs_, &Prefs::setPeakShowDb);
+        connect(prefs_, &Prefs::peakShowDbChanged, pbox, [this, pShow]() {
+            if (pShow->isChecked() != prefs_->peakShowDb())
+                pShow->setChecked(prefs_->peakShowDb());
+        });
+        r1->addWidget(pShow);
+
+        r1->addWidget(new QLabel(tr("Colour:"), pbox));
+        auto *pSwatch = new QPushButton(pbox);
+        pSwatch->setFixedSize(44, 22);
+        pSwatch->setToolTip(tr("Peak marker colour"));
+        auto pSet = [pSwatch](const QString &hex) {
+            pSwatch->setStyleSheet(QStringLiteral(
+                "QPushButton{background:%1;border:1px solid #2a3a4a;"
+                "border-radius:3px;}").arg(hex));
+        };
+        pSet(prefs_->peakColor());
+        connect(pSwatch, &QPushButton::clicked, pbox, [this, pbox]() {
+            const QColor c = QColorDialog::getColor(
+                QColor(prefs_->peakColor()), pbox, tr("Peak marker colour"));
+            if (c.isValid()) prefs_->setPeakColor(c.name());
+        });
+        connect(prefs_, &Prefs::peakColorChanged, pbox,
+                [this, pSet]() { pSet(prefs_->peakColor()); });
+        r1->addWidget(pSwatch);
+        r1->addStretch(1);
+        pv->addLayout(r1);
+
+        // Row 2: decay rate (dB/s) — applies to the timed hold modes.
+        auto *r2 = new QHBoxLayout();
+        r2->addWidget(new QLabel(tr("Decay:"), pbox));
+        auto *pDecay = new QSpinBox(pbox);
+        pDecay->setRange(1, 120);
+        pDecay->setSuffix(tr(" dB/s"));
+        pDecay->setValue(static_cast<int>(prefs_->peakDecayDbps() + 0.5));
+        pDecay->setToolTip(tr("How fast held peaks fall once past their "
+                              "hold window (timed modes)."));
+        connect(pDecay, &QSpinBox::valueChanged, prefs_,
+                [this](int v) { prefs_->setPeakDecayDbps(v); });
+        connect(prefs_, &Prefs::peakDecayDbpsChanged, pbox, [this, pDecay]() {
+            const int v = static_cast<int>(prefs_->peakDecayDbps() + 0.5);
+            if (pDecay->value() != v) pDecay->setValue(v);
+        });
+        r2->addWidget(pDecay);
+        r2->addStretch(1);
+        pv->addLayout(r2);
+
+        form->addRow(tr("Peak markers"), pbox);
+    }
+
     // --- Trace smoothing (temporal EWMA, 0 = off) ---
     auto *smooth = new QSpinBox(page);
     smooth->setRange(0, 10);

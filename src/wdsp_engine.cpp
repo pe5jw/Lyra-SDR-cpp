@@ -26,7 +26,7 @@ namespace {
 // map directly onto WDSP's RXA mode + wcpAGC mode switch statements.
 constexpr int    kRxaModeUSB = 1;   // RxaMode.USB
 constexpr int    kAgcModeMed = 3;   // AgcMode.MED
-constexpr double kUsbLowHz   = 200.0;
+constexpr double kUsbLowHz   = 0.0;   // SSB/DIG low cut starts at centre (op req)
 constexpr double kUsbHighHz  = 3000.0;
 
 // Step 3e level-cal (mirrors the bench-proven Python _open_wdsp_rx).
@@ -502,9 +502,9 @@ void WdspEngine::computePassband(double *lo, double *hi) const
     const double bw   = static_cast<double>(bw_);
     const double half = bw / 2.0;
     if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
-        *lo = 200.0;              *hi = bw;
+        *lo = 0.0;                *hi = bw;     // low cut at centre (op req)
     } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
-        *lo = -bw;                *hi = -200.0;
+        *lo = -bw;                *hi = 0.0;
     } else if (mode_ == QLatin1String("CWU")) {
         *lo = cwPitchHz_ - half;  *hi = cwPitchHz_ + half;
     } else if (mode_ == QLatin1String("CWL")) {

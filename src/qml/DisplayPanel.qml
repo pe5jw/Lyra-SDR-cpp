@@ -9,11 +9,12 @@
 //
 // SCOPE (operator-locked 2026-05-22): only controls that were on old
 // Lyra's FRONT Display panel AND exist in the C++ build today belong
-// here.  That is currently Spec FPS + Waterfall rate.  Palette,
-// smoothing, glow, gridline etc. stay in Settings → Visuals (that's
-// where they were in old Lyra — don't promote them here).  As Zoom,
-// Panafall Step, Exact/100 Hz, and Peak Hold land, they slot in here in
-// old Lyra's layout.
+// here.  Currently Zoom + Spec FPS + Waterfall rate + Peak Hold,
+// arranged in old Lyra's 3-row grid (see the GridLayout comment below).
+// Palette, smoothing, glow, gridline etc. stay in Settings → Visuals
+// (that's where they were in old Lyra — don't promote them here).
+// Panafall Step + Exact/100 Hz slot into the row-1 left cells when those
+// features land in the C++ build.
 
 import QtQuick
 import QtQuick.Controls
@@ -21,8 +22,8 @@ import QtQuick.Layouts
 
 Rectangle {
     id: root
-    implicitHeight: 50
-    implicitWidth: 690
+    implicitHeight: 100
+    implicitWidth: 700
     color: "#101820"
     border.color: "#2a4a5a"
 
@@ -38,17 +39,81 @@ Rectangle {
         return best
     }
 
-    RowLayout {
-        anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
-        spacing: 8
+    // Peak-hold combo values (old-Lyra encoding): 0 Off, -2 Live, N timed
+    // seconds, -1 Hold (infinite).  Index-aligned with the combo model.
+    readonly property var peakHoldVals: [0, -2, 1, 2, 5, 10, 30, -1]
+    function peakHoldIndex(s) {
+        var i = peakHoldVals.indexOf(s)
+        return i < 0 ? 0 : i
+    }
+    // Decay rate presets (dB/s): Fast / Med / Slow.
+    readonly property var peakDecayVals: [45, 10, 3]
+    function peakDecayIndex(d) {
+        var best = 0
+        for (var i = 1; i < peakDecayVals.length; ++i)
+            if (Math.abs(peakDecayVals[i] - d) < Math.abs(peakDecayVals[best] - d))
+                best = i
+        return best
+    }
 
-        // ----- Spectrum frame rate -----
-        Label { text: qsTr("Spec"); color: "#cccccc"; font.bold: true }
+    // Old-Lyra DISPLAY layout is a 3-row grid (ViewPanel zoom_grid):
+    //   Row 0 : Zoom (combo + fine slider + live readout)
+    //   Row 1 : [Panafall Step + Exact — not built yet] | Spec FPS (right)
+    //   Row 2 : Peak Hold + Decay + Clear (left)         | WF rate (right)
+    // We mirror those exact row/column slots; the row-1 left cells stay
+    // empty until Panafall Step / Exact-100 Hz land in the C++ build.
+    GridLayout {
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.leftMargin: 12
+        columns: 7
+        rowSpacing: 7
+        columnSpacing: 6
+
+        // ── Row 0: Panadapter zoom (preset combo + fine slider + N.Nx) ──
+        Label {
+            Layout.row: 0; Layout.column: 0
+            text: qsTr("Zoom"); color: "#cccccc"; font.bold: true
+        }
+        ComboBox {
+            id: zoomCombo
+            Layout.row: 0; Layout.column: 1
+            Layout.preferredWidth: 64
+            model: ["1x", "2x", "4x", "8x", "16x"]
+            currentIndex: root.zoomIndex(Prefs.zoom)
+            onActivated: Prefs.zoom = root.zoomLevels[currentIndex]
+        }
+        Slider {
+            id: zoomSlider
+            Layout.row: 0; Layout.column: 2
+            Layout.preferredWidth: 110
+            from: 10; to: 160; stepSize: 1     // slider int = zoom × 10
+            value: Prefs.zoom * 10
+            onMoved: Prefs.zoom = Math.round(value) / 10
+            WheelHandler {
+                onWheel: (ev) => {
+                    Prefs.zoom = Math.max(1.0, Math.min(16.0,
+                        Math.round(Prefs.zoom * 10
+                            + (ev.angleDelta.y > 0 ? 1 : -1)) / 10))
+                }
+            }
+        }
+        Label {
+            Layout.row: 0; Layout.column: 3
+            text: Prefs.zoom.toFixed(1) + qsTr("x")
+            color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
+            Layout.preferredWidth: 40
+        }
+
+        // ── Row 1 (right group): Spectrum frame rate ──
+        Label {
+            Layout.row: 1; Layout.column: 4
+            text: qsTr("Spec"); color: "#cccccc"; font.bold: true
+        }
         Slider {
             id: fpsSlider
-            Layout.preferredWidth: 130
+            Layout.row: 1; Layout.column: 5
+            Layout.preferredWidth: 140
             from: 5; to: 120; stepSize: 1
             value: Prefs.targetFps
             onMoved: Prefs.targetFps = Math.round(value)
@@ -63,23 +128,59 @@ Rectangle {
             }
         }
         Label {
+            Layout.row: 1; Layout.column: 6
             text: Prefs.targetFps + qsTr(" fps")
             color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
             Layout.preferredWidth: 56
         }
 
-        Rectangle {   // divider
-            Layout.preferredWidth: 1
-            Layout.topMargin: 10; Layout.bottomMargin: 10
-            Layout.fillHeight: true
-            color: "#2a4a5a"
+        // ── Row 2 (left group): Peak-hold markers ──
+        Label {
+            Layout.row: 2; Layout.column: 0
+            text: qsTr("Peak Hold"); color: "#cccccc"; font.bold: true
+        }
+        ComboBox {
+            id: peakCombo
+            Layout.row: 2; Layout.column: 1
+            Layout.preferredWidth: 80
+            model: ["Off", "Live", "1 s", "2 s", "5 s", "10 s", "30 s", "Hold"]
+            currentIndex: root.peakHoldIndex(Prefs.peakHoldSecs)
+            onActivated: {
+                Prefs.peakHoldSecs = root.peakHoldVals[currentIndex]
+                Prefs.peakEnabled = (Prefs.peakHoldSecs !== 0)
+            }
+        }
+        RowLayout {
+            Layout.row: 2; Layout.column: 2
+            spacing: 6
+            Label { text: qsTr("Decay"); color: "#cccccc" }
+            ComboBox {
+                id: decayCombo
+                Layout.preferredWidth: 72
+                model: ["Fast", "Med", "Slow"]
+                currentIndex: root.peakDecayIndex(Prefs.peakDecayDbps)
+                // Decay only applies to the timed hold modes.
+                enabled: Prefs.peakHoldSecs > 0
+                onActivated: Prefs.peakDecayDbps = root.peakDecayVals[currentIndex]
+            }
+            Button {
+                text: qsTr("Clear")
+                Layout.preferredWidth: 60
+                // Off has nothing to clear; Live re-seeds itself every tick.
+                enabled: Prefs.peakEnabled && Prefs.peakHoldSecs !== -2
+                onClicked: Prefs.requestClearPeaks()
+            }
         }
 
-        // ----- Waterfall scroll rate -----
-        Label { text: qsTr("WF"); color: "#cccccc"; font.bold: true }
+        // ── Row 2 (right group): Waterfall scroll rate ──
+        Label {
+            Layout.row: 2; Layout.column: 4
+            text: qsTr("WF"); color: "#cccccc"; font.bold: true
+        }
         Slider {
             id: wfSlider
-            Layout.preferredWidth: 130
+            Layout.row: 2; Layout.column: 5
+            Layout.preferredWidth: 140
             from: 1; to: 120; stepSize: 1
             value: Prefs.waterfallSpeed
             onMoved: Prefs.waterfallSpeed = Math.round(value)
@@ -92,48 +193,10 @@ Rectangle {
             }
         }
         Label {
+            Layout.row: 2; Layout.column: 6
             text: Prefs.waterfallSpeed + qsTr(" rows/s")
             color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
             Layout.preferredWidth: 64
         }
-
-        Rectangle {   // divider
-            Layout.preferredWidth: 1
-            Layout.topMargin: 10; Layout.bottomMargin: 10
-            Layout.fillHeight: true
-            color: "#2a4a5a"
-        }
-
-        // ----- Panadapter zoom (old-Lyra layout: preset combo + fine
-        //        slider + live N.Nx readout) -----
-        Label { text: qsTr("Zoom"); color: "#cccccc"; font.bold: true }
-        ComboBox {
-            id: zoomCombo
-            Layout.preferredWidth: 64
-            model: ["1x", "2x", "4x", "8x", "16x"]
-            currentIndex: root.zoomIndex(Prefs.zoom)
-            onActivated: Prefs.zoom = root.zoomLevels[currentIndex]
-        }
-        Slider {
-            id: zoomSlider
-            Layout.preferredWidth: 110
-            from: 10; to: 160; stepSize: 1     // slider int = zoom × 10
-            value: Prefs.zoom * 10
-            onMoved: Prefs.zoom = Math.round(value) / 10
-            WheelHandler {
-                onWheel: (ev) => {
-                    Prefs.zoom = Math.max(1.0, Math.min(16.0,
-                        Math.round(Prefs.zoom * 10
-                            + (ev.angleDelta.y > 0 ? 1 : -1)) / 10))
-                }
-            }
-        }
-        Label {
-            text: Prefs.zoom.toFixed(1) + qsTr("x")
-            color: "#cdd9e5"; font.family: "Consolas"; font.bold: true
-            Layout.preferredWidth: 40
-        }
-
-        Item { Layout.fillWidth: true }
     }
 }

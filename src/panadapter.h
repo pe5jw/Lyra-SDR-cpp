@@ -29,6 +29,7 @@
 #include <QColor>
 #include <QElapsedTimer>
 #include <QQuickItem>
+#include <QVariantList>
 
 #include "autoscale.h"
 
@@ -98,9 +99,34 @@ class Panadapter : public QQuickItem {
     // this.
     Q_PROPERTY(QColor fillColor READ fillColor WRITE setFillColor
                NOTIFY fillColorChanged)
+    // ---- Peak-hold markers (old-Lyra parity) ----
+    // peakHoldSecs encodes the mode: 0 = Off, -1 = Hold (infinite),
+    // -2 = Live (rides the current spectrum), >0 = hold-then-decay
+    // seconds.  Held per analyzer bin, decayed at peakDecayDbps, drawn
+    // as a separate overlay in the chosen style.
+    Q_PROPERTY(bool peakEnabled READ peakEnabled WRITE setPeakEnabled
+               NOTIFY peakEnabledChanged)
+    Q_PROPERTY(double peakHoldSecs READ peakHoldSecs WRITE setPeakHoldSecs
+               NOTIFY peakHoldSecsChanged)
+    Q_PROPERTY(double peakDecayDbps READ peakDecayDbps WRITE setPeakDecayDbps
+               NOTIFY peakDecayDbpsChanged)
+    // 0 = Line, 1 = Dots, 2 = Triangles.
+    Q_PROPERTY(int peakStyle READ peakStyle WRITE setPeakStyle
+               NOTIFY peakStyleChanged)
+    Q_PROPERTY(QColor peakColor READ peakColor WRITE setPeakColor
+               NOTIFY peakColorChanged)
+    Q_PROPERTY(bool peakShowDb READ peakShowDb WRITE setPeakShowDb
+               NOTIFY peakShowDbChanged)
+    // Numeric dB labels for the strongest in-view peaks — each entry is
+    // {frac: 0..1 across width, db: value}.  Rendered as QML Text in
+    // PanadapterPanel (text in the scene graph is impractical here).
+    Q_PROPERTY(QVariantList peakLabels READ peakLabels NOTIFY peakLabelsChanged)
 
 public:
     explicit Panadapter(QQuickItem *parent = nullptr);
+
+    // Clear the peak-hold buffer (the Display panel "Clear" button).
+    Q_INVOKABLE void clearPeaks();
 
     QObject *engineObj() const;
     void     setEngineObj(QObject *o);
@@ -146,6 +172,20 @@ public:
     QColor fillColor() const { return fillColor_; }
     void   setFillColor(const QColor &c);
 
+    bool peakEnabled() const { return peakEnabled_; }
+    void setPeakEnabled(bool v);
+    double peakHoldSecs() const { return peakHoldSecs_; }
+    void   setPeakHoldSecs(double v);
+    double peakDecayDbps() const { return peakDecayDbps_; }
+    void   setPeakDecayDbps(double v);
+    int  peakStyle() const { return peakStyle_; }
+    void setPeakStyle(int v);
+    QColor peakColor() const { return peakColor_; }
+    void   setPeakColor(const QColor &c);
+    bool peakShowDb() const { return peakShowDb_; }
+    void setPeakShowDb(bool v);
+    QVariantList peakLabels() const { return peakLabels_; }
+
 signals:
     void engineChanged();
     void rangeChanged();
@@ -161,6 +201,13 @@ signals:
     void strengthColorChanged();
     void fillEnabledChanged();
     void fillColorChanged();
+    void peakEnabledChanged();
+    void peakHoldSecsChanged();
+    void peakDecayDbpsChanged();
+    void peakStyleChanged();
+    void peakColorChanged();
+    void peakShowDbChanged();
+    void peakLabelsChanged();
 
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode,
@@ -172,6 +219,12 @@ private slots:
     void onFrame();   // timer-paced: fetch spectrum + schedule repaint
 
 private:
+    // Passband pixel range [lo,hi) across the item width, from the
+    // engine's passband offsets + span (full width if no engine / no
+    // span).  Peak markers + dB labels render only inside it (old-Lyra
+    // parity: the peak overlay is passband-only).
+    void passbandPx(int W, int *lo, int *hi) const;
+
     lyra::dsp::WdspEngine *engine_ = nullptr;
     std::vector<float>     pix_;        // dB pixels (post-EWMA, what renders)
     std::vector<float>     rawPix_;     // latest raw frame from the analyzer
@@ -193,6 +246,19 @@ private:
     bool                   fillEnabled_ = true; // fill beneath the line
     QColor                 fillColor_ = QColor(0x5e, 0xc8, 0xff);  // solid-mode fill
     QTimer                *frameTimer_ = nullptr;  // fixed-cadence repaint pump
+
+    // ---- peak-hold markers ----
+    bool   peakEnabled_   = false;
+    double peakHoldSecs_  = 0.0;     // 0 Off / -1 Hold / -2 Live / >0 timed
+    double peakDecayDbps_ = 10.0;
+    int    peakStyle_     = 1;       // 0 line / 1 dots / 2 triangles
+    QColor peakColor_     = QColor(0xff, 0xbe, 0x5a);
+    bool   peakShowDb_    = false;
+    QVariantList           peakLabels_;
+    std::vector<float>     peakDb_;       // per-bin hold buffer (size of pix_)
+    std::vector<double>    peakUpdated_;  // per-bin last-updated (seconds)
+    double                 peakLastS_ = -1.0;  // last hold/decay tick (seconds)
+    std::vector<float>     peakColDb_;    // per-column reduced peak curve (scratch)
 
     // Per-frame scratch (reused to avoid per-frame allocation): the
     // peak-per-column curve, then the spatially-smoothed curve.

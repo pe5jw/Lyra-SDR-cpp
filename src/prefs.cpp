@@ -25,6 +25,12 @@ constexpr auto kFillCol = "panadapter/fillColor";
 constexpr auto kSmooth = "panadapter/smoothing";
 constexpr auto kGlow   = "panadapter/glow";
 constexpr auto kSheen  = "panadapter/glassSheen";
+constexpr auto kPkEn    = "panadapter/peakEnabled";
+constexpr auto kPkHold  = "panadapter/peakHoldSecs";
+constexpr auto kPkDecay = "panadapter/peakDecayDbps";
+constexpr auto kPkStyle = "panadapter/peakStyle";
+constexpr auto kPkColor = "panadapter/peakColor";
+constexpr auto kPkShow  = "panadapter/peakShowDb";
 constexpr auto kWmark  = "panadapter/watermark";
 constexpr auto kMet    = "panadapter/meteors";
 constexpr auto kMetGap = "panadapter/meteorGap";
@@ -68,6 +74,12 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     smoothing_   = std::clamp(s.value(kSmooth, 0).toInt(), 0, 10);
     glow_        = std::clamp(s.value(kGlow, 40).toInt(), 0, 100);
     glassSheen_  = std::clamp(s.value(kSheen, 20).toInt(), 0, 100);
+    peakEnabled_   = s.value(kPkEn, false).toBool();
+    peakHoldSecs_  = s.value(kPkHold, 0.0).toDouble();   // 0 = Off
+    peakDecayDbps_ = std::clamp(s.value(kPkDecay, 10.0).toDouble(), 1.0, 120.0);
+    peakStyle_     = std::clamp(s.value(kPkStyle, 1).toInt(), 0, 2);  // 1 dots
+    peakColor_     = s.value(kPkColor, QStringLiteral("#ffbe5a")).toString();
+    peakShowDb_    = s.value(kPkShow, false).toBool();
     watermark_   = s.value(kWmark, true).toBool();
     meteors_     = s.value(kMet, true).toBool();
     meteorGap_   = std::clamp(s.value(kMetGap, 30).toInt(), 5, 120);
@@ -229,6 +241,56 @@ void Prefs::setGlassSheen(int v) {
         glassSheen_ = v;
         QSettings().setValue(kSheen, v);
         emit glassSheenChanged();
+    }
+}
+
+void Prefs::setPeakEnabled(bool v) {
+    if (v != peakEnabled_) {
+        peakEnabled_ = v;
+        QSettings().setValue(kPkEn, v);
+        emit peakEnabledChanged();
+    }
+}
+
+void Prefs::setPeakHoldSecs(double v) {
+    if (v != peakHoldSecs_) {
+        peakHoldSecs_ = v;
+        QSettings().setValue(kPkHold, v);
+        emit peakHoldSecsChanged();
+    }
+}
+
+void Prefs::setPeakDecayDbps(double v) {
+    v = std::clamp(v, 1.0, 120.0);
+    if (v != peakDecayDbps_) {
+        peakDecayDbps_ = v;
+        QSettings().setValue(kPkDecay, v);
+        emit peakDecayDbpsChanged();
+    }
+}
+
+void Prefs::setPeakStyle(int v) {
+    v = std::clamp(v, 0, 2);
+    if (v != peakStyle_) {
+        peakStyle_ = v;
+        QSettings().setValue(kPkStyle, v);
+        emit peakStyleChanged();
+    }
+}
+
+void Prefs::setPeakColor(const QString &hex) {
+    if (hex != peakColor_ && !hex.isEmpty()) {
+        peakColor_ = hex;
+        QSettings().setValue(kPkColor, hex);
+        emit peakColorChanged();
+    }
+}
+
+void Prefs::setPeakShowDb(bool v) {
+    if (v != peakShowDb_) {
+        peakShowDb_ = v;
+        QSettings().setValue(kPkShow, v);
+        emit peakShowDbChanged();
     }
 }
 
