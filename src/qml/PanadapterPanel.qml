@@ -27,10 +27,29 @@ Item {
     // this QQuickWidget setup (same lesson as the Band panel), which
     // would leave the freq labels stale after a tune.
     property int centerHz: 0
-    Component.onCompleted: centerHz = Stream.rx1FreqHz
+    Component.onCompleted: {
+        centerHz = Stream.rx1FreqHz
+        effMin = pan.effDbMin
+        effMax = pan.effDbMax
+    }
     Connections {
         target: Stream
         function onRx1FreqChanged() { root.centerHz = Stream.rx1FreqHz }
+    }
+
+    // Effective dB range the panadapter is actually rendering with
+    // (auto-fit when on, else the manual dbMin/dbMax).  Mirrored from
+    // the panadapter's effRangeChanged SIGNAL into LOCAL properties so
+    // the dB-scale labels track it reliably (same proven pattern as
+    // centerHz — avoids the context-property binding flakiness).
+    property real effMin: -130
+    property real effMax: -20
+    Connections {
+        target: pan
+        function onEffRangeChanged() {
+            root.effMin = pan.effDbMin
+            root.effMax = pan.effDbMax
+        }
     }
 
     // dB labels at the 8 horizontal grid divisions: dbMax at the top
@@ -39,6 +58,8 @@ Item {
         id: rep
         property bool rightSide: false
         property Item area      // the spectrum area these label
+        property real dMax: 0   // effective ceiling (auto or manual)
+        property real dMin: 0   // effective floor
         model: 9   // 0..8 -> top edge .. bottom edge
         delegate: Text {
             required property int index
@@ -46,7 +67,7 @@ Item {
             x: rep.rightSide ? (rep.area.width - width - 5) : 5
             y: Math.max(0, Math.min(rep.area.height - height,
                                     frac * rep.area.height - height / 2))
-            text: Math.round(Prefs.dbMax - frac * (Prefs.dbMax - Prefs.dbMin))
+            text: Math.round(rep.dMax - frac * (rep.dMax - rep.dMin))
             color: "#8fa6ba"
             font.pixelSize: 13
             font.family: "Consolas"
@@ -108,6 +129,8 @@ Item {
                 gridLevel: Prefs.gridLevel
                 glassSheen: Prefs.glassSheen
                 targetFps: Prefs.targetFps
+                // Auto-fit when enabled; dbMin/dbMax used otherwise.
+                autoScale: Prefs.dbAuto
                 dbMin: Prefs.dbMin
                 dbMax: Prefs.dbMax
                 traceMode: Prefs.traceMode
@@ -291,8 +314,10 @@ Item {
             }
 
             // ---- dBm vertical scale, BOTH edges ----
-            DbLabels { rightSide: false; area: spectrumArea }
-            DbLabels { rightSide: true;  area: spectrumArea }
+            DbLabels { rightSide: false; area: spectrumArea
+                       dMax: root.effMax; dMin: root.effMin }
+            DbLabels { rightSide: true;  area: spectrumArea
+                       dMax: root.effMax; dMin: root.effMin }
 
             // ---- frequency scale at the spectrum/waterfall boundary ----
             // MHz labels at the vertical grid divisions; shared X axis for
@@ -412,6 +437,14 @@ Item {
                 onPressed: (mouse) => {
                     dbMode = dbModeAt(mouse.x, mouse.y)
                     if (dbMode !== "") {
+                        // Dragging the dB scale takes MANUAL control: if
+                        // auto is on, seed the manual range from the
+                        // current auto fit and turn auto off, then drag.
+                        if (Prefs.dbAuto) {
+                            Prefs.dbMin = Math.round(pan.effDbMin)
+                            Prefs.dbMax = Math.round(pan.effDbMax)
+                            Prefs.dbAuto = false
+                        }
                         startY = mouse.y
                         startMin = Prefs.dbMin
                         startMax = Prefs.dbMax

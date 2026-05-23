@@ -81,6 +81,8 @@ Panadapter::Panadapter(QQuickItem *parent) : QQuickItem(parent) {
     frameTimer_->setTimerType(Qt::PreciseTimer);
     frameTimer_->setInterval(1000 / std::max(1, targetFps_));
     connect(frameTimer_, &QTimer::timeout, this, &Panadapter::onFrame);
+
+    autoClock_.start();   // paces the auto-fit feed (throttled in onFrame)
 }
 
 QObject *Panadapter::engineObj() const {
@@ -103,11 +105,31 @@ void Panadapter::setEngineObj(QObject *o) {
 }
 
 void Panadapter::setDbMin(double v) {
-    if (v != dbMin_) { dbMin_ = v; emit rangeChanged(); update(); }
+    if (v != dbMin_) {
+        dbMin_ = v;
+        emit rangeChanged();
+        if (!autoScale_) emit effRangeChanged();   // manual = effective
+        update();
+    }
 }
 
 void Panadapter::setDbMax(double v) {
-    if (v != dbMax_) { dbMax_ = v; emit rangeChanged(); update(); }
+    if (v != dbMax_) {
+        dbMax_ = v;
+        emit rangeChanged();
+        if (!autoScale_) emit effRangeChanged();
+        update();
+    }
+}
+
+void Panadapter::setAutoScale(bool v) {
+    if (v != autoScale_) {
+        autoScale_ = v;
+        if (v) { autoScaler_.reset(); lastAutoMs_ = -1; }   // fresh fit
+        emit autoScaleChanged();
+        emit effRangeChanged();   // effective source switched
+        update();
+    }
 }
 
 void Panadapter::setTargetFps(int v) {
@@ -185,6 +207,17 @@ void Panadapter::onFrame() {
         rawPix_.assign(static_cast<size_t>(n), -200.0f);
     }
     engine_->copySpectrum(rawPix_.data(), n);
+
+    // Auto-fit the dB range from the raw spectrum (throttled ~5 Hz).
+    // effRangeChanged drives the dB-scale labels to follow the live fit.
+    if (autoScale_) {
+        const qint64 nowA = autoClock_.elapsed();
+        if (lastAutoMs_ < 0 || (nowA - lastAutoMs_) >= 200) {
+            lastAutoMs_ = nowA;
+            autoScaler_.feed(rawPix_.data(), n);
+            emit effRangeChanged();
+        }
+    }
 
     if (smoothing_ > 0 && smoothInit_) {
         // Display-only EWMA across frames (old-Lyra smoothing): blend
@@ -412,7 +445,10 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
         auto *fv = fillEnabled_ ? fillGeo->vertexDataAsColoredPoint2D()
                                 : nullptr;
         auto *lv = lineGeo->vertexDataAsColoredPoint2D();
-        const double range = (dbMax_ - dbMin_);
+        // Render with the EFFECTIVE range (auto-fit when on, else manual).
+        const double effMin = autoScale_ ? autoScaler_.floorDb() : dbMin_;
+        const double effMax = autoScale_ ? autoScaler_.ceilDb()  : dbMax_;
+        const double range = (effMax - effMin);
         const double invRange = (range != 0.0) ? 1.0 / range : 1.0;
         // Trace colour: SOLID (one picked colour) or BY-STRENGTH (colour
         // tracks signal level via the palette LUT — the intensity
@@ -426,7 +462,7 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
         const bool customStrength = byStrength && paletteIndex_ >= palCount;
         const lyra::palettes::Lut &pal = lyra::palettes::lut(paletteIndex_);
         for (int x = 0; x < W; ++x) {
-            double t = (static_cast<double>(curve[x]) - dbMin_) * invRange;
+            double t = (static_cast<double>(curve[x]) - effMin) * invRange;
             t = std::clamp(t, 0.0, 1.0);
             int rr = traceColor_.red();
             int gg = traceColor_.green();

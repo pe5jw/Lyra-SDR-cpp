@@ -840,6 +840,17 @@ QWidget *SettingsDialog::buildVisualsTab() {
     form->addRow(tr("Frame rate"), fps);
 
     // --- dB display range (vertical scale) ---
+    // Auto-fit OR a manual floor/ceiling.  The manual spinboxes gray
+    // out while Auto is on (the panadapter auto-fits internally).
+    auto *pdAuto = new QCheckBox(tr("Auto-fit the spectrum dB range"), page);
+    pdAuto->setChecked(prefs_->dbAuto());
+    pdAuto->setToolTip(tr("Track the band automatically (noise floor − 15 dB "
+                          "to peak + 15 dB). Off = use the floor/ceiling "
+                          "below. Dragging the right-edge dB scale also "
+                          "turns this off."));
+    connect(pdAuto, &QCheckBox::toggled, prefs_, &Prefs::setDbAuto);
+    form->addRow(tr("Spectrum dB"), pdAuto);
+
     auto *dbMin = new QDoubleSpinBox(page);
     dbMin->setRange(-200.0, 0.0);
     dbMin->setSuffix(tr(" dB"));
@@ -859,6 +870,21 @@ QWidget *SettingsDialog::buildVisualsTab() {
         if (dbMax->value() != prefs_->dbMax()) dbMax->setValue(prefs_->dbMax());
     });
     form->addRow(tr("dB range — ceiling"), dbMax);
+
+    // Gray the manual floor/ceiling out while Auto is on, and keep the
+    // checkbox in sync if Auto is flipped elsewhere (e.g. a dB-edge drag
+    // on the panadapter turns it off).
+    auto applyPdAuto = [dbMin, dbMax](bool a) {
+        dbMin->setEnabled(!a);
+        dbMax->setEnabled(!a);
+    };
+    applyPdAuto(prefs_->dbAuto());
+    connect(prefs_, &Prefs::dbAutoChanged, page,
+            [this, pdAuto, applyPdAuto]() {
+                const bool a = prefs_->dbAuto();
+                if (pdAuto->isChecked() != a) pdAuto->setChecked(a);
+                applyPdAuto(a);
+            });
 
     // --- Graphics backend (advanced; restart to apply) ---
     // The Qt RHI backend is fixed at startup, so this writes a QSettings

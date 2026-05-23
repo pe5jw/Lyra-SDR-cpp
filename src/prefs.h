@@ -27,6 +27,8 @@ class Prefs : public QObject {
                NOTIFY targetFpsChanged)
     Q_PROPERTY(double dbMin READ dbMin WRITE setDbMin NOTIFY dbMinChanged)
     Q_PROPERTY(double dbMax READ dbMax WRITE setDbMax NOTIFY dbMaxChanged)
+    // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
+    Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
                NOTIFY traceModeChanged)
     Q_PROPERTY(QString traceColor READ traceColor WRITE setTraceColor
@@ -96,6 +98,8 @@ public:
     void   setDbMin(double v);
     double dbMax() const { return dbMax_; }
     void   setDbMax(double v);
+    bool dbAuto() const { return dbAuto_; }
+    void setDbAuto(bool v);
     int  traceMode() const { return traceMode_; }
     void setTraceMode(int v);
     QString traceColor() const { return traceColor_; }
@@ -144,6 +148,7 @@ signals:
     void targetFpsChanged();
     void dbMinChanged();
     void dbMaxChanged();
+    void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
     void paletteChanged();
@@ -171,6 +176,7 @@ private:
     int     targetFps_;
     double  dbMin_;
     double  dbMax_;
+    bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;
     int     palette_;

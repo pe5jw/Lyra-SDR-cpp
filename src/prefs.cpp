@@ -15,6 +15,7 @@ constexpr auto kGrid   = "panadapter/gridLevel";
 constexpr auto kFps    = "panadapter/targetFps";
 constexpr auto kDbMin  = "panadapter/dbMin";
 constexpr auto kDbMax  = "panadapter/dbMax";
+constexpr auto kDbAuto = "panadapter/dbAuto";
 constexpr auto kTrace  = "panadapter/traceColor";
 constexpr auto kMode   = "panadapter/traceMode";
 constexpr auto kPal    = "panadapter/tracePalette";
@@ -44,6 +45,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     targetFps_  = std::clamp(s.value(kFps, 60).toInt(), 1, 240);
     dbMin_      = s.value(kDbMin, -130.0).toDouble();
     dbMax_      = s.value(kDbMax, -20.0).toDouble();
+    dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
     palette_    = std::max(0, s.value(kPal, 0).toInt());
@@ -104,6 +106,14 @@ void Prefs::setDbMax(double v) {
         dbMax_ = v;
         QSettings().setValue(kDbMax, v);
         emit dbMaxChanged();
+    }
+}
+
+void Prefs::setDbAuto(bool v) {
+    if (v != dbAuto_) {
+        dbAuto_ = v;
+        QSettings().setValue(kDbAuto, v);
+        emit dbAutoChanged();
     }
 }
 

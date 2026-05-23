@@ -27,7 +27,10 @@
 #pragma once
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QQuickItem>
+
+#include "autoscale.h"
 
 #include <vector>
 
@@ -44,6 +47,14 @@ class Panadapter : public QQuickItem {
     // dB display window (vertical scale).  Operator-tunable later.
     Q_PROPERTY(double dbMin READ dbMin WRITE setDbMin NOTIFY rangeChanged)
     Q_PROPERTY(double dbMax READ dbMax WRITE setDbMax NOTIFY rangeChanged)
+    // Auto dB range: when true the floor/ceiling track the band
+    // automatically and dbMin/dbMax are ignored for rendering.  The
+    // EFFECTIVE range actually in use (auto OR manual) is exposed via
+    // effDbMin/effDbMax so the dB-scale labels follow it.
+    Q_PROPERTY(bool autoScale READ autoScale WRITE setAutoScale
+               NOTIFY autoScaleChanged)
+    Q_PROPERTY(double effDbMin READ effDbMin NOTIFY effRangeChanged)
+    Q_PROPERTY(double effDbMax READ effDbMax NOTIFY effRangeChanged)
     // Target display fps (throttle of the vsync pump).  0 = every frame.
     Q_PROPERTY(int targetFps READ targetFps WRITE setTargetFps
                NOTIFY targetFpsChanged)
@@ -99,6 +110,12 @@ public:
     double dbMax() const { return dbMax_; }
     void   setDbMax(double v);
 
+    bool autoScale() const { return autoScale_; }
+    void setAutoScale(bool v);
+    // Effective range currently rendered (auto-fit when on, else manual).
+    double effDbMin() const { return autoScale_ ? autoScaler_.floorDb() : dbMin_; }
+    double effDbMax() const { return autoScale_ ? autoScaler_.ceilDb()  : dbMax_; }
+
     int  targetFps() const { return targetFps_; }
     void setTargetFps(int v);
 
@@ -132,6 +149,8 @@ public:
 signals:
     void engineChanged();
     void rangeChanged();
+    void autoScaleChanged();
+    void effRangeChanged();   // effective (auto or manual) range changed
     void targetFpsChanged();
     void smoothingChanged();
     void gridLevelChanged();
@@ -159,6 +178,10 @@ private:
     bool                   smoothInit_ = false;  // pix_ seeded yet?
     double                 dbMin_ = -130.0;
     double                 dbMax_ = -20.0;
+    bool                   autoScale_ = false;   // auto-fit the dB range?
+    AutoScaler             autoScaler_;          // computes the auto range
+    QElapsedTimer          autoClock_;           // throttles the auto feed
+    qint64                 lastAutoMs_ = -1;
     int                    targetFps_ = 60;
     int                    smoothing_ = 0;     // 0..100 spatial smoothing (off = Lyra-style raw trace)
     int                    gridLevel_ = 35;    // 0..100 gridline brightness
