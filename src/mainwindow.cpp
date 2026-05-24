@@ -43,6 +43,7 @@
 #include <QCoreApplication>
 
 #include "updatechecker.h"
+#include "default_layout.h"
 
 #include <utility>
 
@@ -710,6 +711,10 @@ void MainWindow::restoreLayout() {
         s.value(QStringLiteral("ui/windowState")).toByteArray();
     if (!st.isEmpty()) {
         restoreState(st);
+    } else {
+        // First run (no saved session): come up in the curated factory
+        // layout rather than the raw dock-creation order.
+        restoreState(defaultWindowState());
     }
     // Apply the persisted lock state (default unlocked).
     const bool locked =
@@ -886,6 +891,18 @@ void MainWindow::applyDefaultLayout() {
     for (auto *dock : std::as_const(docks_)) {
         dock->setFloating(false);
         dock->show();
+    }
+    // Prefer the curated factory layout (operator's embedded arrangement).
+    // Fall back to the programmatic placement below only if it fails to
+    // apply (e.g. a future build whose dock object names changed).
+    if (restoreState(defaultWindowState())) {
+        for (auto *dock : std::as_const(docks_)) {
+            dock->show();
+        }
+        if (prefs_) {
+            prefs_->setPanadapterSplit(QVariant());   // QML 60/40 default
+        }
+        return;
     }
     if (auto *pan = docks_.value(QStringLiteral("panadapter"))) {
         addDockWidget(Qt::TopDockWidgetArea, pan);

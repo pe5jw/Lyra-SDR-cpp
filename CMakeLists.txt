@@ -68,6 +68,7 @@ qt_add_executable(lyra
     src/autoscale.h
     src/mainwindow.h
     src/mainwindow.cpp
+    src/default_layout.h
     src/prefs.h
     src/prefs.cpp
     src/settingsdialog.h
