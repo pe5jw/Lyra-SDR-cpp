@@ -1073,7 +1073,7 @@ QWidget *SettingsDialog::buildVisualsTab() {
         gfx->addItem(QStringLiteral("OpenGL"),        QStringLiteral("opengl"));
         const QString cur = QSettings()
             .value(QStringLiteral("ui/graphicsBackend"),
-                   QStringLiteral("vulkan")).toString().toLower();
+                   QStringLiteral("auto")).toString().toLower();
         const int idx = std::max(0, gfx->findData(cur));
         gfx->setCurrentIndex(idx);
         connect(gfx, &QComboBox::currentIndexChanged, gfx, [gfx](int i) {

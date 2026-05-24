@@ -104,14 +104,23 @@ int main(int argc, char *argv[])
     // falls back transparently if that backend is unavailable at runtime.
     {
         using RI = QSGRendererInterface;
-        const QString be = QSettings().value(
-            QStringLiteral("ui/graphicsBackend"),
-            QStringLiteral("vulkan")).toString().toLower();
+        // Resolution order: LYRA_GRAPHICS env var (no-UI escape hatch for
+        // testers) -> persisted Settings -> "auto" default.  "auto" leaves
+        // the API unpinned so Qt RHI picks the most compatible backend per
+        // machine (Direct3D 11 on Windows) and honours QSG_RHI_BACKEND.
+        // This avoids Vulkan being force-pinned on GPUs/drivers where the
+        // QQuickWidget swapchain fails to create OR crashes on dock
+        // float/reparent (both field-reported on tester hardware).  Vulkan
+        // stays fully selectable in Settings -> Visuals.
+        QString be = qEnvironmentVariable("LYRA_GRAPHICS").trimmed().toLower();
+        if (be.isEmpty())
+            be = QSettings().value(QStringLiteral("ui/graphicsBackend"),
+                                   QStringLiteral("auto")).toString().toLower();
         if      (be == "vulkan") QQuickWindow::setGraphicsApi(RI::Vulkan);
         else if (be == "opengl") QQuickWindow::setGraphicsApi(RI::OpenGL);
         else if (be == "d3d11")  QQuickWindow::setGraphicsApi(RI::Direct3D11);
         else if (be == "d3d12")  QQuickWindow::setGraphicsApi(RI::Direct3D12);
-        // "auto" -> don't pin an API; Qt RHI auto-selects per platform.
+        // "auto" (default) -> leave unpinned; Qt RHI auto-selects.
     }
 
     // Multisample anti-aliasing.  Without this the RHI swapchain runs
