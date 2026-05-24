@@ -37,6 +37,10 @@
 #include <QDesktopServices>
 #include <QPushButton>
 #include <QUrl>
+#include <QFileDialog>
+#include <QStandardPaths>
+#include <QProcess>
+#include <QCoreApplication>
 
 #include "updatechecker.h"
 
@@ -274,6 +278,11 @@ void MainWindow::buildMenus() {
     QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Settings…"), QKeySequence(tr("Ctrl+,")),
                         this, &MainWindow::openSettings);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("&Export settings…"),
+                        this, &MainWindow::exportSettings);
+    fileMenu->addAction(tr("&Import settings…"),
+                        this, &MainWindow::importSettings);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("E&xit"), QKeySequence(QKeySequence::Quit),
                         this, &QWidget::close);
@@ -763,6 +772,108 @@ void MainWindow::restoreUserLayout() {
         if (sp.isValid()) {
             prefs_->setPanadapterSplit(sp);
         }
+    }
+}
+
+namespace {
+// Keys NOT carried in an exported profile — machine/hardware-specific
+// choices that shouldn't follow a profile to another PC (e.g. the
+// graphics backend: a Vulkan pin must not infect a machine where Vulkan
+// fails — the whole reason the default is "auto").
+bool isMachineSpecificKey(const QString &k) {
+    return k == QStringLiteral("ui/graphicsBackend");
+}
+} // namespace
+
+void MainWindow::exportSettings() {
+    // Capture the CURRENT on-screen layout into the session keys so the
+    // exported profile reflects exactly what's showing now.
+    {
+        QSettings s;
+        s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+        s.setValue(QStringLiteral("ui/windowState"), saveState());
+    }
+    const QString docs =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Lyra settings"),
+        docs + QStringLiteral("/lyra-profile.lyra"),
+        tr("Lyra profile (*.lyra)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(QStringLiteral(".lyra"), Qt::CaseInsensitive))
+        path += QStringLiteral(".lyra");
+
+    QSettings src;                                   // live scope
+    QSettings dst(path, QSettings::IniFormat);
+    dst.clear();
+    int n = 0;
+    for (const QString &k : src.allKeys()) {
+        if (isMachineSpecificKey(k)) continue;
+        dst.setValue(k, src.value(k));
+        ++n;
+    }
+    dst.sync();
+    if (dst.status() != QSettings::NoError) {
+        QMessageBox::warning(this, tr("Export failed"),
+            tr("Couldn't write the profile to:\n%1").arg(path));
+        return;
+    }
+    QMessageBox::information(this, tr("Settings exported"),
+        tr("Saved %1 settings (layout + preferences) to:\n%2")
+            .arg(n).arg(path));
+}
+
+void MainWindow::importSettings() {
+    const QString docs =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import Lyra settings"), docs,
+        tr("Lyra profile (*.lyra);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QSettings file(path, QSettings::IniFormat);
+    const QStringList keys = file.allKeys();
+    if (keys.isEmpty() || file.status() != QSettings::NoError) {
+        QMessageBox::warning(this, tr("Import failed"),
+            tr("That file doesn't look like a Lyra profile."));
+        return;
+    }
+    {
+        QSettings live;
+        for (const QString &k : keys) {
+            if (isMachineSpecificKey(k)) continue;   // never import hw choices
+            live.setValue(k, file.value(k));
+        }
+        live.sync();
+    }
+    // Apply the imported layout live NOW so the on-screen arrangement
+    // matches the profile (a later close-save then can't clobber it),
+    // then offer a restart so Prefs re-read the rest cleanly at startup.
+    {
+        QSettings s;
+        const QByteArray geo =
+            s.value(QStringLiteral("ui/geometry")).toByteArray();
+        const QByteArray st =
+            s.value(QStringLiteral("ui/windowState")).toByteArray();
+        if (!geo.isEmpty()) restoreGeometry(geo);
+        if (!st.isEmpty())  restoreState(st);
+        for (auto *dock : std::as_const(docks_)) dock->show();
+        if (prefs_) {
+            const QVariant sp =
+                s.value(QStringLiteral("ui/panadapterSplit"));
+            if (sp.isValid()) prefs_->setPanadapterSplit(sp);
+        }
+    }
+    const auto btn = QMessageBox::question(this, tr("Settings imported"),
+        tr("Imported %1 settings (the layout is applied now).\n\n"
+           "Restart Lyra to apply the rest (visuals, etc.)?\n"
+           "(Graphics backend is left as this machine's own setting.)")
+            .arg(keys.size()),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (btn == QMessageBox::Yes) {
+        QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                QStringList());
+        QCoreApplication::quit();
     }
 }
 

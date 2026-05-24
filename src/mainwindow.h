@@ -94,6 +94,12 @@ private:
     void saveUserLayout();             // snapshot current as "my default"
     void restoreUserLayout();          // jump back to the saved default
     void applyDefaultLayout();         // factory arrangement (built-in)
+    // Export/import the full settings profile (layout + all prefs) to a
+    // portable .lyra file — backup, transfer to another machine, or
+    // instant recovery after layout tinkering.  Machine-specific keys
+    // (graphics backend) are deliberately NOT carried.
+    void exportSettings();
+    void importSettings();
     void openSettings();
     // Per-panel "?" badge targets (driven by the Help bridge).
     void showHelp(const QString &topic);        // open the User Guide at topic
