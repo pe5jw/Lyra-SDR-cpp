@@ -26,6 +26,7 @@
 #include <QSettings>
 #include <QImage>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSlider>
@@ -35,6 +36,7 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <cmath>
 
 namespace lyra::ui {
 
@@ -106,6 +108,94 @@ QWidget *SettingsDialog::buildAudioTab() {
 QWidget *SettingsDialog::buildHardwareTab() {
     auto *page = new QWidget(this);
     auto *form = new QFormLayout(page);
+
+    // --- Operator / Station ---
+    // Callsign + Maidenhead grid (+ manual lat/lon fallback).  The
+    // location drives the weather sources + solar panel; callsign feeds
+    // TCI/logging.  Grid wins over manual when valid.
+    {
+        auto *grp = new QGroupBox(tr("Operator / Station"), page);
+        auto *g = new QGridLayout(grp);
+        g->setColumnStretch(1, 1);
+
+        g->addWidget(new QLabel(tr("Callsign"), grp), 0, 0);
+        auto *call = new QLineEdit(prefs_->callsign(), grp);
+        call->setFixedWidth(140);
+        call->setPlaceholderText(tr("e.g. N8SDR"));
+        connect(call, &QLineEdit::editingFinished, grp,
+                [this, call]() { prefs_->setCallsign(call->text()); });
+        connect(prefs_, &Prefs::callsignChanged, call, [this, call]() {
+            if (call->text() != prefs_->callsign()) call->setText(prefs_->callsign());
+        });
+        g->addWidget(call, 0, 1);
+
+        g->addWidget(new QLabel(tr("Grid square"), grp), 1, 0);
+        auto *grid = new QLineEdit(prefs_->gridSquare(), grp);
+        grid->setFixedWidth(140);
+        grid->setPlaceholderText(tr("e.g. EN82"));
+        g->addWidget(grid, 1, 1);
+
+        g->addWidget(new QLabel(tr("Computed lat/lon"), grp), 2, 0);
+        auto *comp = new QLabel(grp);
+        comp->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
+        g->addWidget(comp, 2, 1);
+
+        g->addWidget(new QLabel(tr("Manual lat (°)"), grp), 3, 0);
+        auto *latE = new QLineEdit(grp);
+        latE->setFixedWidth(140);
+        latE->setPlaceholderText(tr("e.g. 41.5  (fallback if no grid)"));
+        if (!std::isnan(prefs_->manualLat()))
+            latE->setText(QString::number(prefs_->manualLat(), 'f', 4));
+        g->addWidget(latE, 3, 1);
+
+        g->addWidget(new QLabel(tr("Manual lon (°)"), grp), 4, 0);
+        auto *lonE = new QLineEdit(grp);
+        lonE->setFixedWidth(140);
+        lonE->setPlaceholderText(tr("e.g. -83.6"));
+        if (!std::isnan(prefs_->manualLon()))
+            lonE->setText(QString::number(prefs_->manualLon(), 'f', 4));
+        g->addWidget(lonE, 4, 1);
+
+        auto refreshComputed = [this, comp]() {
+            double la = 0, lo = 0;
+            if (prefs_->operatorLocation(&la, &lo))
+                comp->setText(QStringLiteral("%1, %2")
+                                  .arg(la, 0, 'f', 4).arg(lo, 0, 'f', 4));
+            else
+                comp->setText(tr("— not set —"));
+        };
+        refreshComputed();
+        connect(prefs_, &Prefs::locationChanged, comp, refreshComputed);
+
+        connect(grid, &QLineEdit::editingFinished, grp, [this, grid]() {
+            prefs_->setGridSquare(grid->text());
+            if (grid->text() != prefs_->gridSquare())   // reflect normalization
+                grid->setText(prefs_->gridSquare());
+        });
+        connect(prefs_, &Prefs::gridSquareChanged, grid, [this, grid]() {
+            if (grid->text() != prefs_->gridSquare()) grid->setText(prefs_->gridSquare());
+        });
+
+        auto applyManual = [this, latE, lonE]() {
+            const QString lt = latE->text().trimmed();
+            const QString ln = lonE->text().trimmed();
+            if (lt.isEmpty() && ln.isEmpty()) {       // clear override
+                prefs_->setManualLatLon(std::nan(""), std::nan(""));
+                return;
+            }
+            bool ok1 = false, ok2 = false;
+            const double la = lt.toDouble(&ok1);
+            const double lo = ln.toDouble(&ok2);
+            if (ok1 && ok2) prefs_->setManualLatLon(la, lo);
+        };
+        connect(latE, &QLineEdit::editingFinished, grp, applyManual);
+        connect(lonE, &QLineEdit::editingFinished, grp, applyManual);
+
+        grp->setToolTip(tr("Your location drives the weather alerts and the "
+                           "solar panel. The grid square is used when valid; "
+                           "manual lat/lon is the fallback."));
+        form->addRow(grp);
+    }
 
     // --- Radio (HL2 discovery + connect) ---
     // LAN scan + found-radios list + Open/Close.  Moved here from the

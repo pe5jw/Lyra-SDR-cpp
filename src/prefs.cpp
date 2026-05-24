@@ -3,10 +3,13 @@
 #include "prefs.h"
 
 #include "palettes.h"
+#include "grid.h"
 
 #include <QSettings>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace lyra::ui {
 
@@ -50,6 +53,10 @@ constexpr auto kRxMode = "modefilter/mode";
 constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
 constexpr auto kWfCollapse = "panadapter/waterfallCollapsed";
 constexpr auto kSampRate = "radio/sampleRate";
+constexpr auto kOpCall  = "operator/callsign";
+constexpr auto kOpGrid  = "operator/grid";
+constexpr auto kOpLat   = "operator/lat_manual";
+constexpr auto kOpLon   = "operator/lon_manual";
 // Modes whose per-mode bandwidth we persist/restore.
 const QStringList kModes = {
     QStringLiteral("LSB"),  QStringLiteral("USB"),
@@ -107,6 +114,14 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         }
     }
     waterfallCollapsed_ = s.value(kWfCollapse, false).toBool();
+    callsign_   = s.value(kOpCall, QString()).toString();
+    gridSquare_ = lyra::ham::normalizeGrid(s.value(kOpGrid).toString());
+    {
+        constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+        const QVariant la = s.value(kOpLat), lo = s.value(kOpLon);
+        manualLat_ = la.isValid() ? la.toDouble() : kNaN;
+        manualLon_ = lo.isValid() ? lo.toDouble() : kNaN;
+    }
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -468,6 +483,62 @@ void Prefs::setPanadapterSplit(const QVariant &v) {
         QSettings().remove(kPanSplit);
     }
     emit panadapterSplitChanged();
+}
+
+void Prefs::setCallsign(const QString &c) {
+    const QString v = c.trimmed().toUpper();   // no format validation (old Lyra)
+    if (v != callsign_) {
+        callsign_ = v;
+        QSettings().setValue(kOpCall, v);
+        emit callsignChanged();
+    }
+}
+
+void Prefs::setGridSquare(const QString &g) {
+    const QString v = lyra::ham::normalizeGrid(g);   // "" if invalid
+    if (v != gridSquare_) {
+        gridSquare_ = v;
+        QSettings().setValue(kOpGrid, v);
+        emit gridSquareChanged();
+        emit locationChanged();   // effective lat/lon follows the grid
+    }
+}
+
+void Prefs::setManualLatLon(double lat, double lon) {
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    QSettings s;
+    if (std::isnan(lat) || std::isnan(lon)) {        // clear the override
+        const bool had = !std::isnan(manualLat_) || !std::isnan(manualLon_);
+        manualLat_ = kNaN;
+        manualLon_ = kNaN;
+        s.remove(kOpLat);
+        s.remove(kOpLon);
+        if (had) emit locationChanged();
+        return;
+    }
+    lat = std::clamp(lat, -90.0, 90.0);
+    lon = std::clamp(lon, -180.0, 180.0);
+    if (lat != manualLat_ || lon != manualLon_) {
+        manualLat_ = lat;
+        manualLon_ = lon;
+        s.setValue(kOpLat, lat);
+        s.setValue(kOpLon, lon);
+        emit locationChanged();
+    }
+}
+
+bool Prefs::operatorLocation(double *lat, double *lon) const {
+    if (const auto ll = lyra::ham::gridToLatLon(gridSquare_)) {
+        if (lat) *lat = ll->first;
+        if (lon) *lon = ll->second;
+        return true;
+    }
+    if (!std::isnan(manualLat_) && !std::isnan(manualLon_)) {
+        if (lat) *lat = manualLat_;
+        if (lon) *lon = manualLon_;
+        return true;
+    }
+    return false;
 }
 
 } // namespace lyra::ui

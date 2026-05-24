@@ -125,6 +125,14 @@ class Prefs : public QObject {
     // the value round-trips through QSettings byte-exact.
     Q_PROPERTY(QVariant panadapterSplit READ panadapterSplit
                WRITE setPanadapterSplit NOTIFY panadapterSplitChanged)
+    // Operator / station identity (Settings → Hardware).  Callsign feeds
+    // TCI/logging; the location (grid, or manual lat/lon override) feeds
+    // the weather sources + solar panel.  Effective lat/lon = grid when
+    // valid, else the manual override.
+    Q_PROPERTY(QString callsign READ callsign WRITE setCallsign
+               NOTIFY callsignChanged)
+    Q_PROPERTY(QString gridSquare READ gridSquare WRITE setGridSquare
+               NOTIFY gridSquareChanged)
 
 public:
     explicit Prefs(QObject *parent = nullptr);
@@ -216,6 +224,18 @@ public:
     void setSampleRate(int hz);
     bool waterfallCollapsed() const { return waterfallCollapsed_; }
     void setWaterfallCollapsed(bool v);
+    // --- operator / station identity ---
+    QString callsign() const { return callsign_; }
+    void    setCallsign(const QString &c);
+    QString gridSquare() const { return gridSquare_; }
+    void    setGridSquare(const QString &g);   // normalized; "" if invalid
+    double  manualLat() const { return manualLat_; }   // NaN = unset
+    double  manualLon() const { return manualLon_; }
+    // Set/clear the manual lat/lon override (pass NaN,NaN to clear).
+    Q_INVOKABLE void setManualLatLon(double lat, double lon);
+    // Effective operator location: grid (if valid) else manual override.
+    // Returns false (and leaves *lat/*lon untouched) when neither is set.
+    bool operatorLocation(double *lat, double *lon) const;
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
 
@@ -260,6 +280,9 @@ signals:
     void rxBandwidthChanged();
     void sampleRateChanged();
     void waterfallCollapsedChanged();
+    void callsignChanged();
+    void gridSquareChanged();
+    void locationChanged();   // effective lat/lon changed (grid or manual)
 
 private:
     int     gridLevel_;
@@ -301,6 +324,10 @@ private:
     QHash<QString, int> bwByMode_;   // per-mode RX bandwidth memory
     int     sampleRate_;
     bool    waterfallCollapsed_;
+    QString callsign_;
+    QString gridSquare_;
+    double  manualLat_;   // NaN = unset
+    double  manualLon_;   // NaN = unset
 };
 
 } // namespace lyra::ui

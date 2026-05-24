@@ -85,6 +85,8 @@ qt_add_executable(lyra
     src/helpdialog.cpp
     src/updatechecker.h
     src/updatechecker.cpp
+    src/grid.h
+    src/grid.cpp
 )
 
 # QML module — keeps Main.qml inside the binary as a Qt resource so
