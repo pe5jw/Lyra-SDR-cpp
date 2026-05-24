@@ -44,6 +44,11 @@
 
 #include "updatechecker.h"
 #include "default_layout.h"
+#include "wxservice.h"
+#include "wxindicator.h"
+
+#include <QApplication>
+#include <QSystemTrayIcon>
 
 #include <utility>
 
@@ -59,10 +64,10 @@ constexpr QDockWidget::DockWidgetFeatures kUnlockedFeatures =
 
 MainWindow::MainWindow(QObject *discovery, QObject *stream,
                        QObject *wdsp, QObject *wdspEngine,
-                       Prefs *prefs, QWidget *parent)
+                       Prefs *prefs, lyra::wx::WxService *wx, QWidget *parent)
     : QMainWindow(parent),
       discovery_(discovery), stream_(stream),
-      wdsp_(wdsp), wdspEngine_(wdspEngine), prefs_(prefs) {
+      wdsp_(wdsp), wdspEngine_(wdspEngine), prefs_(prefs), wx_(wx) {
     setWindowTitle(QStringLiteral(
         "Lyra — Hermes Lite 2 / 2+ — v" LYRA_VERSION " (C++23 / Qt 6)"));
     setObjectName(QStringLiteral("LyraMainWindow"));
@@ -353,7 +358,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            this);
+            wx_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
@@ -432,6 +437,23 @@ void MainWindow::buildToolbar() {
     auto *clockSpacerR = new QWidget(tb);
     clockSpacerR->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     tb->addWidget(clockSpacerR);
+
+    // Weather-alert badges — hard right of the clocks, toward the right
+    // edge of the header (empty/invisible until an alert is active).
+    if (wx_) {
+        wxIndicator_ = new WxIndicator(wx_, tb);
+        tb->addWidget(wxIndicator_);
+        connect(wx_, &lyra::wx::WxService::toast, this,
+                [this](const QString &title, const QString &body) {
+            if (!tray_) {   // lazily create a tray icon for OS notifications
+                tray_ = new QSystemTrayIcon(windowIcon(), this);
+                tray_->show();
+            }
+            tray_->showMessage(title, body, QSystemTrayIcon::Warning, 8000);
+        });
+        connect(wx_, &lyra::wx::WxService::chime, this,
+                []() { QApplication::beep(); });
+    }
 
     clockTimer_ = new QTimer(this);
     clockTimer_->setInterval(1000);

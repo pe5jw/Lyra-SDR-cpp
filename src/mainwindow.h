@@ -23,6 +23,9 @@ class QDockWidget;
 class QLabel;
 class QQuickWidget;
 class QTimer;
+class QSystemTrayIcon;
+
+namespace lyra::wx { class WxService; }
 
 namespace lyra::ui {
 
@@ -33,6 +36,7 @@ class HelpDialog;
 class Bands;
 class UsbBcd;
 class UpdateChecker;
+class WxIndicator;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -42,7 +46,7 @@ public:
     // WdspEngine), so each panel binds whatever it needs.
     MainWindow(QObject *discovery, QObject *stream,
                QObject *wdsp, QObject *wdspEngine,
-               Prefs *prefs,
+               Prefs *prefs, lyra::wx::WxService *wx,
                QWidget *parent = nullptr);
 
 protected:
@@ -110,6 +114,9 @@ private:
     QObject *wdsp_       = nullptr;
     QObject *wdspEngine_ = nullptr;
     Prefs   *prefs_      = nullptr;
+    lyra::wx::WxService *wx_ = nullptr;
+    WxIndicator         *wxIndicator_ = nullptr;   // header alert badges
+    QSystemTrayIcon     *tray_ = nullptr;          // lazy, for wx toasts
 
     QHash<QString, QDockWidget *> docks_;
     QAction                    *lockAction_ = nullptr;

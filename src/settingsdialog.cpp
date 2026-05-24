@@ -9,6 +9,7 @@
 #include "prefs.h"
 #include "usb_bcd.h"
 #include "wdsp_engine.h"
+#include "wxservice.h"
 
 #include <QCheckBox>
 #include <QGroupBox>
@@ -43,9 +44,10 @@ namespace lyra::ui {
 SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::ipc::HL2Discovery *discovery,
                                UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
+                               lyra::wx::WxService *wx,
                                QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
-      discovery_(discovery), bcd_(bcd), engine_(engine) {
+      discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
@@ -56,6 +58,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(buildHardwareTab(), tr("Hardware"));
+    }
+    if (wx_) {
+        tabs_->addTab(buildWeatherTab(), tr("Weather"));
     }
     // Further tabs (Radio, Audio, DSP, …) are added as those features
     // land — deliberately no empty placeholder tabs.
@@ -1180,6 +1185,191 @@ QWidget *SettingsDialog::buildVisualsTab() {
         form->addRow(tr("Graphics backend"), gbox);
     }
 
+    return page;
+}
+
+QWidget *SettingsDialog::buildWeatherTab() {
+    auto *page = new QWidget(this);
+    auto *outer = new QVBoxLayout(page);
+    auto apply = [this]() { if (wx_) wx_->reloadConfig(); };
+
+    // Disclaimer + master enable (enable gated on accepting the disclaimer).
+    auto *disc = new QCheckBox(
+        tr("I understand these alerts are advisory only and not a "
+           "substitute for official warnings."), page);
+    disc->setChecked(QSettings().value(QStringLiteral("wx/disclaimer_accepted"),
+                                       false).toBool());
+    outer->addWidget(disc);
+
+    auto *enable = new QCheckBox(tr("Enable weather alerts"), page);
+    enable->setChecked(QSettings().value(QStringLiteral("wx/enabled"), false).toBool());
+    enable->setEnabled(disc->isChecked());
+    outer->addWidget(enable);
+
+    connect(disc, &QCheckBox::toggled, page, [enable, apply](bool on) {
+        QSettings().setValue(QStringLiteral("wx/disclaimer_accepted"), on);
+        enable->setEnabled(on);
+        if (!on) enable->setChecked(false);
+        apply();
+    });
+    connect(enable, &QCheckBox::toggled, page, [apply](bool on) {
+        QSettings().setValue(QStringLiteral("wx/enabled"), on);
+        apply();
+    });
+
+    // --- Sources ---
+    {
+        auto *grp = new QGroupBox(tr("Sources"), page);
+        auto *v = new QVBoxLayout(grp);
+        auto mkSrc = [v, page, apply](const QString &label,
+                                      const QString &key, bool def) {
+            auto *cb = new QCheckBox(label, page);
+            cb->setChecked(QSettings().value(key, def).toBool());
+            QObject::connect(cb, &QCheckBox::toggled, page,
+                             [key, apply](bool on) {
+                QSettings().setValue(key, on);
+                apply();
+            });
+            v->addWidget(cb);
+        };
+        mkSrc(tr("Blitzortung — global lightning (free, no key)"),
+              QStringLiteral("wx/src_blitzortung"), true);
+        mkSrc(tr("NWS / weather.gov — wind + severe alerts (free)"),
+              QStringLiteral("wx/src_nws"), true);
+        mkSrc(tr("NWS METAR — live wind from a station (free)"),
+              QStringLiteral("wx/src_nws_metar"), true);
+        mkSrc(tr("Ambient Weather — your station (needs keys below)"),
+              QStringLiteral("wx/src_ambient"), false);
+        mkSrc(tr("Ecowitt — your station (needs keys below)"),
+              QStringLiteral("wx/src_ecowitt"), false);
+        outer->addWidget(grp);
+    }
+
+    // --- Thresholds + station/units ---
+    {
+        auto *grp = new QGroupBox(tr("Thresholds"), page);
+        auto *f = new QFormLayout(grp);
+
+        auto *range = new QSpinBox(grp);
+        range->setRange(5, 500);
+        range->setSuffix(tr(" km"));
+        range->setValue(qRound(QSettings()
+            .value(QStringLiteral("wx/lightning_range_km"), 80.0).toDouble()));
+        connect(range, &QSpinBox::valueChanged, grp, [apply](int v) {
+            QSettings().setValue(QStringLiteral("wx/lightning_range_km"),
+                                 double(v));
+            apply();
+        });
+        f->addRow(tr("Lightning range"), range);
+
+        auto *ws = new QSpinBox(grp);
+        ws->setRange(5, 100);
+        ws->setSuffix(tr(" mph"));
+        ws->setValue(qRound(QSettings()
+            .value(QStringLiteral("wx/wind_sustained_mph"), 30.0).toDouble()));
+        connect(ws, &QSpinBox::valueChanged, grp, [apply](int v) {
+            QSettings().setValue(QStringLiteral("wx/wind_sustained_mph"),
+                                 double(v));
+            apply();
+        });
+        f->addRow(tr("Wind sustained ≥"), ws);
+
+        auto *wg = new QSpinBox(grp);
+        wg->setRange(10, 150);
+        wg->setSuffix(tr(" mph"));
+        wg->setValue(qRound(QSettings()
+            .value(QStringLiteral("wx/wind_gust_mph"), 40.0).toDouble()));
+        connect(wg, &QSpinBox::valueChanged, grp, [apply](int v) {
+            QSettings().setValue(QStringLiteral("wx/wind_gust_mph"), double(v));
+            apply();
+        });
+        f->addRow(tr("Wind gust ≥"), wg);
+
+        auto *metar = new QLineEdit(
+            QSettings().value(QStringLiteral("wx/nws_metar_station")).toString(), grp);
+        metar->setPlaceholderText(tr("ICAO, e.g. KTOL"));
+        connect(metar, &QLineEdit::editingFinished, grp, [metar, apply]() {
+            QSettings().setValue(QStringLiteral("wx/nws_metar_station"),
+                                 metar->text().trimmed().toUpper());
+            apply();
+        });
+        f->addRow(tr("METAR station"), metar);
+
+        auto *unit = new QComboBox(grp);
+        unit->addItem(tr("Miles"), QStringLiteral("mi"));
+        unit->addItem(tr("Kilometres"), QStringLiteral("km"));
+        unit->setCurrentIndex(std::max(0, unit->findData(QSettings()
+            .value(QStringLiteral("wx/distance_unit"),
+                   QStringLiteral("mi")).toString())));
+        connect(unit, &QComboBox::currentIndexChanged, grp, [unit, apply](int) {
+            QSettings().setValue(QStringLiteral("wx/distance_unit"),
+                                 unit->currentData().toString());
+            apply();
+        });
+        f->addRow(tr("Distance unit"), unit);
+        outer->addWidget(grp);
+    }
+
+    // --- Notifications + test ---
+    {
+        auto *grp = new QGroupBox(tr("Notifications"), page);
+        auto *v = new QVBoxLayout(grp);
+        auto *toastCb = new QCheckBox(tr("Desktop notification on alert"), page);
+        toastCb->setChecked(QSettings()
+            .value(QStringLiteral("wx/desktop_enabled"), true).toBool());
+        connect(toastCb, &QCheckBox::toggled, page, [apply](bool on) {
+            QSettings().setValue(QStringLiteral("wx/desktop_enabled"), on);
+            apply();
+        });
+        v->addWidget(toastCb);
+        auto *audioCb = new QCheckBox(tr("Audible chime on alert"), page);
+        audioCb->setChecked(QSettings()
+            .value(QStringLiteral("wx/audio_enabled"), true).toBool());
+        connect(audioCb, &QCheckBox::toggled, page, [apply](bool on) {
+            QSettings().setValue(QStringLiteral("wx/audio_enabled"), on);
+            apply();
+        });
+        v->addWidget(audioCb);
+        auto *test = new QPushButton(tr("Send test alert"), page);
+        test->setToolTip(tr("Light the header badges + fire one toast for "
+                            "a few seconds."));
+        connect(test, &QPushButton::clicked, page,
+                [this]() { if (wx_) wx_->fireTestSnapshot(); });
+        v->addWidget(test);
+        outer->addWidget(grp);
+    }
+
+    // --- API credentials (Ambient / Ecowitt) ---
+    {
+        auto *grp = new QGroupBox(tr("Station API credentials"), page);
+        auto *f = new QFormLayout(grp);
+        auto mkKey = [f, grp, apply](const QString &label, const QString &key) {
+            auto *e = new QLineEdit(QSettings().value(key).toString(), grp);
+            e->setEchoMode(QLineEdit::Password);
+            QObject::connect(e, &QLineEdit::editingFinished, grp,
+                             [e, key, apply]() {
+                QSettings().setValue(key, e->text().trimmed());
+                apply();
+            });
+            f->addRow(label, e);
+        };
+        mkKey(tr("Ambient API key"), QStringLiteral("wx/ambient_api_key"));
+        mkKey(tr("Ambient Application key"), QStringLiteral("wx/ambient_app_key"));
+        mkKey(tr("Ecowitt Application key"), QStringLiteral("wx/ecowitt_app_key"));
+        mkKey(tr("Ecowitt API key"), QStringLiteral("wx/ecowitt_api_key"));
+        auto *mac = new QLineEdit(
+            QSettings().value(QStringLiteral("wx/ecowitt_mac")).toString(), grp);
+        mac->setPlaceholderText(tr("e.g. 34:94:54:AB:CD:EF"));
+        connect(mac, &QLineEdit::editingFinished, grp, [mac, apply]() {
+            QSettings().setValue(QStringLiteral("wx/ecowitt_mac"),
+                                 mac->text().trimmed().toUpper());
+            apply();
+        });
+        f->addRow(tr("Ecowitt gateway MAC"), mac);
+        outer->addWidget(grp);
+    }
+
+    outer->addStretch(1);
     return page;
 }
 

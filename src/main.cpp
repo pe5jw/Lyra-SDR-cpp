@@ -29,6 +29,7 @@
 #include <QSurfaceFormat>
 
 #include "mainwindow.h"
+#include "wxservice.h"
 #include "prefs.h"
 #include "theme.h"
 #include <QTimer>
@@ -232,8 +233,14 @@ int main(int argc, char *argv[])
     // objects to that QML as context properties (Discovery / Stream /
     // Wdsp / WdspEngine).  All native C++ — no Python, no GIL.
     auto *prefs = new lyra::ui::Prefs(&app);
+    // Weather-alert service — polls the operator's enabled sources and
+    // feeds the header badges + toasts.  Reads its location from Prefs,
+    // so a station-location change re-arms it.
+    auto *wx = new lyra::wx::WxService(prefs, &app);
+    QObject::connect(prefs, &lyra::ui::Prefs::locationChanged,
+                     wx, &lyra::wx::WxService::reloadConfig);
     auto *win = new lyra::ui::MainWindow(discovery, stream, wdsp,
-                                         wdspEngine, prefs);
+                                         wdspEngine, prefs, wx);
     win->show();
 
     // Defer the WDSP load / wisdom / channel-open to the FIRST

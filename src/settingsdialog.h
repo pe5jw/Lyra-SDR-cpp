@@ -14,6 +14,7 @@ class QTabWidget;
 
 namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
+namespace lyra::wx  { class WxService; }
 
 namespace lyra::ui {
 
@@ -30,6 +31,7 @@ public:
     SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                    lyra::ipc::HL2Discovery *discovery,
                    UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
+                   lyra::wx::WxService *wx,
                    QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
@@ -39,12 +41,14 @@ private:
     QWidget *buildVisualsTab();
     QWidget *buildHardwareTab();
     QWidget *buildAudioTab();    // RX audio output device chooser
+    QWidget *buildWeatherTab();  // weather-alert sources + thresholds + keys
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
     lyra::ipc::HL2Discovery *discovery_ = nullptr;
     UsbBcd                 *bcd_       = nullptr;
     lyra::dsp::WdspEngine  *engine_    = nullptr;
+    lyra::wx::WxService    *wx_        = nullptr;
     QTabWidget             *tabs_      = nullptr;
 };
 

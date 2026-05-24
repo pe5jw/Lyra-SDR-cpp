@@ -87,6 +87,10 @@ qt_add_executable(lyra
     src/updatechecker.cpp
     src/grid.h
     src/grid.cpp
+    src/wxservice.h
+    src/wxservice.cpp
+    src/wxindicator.h
+    src/wxindicator.cpp
 )
 
 # QML module — keeps Main.qml inside the binary as a Qt resource so
