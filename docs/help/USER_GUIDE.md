@@ -24,19 +24,29 @@ not programmers — if you can click a menu, you can use this.
 
 - [Why "Lyra"?](#why-lyra)
 - [Getting started](#getting-started)
+- [The header (top toolbar)](#the-header-top-toolbar)
 - [Getting around the window](#getting-around-the-window)
 - [The panadapter (spectrum display)](#the-panadapter-spectrum-display)
 - [Tuning panel](#tuning-panel)
+- [Mode + Filter panel](#mode--filter-panel)
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
 - [Display panel](#display-panel)
+- [Weather alerts](#weather-alerts)
+- [Updates](#updates)
+- [Backing up & sharing your settings](#backing-up--sharing-your-settings)
 - [Settings → Hardware](#settings--hardware)
+  - [Operator / Station](#operator--station)
+  - [Band plan (Region)](#band-plan-region)
   - [Radio](#radio)
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
+- [Settings → Audio](#settings--audio)
 - [Settings → Visuals](#settings--visuals)
   - [Trace color](#trace-color)
   - [Spectrum fill](#spectrum-fill)
+  - [Peak markers](#peak-markers)
+  - [Noise-floor line](#noise-floor-line)
   - [Trace smoothing](#trace-smoothing)
   - [Peak glow](#peak-glow)
   - [Glass sheen](#glass-sheen)
@@ -45,6 +55,8 @@ not programmers — if you can click a menu, you can use this.
   - [dB range (floor / ceiling)](#db-range-floor--ceiling)
   - [Watermark](#watermark)
   - [Meteors](#meteors)
+  - [Graphics backend](#graphics-backend)
+- [Settings → Weather](#settings--weather)
 
 ---
 
@@ -85,11 +97,12 @@ Python Lyra — same spirit, no Python and no GIL anywhere. Licensed
 ### 1. Know your hardware
 
 - **HL2** (plain) — a stock Hermes Lite 2 board. Received audio is
-  decoded on the PC and played through whatever output you pick in the
-  **Audio** panel.
+  decoded on the PC and played through whatever output you pick in
+  **Settings → Audio**.
 - **HL2+** — the HL2 base **plus** the AK4951 audio add-in board (and the
   updated HL2+ gateware). Adds on-board audio routing and a microphone
-  input for future transmit.
+  input for future transmit. The HL2's own headphone jack is the default,
+  lowest-latency audio path.
 
 ### 2. Network
 
@@ -107,30 +120,33 @@ can talk to the radio (inbound UDP 1024 for `lyra.exe`).
 
 Connecting to the radio lives in **Settings → Hardware** — open Settings
 (**Ctrl+,** or **File → Settings…**), pick the **Hardware** tab, and find
-the **Radio** section:
+the **Radio** section. Or just use **▶ Start** on the toolbar:
 
 1. Power on the HL2 / HL2+ and make sure it's on the same network.
-2. Click **Discover** to scan the LAN. Radios that answer appear in the
-   list below.
-3. Select your radio and click **Open** to start the stream — the status
-   line reads **Connected to …**. (Lyra also auto-connects to the last
-   radio you used, so it may already be running.)
-4. You should see a live spectrum and hear the band noise floor. Click
-   **Close** to disconnect.
+2. Click **▶ Start** on the toolbar (or **Discover** → **Open** in
+   Settings → Hardware → Radio). Lyra also auto-connects to the last radio
+   you used, so it may already be running.
+3. You should see a live spectrum and hear the band noise floor. **■ Stop**
+   disconnects.
 
-### 4. Tune and listen
+### 4. First-launch note (one-time)
 
-- **Tuning panel** — set the **RX1** frequency: type it in MHz or use the
-  **−10k / −1k / +1k / +10k** step buttons. Jump between bands from the
-  **Band panel**.
-- **Audio panel** — **Mute / Unmute**, set **Vol**, and choose the
-  output device under **Out**.
-- **Panadapter** — drag the right-hand edge to set the signal-strength
-  scale; see [The panadapter](#the-panadapter-spectrum-display).
+The very first time Lyra runs (and after a settings reset), it builds
+optimized signal-processing plans ("FFT WISDOM"). A small window says so;
+it takes a few minutes once, then Lyra opens normally and every launch
+after is fast. Let it finish.
 
-That's the whole receive path. Make it look the way you like under
-**Settings → Visuals** (**Ctrl+,**), and arrange the panels however suits
-you — see [Getting around the window](#getting-around-the-window).
+### 5. Tune and listen
+
+- **Tuning panel** — set the **RX1** frequency on the LED readout; see
+  [Tuning panel](#tuning-panel).
+- **Mode + Filter panel** — pick the **mode** (USB/LSB/CW/…) and **filter
+  bandwidth**; see [Mode + Filter panel](#mode--filter-panel).
+- **Band panel** — jump between bands.
+- **Audio panel** — **Mute / Unmute** and set **Vol**. Choose the output
+  device in **Settings → Audio**.
+- **Panadapter** — click/drag/wheel to tune; drag the right edge to set
+  the signal-strength scale. See [The panadapter](#the-panadapter-spectrum-display).
 
 ### Finding your version
 
@@ -140,34 +156,52 @@ exact build.
 
 ---
 
+## The header (top toolbar)
+
+The strip across the top, between the menu bar and the panels:
+
+- **▶ Start / ■ Stop** — connect to the radio and start streaming, or stop
+  it. On Start, Lyra connects to your saved radio (or scans and opens the
+  first one found).
+- **Connection status** — "Disconnected" / "Connected to …".
+- **⬆ vX.Y.Z** (only when present) — an update is available; click it to
+  open the release page. See [Updates](#updates).
+- **Clocks** — a **local** clock (amber) and a **UTC / Zulu** clock (cyan,
+  ending in *Z*), centered in the header. They read straight off your PC
+  clock, so keep that synced for accurate UTC.
+- **Weather badges** — ⚡ lightning, 💨 wind, ⚠ severe — appear toward the
+  right edge when an alert is active and **flash** on the most serious
+  tier. Hidden when all-clear. See [Weather alerts](#weather-alerts).
+
+---
+
 ## Getting around the window
 
 Lyra's window is built from **dockable panels** — like a workbench you
 arrange to taste. Lyra opens **full screen (maximized)** by default — the
-way it's meant to be run — with the panadapter filling the top and the
-control panels in a row beneath.
+way it's meant to be run — in a curated default layout (panadapter on top,
+control panels in a row beneath).
 
 - **Move a panel:** drag it by its title bar. Drop it against an edge to
   re-dock, or out on its own to float.
 - **Resize the spectrum vs. waterfall:** drag the divider between the
-  panadapter and the waterfall. Its position is remembered along with
-  your layout.
+  panadapter and the waterfall. Its position is remembered with your layout.
 - **Show / hide panels:** the **View** menu lists every panel; tick or
   untick to show or hide it.
 - **Lock the layout:** **View → Lock panels** (or **Ctrl+L**) freezes
-  everything in place so you can't nudge a panel by accident during
-  operating. Unlock the same way. Your window size, panel layout, and
-  divider position are remembered between sessions.
+  everything so you can't nudge a panel by accident during operating.
 
-**Saving a layout you like.** Once the panels are arranged the way you
-want them:
+**Saving a layout you like.** Once arranged the way you want:
 
 - **View → Save current layout as my default** — snapshots the current
   arrangement (panels *and* the spectrum/waterfall divider).
-- **View → Restore my saved layout** — snaps everything back to that
-  snapshot any time you've shuffled things around.
+- **View → Restore my saved layout** — snaps back to that snapshot.
 - **View → Reset to default layout** — returns to Lyra's built-in
-  arrangement (panadapter on top, control panels in a row beneath).
+  arrangement. (Use this if a layout ever gets scrambled.)
+
+Your window size, layout, and divider position are remembered between
+sessions. To move a layout to another PC or keep a backup, see
+[Backing up & sharing your settings](#backing-up--sharing-your-settings).
 
 **Opening Settings:** **File → Settings…**, or press **Ctrl+,**.
 
@@ -179,9 +213,23 @@ The panadapter is the live picture of the radio spectrum — signals show
 up as peaks rising out of the noise floor. Lyra draws it with a glassy,
 glowing look that takes advantage of your graphics card.
 
+**Tuning on the panadapter:**
+
+- **Click** anywhere to tune RX1 there.
+- **Click + drag** left/right to pan across the band.
+- **Mouse wheel** steps the frequency (by the Tuning panel's Step size).
+- A small **frequency readout** follows your cursor (toggle in
+  Settings → Visuals).
+
+**The RX filter passband** is shown as a translucent box over the tuned
+signal. **Drag either edge** of the box to widen or narrow the receive
+bandwidth — the **RX BW** readout in the Mode + Filter panel updates to
+match (and is remembered per mode). The orange center line marks your
+tuned carrier (offset into the passband on CW, where the tone sits).
+
 **The dB scale (signal-strength scale) down each side.** The numbers on
-the left and right edges show signal strength in dB. You can adjust the
-scale by **dragging on the right-hand edge** of the panadapter:
+the left and right edges show signal strength in dB. Adjust by **dragging
+on the right-hand edge**:
 
 | Where you drag (right edge) | What it does |
 |---|---|
@@ -189,27 +237,60 @@ scale by **dragging on the right-hand edge** of the panadapter:
 | **Bottom third** | Raises / lowers the **floor** (bottom of the scale) |
 | **Middle third** | **Pans** the whole scale up or down together |
 
-Dragging **up** always raises that edge — like lifting the scale. This is
-the quick way to "zoom" the vertical scale so signals fill the display
-nicely. (The exact numbers are also in **Settings → Visuals → dB range**.)
+Dragging **up** always raises that edge. (Exact numbers live in
+**Settings → Visuals → dB range**.)
 
 **The frequency scale** runs along the bottom in MHz, centered on your
-receive frequency.
+receive frequency. **Zoom** in/out from the [Display panel](#display-panel).
+
+**Overlays you can turn on:** [peak markers](#peak-markers) (held signal
+peaks) and a [noise-floor line](#noise-floor-line) — both configured in
+Settings → Visuals, with quick controls on the Display panel.
 
 ---
 
 ## Tuning panel
 
-Sets the **RX1 receive frequency** (the radio's first receiver).
+Sets the **RX1 receive frequency** on a big amber **LED-style readout**
+(megahertz · kilohertz · hertz), the way old Lyra showed it.
 
-- **Type a frequency** in MHz in the center field and press Enter.
-- **Step buttons** nudge the frequency: **−10k / −1k / +1k / +10k**
-  (kilohertz).
+- **Click a digit** to select it (a cyan underline marks it), then **roll
+  the mouse wheel** over the display to tune that digit's place up/down;
+  the **arrow keys** also nudge it.
+- **Roll the wheel** anywhere on the display to tune by the current
+  **Step** (see below).
+- **Double-click** the display to type an exact frequency.
+- **Step** — the tune step for the wheel: **1 Hz / 10 Hz / 100 Hz / 1 kHz
+  / 10 kHz** (default **1 kHz**).
+- **CW Pitch** — only shown in CW modes (CWU/CWL): your preferred sidetone
+  / beat-note pitch, **200–1500 Hz** (default 600). The receive filter
+  centers on this pitch and the tuned-carrier marker offsets to match, so
+  a signal you zero-beat lands at your chosen tone.
 
-To jump between bands, use the **Band panel**.
+The Lyra logo sits at the left of the panel. To jump between bands, use
+the **Band panel**; to change mode or filter width, the **Mode + Filter**
+panel.
 
-The field tracks the radio as you tune by other means, but it won't
-overwrite what you're typing mid-edit.
+---
+
+## Mode + Filter panel
+
+Sets how RX1 demodulates and how wide the receive filter is.
+
+- **Rate** — the IQ sample rate / panadapter span: **96 k / 192 k /
+  384 k**. Higher shows more spectrum at once (wider waterfall) for a bit
+  more CPU/network.
+- **Mode** — **LSB, USB, CWL, CWU, DSB, AM, FM, DIGU, DIGL**.
+- **RX BW** — the receive filter bandwidth. The list is **per-mode**
+  (sensible presets for SSB, CW, AM, FM, digital), and Lyra remembers the
+  width you last used for each mode. If you **drag a passband edge** on the
+  panadapter to a width that isn't a preset, the combo shows it as
+  **"(custom)"** at the top of the list so the readout always matches what
+  you're actually hearing; pick a preset to snap back.
+
+SSB and digital filters open right at the carrier (no low-cut gap); CW
+filters are centered on your **CW Pitch**; AM/DSB/FM are symmetric around
+the carrier.
 
 ---
 
@@ -221,9 +302,7 @@ button for the band you're currently on lights up (a red-glow highlight),
 so you can see at a glance where you are — and it follows the frequency,
 so it updates whenever you tune into a different band by any means.
 
-Each band also has a default mode (LSB on 160/80/40, CWU on 30, USB on
-the higher bands) — Lyra will switch to it automatically once mode
-selection is added.
+Pick the mode and filter for the band in the **Mode + Filter** panel.
 
 ---
 
@@ -231,45 +310,145 @@ selection is added.
 
 Controls what you hear.
 
-- **Mute / Unmute** — silences or restores the audio; the **LIVE /
-  MUTED** label shows the current state at a glance.
+- **Mute / Unmute** — silences or restores the audio; the **LIVE / MUTED**
+  label shows the current state at a glance. (Lyra starts **unmuted**.)
 - **Vol** — output volume, shown in dB beside the slider (−∞ when fully
   down).
-- **Out** — the output device. Pick where Lyra sends received audio
-  (your sound card, headphones, a virtual cable to digital-mode
-  software, etc.).
+
+Choosing **where** the audio goes (HL2 headphone jack vs. a PC sound
+device) lives in **[Settings → Audio](#settings--audio)** — it's a
+set-once choice, not an everyday control.
 
 ---
 
 ## Display panel
 
-The handful of spectrum/waterfall controls you reach for most often,
-one click away instead of buried in Settings. These are the same
-settings as **Settings → Visuals** — change them in either place and
-both stay in sync.
+The handful of spectrum/waterfall controls you reach for most often, one
+click away instead of buried in Settings. These mirror **Settings →
+Visuals** — change them in either place and both stay in sync. The panel
+is laid out in old Lyra's three-row arrangement:
 
-- **Spec** — spectrum frame rate (how many times per second the
-  panadapter redraws).
+- **Zoom** — magnify the panadapter around center: a preset combo
+  (**1× / 2× / 4× / 8× / 16×**) plus a fine slider and a live "N.Nx"
+  readout. Zooming in narrows the displayed span so you can pull a single
+  signal apart.
+- **Spec** — spectrum frame rate (how many times per second the panadapter
+  redraws).
 - **WF** — waterfall scroll rate (history rows per second).
+- **Peak Hold** — how the [peak markers](#peak-markers) behave:
+  - **Off** — no peak markers.
+  - **Live** — markers ride the current spectrum.
+  - **1 / 2 / 5 / 10 / 30 s** — hold each peak for that long, then fade.
+  - **Hold** — peaks never fade until you press **Clear**.
+- **Decay** — how fast held peaks fade once their hold time is up:
+  **Fast / Med / Slow** (only matters in the timed modes).
+- **Clear** — wipe the held peaks and start fresh (handy in **Hold** mode).
 
-More controls (zoom, peak/data hold) appear here as those features land.
-The look-and-feel settings — palettes, smoothing, glow, gridline — live
-in **Settings → Visuals** (they're set-and-forget, not everyday tweaks).
+The look-and-feel settings — palettes, smoothing, glow, gridline, peak
+style/color, noise floor — live in **Settings → Visuals**.
+
+---
+
+## Weather alerts
+
+Lyra can watch for nearby **lightning**, high **wind**, and **severe-storm
+warnings**, and show flashing badges in the header so you know to think
+about your antennas. Turn it on and configure it in
+**[Settings → Weather](#settings--weather)**.
+
+> ⚠ **Advisory only.** These alerts are a convenience, **not** a substitute
+> for official warnings or your own judgment. You must accept a short
+> disclaimer before enabling them.
+
+**What you'll see** — badges appear toward the right of the header when an
+alert is active, and **flash** on the most serious tier:
+
+- **⚡ Lightning** — shows the closest strike distance + compass bearing.
+  Yellow ≈ far, orange ≈ mid, **red = close** (flashing).
+- **💨 Wind** — shows gust (or sustained) speed. Yellow/orange by your
+  thresholds, **red = extreme** (flashing).
+- **⚠ Severe** — an NWS thunderstorm/severe warning is active (red,
+  flashing). Hover for the headline.
+
+**Where the data comes from** depends on which sources you enable
+(Settings → Weather): **Blitzortung** (global lightning, free),
+**NWS / weather.gov** (wind + severe + live station wind, free, US), and
+your own **Ambient Weather** or **Ecowitt** station (needs that account's
+keys). Lyra needs your **location** to know what's "nearby" — set your
+grid square in [Settings → Hardware → Operator / Station](#operator--station).
+
+**Notifications** — optionally a desktop pop-up and an audible chime when
+an alert first crosses a tier (with a cool-down so it doesn't nag). Toggle
+both in Settings → Weather, and use **Send test alert** there to see the
+badges light up.
+
+---
+
+## Updates
+
+Lyra checks GitHub for new releases so you don't miss one.
+
+- A quiet check runs a few seconds after launch. If a newer version
+  exists, you get a one-time pop-up (**Open release page / Remind me later
+  / Skip this version**) and an **⬆** indicator stays in the toolbar.
+- Check whenever you like: **Help → Check for Updates…**.
+- Downloads are on the project's GitHub Releases page; grab the new
+  installer and run it over the top.
+
+---
+
+## Backing up & sharing your settings
+
+Lyra can save your **entire configuration** — panel layout, saved default
+layout, and all your preferences (visuals, mode/bandwidths, weather, etc.)
+— to a single portable file.
+
+- **File → Export settings…** — writes a `.lyra` profile. Keep it as a
+  backup, or hand it to another operator so they get your exact setup.
+- **File → Import settings…** — loads a `.lyra` profile; the layout applies
+  immediately and Lyra offers to restart to apply the rest.
+
+This is the easy way to recover if a layout gets scrambled, or to set up a
+second PC the same way. (One thing that intentionally **doesn't** travel in
+a profile: the graphics backend, since that's a per-machine hardware
+choice.)
 
 ---
 
 ## Settings → Hardware
 
-The **Hardware** tab (Settings — **Ctrl+,**) is where Lyra connects to
-the radio and drives optional station hardware.
+The **Hardware** tab (Settings — **Ctrl+,**) holds your station identity
+and connects to the radio + optional station hardware.
+
+### Operator / Station
+
+Your identity and location, used by the weather alerts (and, in time, the
+solar panel and logging):
+
+- **Callsign** — your call (stored uppercase).
+- **Grid square** — your Maidenhead locator (e.g. `EN82`, `EN82dk`). When
+  it's valid, Lyra computes your latitude/longitude from it — shown live
+  in **Computed lat/lon**.
+- **Manual lat / lon (°)** — a fallback if you'd rather not use a grid (or
+  don't have one). Used only when the grid is blank/invalid.
+
+Grid wins when it's valid; otherwise the manual lat/lon is used. Either way
+that's the location the weather sources use for "nearby."
+
+### Band plan (Region)
+
+**Region** — your IARU region (**US / IARU Region 2**, **IARU Region 1**,
+**IARU Region 3**, or **None**). This selects which amateur band-plan the
+panadapter band-plan overlay uses. *(The overlay itself — sub-band
+shading, landmarks, out-of-band advisories — is coming in a later build;
+this setting is here and remembered so it's ready when the overlay lands.)*
 
 ### Radio
 
-Find and connect to your HL2 / HL2+. See [Getting started](#getting-started)
-for the step-by-step: **Discover** scans the LAN, **Open** connects to the
-selected radio, **Close** disconnects, and the status line shows what
-you're connected to. Lyra remembers the last radio and shows it here on
-launch.
+Find and connect to your HL2 / HL2+. **Discover** scans the LAN, **Open**
+connects to the selected radio, **Close** disconnects, and the status line
+shows what you're connected to. Lyra remembers the last radio and shows it
+here on launch. (The toolbar **▶ Start / ■ Stop** does the same thing.)
 
 ### Filter board (N2ADR / compatible)
 
@@ -298,6 +477,22 @@ instead — install the FTDI D2XX driver to use USB-BCD.)
 
 ---
 
+## Settings → Audio
+
+Where Lyra sends received audio:
+
+- **HL2 audio jack (AK4951)** — the default on HL2+ hardware. Audio is
+  decoded on the PC, sent back to the radio, and played from the HL2's own
+  headphone jack. Single-crystal, lowest latency, bypasses the PC sound
+  card.
+- **PC sound device** — pick any output Windows offers (sound card,
+  headphones, a virtual audio cable to WSJT-X / FLDigi, etc.).
+
+Pick your output device here; everyday **Mute** and **Vol** stay on the
+[Audio panel](#audio-panel).
+
+---
+
 ## Settings → Visuals
 
 Everything that controls how the panadapter *looks* lives on the
@@ -311,75 +506,138 @@ from the dropdown:
 
 - **Solid color** — one fixed color for the whole trace. Choose from the
   preset color chips, or click **Custom color…** for any color you like.
-  This is the classic look.
 - **By signal strength** — the trace color changes with how strong each
   part of the signal is, like a heat map (weak = dark/cool, strong =
-  bright/hot). Pick a **palette** from the dropdown and a **preview strip**
-  shows you exactly what that palette looks like (weak on the left,
-  strong on the right). Choose **Custom color…** in the palette list to
-  build your own dark-to-bright ramp from a base color of your choosing.
+  bright/hot). Pick a **palette** and a **preview strip** shows it (weak
+  left, strong right). Choose **Custom color…** in the palette list to
+  build your own dark-to-bright ramp from a base color.
 
 ### Spectrum fill
 
 **Show fill beneath the trace** — fills the area under the signal line
 with a soft gradient for a richer look. Turn it off for a clean,
-line-only trace.
+line-only trace. (You can pick a separate **fill color** in solid mode.)
+
+### Peak markers
+
+Highlights the **held peak** of each signal across the tuned passband — a
+running "high-water mark" so you can see the strongest a signal has been.
+Drive the **mode** (Off / Live / timed / Hold) and **Decay** from the
+[Display panel](#display-panel); the look lives here:
+
+- **Show peak markers** — master on/off (the Display panel's Peak Hold
+  combo also turns this on when you pick a mode).
+- **Style** — **Line**, **Dots**, or **Triangles** (default Dots).
+- **Show dB** — label the strongest few peaks with their level in dB.
+- **Colour** — the marker color (default warm amber).
+- **Decay** — fade rate in dB/s for the timed hold modes (the Display
+  panel's Fast/Med/Slow are presets for this).
+
+Peaks are drawn only inside your RX filter passband, so they track the
+signal you're actually listening to.
+
+### Noise-floor line
+
+**Show noise-floor line** — a dashed reference line at the current noise
+floor, with an **"NF −NN dBFS"** label. Handy for judging how far a signal
+sticks up out of the noise. Pick its **Colour** (default sage green). On
+by default.
 
 ### Trace smoothing
 
 Smooths the trace over time so it's less jittery. **0 = Off** (rawest,
-most responsive); higher values (up to **10**) give a calmer, smoother
-trace. This is time-based smoothing — it does **not** flatten or hide real
-signal peaks, it just settles the noise.
+most responsive); higher values (up to **10**) give a calmer trace. This
+is time-based smoothing — it does **not** flatten or hide real peaks.
 
 ### Peak glow
 
-Adds a luminous bloom around strong peaks so they really pop off the
-screen. **0 % = Off**; raise it (up to **100 %**) for more glow. Costs a
-little graphics work only when it's on.
+Adds a luminous bloom around strong peaks so they pop off the screen.
+**0 % = Off**; raise it (up to **100 %**) for more glow. Costs a little
+graphics work only when it's on.
 
 ### Glass sheen
 
 A subtle glassy highlight across the panadapter for the "floating glass"
-look. **0 % = Off**; **20 %** is the default — tasteful. Raise for a more
-pronounced sheen.
+look. **0 % = Off**; **20 %** is the default. Raise for a stronger sheen.
 
 ### Gridline brightness
 
-How bright the reference grid lines are, from **0** (no grid) to **100**
-(bright). Default **35** — visible but not distracting.
+How bright the reference grid lines are, **0** (no grid) to **100**
+(bright). Default **35**.
 
 ### Frame rate
 
 How many times per second the panadapter redraws, **1–240 fps**. Default
-**60**. Higher is smoother but uses more graphics power; lower saves
-power on a modest machine.
+**60**. Higher is smoother but uses more graphics power.
 
 ### dB range (floor / ceiling)
 
 The exact numbers for the bottom (**floor**) and top (**ceiling**) of the
 signal-strength scale. Most operators just drag the scale on the
-panadapter edge (see above), but you can type precise values here.
+panadapter edge, but you can type precise values here.
 
 ### Watermark
 
 **Show Lyra constellation watermark** — a faint Lyra (the lyre /
-constellation) image with a gently pulsing **Vega** star, drawn over the
-panadapter as a tasteful background mark. On by default. Untick to hide
-it.
+constellation) image with a gently pulsing **Vega** star, over the
+panadapter. On by default. Untick to hide it.
 
 ### Meteors
 
 Occasional "shooting star" streaks that drift across the panadapter —
-ambient sky-weather, deliberately rare so they're a pleasant surprise
-rather than a distraction.
+ambient sky-weather, deliberately rare.
 
 - **Show occasional meteor streaks** — master on/off (on by default).
-- **Meteor frequency** — the average gap between meteors, **5–120 s**
+- **Meteor frequency** — average gap between meteors, **5–120 s**
   (default **30 s**). Lower = more frequent.
-- **Gold fireballs** — the percent chance a meteor is a warm-gold
-  "fireball" instead of the usual cool blue, **0–100 %** (default **15 %**).
-  Set to 0 for all-blue meteors.
+- **Gold fireballs** — percent chance a meteor is a warm-gold "fireball"
+  instead of cool blue, **0–100 %** (default **15 %**).
+
+### Graphics backend
+
+*Advanced — restart to apply.* Which graphics engine Lyra renders with.
+Leave it on **Auto (recommended)** — on Windows that's Direct3D 11, the
+most compatible. **Vulkan / D3D12 / D3D11 / OpenGL** can be forced if you
+know your card prefers one. (If panels ever fail to draw or crash when you
+drag them, set this to **Direct3D 11** or **Auto** and restart.) This
+setting stays on the machine — it isn't carried in an exported profile.
+
+---
+
+## Settings → Weather
+
+Configure the [weather alerts](#weather-alerts) here. Nothing runs until
+you accept the disclaimer and tick **Enable**.
+
+- **Disclaimer** — tick to acknowledge the alerts are advisory only; this
+  unlocks **Enable weather alerts**.
+- **Sources** (enable any combination):
+  - **Blitzortung** — global lightning network, free, no key. Uses your
+    location.
+  - **NWS / weather.gov** — US wind + severe-storm alerts, free, no key.
+  - **NWS METAR** — live wind from a nearby station (set its **ICAO** below).
+  - **Ambient Weather** — your own station (needs API + Application keys).
+  - **Ecowitt** — your own station (needs Application key + API key + the
+    gateway MAC).
+- **Thresholds:**
+  - **Lightning range** — how far out to consider strikes (shown in your
+    chosen distance unit).
+  - **Wind sustained ≥ / gust ≥** — the speeds (mph) that raise the wind
+    tier.
+  - **METAR station** — the ICAO id (e.g. `KTOL`) for live wind.
+  - **Distance unit** — Miles or Kilometres (also used by the ⚡ badge).
+- **Notifications:**
+  - **Desktop notification on alert** — a system pop-up on a new alert.
+  - **Audible chime on alert** — a beep on a new alert.
+  - **Send test alert** — lights the badges + fires one notification for a
+    few seconds so you can check it all works.
+- **Station API credentials** — Ambient API/Application keys, Ecowitt
+  Application/API keys, and Ecowitt gateway MAC (only needed for those
+  sources).
+
+Remember to set your location in
+[Settings → Hardware → Operator / Station](#operator--station) — without
+it, the location-based sources can't tell what's nearby.
 
 ---
 
