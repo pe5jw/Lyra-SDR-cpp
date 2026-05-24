@@ -133,6 +133,11 @@ class Prefs : public QObject {
                NOTIFY callsignChanged)
     Q_PROPERTY(QString gridSquare READ gridSquare WRITE setGridSquare
                NOTIFY gridSquareChanged)
+    // Amateur band-plan region for panadapter overlays (sub-band
+    // segments, landmarks, out-of-band advisories).  Values:
+    // US / IARU_R1 / IARU_R3 / NONE.
+    Q_PROPERTY(QString bandPlanRegion READ bandPlanRegion
+               WRITE setBandPlanRegion NOTIFY bandPlanRegionChanged)
 
 public:
     explicit Prefs(QObject *parent = nullptr);
@@ -236,6 +241,8 @@ public:
     // Effective operator location: grid (if valid) else manual override.
     // Returns false (and leaves *lat/*lon untouched) when neither is set.
     bool operatorLocation(double *lat, double *lon) const;
+    QString bandPlanRegion() const { return bandPlanRegion_; }
+    void    setBandPlanRegion(const QString &r);
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
 
@@ -283,6 +290,7 @@ signals:
     void callsignChanged();
     void gridSquareChanged();
     void locationChanged();   // effective lat/lon changed (grid or manual)
+    void bandPlanRegionChanged();
 
 private:
     int     gridLevel_;
@@ -328,6 +336,7 @@ private:
     QString gridSquare_;
     double  manualLat_;   // NaN = unset
     double  manualLon_;   // NaN = unset
+    QString bandPlanRegion_;
 };
 
 } // namespace lyra::ui

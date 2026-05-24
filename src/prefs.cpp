@@ -57,6 +57,11 @@ constexpr auto kOpCall  = "operator/callsign";
 constexpr auto kOpGrid  = "operator/grid";
 constexpr auto kOpLat   = "operator/lat_manual";
 constexpr auto kOpLon   = "operator/lon_manual";
+constexpr auto kBandRegion = "band_plan/region";
+const QStringList kRegions = {
+    QStringLiteral("US"), QStringLiteral("IARU_R1"),
+    QStringLiteral("IARU_R3"), QStringLiteral("NONE"),
+};
 // Modes whose per-mode bandwidth we persist/restore.
 const QStringList kModes = {
     QStringLiteral("LSB"),  QStringLiteral("USB"),
@@ -122,6 +127,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         manualLat_ = la.isValid() ? la.toDouble() : kNaN;
         manualLon_ = lo.isValid() ? lo.toDouble() : kNaN;
     }
+    bandPlanRegion_ = s.value(kBandRegion, QStringLiteral("US")).toString();
+    if (!kRegions.contains(bandPlanRegion_)) bandPlanRegion_ = QStringLiteral("US");
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -524,6 +531,15 @@ void Prefs::setManualLatLon(double lat, double lon) {
         s.setValue(kOpLat, lat);
         s.setValue(kOpLon, lon);
         emit locationChanged();
+    }
+}
+
+void Prefs::setBandPlanRegion(const QString &r) {
+    const QString v = kRegions.contains(r) ? r : QStringLiteral("US");
+    if (v != bandPlanRegion_) {
+        bandPlanRegion_ = v;
+        QSettings().setValue(kBandRegion, v);
+        emit bandPlanRegionChanged();
     }
 }
 

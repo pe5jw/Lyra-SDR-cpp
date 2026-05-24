@@ -202,6 +202,32 @@ QWidget *SettingsDialog::buildHardwareTab() {
         form->addRow(grp);
     }
 
+    // --- Band plan (region for panadapter overlays) ---
+    {
+        auto *grp = new QGroupBox(tr("Band plan"), page);
+        auto *g = new QGridLayout(grp);
+        g->setColumnStretch(1, 1);
+        g->addWidget(new QLabel(tr("Region"), grp), 0, 0);
+        auto *region = new QComboBox(grp);
+        region->addItem(tr("US / IARU Region 2"),      QStringLiteral("US"));
+        region->addItem(tr("IARU Region 1 (EU / Africa)"), QStringLiteral("IARU_R1"));
+        region->addItem(tr("IARU Region 3 (Asia-Pacific)"), QStringLiteral("IARU_R3"));
+        region->addItem(tr("None"),                    QStringLiteral("NONE"));
+        region->setCurrentIndex(std::max(0, region->findData(prefs_->bandPlanRegion())));
+        region->setToolTip(tr("Region for the amateur band-plan overlay "
+                              "(sub-band segments, landmarks, out-of-band "
+                              "advisories) on the panadapter."));
+        connect(region, &QComboBox::currentIndexChanged, grp, [this, region](int) {
+            prefs_->setBandPlanRegion(region->currentData().toString());
+        });
+        connect(prefs_, &Prefs::bandPlanRegionChanged, grp, [this, region]() {
+            const int i = region->findData(prefs_->bandPlanRegion());
+            if (i >= 0 && region->currentIndex() != i) region->setCurrentIndex(i);
+        });
+        g->addWidget(region, 0, 1);
+        form->addRow(grp);
+    }
+
     // --- Radio (HL2 discovery + connect) ---
     // LAN scan + found-radios list + Open/Close.  Moved here from the
     // old central dev scaffold (Log / wire-stats banner / Found-radios):
@@ -1250,14 +1276,32 @@ QWidget *SettingsDialog::buildWeatherTab() {
         auto *grp = new QGroupBox(tr("Thresholds"), page);
         auto *f = new QFormLayout(grp);
 
+        // Distance unit drives the lightning-range display; range is
+        // always STORED in km (wx/lightning_range_km), shown in mi/km.
+        auto *unit = new QComboBox(grp);
+        unit->addItem(tr("Miles"), QStringLiteral("mi"));
+        unit->addItem(tr("Kilometres"), QStringLiteral("km"));
+        unit->setCurrentIndex(std::max(0, unit->findData(QSettings()
+            .value(QStringLiteral("wx/distance_unit"),
+                   QStringLiteral("mi")).toString())));
+        auto isKm = [unit]() {
+            return unit->currentData().toString() == QStringLiteral("km");
+        };
+
         auto *range = new QSpinBox(grp);
-        range->setRange(5, 500);
-        range->setSuffix(tr(" km"));
-        range->setValue(qRound(QSettings()
-            .value(QStringLiteral("wx/lightning_range_km"), 80.0).toDouble()));
-        connect(range, &QSpinBox::valueChanged, grp, [apply](int v) {
-            QSettings().setValue(QStringLiteral("wx/lightning_range_km"),
-                                 double(v));
+        range->setRange(3, 600);
+        auto syncRange = [range, isKm]() {
+            const double km = QSettings()
+                .value(QStringLiteral("wx/lightning_range_km"), 80.0).toDouble();
+            range->blockSignals(true);
+            range->setSuffix(isKm() ? tr(" km") : tr(" mi"));
+            range->setValue(qRound(isKm() ? km : km / 1.60934));
+            range->blockSignals(false);
+        };
+        syncRange();
+        connect(range, &QSpinBox::valueChanged, grp, [isKm, apply](int v) {
+            const double km = isKm() ? double(v) : v * 1.60934;
+            QSettings().setValue(QStringLiteral("wx/lightning_range_km"), km);
             apply();
         });
         f->addRow(tr("Lightning range"), range);
@@ -1295,15 +1339,11 @@ QWidget *SettingsDialog::buildWeatherTab() {
         });
         f->addRow(tr("METAR station"), metar);
 
-        auto *unit = new QComboBox(grp);
-        unit->addItem(tr("Miles"), QStringLiteral("mi"));
-        unit->addItem(tr("Kilometres"), QStringLiteral("km"));
-        unit->setCurrentIndex(std::max(0, unit->findData(QSettings()
-            .value(QStringLiteral("wx/distance_unit"),
-                   QStringLiteral("mi")).toString())));
-        connect(unit, &QComboBox::currentIndexChanged, grp, [unit, apply](int) {
+        connect(unit, &QComboBox::currentIndexChanged, grp,
+                [unit, apply, syncRange](int) {
             QSettings().setValue(QStringLiteral("wx/distance_unit"),
                                  unit->currentData().toString());
+            syncRange();   // re-display the range in the newly-chosen unit
             apply();
         });
         f->addRow(tr("Distance unit"), unit);
