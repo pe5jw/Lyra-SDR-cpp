@@ -138,6 +138,21 @@ class Prefs : public QObject {
     // US / IARU_R1 / IARU_R3 / NONE.
     Q_PROPERTY(QString bandPlanRegion READ bandPlanRegion
                WRITE setBandPlanRegion NOTIFY bandPlanRegionChanged)
+    // Band-plan panadapter-overlay layer toggles (Settings → Hardware →
+    // Band plan).  All default ON; the master Region=NONE hides everything.
+    Q_PROPERTY(bool bandPlanSegments READ bandPlanSegments
+               WRITE setBandPlanSegments NOTIFY bandPlanSegmentsChanged)
+    Q_PROPERTY(bool bandPlanLandmarks READ bandPlanLandmarks
+               WRITE setBandPlanLandmarks NOTIFY bandPlanLandmarksChanged)
+    Q_PROPERTY(bool bandPlanBeacons READ bandPlanBeacons
+               WRITE setBandPlanBeacons NOTIFY bandPlanBeaconsChanged)
+    Q_PROPERTY(bool bandPlanEdges READ bandPlanEdges
+               WRITE setBandPlanEdges NOTIFY bandPlanEdgesChanged)
+    // Verbose diagnostic logging (Settings → Hardware → Diagnostics).
+    // OFF (default) keeps only warnings/errors in the log; ON also
+    // captures Debug/Info for when we need the full picture.
+    Q_PROPERTY(bool debugLogging READ debugLogging WRITE setDebugLogging
+               NOTIFY debugLoggingChanged)
 
 public:
     explicit Prefs(QObject *parent = nullptr);
@@ -243,6 +258,21 @@ public:
     bool operatorLocation(double *lat, double *lon) const;
     QString bandPlanRegion() const { return bandPlanRegion_; }
     void    setBandPlanRegion(const QString &r);
+    bool bandPlanSegments() const { return bandPlanSegments_; }
+    void setBandPlanSegments(bool v);
+    bool bandPlanLandmarks() const { return bandPlanLandmarks_; }
+    void setBandPlanLandmarks(bool v);
+    bool bandPlanBeacons() const { return bandPlanBeacons_; }
+    void setBandPlanBeacons(bool v);
+    bool bandPlanEdges() const { return bandPlanEdges_; }
+    void setBandPlanEdges(bool v);
+    // Per-mode-kind band-plan segment colour (override of the defaults).
+    // kind = "CW"/"DIG"/"SSB"/"FM"/"MIX"/"BC".  Always returns a colour.
+    QString bandPlanColor(const QString &kind) const;
+    void    setBandPlanColor(const QString &kind, const QString &hex);
+    static QString defaultBandPlanColor(const QString &kind);
+    bool debugLogging() const { return debugLogging_; }
+    void setDebugLogging(bool on);
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
 
@@ -291,6 +321,12 @@ signals:
     void gridSquareChanged();
     void locationChanged();   // effective lat/lon changed (grid or manual)
     void bandPlanRegionChanged();
+    void bandPlanSegmentsChanged();
+    void bandPlanLandmarksChanged();
+    void bandPlanBeaconsChanged();
+    void bandPlanEdgesChanged();
+    void bandPlanColorsChanged();
+    void debugLoggingChanged();
 
 private:
     int     gridLevel_;
@@ -337,6 +373,12 @@ private:
     double  manualLat_;   // NaN = unset
     double  manualLon_;   // NaN = unset
     QString bandPlanRegion_;
+    bool    bandPlanSegments_  = true;
+    bool    bandPlanLandmarks_ = true;
+    bool    bandPlanBeacons_   = true;
+    bool    bandPlanEdges_     = true;
+    QHash<QString, QString> bandPlanColors_;   // kind → override hex (sparse)
+    bool    debugLogging_ = false;
 };
 
 } // namespace lyra::ui

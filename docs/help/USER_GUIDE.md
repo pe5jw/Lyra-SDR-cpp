@@ -32,12 +32,14 @@ not programmers — if you can click a menu, you can use this.
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
 - [Display panel](#display-panel)
+- [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
 - [Updates](#updates)
 - [Backing up & sharing your settings](#backing-up--sharing-your-settings)
 - [Settings → Hardware](#settings--hardware)
   - [Operator / Station](#operator--station)
   - [Band plan (Region)](#band-plan-region)
+  - [Diagnostics (debug log)](#diagnostics-debug-log)
   - [Radio](#radio)
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
@@ -168,7 +170,13 @@ The strip across the top, between the menu bar and the panels:
   open the release page. See [Updates](#updates).
 - **Clocks** — a **local** clock (amber) and a **UTC / Zulu** clock (cyan,
   ending in *Z*), centered in the header. They read straight off your PC
-  clock, so keep that synced for accurate UTC.
+  clock. **Right-click either clock** to *Check clock drift now…* — Lyra
+  asks a network time server how far off your PC clock is and tells you
+  (under 1 sec = fine). This matters for the **NCDXF beacons**: their
+  rotation is locked to UTC on 10-second slots, so a PC clock that's off by
+  a few seconds makes the beacon markers / Follow track the *wrong* station.
+  If your clock is off, a **⚠** appears on the UTC clock; use the same
+  right-click menu's *Sync time (w32tm /resync)* to fix it (Windows).
 - **Weather badges** — ⚡ lightning, 💨 wind, ⚠ severe — appear toward the
   right edge when an alert is active and **flash** on the most serious
   tier. Hidden when all-clear. See [Weather alerts](#weather-alerts).
@@ -297,12 +305,22 @@ the carrier.
 ## Band panel
 
 Quick band switching across the HF/6m amateur bands. Click a band button
-(**160m … 6m**) and Lyra tunes RX1 to that band's default frequency. The
+(**160m … 6m**) and Lyra returns RX1 to **the last frequency you were on in
+that band** (the band's default the first time you visit it). The
 button for the band you're currently on lights up (a red-glow highlight),
 so you can see at a glance where you are — and it follows the frequency,
 so it updates whenever you tune into a different band by any means.
 
 Pick the mode and filter for the band in the **Mode + Filter** panel.
+
+**Per-band memory.** Lyra remembers each band's settings independently and
+restores them when you move to that band: the **last frequency** (recalled
+by the band buttons), the **demod mode**, the **panadapter dB min/max**
+(reference-level range), and the **waterfall dB min/max**. Set 40m to LSB with a tight waterfall range and 20m to a wider
+one, and each comes back the way you left it as you hop between them — no
+need to re-adjust every time. (Auto-scale on/off is global; RX filter
+bandwidth is remembered per *mode*, as before.) Memory is saved live as you
+adjust, and persists across sessions.
 
 ---
 
@@ -346,6 +364,50 @@ is laid out in old Lyra's three-row arrangement:
 
 The look-and-feel settings — palettes, smoothing, glow, gridline, peak
 style/color, noise floor — live in **Settings → Visuals**.
+
+---
+
+## Solar / Propagation panel
+
+A compact strip showing current **HF propagation** conditions from
+[HamQSL](https://www.hamqsl.com/) (N0NBH's solar data):
+
+- **SFI** (Solar Flux Index), **A** (A-index), **K** (K-index) — each
+  colour-coded green / amber / red so you can read conditions at a glance
+  (higher SFI is better; lower A and K are better). Hover the **SFI** box
+  for the full picture — sunspot number, X-ray level, solar wind, and when
+  HamQSL last updated.
+- **A 10-band heat-map** — `160` through `6` m, each tinted **green
+  (Good)**, **amber (Fair)**, **red (Poor)**, or **gray (no prediction)**.
+  Hover a band for its rating.
+
+The ratings are shown for **your current day or night** — Lyra works out
+whether it's daylight at your location and picks HamQSL's day or night
+figures accordingly. For that to be right, set your **grid square** (or
+manual lat/lon) in
+[Settings → Hardware → Operator / Station](#operator--station); without a
+location it assumes daytime. HamQSL doesn't predict **160 m** or **6 m**,
+so those two always show gray.
+
+The data is fetched when Lyra starts and refreshed about every 15 minutes
+(the day/night split updates on its own as the sun rises and sets). It's
+read-only and needs no account or key — just an internet connection. If
+the feed can't be reached, the last-known figures stay on screen and the
+SFI tooltip notes the error.
+
+**NCDXF beacon auto-follow.** The **Follow** button on the right of the
+panel lets you chase a single NCDXF beacon station through the rotation.
+Pick a station (e.g. **4U1UN**) from the dropdown and Lyra automatically
+tunes (in CW) to whichever of the five beacon bands that station is
+transmitting on *right now* — 20 → 17 → 15 → 12 → 10 m — re-checking every
+second and hopping with it through the 3-minute cycle. It's a quick way to
+hear how one station is propagating across the bands. Set it to **Off** to
+stop; your choice is remembered between sessions. (While following, Lyra
+re-tunes on its own, so manual tuning won't "stick" until you turn Follow
+off.)
+
+If you don't want the panel, close it like any other (the **View** menu
+re-opens it). It's a dock — drag, float, or tab it wherever you like.
 
 ---
 
@@ -439,9 +501,42 @@ that's the location the weather sources use for "nearby."
 
 **Region** — your IARU region (**US / IARU Region 2**, **IARU Region 1**,
 **IARU Region 3**, or **None**). This selects which amateur band-plan the
-panadapter band-plan overlay uses. *(The overlay itself — sub-band
-shading, landmarks, out-of-band advisories — is coming in a later build;
-this setting is here and remembered so it's ready when the overlay lands.)*
+panadapter overlay draws. Set it to **None** to turn the whole overlay off.
+
+The overlay paints a thin strip across the **top of the panadapter**:
+
+- **Sub-band segments** — a coloured bar showing the mode allocations in
+  view: **CW** (blue), **digital** (magenta), **SSB** (green), **FM**
+  (orange). The label (CW / DIG / SSB / FM) shows when the segment is wide
+  enough on screen.
+- **Digital landmarks** — small **▼** markers at the common calling
+  frequencies (**FT8 / FT4 / WSPR / PSK**), gold. **Click a marker to tune
+  straight to it** (and Lyra switches to the suggested mode).
+- **NCDXF beacon markers** — the five International Beacon Project
+  frequencies, in cyan. **Hover one** and the tooltip shows the station
+  that's transmitting *right now* (the 18 worldwide beacons rotate every
+  10 seconds) — e.g. "Now: 4U1UN — United Nations, NY". Click to QSY
+  there in CW.
+- **Band-edge warning lines** — red dashed lines at each band's edges, so
+  you can see at a glance when you're tuning toward the edge of an
+  allocation.
+
+Each of those four layers has its own checkbox here so you can show only
+what you want. They're all on by default. **Segment colors** — the four
+swatch buttons (CW / DIG / SSB / FM) let you recolor each mode category;
+click a swatch to pick a color, or choose the original color to clear the
+override.
+
+As you tune, Lyra shows a brief message at the **bottom of the window**
+when you cross a band edge — "In band: 40m (US)" when you're inside an
+allocation, or "⚠ Out of band — X.XXX MHz is outside the US amateur
+allocations" when you're not. (Gated on the band-edge layer above.)
+
+> The band plan is **advisory only** — the HL2 is unlocked and Lyra will
+> tune anywhere it can receive. Sub-band boundaries vary by license class
+> and country and change over time; verify against your own regulator
+> before transmitting near an edge. The strip is a navigation aid, not a
+> legal reference.
 
 ### Radio
 
@@ -474,6 +569,27 @@ the current code. **60 m** has no standard BCD code — tick **60 m uses the
 
 (If the FTDI driver, `ftd2xx.dll`, isn't installed, this section says so
 instead — install the FTDI D2XX driver to use USB-BCD.)
+
+### Diagnostics (debug log)
+
+Lyra runs without a console window, so if something misbehaves there's no
+black terminal to copy errors from. Instead, Lyra keeps a **diagnostic
+log** you can read, copy, and send to us.
+
+- **Help → Show Log…** opens the log viewer — a scrolling view of this
+  session's diagnostic messages with **Copy all**, **Save…**, and **Open
+  log folder** buttons. It updates live while open.
+- **Enable verbose debug logging** (here in Diagnostics, also a checkbox
+  in the log viewer) turns on detailed capture. Leave it **off** for
+  normal use — the log then keeps only warnings and errors and stays
+  small. Turn it **on** when you're chasing a problem: enable it,
+  reproduce the issue, then Copy or Save the log.
+- A copy of the log is always written to a file on disk
+  (`…/N8SDR/Lyra-cpp/logs/lyra-log.txt`, reachable via **Open log
+  folder**), refreshed each launch — so even a crash leaves a trace.
+
+When you report a bug, attach the log (or paste it) along with what you
+were doing and what you expected.
 
 ---
 

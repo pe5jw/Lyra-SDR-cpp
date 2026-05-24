@@ -33,6 +33,8 @@ const QHash<QString, QString> &topicHeads() {
         {QStringLiteral("audio"), QStringLiteral("Audio panel")},
         {QStringLiteral("display"), QStringLiteral("Display panel")},
         {QStringLiteral("band"), QStringLiteral("Band panel")},
+        {QStringLiteral("propagation"),
+         QStringLiteral("Solar / Propagation panel")},
     };
     return m;
 }

@@ -58,6 +58,21 @@ constexpr auto kOpGrid  = "operator/grid";
 constexpr auto kOpLat   = "operator/lat_manual";
 constexpr auto kOpLon   = "operator/lon_manual";
 constexpr auto kBandRegion = "band_plan/region";
+constexpr auto kBpSegs     = "band_plan/segments";
+constexpr auto kBpLand     = "band_plan/landmarks";
+constexpr auto kBpBeacons  = "band_plan/beacons";
+constexpr auto kBpEdges    = "band_plan/edges";
+constexpr auto kBpColorPfx = "band_plan/color_";   // + <kind>
+constexpr auto kDebugLog   = "debug/logging";
+// Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
+const QHash<QString, QString> kBpDefaultColors = {
+    {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
+    {QStringLiteral("DIG"), QStringLiteral("#9c3c9c")},
+    {QStringLiteral("SSB"), QStringLiteral("#3c9c6a")},
+    {QStringLiteral("FM"),  QStringLiteral("#c47a2a")},
+    {QStringLiteral("MIX"), QStringLiteral("#5c8caa")},
+    {QStringLiteral("BC"),  QStringLiteral("#7a7a3a")},
+};
 const QStringList kRegions = {
     QStringLiteral("US"), QStringLiteral("IARU_R1"),
     QStringLiteral("IARU_R3"), QStringLiteral("NONE"),
@@ -129,6 +144,16 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     }
     bandPlanRegion_ = s.value(kBandRegion, QStringLiteral("US")).toString();
     if (!kRegions.contains(bandPlanRegion_)) bandPlanRegion_ = QStringLiteral("US");
+    bandPlanSegments_  = s.value(kBpSegs, true).toBool();
+    bandPlanLandmarks_ = s.value(kBpLand, true).toBool();
+    bandPlanBeacons_   = s.value(kBpBeacons, true).toBool();
+    bandPlanEdges_     = s.value(kBpEdges, true).toBool();
+    for (auto it = kBpDefaultColors.cbegin(); it != kBpDefaultColors.cend(); ++it) {
+        const QVariant v = s.value(QString(kBpColorPfx) + it.key());
+        if (v.isValid() && !v.toString().isEmpty())
+            bandPlanColors_.insert(it.key(), v.toString());
+    }
+    debugLogging_ = s.value(kDebugLog, false).toBool();
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -540,6 +565,72 @@ void Prefs::setBandPlanRegion(const QString &r) {
         bandPlanRegion_ = v;
         QSettings().setValue(kBandRegion, v);
         emit bandPlanRegionChanged();
+    }
+}
+
+void Prefs::setBandPlanSegments(bool v) {
+    if (v != bandPlanSegments_) {
+        bandPlanSegments_ = v;
+        QSettings().setValue(kBpSegs, v);
+        emit bandPlanSegmentsChanged();
+    }
+}
+
+void Prefs::setBandPlanLandmarks(bool v) {
+    if (v != bandPlanLandmarks_) {
+        bandPlanLandmarks_ = v;
+        QSettings().setValue(kBpLand, v);
+        emit bandPlanLandmarksChanged();
+    }
+}
+
+void Prefs::setBandPlanBeacons(bool v) {
+    if (v != bandPlanBeacons_) {
+        bandPlanBeacons_ = v;
+        QSettings().setValue(kBpBeacons, v);
+        emit bandPlanBeaconsChanged();
+    }
+}
+
+void Prefs::setBandPlanEdges(bool v) {
+    if (v != bandPlanEdges_) {
+        bandPlanEdges_ = v;
+        QSettings().setValue(kBpEdges, v);
+        emit bandPlanEdgesChanged();
+    }
+}
+
+QString Prefs::defaultBandPlanColor(const QString &kind) {
+    return kBpDefaultColors.value(kind, QStringLiteral("#5c8caa"));
+}
+
+QString Prefs::bandPlanColor(const QString &kind) const {
+    return bandPlanColors_.value(kind, defaultBandPlanColor(kind));
+}
+
+void Prefs::setBandPlanColor(const QString &kind, const QString &hex) {
+    const QString def = defaultBandPlanColor(kind);
+    QSettings s;
+    if (hex.isEmpty() || hex.compare(def, Qt::CaseInsensitive) == 0) {
+        // Back to default → drop the override.
+        if (bandPlanColors_.remove(kind) > 0) {
+            s.remove(QString(kBpColorPfx) + kind);
+            emit bandPlanColorsChanged();
+        }
+        return;
+    }
+    if (bandPlanColors_.value(kind) != hex) {
+        bandPlanColors_.insert(kind, hex);
+        s.setValue(QString(kBpColorPfx) + kind, hex);
+        emit bandPlanColorsChanged();
+    }
+}
+
+void Prefs::setDebugLogging(bool on) {
+    if (on != debugLogging_) {
+        debugLogging_ = on;
+        QSettings().setValue(kDebugLog, on);
+        emit debugLoggingChanged();
     }
 }
 

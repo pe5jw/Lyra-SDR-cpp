@@ -693,6 +693,153 @@ Item {
                     }
                 }
             }
+
+            // ---- Band-plan overlay (top strip: segments / edges /
+            // landmarks) ----  Advisory amateur band plan from BandPlan
+            // (region + data) gated by the Prefs layer toggles.  Maps a
+            // frequency to x the same way the freq scale + markers do.
+            Item {
+                id: bandPlan
+                anchors.fill: parent
+                z: 6
+                readonly property real spanHz: Math.max(1, WdspEngine.spanHz)
+                function xOf(hz) {
+                    return spectrumArea.width
+                           * (0.5 + (hz - root.centerHz) / bandPlan.spanHz)
+                }
+                // All four bindings reference reactive deps (BandPlan.region
+                // has a NOTIFY; the Prefs toggles + centerHz + spanHz are
+                // QML props) so the overlay re-queries C++ on any change.
+                readonly property var segs:
+                    (Prefs.bandPlanSegments && BandPlan.region !== "NONE")
+                    ? BandPlan.segments(root.centerHz, bandPlan.spanHz) : []
+                readonly property var edges:
+                    (Prefs.bandPlanEdges && BandPlan.region !== "NONE")
+                    ? BandPlan.edges(root.centerHz, bandPlan.spanHz) : []
+                readonly property var marks:
+                    (BandPlan.region !== "NONE"
+                     && (Prefs.bandPlanLandmarks || Prefs.bandPlanBeacons))
+                    ? BandPlan.landmarks(root.centerHz, bandPlan.spanHz,
+                                         Prefs.bandPlanLandmarks,
+                                         Prefs.bandPlanBeacons) : []
+
+                // Sub-band segment bars (top 10 px), coloured by mode.
+                Repeater {
+                    model: bandPlan.segs
+                    delegate: Item {
+                        id: segItem
+                        required property var modelData
+                        readonly property real x0: bandPlan.xOf(modelData.lo)
+                        readonly property real x1: bandPlan.xOf(modelData.hi)
+                        Rectangle {
+                            x: Math.min(segItem.x0, segItem.x1)
+                            y: 0
+                            width: Math.max(0, Math.abs(segItem.x1 - segItem.x0))
+                            height: 10
+                            color: segItem.modelData.color
+                            opacity: 0.82
+                        }
+                        Text {
+                            visible: Math.abs(segItem.x1 - segItem.x0) >= 24
+                            x: Math.min(segItem.x0, segItem.x1) + 3
+                            y: 0
+                            text: segItem.modelData.label
+                            color: "#f0f0f0"
+                            font.pixelSize: 9
+                            font.bold: true
+                            style: Text.Outline
+                            styleColor: "#a0000000"
+                        }
+                    }
+                }
+
+                // Band-edge warning lines — full-height red dashed + label.
+                Repeater {
+                    model: bandPlan.edges
+                    delegate: Item {
+                        id: edgeItem
+                        required property var modelData
+                        readonly property real ex: bandPlan.xOf(modelData.freq)
+                        Repeater {           // dashed: 5 px dash + 5 px gap
+                            model: Math.max(1, Math.ceil(spectrumArea.height / 10))
+                            delegate: Rectangle {
+                                required property int index
+                                x: edgeItem.ex - 1
+                                y: index * 10
+                                width: 2; height: 5
+                                color: "#ff5050"
+                                opacity: 0.85
+                            }
+                        }
+                        Text {
+                            x: Math.max(0, Math.min(spectrumArea.width - width,
+                                                    edgeItem.ex + 2))
+                            y: spectrumArea.height - height - 16
+                            text: edgeItem.modelData.name + qsTr(" EDGE")
+                            color: "#ff8080"
+                            font.pixelSize: 9
+                            font.bold: true
+                            style: Text.Outline
+                            styleColor: "#cc000000"
+                        }
+                    }
+                }
+
+                // Watering-hole landmarks — ▼ marker + label + click-to-tune.
+                Repeater {
+                    model: bandPlan.marks
+                    delegate: Item {
+                        id: markItem
+                        required property var modelData
+                        readonly property real mx: bandPlan.xOf(modelData.freq)
+                        readonly property color col:
+                            modelData.beacon ? "#78dcff" : "#ffd700"
+                        Rectangle {          // short tick below the strip
+                            x: markItem.mx - 0.5; y: 10; width: 1; height: 9
+                            color: markItem.col; opacity: 0.5
+                        }
+                        Text {
+                            x: markItem.mx - width / 2; y: 8
+                            text: "▼"; color: markItem.col; font.pixelSize: 10
+                        }
+                        Text {
+                            x: markItem.mx + 6; y: 10
+                            text: markItem.modelData.label
+                            color: markItem.col
+                            font.pixelSize: 9; font.bold: true
+                            style: Text.Outline; styleColor: "#cc000000"
+                        }
+                        MouseArea {
+                            x: markItem.mx - 9; y: 6; width: 18; height: 18
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Prefs.mode = markItem.modelData.mode
+                                Stream.setRx1FreqHz(Math.round(markItem.modelData.freq))
+                                Status.show(qsTr("Tuned to ")
+                                    + (markItem.modelData.freq / 1.0e6).toFixed(3)
+                                    + " MHz " + markItem.modelData.mode
+                                    + " · " + markItem.modelData.label, 2500)
+                            }
+                            ToolTip.visible: containsMouse
+                            // NCDXF beacons show the LIVE rotating station
+                            // (computed on hover); others show label/mode.
+                            ToolTip.text: {
+                                var f = (markItem.modelData.freq / 1.0e6).toFixed(3)
+                                if (markItem.modelData.beacon) {
+                                    var who = BandPlan.ncdxfStation(markItem.modelData.freq)
+                                    return qsTr("NCDXF ") + f + qsTr(" MHz")
+                                           + (who !== "" ? qsTr("\nNow: ") + who : "")
+                                           + qsTr("\nClick to QSY (CWU)")
+                                }
+                                return markItem.modelData.label + " · "
+                                       + markItem.modelData.mode + "  " + f
+                                       + qsTr(" MHz\nClick to tune")
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ===== Waterfall (rolling spectrogram) =====

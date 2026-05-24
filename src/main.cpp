@@ -31,6 +31,7 @@
 #include "mainwindow.h"
 #include "wxservice.h"
 #include "prefs.h"
+#include "logbuffer.h"
 #include "theme.h"
 #include <QTimer>
 #include <QtQml>
@@ -99,6 +100,12 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("Lyra-cpp"));
     QCoreApplication::setOrganizationDomain(
         QStringLiteral("github.com/N8SDR1/Lyra-SDR"));
+    // Capture qDebug/qWarning/etc into the in-app Log viewer + a rolling
+    // app-data log file.  Release builds are GUI-subsystem (no console),
+    // so this is the operator's window into diagnostics.  Install early —
+    // after the app-data path resolves (org/app name set above), before
+    // any service object starts logging.
+    lyra::ui::LogBuffer::instance().install();
     // Operator-selectable RHI backend (Settings → Visuals → Graphics
     // backend; restart-to-apply since the API is fixed at startup).
     // "auto" leaves Qt RHI to pick per platform; any explicit value still
@@ -233,6 +240,14 @@ int main(int argc, char *argv[])
     // objects to that QML as context properties (Discovery / Stream /
     // Wdsp / WdspEngine).  All native C++ — no Python, no GIL.
     auto *prefs = new lyra::ui::Prefs(&app);
+    // Live-apply the verbose-logging toggle (Settings → Hardware) to the
+    // log buffer; the initial value was read from QSettings on install().
+    lyra::ui::LogBuffer::instance().setVerbose(prefs->debugLogging());
+    QObject::connect(prefs, &lyra::ui::Prefs::debugLoggingChanged, prefs,
+                     [prefs]() {
+                         lyra::ui::LogBuffer::instance().setVerbose(
+                             prefs->debugLogging());
+                     });
     // Weather-alert service — polls the operator's enabled sources and
     // feeds the header badges + toasts.  Reads its location from Prefs,
     // so a station-location change re-arms it.

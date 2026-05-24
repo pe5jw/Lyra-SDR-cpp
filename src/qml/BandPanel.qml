@@ -70,28 +70,45 @@ Rectangle {
                 // reactive (unlike the cross-context-property read).
                 readonly property bool active: index === root.activeBand
                 text: modelData.name
-                Layout.preferredWidth: 50
+                // Same flat "chip" shape as the Solar band cells (the
+                // operator-chosen look): compact translucent box, 1px
+                // border, 40×20.  The Band panel keeps its OWN cyan-idle /
+                // red-glow-active colour scheme.
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 22
+                padding: 0
                 focusPolicy: Qt.NoFocus
-                onClicked: Stream.setRx1FreqHz(bandHz)
+                // Return to the last frequency you were on in this band
+                // (per-band memory); fall back to the band's default.
+                onClicked: {
+                    var f = BandMemory.freqFor(modelData.name)
+                    Stream.setRx1FreqHz(f > 0 ? f : bandHz)
+                }
 
                 // Custom background — fully owned, so no Qt-style
                 // highlight/hover state can leak.  Active band = the
-                // old-Lyra red-glow; idle = the cyan theme.
+                // old-Lyra red-glow; idle = the cyan theme on the shared
+                // semi-translucent chip fill.
                 background: Rectangle {
-                    radius: 3
+                    radius: 4
                     color: bandBtn.active ? "#260808"
-                           : (bandBtn.down ? "#1d2b38" : "#16202a")
+                           : (bandBtn.down ? "#1d2b38" : "#b416202a")
                     border.width: bandBtn.active ? 2 : 1
+                    // Bright cyan outline so the chip reads like the Solar
+                    // cells' coloured outline (their look comes from a
+                    // saturated border, not a dark one).  Active = red glow.
                     border.color: bandBtn.active ? "#ff3344"
-                                  : (bandBtn.hovered ? "#3a6a8a" : "#2a4a5a")
+                                  : (bandBtn.hovered ? "#8fdcff" : "#5ec8ff")
                 }
                 contentItem: Text {
                     text: bandBtn.text
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
-                    font.pixelSize: 12
-                    font.bold: bandBtn.active
-                    color: bandBtn.active ? "#ffcc88" : "#9fb4c4"
+                    font.pixelSize: 13
+                    font.bold: true
+                    // Text matches the outline colour (cyan idle / amber
+                    // active) — the same border==text chip styling Solar uses.
+                    color: bandBtn.active ? "#ffcc88" : "#5ec8ff"
                 }
             }
         }

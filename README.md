@@ -12,8 +12,8 @@ up rewrite using the architecture the project should have started with.
 | Language       | C++23                                                            |
 | UI framework   | Qt 6 (Qt Quick / QML)                                            |
 | Graphics       | Qt RHI (Vulkan/D3D12 on Windows, Metal on macOS, OpenGL fallback) |
-| DSP            | WDSP linked directly (GPL v3+) — *lands in a later commit*       |
-| FFT            | FFTW3 — *lands in a later commit*                                |
+| DSP            | WDSP DSP engine, loaded natively (GPL v3+)                       |
+| FFT            | FFTW3 (per-host wisdom-cached on first launch)                   |
 | Wire I/O       | Native UDP (`QUdpSocket`) on dedicated OS threads — no GIL       |
 | Threading      | `std::jthread` + Qt thread pools, OS-priority + MMCSS later      |
 | Build          | CMake 3.21+                                                      |
@@ -22,19 +22,36 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi. No in-process bottleneck on the wire path.**
 
-## Step 1 scope (this commit)
+## Features (v0.1.3)
 
-* Builds clean with MSVC v143 + Qt 6.11.1 MSVC 2022 64-bit binding
-* Opens a Qt Quick / QML window backed by RHI
-* C++ HPSDR Protocol 1 discovery on a dedicated worker thread, multi-NIC
-  (binds + broadcasts from every local IPv4 interface)
-* Surfaces any HL2 / HL2+ replies in the window with their IP, MAC,
-  board name, gateware version, busy flag, and DDC count
+A working receive-side SDR for the Hermes Lite 2 / 2+, native C++ end to
+end.  (Transmit is on the roadmap; the current build is RX-focused.)
 
-This proves the toolchain end-to-end and proves the wire path can talk
-to the radio from C++ with no Python in the loop.  Everything else
-(DSP, audio, panadapter, TX, etc.) lands in subsequent commits, each
-gated by an operator HL2 bench.
+* **Radio** — HPSDR Protocol 1 discovery (multi-NIC) + live RX off the
+  HL2/HL2+ on dedicated OS threads; auto-connect to the last radio.
+* **DSP** — WDSP RX chain: USB/LSB/CW/AM/FM/DIG modes, per-mode filters,
+  AGC, NR, auto-notch, manual notches, squelch.  Audio out the HL2 jack
+  (AK4951) or PC sound card.
+* **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
+  glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
+  drag/wheel tuning; draggable RX passband; collapsible waterfall.
+* **Dockable UI** — movable/floatable/tabbed panels (panadapter, tuning,
+  mode+filter, audio, display, band, solar) with save/restore layout +
+  export/import of the full settings profile.
+* **Band switching + per-band memory** — returns to each band's last
+  frequency, mode, and panadapter/waterfall dB ranges.
+* **Band-plan overlay** — per-region (US / IARU R1 / R3) sub-band
+  segments, band-edge warnings, digital + NCDXF beacon markers with
+  click-to-tune and live beacon-station tooltips; out-of-band advisory.
+* **Solar / propagation panel** — HamQSL SFI/A/K + 10-band day/night
+  heat-map, plus NCDXF beacon auto-follow.
+* **Weather alerts** — lightning / wind / severe-storm badges from
+  Blitzortung / NWS / Ambient / Ecowitt.
+* **Quality-of-life** — header clocks with NTP drift check, GitHub
+  update notifications, in-app diagnostic log viewer (no console window),
+  operator/station identity + band-plan region in Settings.
+
+Every feature landed gated by an operator HL2 bench test.
 
 ## Prerequisites (Windows)
 

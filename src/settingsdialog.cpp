@@ -7,6 +7,9 @@
 #include "hl2_stream.h"
 #include "palettes.h"
 #include "prefs.h"
+#include "logdialog.h"
+
+#include <functional>
 #include "usb_bcd.h"
 #include "wdsp_engine.h"
 #include "wxservice.h"
@@ -225,6 +228,132 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (i >= 0 && region->currentIndex() != i) region->setCurrentIndex(i);
         });
         g->addWidget(region, 0, 1);
+
+        // Overlay-layer toggles (the panadapter top strip).  Each mirrors
+        // a Prefs bool; Region = None hides everything regardless.
+        auto addLayer = [this, g](int row, const QString &text,
+                                  const QString &tip, bool checked,
+                                  std::function<void(bool)> set,
+                                  QWidget *parent) -> QCheckBox * {
+            auto *ck = new QCheckBox(text, parent);
+            ck->setChecked(checked);
+            ck->setToolTip(tip);
+            QObject::connect(ck, &QCheckBox::toggled, parent, set);
+            g->addWidget(ck, row, 0, 1, 2);
+            return ck;
+        };
+        auto *segCk = addLayer(1, tr("Sub-band segments"),
+            tr("Coloured CW / digital / SSB / FM sub-band strip."),
+            prefs_->bandPlanSegments(),
+            [this](bool v){ prefs_->setBandPlanSegments(v); }, grp);
+        connect(prefs_, &Prefs::bandPlanSegmentsChanged, segCk, [this, segCk]() {
+            if (segCk->isChecked() != prefs_->bandPlanSegments())
+                segCk->setChecked(prefs_->bandPlanSegments());
+        });
+        auto *landCk = addLayer(2, tr("Digital landmarks (FT8 / FT4 / WSPR / PSK)"),
+            tr("Markers at the common digital-mode calling frequencies. "
+               "Click one to tune there."),
+            prefs_->bandPlanLandmarks(),
+            [this](bool v){ prefs_->setBandPlanLandmarks(v); }, grp);
+        connect(prefs_, &Prefs::bandPlanLandmarksChanged, landCk, [this, landCk]() {
+            if (landCk->isChecked() != prefs_->bandPlanLandmarks())
+                landCk->setChecked(prefs_->bandPlanLandmarks());
+        });
+        auto *beaconCk = addLayer(3, tr("NCDXF beacon markers"),
+            tr("The 5 NCDXF International Beacon Project frequencies."),
+            prefs_->bandPlanBeacons(),
+            [this](bool v){ prefs_->setBandPlanBeacons(v); }, grp);
+        connect(prefs_, &Prefs::bandPlanBeaconsChanged, beaconCk, [this, beaconCk]() {
+            if (beaconCk->isChecked() != prefs_->bandPlanBeacons())
+                beaconCk->setChecked(prefs_->bandPlanBeacons());
+        });
+        auto *edgeCk = addLayer(4, tr("Band-edge warning lines"),
+            tr("Red dashed lines at each band's edges."),
+            prefs_->bandPlanEdges(),
+            [this](bool v){ prefs_->setBandPlanEdges(v); }, grp);
+        connect(prefs_, &Prefs::bandPlanEdgesChanged, edgeCk, [this, edgeCk]() {
+            if (edgeCk->isChecked() != prefs_->bandPlanEdges())
+                edgeCk->setChecked(prefs_->bandPlanEdges());
+        });
+
+        // Per-mode segment colours — a swatch button per kind (click to
+        // recolour; picking the default clears the override).
+        g->addWidget(new QLabel(tr("Segment colors"), grp), 5, 0);
+        auto *colorRow = new QWidget(grp);
+        auto *ch = new QHBoxLayout(colorRow);
+        ch->setContentsMargins(0, 0, 0, 0);
+        ch->setSpacing(6);
+        const QStringList kinds = {QStringLiteral("CW"), QStringLiteral("DIG"),
+                                   QStringLiteral("SSB"), QStringLiteral("FM")};
+        for (const QString &k : kinds) {
+            auto *btn = new QPushButton(k, colorRow);
+            btn->setFixedWidth(48);
+            btn->setCursor(Qt::PointingHandCursor);
+            auto applySwatch = [this, btn, k]() {
+                btn->setStyleSheet(QStringLiteral(
+                    "QPushButton{background:%1;color:#ffffff;font-weight:700;"
+                    "border:1px solid #2a3a4a;border-radius:3px;padding:3px;}")
+                    .arg(prefs_->bandPlanColor(k)));
+            };
+            applySwatch();
+            connect(btn, &QPushButton::clicked, colorRow, [this, k]() {
+                const QColor picked = QColorDialog::getColor(
+                    QColor(prefs_->bandPlanColor(k)), this,
+                    tr("%1 segment colour").arg(k));
+                if (picked.isValid())
+                    prefs_->setBandPlanColor(k, picked.name());
+            });
+            connect(prefs_, &Prefs::bandPlanColorsChanged, btn, applySwatch);
+            ch->addWidget(btn);
+        }
+        auto *resetColors = new QPushButton(tr("Reset"), colorRow);
+        resetColors->setToolTip(tr("Restore the default segment colors."));
+        connect(resetColors, &QPushButton::clicked, colorRow, [this, kinds]() {
+            for (const QString &k : kinds)
+                prefs_->setBandPlanColor(k, QString());   // "" → revert to default
+        });
+        ch->addWidget(resetColors);
+        ch->addStretch(1);
+        g->addWidget(colorRow, 5, 1);
+
+        form->addRow(grp);
+    }
+
+    // --- Diagnostics (debug logging) ---
+    // Release builds run without a console window. This toggle turns on
+    // verbose capture so the in-app Log viewer / log file have the full
+    // detail we need when chasing a problem.
+    {
+        auto *grp = new QGroupBox(tr("Diagnostics"), page);
+        auto *v = new QVBoxLayout(grp);
+
+        auto *dbg = new QCheckBox(tr("Enable verbose debug logging"), grp);
+        dbg->setChecked(prefs_->debugLogging());
+        dbg->setToolTip(tr("Capture detailed Debug/Info messages (not just "
+                           "warnings/errors). Leave off for normal use; turn "
+                           "on to reproduce and capture a problem."));
+        connect(dbg, &QCheckBox::toggled, grp,
+                [this](bool on) { prefs_->setDebugLogging(on); });
+        connect(prefs_, &Prefs::debugLoggingChanged, dbg, [this, dbg]() {
+            if (dbg->isChecked() != prefs_->debugLogging())
+                dbg->setChecked(prefs_->debugLogging());
+        });
+        v->addWidget(dbg);
+
+        auto *viewRow = new QHBoxLayout;
+        auto *viewBtn = new QPushButton(tr("View Log…"), grp);
+        viewBtn->setToolTip(tr("Open the diagnostic log — Copy or Save it to "
+                              "send to us if something misbehaves."));
+        connect(viewBtn, &QPushButton::clicked, grp, [this]() {
+            auto *dlg = new LogDialog(prefs_, this);
+            dlg->setAttribute(Qt::WA_DeleteOnClose);
+            dlg->show();
+            dlg->raise();
+        });
+        viewRow->addWidget(viewBtn);
+        viewRow->addStretch(1);
+        v->addLayout(viewRow);
+
         form->addRow(grp);
     }
 

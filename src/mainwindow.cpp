@@ -3,8 +3,13 @@
 #include "mainwindow.h"
 
 #include "bands.h"
+#include "bandplan.h"
+#include "statusbus.h"
+#include "timesync.h"
+#include "bandmemory.h"
 #include "help.h"
 #include "helpdialog.h"
+#include "logdialog.h"
 #include "hl2_discovery.h"
 #include "hl2_stream.h"
 #include "wdsp_engine.h"
@@ -31,6 +36,7 @@
 #include <QSettings>
 #include <QStyle>
 #include <QToolBar>
+#include <QStatusBar>
 #include <QToolButton>
 #include <QDateTime>
 #include <QTimer>
@@ -46,6 +52,9 @@
 #include "default_layout.h"
 #include "wxservice.h"
 #include "wxindicator.h"
+#include "solarservice.h"
+#include "solarpanel.h"
+#include "ncdxffollow.h"
 
 #include <QApplication>
 #include <QSystemTrayIcon>
@@ -90,12 +99,100 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // Amateur band table — exposed to QML for the Band panel.
     bands_ = new Bands(this);
 
+    // Band-plan data (sub-band segments / edges / landmarks per region)
+    // — exposed to QML for the panadapter's top-strip overlay.  Reads
+    // the region + layer toggles from Prefs.
+    bandPlan_ = new BandPlan(prefs_, this);
+
+    // Transient status messages (out-of-band advisory, "Tuned to …").
+    // QML posts via the `Status` context property; C++ posts via show().
+    statusBus_ = new StatusBus(this);
+    statusBar()->setStyleSheet(QStringLiteral(
+        "QStatusBar{background:#0c141c;color:#cdd9e5;}"
+        "QStatusBar::item{border:0;}"));
+    statusBar()->setSizeGripEnabled(false);
+    connect(statusBus_, &StatusBus::message, this,
+            [this](const QString &t, int ms) {
+                statusBar()->showMessage(t, ms);
+            });
+
+    // PC clock-drift check (NCDXF beacon timing is UTC-locked).  On-demand
+    // via the header clock right-click menu; result drives the ⚠ on the
+    // UTC clock + an advisory dialog.
+    timeSync_ = new TimeSync(this);
+    connect(timeSync_, &TimeSync::result, this,
+            [this](double, const QString &srv, int sev, const QString &sum) {
+        driftSeverity_ = sev;
+        QString body = tr("Network time (%1):\n%2").arg(srv, sum);
+        if (sev == TimeSync::Warn)
+            body += tr("\n\nYour clock is drifting. NCDXF beacon markers and "
+                       "Follow may show the wrong station near the 10-second "
+                       "slot boundaries.");
+        else if (sev == TimeSync::Bad)
+            body += tr("\n\nYour clock is significantly off — NCDXF beacon "
+                       "tracking will identify the wrong stations. Right-click "
+                       "the clock and choose \"Sync time\".");
+        statusBus_->show(sum, 5000);
+        QMessageBox::information(this, tr("PC clock drift"), body);
+    });
+    connect(timeSync_, &TimeSync::failed, this, [this](const QString &why) {
+        statusBus_->show(why, 5000);
+        QMessageBox::warning(this, tr("PC clock drift"), why);
+    });
+    connect(timeSync_, &TimeSync::resyncDone, this,
+            [this](bool ok, const QString &msg) {
+        statusBus_->show(msg, 5000);
+        if (ok) QTimer::singleShot(1500, this,
+                                   [this]() { timeSync_->checkDrift(); });
+        else QMessageBox::warning(this, tr("Sync time"), msg);
+    });
+
+    // Per-band memory: restores each band's mode + panadapter/waterfall dB
+    // ranges as you move across band edges (saved live while on a band).
+    bandMemory_ = new BandMemory(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
+    // Solar / HF-propagation service — fetches HamQSL, derives per-band
+    // ratings for the operator's day/night.  Drives the PROP dock.  It
+    // re-arms itself on a Prefs location change internally.
+    solar_ = new lyra::solar::SolarService(prefs_, this);
+
+    // NCDXF beacon auto-follow engine (drives the Solar panel's Follow
+    // dropdown).  Needs the stream to QSY + Prefs to set CWU.
+    ncdxfFollow_ = new NcdxfFollow(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
     // USB-BCD amp band output — follows the band off the stream's freq.
     usbBcd_ = new UsbBcd(this);
     if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
         connect(st, &lyra::ipc::HL2Stream::rx1FreqChanged, usbBcd_,
                 [this, st]() { usbBcd_->applyForFreq(st->rx1FreqHz()); });
         usbBcd_->applyForFreq(st->rx1FreqHz());   // assert current band now
+
+        // Band-plan in/out-of-band advisory: on a band-state transition
+        // post a status message (gated like old Lyra on the edge-warning
+        // layer + a real region).  The red edge lines are the visual half.
+        connect(st, &lyra::ipc::HL2Stream::rx1FreqChanged, this,
+                [this, st]() {
+            if (!prefs_->bandPlanEdges()
+                || prefs_->bandPlanRegion() == QLatin1String("NONE")) {
+                lastBandState_ = -1;
+                return;
+            }
+            const double f = double(st->rx1FreqHz());
+            const QString name = bandPlan_->bandContaining(f);
+            const int inb = name.isEmpty() ? 0 : 1;
+            if (inb == lastBandState_) return;
+            lastBandState_ = inb;
+            if (inb)
+                statusBus_->show(tr("In band: %1  (%2)")
+                                     .arg(name, prefs_->bandPlanRegion()), 2500);
+            else
+                statusBus_->show(tr("⚠ Out of band — %1 MHz is outside the "
+                                    "%2 amateur allocations")
+                                     .arg(f / 1.0e6, 0, 'f', 3)
+                                     .arg(prefs_->bandPlanRegion()), 5000);
+        });
     }
     connect(usbBcd_, &UsbBcd::statusMessage, this, [](const QString &) {});
 
@@ -134,6 +231,12 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Help"), help_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Bands"), bands_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("BandPlan"), bandPlan_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Status"), statusBus_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("BandMemory"), bandMemory_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -163,6 +266,22 @@ QDockWidget *MainWindow::addQuickDock(const QString &objectName,
     dock->setWidget(makeQuick(qmlFile));
     // Custom title bar: title (left) + "?" / float / close (right), so
     // the help badge sits in the title row OUTSIDE the panel content.
+    dock->setTitleBarWidget(makeDockTitleBar(dock, title, topic));
+    addDockWidget(area, dock);
+    docks_.insert(objectName, dock);
+    return dock;
+}
+
+QDockWidget *MainWindow::addWidgetDock(const QString &objectName,
+                                       const QString &title,
+                                       QWidget *content,
+                                       const QString &topic,
+                                       Qt::DockWidgetArea area) {
+    auto *dock = new QDockWidget(title, this);
+    dock->setObjectName(objectName);   // load-bearing for saveState/restoreState
+    dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    dock->setFeatures(kUnlockedFeatures);
+    dock->setWidget(content);
     dock->setTitleBarWidget(makeDockTitleBar(dock, title, topic));
     addDockWidget(area, dock);
     docks_.insert(objectName, dock);
@@ -277,6 +396,12 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("band"), tr("Band"),
                  QStringLiteral("BandPanel.qml"),
                  QStringLiteral("band"), Qt::BottomDockWidgetArea);
+    // Solar / Propagation — HamQSL SFI/A/K + 10-band day/night heat-map.
+    // A plain QtWidgets strip (not QML); docks at the bottom like the
+    // other control panels.
+    addWidgetDock(QStringLiteral("propagation"), tr("Solar / Propagation"),
+                  new SolarPanel(solar_, ncdxfFollow_, this),
+                  QStringLiteral("propagation"), Qt::BottomDockWidgetArea);
 }
 
 void MainWindow::buildMenus() {
@@ -325,6 +450,12 @@ void MainWindow::buildMenus() {
                         this, [this]() { showHelp(QString()); });
     helpMenu->addAction(tr("Check for &Updates…"), this,
                         [this]() { checkForUpdates(true); });
+    helpMenu->addAction(tr("Show &Log…"), this, [this]() {
+        if (!logDlg_) logDlg_ = new LogDialog(prefs_, this);
+        logDlg_->show();
+        logDlg_->raise();
+        logDlg_->activateWindow();
+    });
     helpMenu->addSeparator();
     helpMenu->addAction(tr("&About Lyra…"), this, [this]() {
         const QString ver = QStringLiteral(LYRA_VERSION);
@@ -428,8 +559,20 @@ void MainWindow::buildToolbar() {
     clockUtc_->setStyleSheet(QStringLiteral(
         "QLabel{color:#80d8ff;font-family:Consolas,monospace;"
         "font-weight:700;font-size:22px;}"));      // cyan = UTC/Zulu
-    clockUtc_->setToolTip(tr("UTC / Zulu time"));
+    clockUtc_->setToolTip(tr("UTC / Zulu time — right-click to check PC "
+                             "clock drift (matters for NCDXF beacon timing)"));
     tb->addWidget(clockUtc_);
+
+    // Right-click either clock → NTP drift check / Windows time resync.
+    for (QLabel *clk : {clockLocal_, clockUtc_}) {
+        clk->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(clk, &QWidget::customContextMenuRequested, clk,
+                [this, clk](const QPoint &p) {
+                    showClockMenu(clk->mapToGlobal(p));
+                });
+    }
+    clockLocal_->setToolTip(tr("PC local time — right-click to check PC "
+                               "clock drift against network time"));
 
     // Trailing flexible spacer — balances clockSpacer on the left so the
     // clocks sit centered in the header strip rather than hard against
@@ -574,9 +717,27 @@ void MainWindow::tickClocks() {
     const QDateTime now = QDateTime::currentDateTime();
     if (clockLocal_)
         clockLocal_->setText(now.toString(QStringLiteral("HH:mm:ss")));
-    if (clockUtc_)
-        clockUtc_->setText(now.toUTC().toString(QStringLiteral("HH:mm:ss")) +
-                           QStringLiteral("Z"));
+    if (clockUtc_) {
+        QString utc = now.toUTC().toString(QStringLiteral("HH:mm:ss")) +
+                      QStringLiteral("Z");
+        // ⚠ prefix when the last drift check found the clock off (warn/bad).
+        if (driftSeverity_ == TimeSync::Warn || driftSeverity_ == TimeSync::Bad)
+            utc.prepend(QStringLiteral("⚠ "));
+        clockUtc_->setText(utc);
+    }
+}
+
+void MainWindow::showClockMenu(const QPoint &global) {
+    QMenu m;
+    m.addAction(tr("Check clock drift now…"), this, [this]() {
+        statusBus_->show(tr("Checking PC clock against network time…"), 0);
+        timeSync_->checkDrift();
+    });
+    m.addAction(tr("Sync time (w32tm /resync)"), this, [this]() {
+        statusBus_->show(tr("Requesting Windows time re-sync…"), 0);
+        timeSync_->windowsResync();
+    });
+    m.exec(global);
 }
 
 void MainWindow::onStartStop() {

@@ -26,6 +26,7 @@ class QTimer;
 class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
+namespace lyra::solar { class SolarService; }
 
 namespace lyra::ui {
 
@@ -33,10 +34,16 @@ class Prefs;
 class SettingsDialog;
 class Help;
 class HelpDialog;
+class LogDialog;
 class Bands;
+class BandPlan;
+class StatusBus;
+class TimeSync;
+class BandMemory;
 class UsbBcd;
 class UpdateChecker;
 class WxIndicator;
+class NcdxfFollow;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -68,6 +75,13 @@ private:
                               const QString &qmlFile,
                               const QString &topic,
                               Qt::DockWidgetArea area);
+    // Same as addQuickDock but hosts a plain QtWidgets widget (e.g. the
+    // solar PROP strip) instead of a QML surface.
+    QDockWidget *addWidgetDock(const QString &objectName,
+                               const QString &title,
+                               QWidget *content,
+                               const QString &topic,
+                               Qt::DockWidgetArea area);
     // Build a custom dock title bar: title (far left), "?" + float +
     // close (far right).  Replaces the default title bar so the help
     // badge lives in the title row, outside the panel content.
@@ -82,6 +96,7 @@ private:
     void onStartStop();
     void updateConnState();   // reflect stream running state into the UI
     void tickClocks();        // 1 Hz: refresh the header local + UTC clocks
+    void showClockMenu(const QPoint &global);   // right-click clocks → drift check
     // GitHub update notification.  manual=true (Help → Check for Updates)
     // always reports a result; manual=false (startup) is quiet unless an
     // unseen, non-skipped newer release exists (then a once-per-version
@@ -115,6 +130,8 @@ private:
     QObject *wdspEngine_ = nullptr;
     Prefs   *prefs_      = nullptr;
     lyra::wx::WxService *wx_ = nullptr;
+    lyra::solar::SolarService *solar_ = nullptr;   // HamQSL solar/propagation
+    NcdxfFollow         *ncdxfFollow_ = nullptr;   // NCDXF beacon auto-follow
     WxIndicator         *wxIndicator_ = nullptr;   // header alert badges
     QSystemTrayIcon     *tray_ = nullptr;          // lazy, for wx toasts
 
@@ -138,7 +155,14 @@ private:
     SettingsDialog             *settingsDlg_ = nullptr;
     Help                       *help_    = nullptr;   // QML→C++ help bridge
     HelpDialog                 *helpDlg_ = nullptr;   // in-app User Guide
+    LogDialog                  *logDlg_  = nullptr;   // in-app diagnostic log
     Bands                      *bands_   = nullptr;   // amateur band table (QML)
+    BandPlan                   *bandPlan_ = nullptr;  // band-plan overlay data (QML)
+    StatusBus                  *statusBus_ = nullptr; // transient status messages (QML+C++)
+    int                         lastBandState_ = -1;  // -1 unknown / 0 out-of-band / 1 in-band
+    TimeSync                   *timeSync_ = nullptr;  // NTP clock-drift check
+    BandMemory                 *bandMemory_ = nullptr;// per-band mode/dB-range memory
+    int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };
 

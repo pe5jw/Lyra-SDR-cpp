@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.1.2
+    VERSION 0.1.3
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -77,12 +77,23 @@ qt_add_executable(lyra
     src/palettes.cpp
     src/bands.h
     src/bands.cpp
+    src/bandplan.h
+    src/bandplan.cpp
+    src/statusbus.h
+    src/timesync.h
+    src/timesync.cpp
+    src/bandmemory.h
+    src/bandmemory.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
     src/help.cpp
     src/helpdialog.h
     src/helpdialog.cpp
+    src/logbuffer.h
+    src/logbuffer.cpp
+    src/logdialog.h
+    src/logdialog.cpp
     src/updatechecker.h
     src/updatechecker.cpp
     src/grid.h
@@ -91,6 +102,12 @@ qt_add_executable(lyra
     src/wxservice.cpp
     src/wxindicator.h
     src/wxindicator.cpp
+    src/solarservice.h
+    src/solarservice.cpp
+    src/solarpanel.h
+    src/solarpanel.cpp
+    src/ncdxffollow.h
+    src/ncdxffollow.cpp
 )
 
 # QML module — keeps Main.qml inside the binary as a Qt resource so
@@ -224,11 +241,13 @@ endif()
 # clean C++23 + Qt headers on MSVC v143/v144.
 if(MSVC)
     target_compile_options(lyra PRIVATE /utf-8 /Zc:preprocessor /W4 /permissive-)
-    # Step 1 diagnostic build: leave WIN32_EXECUTABLE OFF so Qt
-    # diagnostic output (QML errors, qWarning, qFatal) prints to
-    # the parent console.  Flip to TRUE once the bench-validated
-    # binary is stable.
-    # set_target_properties(lyra PROPERTIES WIN32_EXECUTABLE TRUE)
+    # GUI-subsystem build: no console window pops up alongside the app on
+    # release/full-build installs.  Qt diagnostic output (QML errors,
+    # qWarning, qFatal) is captured by LogBuffer into the in-app Log
+    # viewer (Help → Show Log…) + a rolling app-data log file instead of
+    # the parent console — turn on Settings → Hardware → "verbose debug
+    # logging" to capture the full detail.
+    set_target_properties(lyra PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
 # Install / deploy hint (used later by windeployqt to bundle Qt DLLs
