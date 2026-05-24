@@ -304,12 +304,58 @@ the carrier.
 
 ## Band panel
 
-Quick band switching across the HF/6m amateur bands. Click a band button
-(**160m … 6m**) and Lyra returns RX1 to **the last frequency you were on in
-that band** (the band's default the first time you visit it). The
-button for the band you're currently on lights up (a red-glow highlight),
-so you can see at a glance where you are — and it follows the frequency,
-so it updates whenever you tune into a different band by any means.
+Quick band switching, in three rows:
+
+- **Ham** — the HF/6m amateur bands (**160m … 6m**). Click one and Lyra
+  returns RX1 to **the last frequency you were on in that band** (the
+  band's default the first time). The button for the band you're on lights
+  up (red-glow), following the frequency however you tune.
+  An optional **11m** button (the **Citizens Band**, 26.965–27.405 MHz AM)
+  appears at the end of this row, right after 6m, when you enable it in
+  **Settings → Hardware → Band panel**. When you're tuned on it, the
+  panadapter marks all **40 CB channels** (Ch1…Ch40) across the top —
+  **click a channel marker to jump to it** in AM.
+- **BC** — the shortwave **broadcast** meter bands (**120m … 13m**, all
+  AM). Like the Ham bands, BC and the 11m band **remember their last
+  frequency and mode** and return to it when you click them (band default
+  the first time). The active band lights the same way.
+- **Gen** — the GEN1/2/3 general-coverage slots (below).
+
+**GEN1 / GEN2 / GEN3** (to the right of the band buttons) are
+**general-coverage slots** for listening outside the ham bands —
+shortwave, MW, time stations, utility. Each works like a band button but
+for any frequency: click it to jump to that slot's last freq + mode, and
+while it's the active slot (highlighted) **tuning around updates it**, so
+it always remembers where you left off. Defaults are WWV 10 MHz, WWV
+15 MHz, and 1 MHz (MW), all AM. **Right-click** a GEN button to reset it
+to its default. Clicking an amateur band button leaves general-coverage.
+
+**TIME — HF time stations.** Between GEN3 and Mem, the **TIME** button
+hops through the world's shortwave time-and-frequency stations — handy for
+checking propagation or setting your clock by ear:
+
+- **Left-click TIME** to tune the next station/frequency. It cycles through
+  the whole list — WWV (2.5/5/10/15/20/25 MHz), WWVH, CHU, BPM, RWM, and
+  others — advancing one step each click, and picks up where you left off
+  next time. The mode is set for you (AM, or **USB for CHU**).
+- **Right-click TIME** for the full list grouped by station — pick any
+  station and frequency directly, or **Reset cycle to first entry**.
+- The stations are ordered to put the most useful ones first based on your
+  callsign (a US operator leads with WWV, etc. — set your callsign in
+  **Settings → Hardware**).
+
+**Mem — frequency memory bank.** At the end of the GEN row, the **Mem**
+button holds up to **20 saved frequencies**, each remembering its name,
+frequency, mode, and (optionally) RX filter bandwidth:
+
+- **Left-click Mem** to open the recall list — pick a preset and Lyra
+  tunes straight to it (mode first, then frequency).
+- **Right-click Mem** to **Save current frequency** (the VFO is stored with
+  an auto-name like "14.074 USB") or open **Manage presets…**.
+- Full editing lives in **Settings → Bands → Memory**: a table where you
+  can rename, retype the frequency/mode/bandwidth, add notes, delete, clear
+  all, and **import/export CSV** (columns: Name, Freq_Hz, Mode, RX_BW_Hz,
+  Notes) to back up or share your list.
 
 Pick the mode and filter for the band in the **Mode + Filter** panel.
 
@@ -538,6 +584,45 @@ allocations" when you're not. (Gated on the band-edge layer above.)
 > before transmitting near an edge. The strip is a navigation aid, not a
 > legal reference.
 
+### Shortwave broadcasters (EiBi)
+
+Lyra can overlay the **EiBi shortwave-broadcast schedule** on the
+panadapter so you can see *who's on the air* across the SW broadcast and
+utility ranges. Each station shows as a small tick + name:
+
+- **Cyan** = broadcasting **right now** (the current UTC time falls inside
+  the station's scheduled window for today).
+- **Grey** = scheduled on this frequency but **off-air** at the moment
+  (only shown if you turn off "Hide off-air").
+- **Hover** a station for its frequency, language, target area, and on-air
+  status; **click it to tune there in AM**.
+
+Turn it on in **Settings → Bands → SW Database**:
+
+- **Enable EiBi shortwave overlay** — master on/off (off by default).
+- **Update database now** — downloads the current season's schedule
+  (~3 MB) from eibispace.de. **You must do this once** before anything
+  appears — the data isn't bundled (EiBi's licence is free but
+  no-redistribution). Re-run it when the season changes (roughly April and
+  October).
+- **Load CSV file…** — the fallback if the download fails. eibispace.de's
+  security certificate expires periodically, which can block the in-app
+  download; when that happens, download the `sked-<season>.csv` from the
+  EiBi website in your browser, then point Lyra at it with this button.
+  (Lyra copies it into its own folder, so you can delete the download
+  afterward.)
+- **Hide off-air** — show only stations broadcasting now (on by default).
+- **Show in all bands** — by default the overlay is hidden inside the
+  amateur bands (so it doesn't clutter ham operating); tick this to show it
+  everywhere.
+- **Minimum transmitter power** — hide the weak stations; show only
+  ≥50/100/250 kW transmitters to cut clutter.
+
+> EiBi schedules are a planning aid — actual broadcasts vary with
+> propagation, season, and last-minute changes. A cyan station may be
+> inaudible (wrong band conditions) and you may hear stations the database
+> doesn't list. Data © the EiBi project (eibispace.de).
+
 ### Radio
 
 Find and connect to your HL2 / HL2+. **Discover** scans the LAN, **Open**
@@ -754,6 +839,30 @@ you accept the disclaimer and tick **Enable**.
 Remember to set your location in
 [Settings → Hardware → Operator / Station](#operator--station) — without
 it, the location-based sources can't tell what's nearby.
+
+---
+
+## Support Lyra — buy the developer a coffee ☕
+
+Lyra is **free**, **open-source** (GPL v3 or later — see the License), and
+primarily built by **Rick Langford (N8SDR)** in his spare time, with
+**Brent Crier (N9BC)** joining as co-contributor during early testing and
+**Timmy Davis (KC8TYK)** joining for the v0.1 tester flight. There are no
+ads, no telemetry, no subscription tier, no "pro" upsells.
+
+If Lyra has saved you from a clunky SDR workflow, helped you work a new
+state on FT8, or just makes your shack a little more comfortable, **a small
+donation goes a long way** — it pays for the development hardware and keeps
+the project moving through the long TX-path work still ahead.
+
+**[☕ Donate via PayPal](https://www.paypal.com/donate/?business=NP2ZQS4LR454L&no_recurring=0&item_name=Built+by+a+fellow+ham%2C+for+the+community.++Free+to+use%2C+free+to+share.+A+small+donation+keeps+the+code+flowing.+73+de+N8SDR&currency_code=USD)**
+
+Any amount is welcome — $5 buys a coffee, $20 buys a pint at the hamfest,
+$100 keeps the development bench rolling for a month. You can also reach the
+donate page any time from **Help → About Lyra**.
+
+> *Built by a fellow ham, for the community. Free to use, free to share.
+> A small donation keeps the code flowing. 73 de N8SDR.*
 
 ---
 

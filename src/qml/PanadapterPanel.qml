@@ -722,6 +722,25 @@ Item {
                     ? BandPlan.landmarks(root.centerHz, bandPlan.spanHz,
                                          Prefs.bandPlanLandmarks,
                                          Prefs.bandPlanBeacons) : []
+                // CB channel markers — only when the 11m/CB band is enabled.
+                readonly property var cbChans:
+                    Prefs.cbBandEnabled
+                    ? BandPlan.cbChannels(root.centerHz, bandPlan.spanHz) : []
+
+                // EiBi shortwave broadcasters active in this span.  Eibi
+                // gates internally (returns [] when the overlay is off, no
+                // DB is loaded, or we're inside a ham band).  eibiRev is
+                // bumped on a download/settings change so the binding
+                // re-queries C++ even though those aren't QML properties.
+                property int eibiRev: 0
+                readonly property var eibiList:
+                    (bandPlan.eibiRev,
+                     Eibi.entriesInSpan(root.centerHz, bandPlan.spanHz))
+                Connections {
+                    target: Eibi
+                    function onChanged()         { bandPlan.eibiRev++ }
+                    function onSettingsChanged()  { bandPlan.eibiRev++ }
+                }
 
                 // Sub-band segment bars (top 10 px), coloured by mode.
                 Repeater {
@@ -836,6 +855,100 @@ Item {
                                        + markItem.modelData.mode + "  " + f
                                        + qsTr(" MHz\nClick to tune")
                             }
+                        }
+                    }
+                }
+
+                // CB channel ticks + numbers (Ch1…Ch40) — click to QSY (AM).
+                Repeater {
+                    model: bandPlan.cbChans
+                    delegate: Item {
+                        id: cbItem
+                        required property var modelData
+                        readonly property real cx: bandPlan.xOf(modelData.freq)
+                        Rectangle {
+                            x: cbItem.cx - 0.5; y: 14; width: 1; height: 9
+                            color: "#b0c4d4"; opacity: 0.6
+                        }
+                        Text {
+                            x: cbItem.cx - width / 2; y: 9
+                            text: cbItem.modelData.label
+                            color: "#b0c4d4"
+                            font.pixelSize: 11; font.bold: true
+                            style: Text.Outline; styleColor: "#cc000000"
+                        }
+                        MouseArea {
+                            x: cbItem.cx - 11; y: 8; width: 22; height: 20
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Prefs.mode = "AM"
+                                Stream.setRx1FreqHz(Math.round(cbItem.modelData.freq))
+                                Status.show(qsTr("Tuned to CB ") + cbItem.modelData.label
+                                    + " — " + (cbItem.modelData.freq / 1.0e6).toFixed(4)
+                                    + " MHz AM", 2000)
+                            }
+                            ToolTip.visible: containsMouse
+                            ToolTip.text: "CB " + cbItem.modelData.label + "  "
+                                + (cbItem.modelData.freq / 1.0e6).toFixed(3)
+                                + qsTr(" MHz AM")
+                                + (cbItem.modelData.note !== ""
+                                   ? "\n" + cbItem.modelData.note : "")
+                                + qsTr("\nClick to tune")
+                        }
+                    }
+                }
+
+                // EiBi shortwave broadcasters — station tick + name, cyan
+                // when on-air now / grey when scheduled-but-off; staggered
+                // over 3 rows to reduce label overlap.  Click tunes in AM.
+                Repeater {
+                    model: bandPlan.eibiList
+                    delegate: Item {
+                        id: ebItem
+                        required property var modelData
+                        required property int index
+                        readonly property real ex: bandPlan.xOf(modelData.freqHz)
+                        readonly property color col:
+                            modelData.onAir ? "#50c8dc" : "#7a8a94"
+                        readonly property real labelY: 25 + (index % 3) * 13
+                        Rectangle {
+                            x: ebItem.ex - 0.5; y: 20
+                            width: 1; height: ebItem.labelY - 20
+                            color: ebItem.col; opacity: 0.55
+                        }
+                        Text {
+                            x: ebItem.ex + 3; y: ebItem.labelY
+                            text: ebItem.modelData.station.length > 22
+                                  ? ebItem.modelData.station.substring(0, 22)
+                                  : ebItem.modelData.station
+                            color: ebItem.col
+                            font.pixelSize: 10; font.bold: true
+                            style: Text.Outline; styleColor: "#cc000000"
+                        }
+                        MouseArea {
+                            x: ebItem.ex - 6; y: 20
+                            width: 52; height: ebItem.labelY - 20 + 14
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Prefs.mode = "AM"
+                                Stream.setRx1FreqHz(Math.round(ebItem.modelData.freqHz))
+                                Status.show(qsTr("Tuned to ")
+                                    + (ebItem.modelData.freqHz / 1.0e6).toFixed(3)
+                                    + " MHz AM · " + ebItem.modelData.station, 2500)
+                            }
+                            ToolTip.visible: containsMouse
+                            ToolTip.text: ebItem.modelData.station + "  "
+                                + (ebItem.modelData.freqHz / 1.0e6).toFixed(3)
+                                + qsTr(" MHz")
+                                + (ebItem.modelData.onAir ? qsTr("  (ON AIR)")
+                                                          : qsTr("  (off air)"))
+                                + (ebItem.modelData.language !== ""
+                                   ? qsTr("\nLanguage: ") + ebItem.modelData.language : "")
+                                + (ebItem.modelData.target !== ""
+                                   ? qsTr("\nTarget: ") + ebItem.modelData.target : "")
+                                + qsTr("\nClick to tune (AM)")
                         }
                     }
                 }

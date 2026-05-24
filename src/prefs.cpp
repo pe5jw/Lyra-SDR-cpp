@@ -63,6 +63,7 @@ constexpr auto kBpLand     = "band_plan/landmarks";
 constexpr auto kBpBeacons  = "band_plan/beacons";
 constexpr auto kBpEdges    = "band_plan/edges";
 constexpr auto kBpColorPfx = "band_plan/color_";   // + <kind>
+constexpr auto kCbBand     = "bands/cb_enabled";
 constexpr auto kDebugLog   = "debug/logging";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
@@ -153,6 +154,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         if (v.isValid() && !v.toString().isEmpty())
             bandPlanColors_.insert(it.key(), v.toString());
     }
+    cbBandEnabled_ = s.value(kCbBand, false).toBool();
     debugLogging_ = s.value(kDebugLog, false).toBool();
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
@@ -623,6 +625,14 @@ void Prefs::setBandPlanColor(const QString &kind, const QString &hex) {
         bandPlanColors_.insert(kind, hex);
         s.setValue(QString(kBpColorPfx) + kind, hex);
         emit bandPlanColorsChanged();
+    }
+}
+
+void Prefs::setCbBandEnabled(bool v) {
+    if (v != cbBandEnabled_) {
+        cbBandEnabled_ = v;
+        QSettings().setValue(kCbBand, v);
+        emit cbBandEnabledChanged();
     }
 }
 

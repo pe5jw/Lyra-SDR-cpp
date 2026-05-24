@@ -1,27 +1,17 @@
-// Lyra — Band dock panel (HF/6m amateur band switching).
+// Lyra — Band dock panel.
 //
-// One button per amateur band (160m … 6m), built from the shared C++
-// band table (Bands context property) — a single source of truth, so
-// the list never drifts from the protocol/DSP side.  Clicking a band
-// tunes RX1 to that band's default frequency.
+// Three rows, matching old Lyra's BandSelectorPanel:
+//   1. AMATEUR  — 160m … 6m amateur bands
+//   2. BC       — shortwave broadcast meter bands (120m … 13m)
+//   3. GEN      — GEN1/2/3 general-coverage slots (TIME + Mem join here
+//                 as those features land)
+// All built from the shared C++ band tables (Bands context property),
+// so the lists never drift from the protocol/DSP side.
 //
-// Active-band highlight — modeled on old Lyra + Thetis (studied
-// 2026-05-23), NOT a per-button live comparison:
-//   * Old Lyra: an explicit _refresh_band_highlight() loops every
-//     button and sets exactly one checked, driven by the freq-changed
-//     signal (red-glow :checked style).
-//   * Thetis: auto-exclusive RadioButtons-as-buttons — framework
-//     guarantees one checked; the active one gets a distinct fill.
-// Common principle: ONE mutually-exclusive "active" state, set
-// IMPERATIVELY when the frequency changes — clear all, light one.
-//
-// We follow that here: a single `activeBand` index is recomputed in the
-// onRx1FreqChanged handler (the signal reliably fires — the Tuning panel
-// relies on it the same way) via Bands.indexForFreq().  Each button's
-// look derives from `index === activeBand` through a CUSTOM background,
-// so exactly one band lights and the previous one clears.  This avoids
-// the earlier failure mode where binding `highlighted` directly to
-// Stream.rx1FreqHz per-button left old buttons stuck lit.
+// Active-band highlight is set IMPERATIVELY on the rx1FreqChanged signal
+// (Bands.indexForFreq / broadcastIndexForFreq) — never a per-button
+// reactive read of Stream.rx1FreqHz (that proved unreliable here).  Each
+// chip's look derives from `chipActive`, so exactly one lights per row.
 
 import QtQuick
 import QtQuick.Controls
@@ -29,90 +19,319 @@ import QtQuick.Layouts
 
 Rectangle {
     id: root
-    implicitHeight: 44
+    implicitHeight: col.implicitHeight + 16   // grows/shrinks with the CB row
     implicitWidth: 720
     color: "#101820"
     border.color: "#2a4a5a"
 
-    // The one source of truth: index of the band that contains RX1's
-    // frequency (-1 = none).  Set IMPERATIVELY — never a per-button
-    // reactive read of Stream.rx1FreqHz (that proved unreliable here).
-    property int activeBand: -1
-    function refreshActiveBand() {
-        // Imperative call (not a binding) — reading a C++ Q_INVOKABLE /
-        // context property inside a function always works; it's only
-        // BINDINGS through the context property that were flaky.
+    property int activeBand: -1     // amateur band index containing RX1, or -1
+    property int activeBc: -1       // broadcast band index, or -1
+    property int activeCb: -1       // CB band index, or -1
+    function refreshActive() {
         root.activeBand = Bands.indexForFreq(Stream.rx1FreqHz)
+        root.activeBc   = Bands.broadcastIndexForFreq(Stream.rx1FreqHz)
+        root.activeCb   = Bands.cbIndexForFreq(Stream.rx1FreqHz)
     }
-    Component.onCompleted: refreshActiveBand()
+    // Live memory-preset list for the Mem recall menu (kept current).
+    property var memList: []
+    function refreshMem() { root.memList = Memory.list() }
+
+    Component.onCompleted: { refreshActive(); refreshMem() }
     Connections {
         target: Stream
-        function onRx1FreqChanged() { root.refreshActiveBand() }
+        function onRx1FreqChanged() { root.refreshActive() }
+    }
+    Connections {
+        target: Memory
+        function onChanged() { root.refreshMem() }
     }
 
-    RowLayout {
+    // Shared flat-chip button (same look across all three rows).  Active
+    // colours default to the amateur red-glow; GEN overrides them to cyan.
+    component ChipButton : Button {
+        id: cb
+        property bool chipActive: false
+        property color activeFill:   "#260808"
+        property color activeBorder: "#ff3344"
+        property color activeText:   "#ffcc88"
+        Layout.preferredWidth: 44
+        Layout.preferredHeight: 22
+        padding: 0
+        focusPolicy: Qt.NoFocus
+        background: Rectangle {
+            radius: 4
+            color: cb.chipActive ? cb.activeFill
+                   : (cb.down ? "#1d2b38" : "#b416202a")
+            border.width: cb.chipActive ? 2 : 1
+            border.color: cb.chipActive ? cb.activeBorder
+                          : (cb.hovered ? "#8fdcff" : "#5ec8ff")
+        }
+        contentItem: Text {
+            text: cb.text
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            font.pixelSize: 13
+            font.bold: true
+            color: cb.chipActive ? cb.activeText : "#5ec8ff"
+        }
+    }
+
+    component RowLabel : Label {
+        color: "#8fa6ba"
+        font.bold: true
+        Layout.preferredWidth: 34
+        Layout.alignment: Qt.AlignVCenter
+    }
+
+    ColumnLayout {
+        id: col
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
+        anchors.margins: 8
         spacing: 4
 
-        Label { text: qsTr("Band"); color: "#cccccc"; font.bold: true }
-
-        Repeater {
-            model: Bands.amateur()
-            delegate: Button {
-                id: bandBtn
-                required property var modelData
-                required property int index
-                readonly property int bandHz: modelData.hz
-                // Active state derives ONLY from the local activeBand
-                // index — a local-property binding, which IS reliably
-                // reactive (unlike the cross-context-property read).
-                readonly property bool active: index === root.activeBand
-                text: modelData.name
-                // Same flat "chip" shape as the Solar band cells (the
-                // operator-chosen look): compact translucent box, 1px
-                // border, 40×20.  The Band panel keeps its OWN cyan-idle /
-                // red-glow-active colour scheme.
-                Layout.preferredWidth: 44
-                Layout.preferredHeight: 22
-                padding: 0
-                focusPolicy: Qt.NoFocus
-                // Return to the last frequency you were on in this band
-                // (per-band memory); fall back to the band's default.
-                onClicked: {
-                    var f = BandMemory.freqFor(modelData.name)
-                    Stream.setRx1FreqHz(f > 0 ? f : bandHz)
-                }
-
-                // Custom background — fully owned, so no Qt-style
-                // highlight/hover state can leak.  Active band = the
-                // old-Lyra red-glow; idle = the cyan theme on the shared
-                // semi-translucent chip fill.
-                background: Rectangle {
-                    radius: 4
-                    color: bandBtn.active ? "#260808"
-                           : (bandBtn.down ? "#1d2b38" : "#b416202a")
-                    border.width: bandBtn.active ? 2 : 1
-                    // Bright cyan outline so the chip reads like the Solar
-                    // cells' coloured outline (their look comes from a
-                    // saturated border, not a dark one).  Active = red glow.
-                    border.color: bandBtn.active ? "#ff3344"
-                                  : (bandBtn.hovered ? "#8fdcff" : "#5ec8ff")
-                }
-                contentItem: Text {
-                    text: bandBtn.text
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    font.pixelSize: 13
-                    font.bold: true
-                    // Text matches the outline colour (cyan idle / amber
-                    // active) — the same border==text chip styling Solar uses.
-                    color: bandBtn.active ? "#ffcc88" : "#5ec8ff"
+        // ── Row 1: amateur bands ──────────────────────────────────────
+        RowLayout {
+            spacing: 4
+            RowLabel { text: qsTr("Ham") }
+            Repeater {
+                model: Bands.amateur()
+                delegate: ChipButton {
+                    required property var modelData
+                    required property int index
+                    text: modelData.name
+                    chipActive: index === root.activeBand
+                    // Return to this band's last freq (per-band memory),
+                    // else its default; and leave any active GEN slot.
+                    onClicked: {
+                        Gen.deactivate()
+                        var f = BandMemory.freqFor(modelData.name)
+                        Stream.setRx1FreqHz(f > 0 ? f : modelData.hz)
+                    }
                 }
             }
+            // 11m / CB band — optional button right after 6m (toggle in
+            // Settings → Hardware → Band panel); same Ham row, no new row.
+            // Small gap + a "CB" label (same style as "Ham") precede it.
+            Item {
+                Layout.preferredWidth: 12
+                Layout.preferredHeight: 1
+                visible: Prefs.cbBandEnabled
+            }
+            RowLabel {
+                text: qsTr("CB")
+                visible: Prefs.cbBandEnabled
+                Layout.preferredWidth: 22
+            }
+            Repeater {
+                model: Bands.cb()
+                delegate: ChipButton {
+                    required property var modelData
+                    required property int index
+                    visible: Prefs.cbBandEnabled
+                    text: modelData.name
+                    chipActive: index === root.activeCb
+                    onClicked: {
+                        Gen.deactivate()
+                        var f = BandMemory.freqFor("cb_" + modelData.name)
+                        Stream.setRx1FreqHz(f > 0 ? f : modelData.hz)
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
         }
 
-        Item { Layout.fillWidth: true }
+        // ── Row 2: broadcast (SW) bands ───────────────────────────────
+        RowLayout {
+            spacing: 4
+            RowLabel { text: qsTr("BC") }
+            Repeater {
+                model: Bands.broadcast()
+                delegate: ChipButton {
+                    required property var modelData
+                    required property int index
+                    text: modelData.name
+                    chipActive: index === root.activeBc
+                    // BC bands now recall last freq (per-band memory),
+                    // else the band default; mode follows via BandMemory.
+                    onClicked: {
+                        Gen.deactivate()
+                        var f = BandMemory.freqFor("bc_" + modelData.name)
+                        Stream.setRx1FreqHz(f > 0 ? f : modelData.hz)
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // ── Row 3: GEN general-coverage slots ─────────────────────────
+        // Click recalls a slot's last freq+mode; while active, tuning
+        // updates it.  Right-click to reset.  (TIME + Mem land here too
+        // when those features are built.)
+        RowLayout {
+            spacing: 4
+            RowLabel { text: qsTr("Gen") }
+            Repeater {
+                model: 3
+                delegate: ChipButton {
+                    required property int index
+                    readonly property int slot: index + 1
+                    text: "GEN" + slot
+                    Layout.preferredWidth: 50
+                    chipActive: Gen.activeSlot === slot
+                    activeFill:   "#10303a"
+                    activeBorder: "#7ff7ff"
+                    activeText:   "#d8fbff"
+                    onClicked: Gen.recall(slot)
+                    ToolTip.visible: hovered
+                    ToolTip.text: "GEN" + slot + ":  "
+                        + (Gen.slotFreq(slot) / 1.0e6).toFixed(3) + " MHz "
+                        + Gen.slotMode(slot)
+                        + (Gen.slotLabel(slot) !== ""
+                           ? "  — " + Gen.slotLabel(slot) : "")
+                        + qsTr("\n(right-click to reset)")
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onClicked: genMenu.popup()
+                        Menu {
+                            id: genMenu
+                            MenuItem {
+                                text: qsTr("Reset to default")
+                                onTriggered: Gen.resetSlot(slot)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── TIME — HF time-station cycle ─────────────────────────
+            // Left-click: tune the next WWV/WWVH/CHU/… entry (cycles
+            // through the whole table, advancing each click).  Right-
+            // click: pick any station/frequency directly.  Mode follows
+            // the station (AM, or USB for CHU).
+            ChipButton {
+                id: timeBtn
+                text: qsTr("TIME")
+                Layout.preferredWidth: 50
+                chipActive: false
+                onClicked: { Gen.deactivate(); Status.show(Time.cycleNext(), 2500) }
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("HF time stations\n"
+                    + "Click to cycle · right-click for the full list")
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    onClicked: timeMenu.popup()
+                    Menu {
+                        id: timeMenu
+                        implicitWidth: 230
+                        // Custom contentItem: cap the height so the long
+                        // list (9 stations × several freqs) scrolls, and
+                        // show an always-on cyan scrollbar so it's obvious
+                        // there's more below — the default thin auto-hiding
+                        // indicator left folks unaware the list continued.
+                        contentItem: ListView {
+                            id: timeList
+                            implicitHeight: Math.min(contentHeight, 340)
+                            implicitWidth: timeMenu.implicitWidth
+                            model: timeMenu.contentModel
+                            currentIndex: timeMenu.currentIndex
+                            interactive: true
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar {
+                                id: timeScroll
+                                policy: ScrollBar.AlwaysOn
+                                width: 11
+                                contentItem: Rectangle {
+                                    implicitWidth: 11
+                                    radius: 5
+                                    color: timeScroll.pressed ? "#8fdcff" : "#5ec8ff"
+                                    opacity: 0.85
+                                }
+                                background: Rectangle {
+                                    radius: 5
+                                    color: "#14202a"
+                                    border.color: "#2a4a5a"
+                                    border.width: 1
+                                }
+                            }
+                        }
+                        // Flat list: bold station headers (disabled) + the
+                        // tunable frequency rows beneath each.  A single
+                        // Repeater of MenuItems is the reliable Qt6 pattern
+                        // (nested Repeater-of-Menu submenus do not register).
+                        Repeater {
+                            model: Time.menuEntries()
+                            delegate: MenuItem {
+                                required property var modelData
+                                text: modelData.text
+                                enabled: !modelData.header
+                                font.bold: modelData.header
+                                onTriggered: {
+                                    Gen.deactivate()
+                                    Status.show(
+                                        Time.tuneEntry(modelData.station,
+                                                       modelData.freq), 2500)
+                                }
+                            }
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: qsTr("Reset cycle to first entry")
+                            onTriggered: Time.resetCycle()
+                        }
+                    }
+                }
+            }
+
+            // ── Mem — frequency memory bank ──────────────────────────
+            // Left-click: recall a preset.  Right-click: save current /
+            // manage.  (Full editing in Settings → Bands → Memory.)
+            ChipButton {
+                id: memBtn
+                text: qsTr("Mem")
+                Layout.preferredWidth: 50
+                chipActive: false
+                onClicked: memRecallMenu.popup()
+                Menu {
+                    id: memRecallMenu
+                    Repeater {
+                        model: root.memList
+                        delegate: MenuItem {
+                            required property var modelData
+                            required property int index
+                            text: (modelData.name.length > 0
+                                   ? modelData.name : modelData.freqMHz)
+                                  + "   " + modelData.freqMHz + " " + modelData.mode
+                            onTriggered: { Gen.deactivate(); Memory.recall(index) }
+                        }
+                    }
+                    MenuItem {
+                        text: qsTr("(no presets — right-click to save)")
+                        enabled: false
+                        visible: root.memList.length === 0
+                    }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    onClicked: memManageMenu.popup()
+                    Menu {
+                        id: memManageMenu
+                        MenuItem {
+                            text: qsTr("Save current frequency")
+                            onTriggered: Memory.addCurrent("")
+                        }
+                        MenuItem {
+                            text: qsTr("Manage presets…")
+                            onTriggered: Help.openSettings("memory")
+                        }
+                    }
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+        }
     }
 }

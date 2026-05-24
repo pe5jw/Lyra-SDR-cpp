@@ -40,6 +40,10 @@ class BandPlan;
 class StatusBus;
 class TimeSync;
 class BandMemory;
+class GenSlots;
+class TimeStations;
+class MemoryStore;
+class EibiStore;
 class UsbBcd;
 class UpdateChecker;
 class WxIndicator;
@@ -162,6 +166,10 @@ private:
     int                         lastBandState_ = -1;  // -1 unknown / 0 out-of-band / 1 in-band
     TimeSync                   *timeSync_ = nullptr;  // NTP clock-drift check
     BandMemory                 *bandMemory_ = nullptr;// per-band mode/dB-range memory
+    GenSlots                   *gen_ = nullptr;       // GEN1/2/3 general-coverage slots
+    TimeStations               *time_ = nullptr;      // HF time-station TIME cycle
+    MemoryStore                *memory_ = nullptr;    // frequency memory bank
+    EibiStore                  *eibi_  = nullptr;     // EiBi shortwave overlay
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };

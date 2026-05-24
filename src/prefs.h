@@ -148,6 +148,9 @@ class Prefs : public QObject {
                WRITE setBandPlanBeacons NOTIFY bandPlanBeaconsChanged)
     Q_PROPERTY(bool bandPlanEdges READ bandPlanEdges
                WRITE setBandPlanEdges NOTIFY bandPlanEdgesChanged)
+    // Show the 11m / CB band row on the Band panel (Settings → Hardware).
+    Q_PROPERTY(bool cbBandEnabled READ cbBandEnabled
+               WRITE setCbBandEnabled NOTIFY cbBandEnabledChanged)
     // Verbose diagnostic logging (Settings → Hardware → Diagnostics).
     // OFF (default) keeps only warnings/errors in the log; ON also
     // captures Debug/Info for when we need the full picture.
@@ -266,6 +269,8 @@ public:
     void setBandPlanBeacons(bool v);
     bool bandPlanEdges() const { return bandPlanEdges_; }
     void setBandPlanEdges(bool v);
+    bool cbBandEnabled() const { return cbBandEnabled_; }
+    void setCbBandEnabled(bool v);
     // Per-mode-kind band-plan segment colour (override of the defaults).
     // kind = "CW"/"DIG"/"SSB"/"FM"/"MIX"/"BC".  Always returns a colour.
     QString bandPlanColor(const QString &kind) const;
@@ -326,6 +331,7 @@ signals:
     void bandPlanBeaconsChanged();
     void bandPlanEdgesChanged();
     void bandPlanColorsChanged();
+    void cbBandEnabledChanged();
     void debugLoggingChanged();
 
 private:
@@ -378,6 +384,7 @@ private:
     bool    bandPlanBeacons_   = true;
     bool    bandPlanEdges_     = true;
     QHash<QString, QString> bandPlanColors_;   // kind → override hex (sparse)
+    bool    cbBandEnabled_ = false;
     bool    debugLogging_ = false;
 };
 

@@ -22,7 +22,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi. No in-process bottleneck on the wire path.**
 
-## Features (v0.1.3)
+## Features (v0.1.4)
 
 A working receive-side SDR for the Hermes Lite 2 / 2+, native C++ end to
 end.  (Transmit is on the roadmap; the current build is RX-focused.)
@@ -38,8 +38,15 @@ end.  (Transmit is on the roadmap; the current build is RX-focused.)
 * **Dockable UI** — movable/floatable/tabbed panels (panadapter, tuning,
   mode+filter, audio, display, band, solar) with save/restore layout +
   export/import of the full settings profile.
-* **Band switching + per-band memory** — returns to each band's last
-  frequency, mode, and panadapter/waterfall dB ranges.
+* **Band switching + per-band memory** — three rows (Ham / BC / Gen),
+  returns to each band's last frequency, mode, and panadapter/waterfall dB
+  ranges; optional 11m/CB band with all-40-channel panadapter markers.
+* **GEN / TIME / Memory** — three general-coverage slots, an HF
+  time-station cycle (WWV/WWVH/CHU/BPM/RWM/…, ordered by your callsign),
+  and a 20-slot frequency memory bank with CSV import/export.
+* **EiBi shortwave overlay** — the EiBi broadcast schedule on the
+  panadapter, on-air-now aware (cyan = live, grey = scheduled), click to
+  tune in AM; in-app download or manual CSV import.
 * **Band-plan overlay** — per-region (US / IARU R1 / R3) sub-band
   segments, band-edge warnings, digital + NCDXF beacon markers with
   click-to-tune and live beacon-station tooltips; out-of-band advisory.

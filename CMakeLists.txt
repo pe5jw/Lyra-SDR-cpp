@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.1.3
+    VERSION 0.1.4
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -84,6 +84,14 @@ qt_add_executable(lyra
     src/timesync.cpp
     src/bandmemory.h
     src/bandmemory.cpp
+    src/genslots.h
+    src/genslots.cpp
+    src/time_stations.h
+    src/time_stations.cpp
+    src/memorystore.h
+    src/memorystore.cpp
+    src/eibistore.h
+    src/eibistore.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h

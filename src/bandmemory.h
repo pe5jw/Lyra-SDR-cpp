@@ -35,7 +35,8 @@ private:
     void onFreqChanged();          // band-edge crossing → restore new band
     void saveCurrent();            // live-save the current band on a change
     void applyBand(const QString &band);
-    static QString bandNameFor(int hz);
+    static QString bandNameFor(int hz);        // "" / "40m" / "bc_49m" / "cb_11m"
+    static QString defaultModeFor(const QString &band);   // band-table default mode
 
     Prefs                *prefs_  = nullptr;
     lyra::ipc::HL2Stream *stream_ = nullptr;

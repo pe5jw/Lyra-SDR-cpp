@@ -20,6 +20,8 @@ namespace lyra::ui {
 
 class Prefs;
 class UsbBcd;
+class MemoryStore;
+class EibiStore;
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -31,8 +33,8 @@ public:
     SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                    lyra::ipc::HL2Discovery *discovery,
                    UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
-                   lyra::wx::WxService *wx,
-                   QWidget *parent = nullptr);
+                   lyra::wx::WxService *wx, MemoryStore *memory,
+                   EibiStore *eibi, QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
     void selectTopic(const QString &topic);
@@ -42,6 +44,7 @@ private:
     QWidget *buildHardwareTab();
     QWidget *buildAudioTab();    // RX audio output device chooser
     QWidget *buildWeatherTab();  // weather-alert sources + thresholds + keys
+    QWidget *buildBandsTab();    // Memory bank (+ Time Stations / SW DB later)
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
@@ -49,6 +52,8 @@ private:
     UsbBcd                 *bcd_       = nullptr;
     lyra::dsp::WdspEngine  *engine_    = nullptr;
     lyra::wx::WxService    *wx_        = nullptr;
+    MemoryStore            *memory_    = nullptr;
+    EibiStore              *eibi_      = nullptr;
     QTabWidget             *tabs_      = nullptr;
 };
 

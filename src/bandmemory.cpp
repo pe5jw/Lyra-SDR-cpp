@@ -34,9 +34,34 @@ BandMemory::BandMemory(Prefs *prefs, lyra::ipc::HL2Stream *stream,
 }
 
 QString BandMemory::bandNameFor(int hz) {
-    const int idx = lyra::bandIndexForFreq(hz);
-    if (idx < 0) return QString();
-    return QString::fromLatin1(lyra::amateurBands()[std::size_t(idx)].name);
+    // Amateur first (priority on overlaps), then broadcast, then CB — each
+    // with a unique memory-key prefix so e.g. ham "60m" and bc "60m" don't
+    // collide.
+    const int a = lyra::bandIndexForFreq(hz);
+    if (a >= 0) return QString::fromLatin1(lyra::amateurBands()[std::size_t(a)].name);
+    const int b = lyra::broadcastBandIndexForFreq(hz);
+    if (b >= 0)
+        return QStringLiteral("bc_")
+               + QString::fromLatin1(lyra::broadcastBands()[std::size_t(b)].name);
+    const int c = lyra::cbBandIndexForFreq(hz);
+    if (c >= 0)
+        return QStringLiteral("cb_")
+               + QString::fromLatin1(lyra::cbBands()[std::size_t(c)].name);
+    return QString();
+}
+
+QString BandMemory::defaultModeFor(const QString &band) {
+    if (band.startsWith(QLatin1String("bc_"))) {
+        const QString n = band.mid(3);
+        for (const auto &b : lyra::broadcastBands())
+            if (n == QString::fromLatin1(b.name)) return QString::fromLatin1(b.mode);
+    } else if (band.startsWith(QLatin1String("cb_"))) {
+        for (const auto &b : lyra::cbBands()) return QString::fromLatin1(b.mode);
+    } else {
+        for (const auto &b : lyra::amateurBands())
+            if (band == QString::fromLatin1(b.name)) return QString::fromLatin1(b.mode);
+    }
+    return QString();
 }
 
 void BandMemory::onFreqChanged() {
@@ -74,7 +99,17 @@ void BandMemory::applyBand(const QString &band) {
     if (!prefs_) return;
     QSettings s;
     const QString p = QString::fromLatin1(kPfx) + band + QLatin1Char('/');
-    if (!s.contains(p + QStringLiteral("mode"))) return;   // never visited
+    if (!s.contains(p + QStringLiteral("mode"))) {
+        // Never configured: apply the band's default mode (band-appropriate
+        // — LSB on 40m, AM on broadcast/CB), leaving dB ranges global.
+        const QString dm = defaultModeFor(band);
+        if (!dm.isEmpty() && prefs_) {
+            applying_ = true;
+            prefs_->setMode(dm);
+            applying_ = false;
+        }
+        return;
+    }
     applying_ = true;                     // don't re-save these as user edits
     prefs_->setMode(s.value(p + QStringLiteral("mode")).toString());
     prefs_->setDbMin(s.value(p + QStringLiteral("dbMin")).toDouble());

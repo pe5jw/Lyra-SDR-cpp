@@ -35,6 +35,53 @@ int bandIndexForFreq(int hz) {
     return -1;
 }
 
+const std::vector<Band> &broadcastBands() {
+    // Shortwave broadcast meter bands, matching old Lyra BROADCAST_BANDS.
+    static const std::vector<Band> kBc = {
+        {"120m",  2300000,  2495000,  2400000, "AM"},
+        {"90m",   3200000,  3400000,  3300000, "AM"},
+        {"75m",   3900000,  4000000,  3950000, "AM"},
+        {"60m",   4750000,  5060000,  4900000, "AM"},
+        {"49m",   5900000,  6200000,  5975000, "AM"},
+        {"41m",   7200000,  7450000,  7255000, "AM"},
+        {"31m",   9400000,  9900000,  9580000, "AM"},
+        {"25m",  11600000, 12100000, 11870000, "AM"},
+        {"22m",  13570000, 13870000, 13700000, "AM"},
+        {"19m",  15100000, 15830000, 15400000, "AM"},
+        {"16m",  17480000, 17900000, 17690000, "AM"},
+        {"13m",  21450000, 21850000, 21600000, "AM"},
+    };
+    return kBc;
+}
+
+int broadcastBandIndexForFreq(int hz) {
+    const auto &b = broadcastBands();
+    for (size_t i = 0; i < b.size(); ++i) {
+        if (hz >= b[i].low && hz <= b[i].high) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+const std::vector<Band> &cbBands() {
+    // 11m / Citizens Band — US 40-channel allocation; default = Ch 19.
+    static const std::vector<Band> kCb = {
+        {"11m", 26965000, 27405000, 27185000, "AM"},
+    };
+    return kCb;
+}
+
+int cbBandIndexForFreq(int hz) {
+    const auto &b = cbBands();
+    for (size_t i = 0; i < b.size(); ++i) {
+        if (hz >= b[i].low && hz <= b[i].high) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 int n2adrOcPattern(int bandIndex, bool transmitting) {
     // (rx, tx) J16 pin bits per amateur band (index-aligned with
     // amateurBands()).  Ported from old Lyra hardware/oc.py N2ADR_PRESET.
@@ -105,8 +152,44 @@ QVariantList Bands::amateur() const {
     return out;
 }
 
+QVariantList Bands::broadcast() const {
+    QVariantList out;
+    for (const auto &b : broadcastBands()) {
+        QVariantMap m;
+        m[QStringLiteral("name")] = QString::fromLatin1(b.name);
+        m[QStringLiteral("low")]  = b.low;
+        m[QStringLiteral("high")] = b.high;
+        m[QStringLiteral("hz")]   = b.defaultHz;
+        m[QStringLiteral("mode")] = QString::fromLatin1(b.mode);
+        out.append(m);
+    }
+    return out;
+}
+
 int Bands::indexForFreq(double hz) const {
     return bandIndexForFreq(static_cast<int>(hz));
+}
+
+int Bands::broadcastIndexForFreq(double hz) const {
+    return broadcastBandIndexForFreq(static_cast<int>(hz));
+}
+
+QVariantList Bands::cb() const {
+    QVariantList out;
+    for (const auto &b : cbBands()) {
+        QVariantMap m;
+        m[QStringLiteral("name")] = QString::fromLatin1(b.name);
+        m[QStringLiteral("low")]  = b.low;
+        m[QStringLiteral("high")] = b.high;
+        m[QStringLiteral("hz")]   = b.defaultHz;
+        m[QStringLiteral("mode")] = QString::fromLatin1(b.mode);
+        out.append(m);
+    }
+    return out;
+}
+
+int Bands::cbIndexForFreq(double hz) const {
+    return cbBandIndexForFreq(static_cast<int>(hz));
 }
 
 } // namespace ui

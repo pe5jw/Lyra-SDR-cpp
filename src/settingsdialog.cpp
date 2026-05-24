@@ -31,11 +31,21 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QHeaderView>
+#include <QAbstractItemView>
+#include <QFileDialog>
+#include "memorystore.h"
+#include "eibistore.h"
+#include <QDesktopServices>
+#include <memory>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -47,10 +57,11 @@ namespace lyra::ui {
 SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::ipc::HL2Discovery *discovery,
                                UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
-                               lyra::wx::WxService *wx,
-                               QWidget *parent)
+                               lyra::wx::WxService *wx, MemoryStore *memory,
+                               EibiStore *eibi, QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
-      discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx) {
+      discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
+      memory_(memory), eibi_(eibi) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
@@ -61,6 +72,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(buildHardwareTab(), tr("Hardware"));
+    }
+    if (memory_ || eibi_) {
+        tabs_->addTab(buildBandsTab(), tr("Bands"));
     }
     if (wx_) {
         tabs_->addTab(buildWeatherTab(), tr("Weather"));
@@ -110,6 +124,229 @@ QWidget *SettingsDialog::buildAudioTab() {
     note->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
     form->addRow(note);
 
+    return page;
+}
+
+QWidget *SettingsDialog::buildBandsTab() {
+    // A nested tab set so Time Stations + SW Database (EiBi) can join
+    // Memory here later, matching old Lyra's Bands → (Memory / Time / SW).
+    auto *page = new QWidget(this);
+    auto *outer = new QVBoxLayout(page);
+    auto *sub = new QTabWidget(page);
+
+    // ---- Memory subtab ----
+    if (memory_) {
+    auto *mem = new QWidget(sub);
+    auto *v = new QVBoxLayout(mem);
+
+    auto *table = new QTableWidget(0, 5, mem);
+    table->setHorizontalHeaderLabels(
+        {tr("Name"), tr("Freq (MHz)"), tr("Mode"), tr("RX BW (Hz)"), tr("Notes")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+    auto refreshing = std::make_shared<bool>(false);
+    auto refresh = [this, table, refreshing]() {
+        *refreshing = true;
+        const auto &ps = memory_->presets();
+        table->setRowCount(ps.size());
+        for (int i = 0; i < ps.size(); ++i) {
+            const auto &p = ps[i];
+            table->setItem(i, 0, new QTableWidgetItem(p.name));
+            table->setItem(i, 1, new QTableWidgetItem(
+                QString::number(p.freq / 1.0e6, 'f', 6)));
+            table->setItem(i, 2, new QTableWidgetItem(p.mode));
+            table->setItem(i, 3, new QTableWidgetItem(
+                p.rxBw > 0 ? QString::number(p.rxBw) : QString()));
+            table->setItem(i, 4, new QTableWidgetItem(p.notes));
+        }
+        *refreshing = false;
+    };
+    refresh();
+    connect(memory_, &MemoryStore::changed, table, refresh);
+    connect(table, &QTableWidget::itemChanged, table,
+            [this, table, refreshing](QTableWidgetItem *) {
+        if (*refreshing) return;
+        const int r = table->currentRow() >= 0 ? table->currentRow() : 0;
+        Q_UNUSED(r);
+        // Rebuild every row from the table on any edit (simple + robust).
+        for (int i = 0; i < table->rowCount() && i < memory_->count(); ++i) {
+            MemoryStore::Preset p;
+            p.name  = table->item(i, 0) ? table->item(i, 0)->text() : QString();
+            p.freq  = qint64(qRound(
+                (table->item(i, 1) ? table->item(i, 1)->text().toDouble() : 0.0)
+                * 1.0e6));
+            p.mode  = table->item(i, 2) ? table->item(i, 2)->text().toUpper()
+                                        : QString();
+            p.rxBw  = table->item(i, 3) ? table->item(i, 3)->text().toInt() : 0;
+            p.notes = table->item(i, 4) ? table->item(i, 4)->text() : QString();
+            if (p.freq > 0) memory_->setPreset(i, p);
+        }
+    });
+    v->addWidget(table);
+
+    auto *btnRow = new QHBoxLayout;
+    auto *addBtn = new QPushButton(tr("Store current"), mem);
+    connect(addBtn, &QPushButton::clicked, mem, [this]() {
+        if (!memory_->addCurrent(QString()))
+            QMessageBox::information(this, tr("Memory"),
+                tr("The memory bank is full (%1 presets).").arg(MemoryStore::kMax));
+    });
+    auto *delBtn = new QPushButton(tr("Delete"), mem);
+    connect(delBtn, &QPushButton::clicked, mem, [this, table]() {
+        const int r = table->currentRow();
+        if (r >= 0) memory_->remove(r);
+    });
+    auto *clrBtn = new QPushButton(tr("Clear all"), mem);
+    connect(clrBtn, &QPushButton::clicked, mem, [this]() {
+        if (QMessageBox::question(this, tr("Memory"),
+                tr("Delete all memory presets?")) == QMessageBox::Yes)
+            memory_->clearAll();
+    });
+    auto *impBtn = new QPushButton(tr("Import CSV…"), mem);
+    connect(impBtn, &QPushButton::clicked, mem, [this]() {
+        const QString fn = QFileDialog::getOpenFileName(this,
+            tr("Import memory CSV"), QString(),
+            tr("CSV files (*.csv);;All files (*)"));
+        if (fn.isEmpty()) return;
+        const auto b = QMessageBox::question(this, tr("Import"),
+            tr("Merge with existing presets, or replace them?\n\n"
+               "Yes = merge,  No = replace."),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+        if (b == QMessageBox::Cancel) return;
+        const auto r = memory_->importCsv(fn, b == QMessageBox::No);
+        if (!r.error.isEmpty())
+            QMessageBox::warning(this, tr("Import"), r.error);
+        else
+            QMessageBox::information(this, tr("Import"),
+                tr("Imported %1 preset(s); skipped %2.").arg(r.added).arg(r.skipped));
+    });
+    auto *expBtn = new QPushButton(tr("Export CSV…"), mem);
+    connect(expBtn, &QPushButton::clicked, mem, [this]() {
+        const QString fn = QFileDialog::getSaveFileName(this,
+            tr("Export memory CSV"), QStringLiteral("lyra-memory.csv"),
+            tr("CSV files (*.csv)"));
+        if (fn.isEmpty()) return;
+        if (!memory_->exportCsv(fn))
+            QMessageBox::warning(this, tr("Export"),
+                                 tr("Could not write the file."));
+    });
+    btnRow->addWidget(addBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addWidget(clrBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(impBtn);
+    btnRow->addWidget(expBtn);
+    v->addLayout(btnRow);
+
+    auto *hint = new QLabel(
+        tr("Edit cells directly. Use the “Mem” button on the Band panel to "
+           "store the current frequency and recall presets. RX BW blank = "
+           "the mode default. Up to %1 presets.").arg(MemoryStore::kMax), mem);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+    v->addWidget(hint);
+
+    sub->addTab(mem, tr("Memory"));
+    }  // if (memory_)
+
+    // ---- SW Database (EiBi) subtab ----
+    if (eibi_) {
+        auto *sw = new QWidget(sub);
+        auto *sv = new QVBoxLayout(sw);
+
+        auto *enable = new QCheckBox(tr("Enable EiBi shortwave overlay"), sw);
+        enable->setChecked(eibi_->enabled());
+        connect(enable, &QCheckBox::toggled, eibi_,
+                [this](bool on) { eibi_->setEnabled(on); });
+        sv->addWidget(enable);
+
+        auto *hideOff = new QCheckBox(tr("Hide stations that are off-air now"), sw);
+        hideOff->setChecked(eibi_->hideOffAir());
+        connect(hideOff, &QCheckBox::toggled, eibi_,
+                [this](bool on) { eibi_->setHideOffAir(on); });
+        sv->addWidget(hideOff);
+
+        auto *forceAll = new QCheckBox(
+            tr("Show in all bands (otherwise hidden inside amateur bands)"), sw);
+        forceAll->setChecked(eibi_->forceAllBands());
+        connect(forceAll, &QCheckBox::toggled, eibi_,
+                [this](bool on) { eibi_->setForceAllBands(on); });
+        sv->addWidget(forceAll);
+
+        auto *pwrRow = new QHBoxLayout;
+        pwrRow->addWidget(new QLabel(tr("Minimum transmitter power:"), sw));
+        auto *pwr = new QComboBox(sw);
+        pwr->addItems({tr("Any"), tr("≥ 50 kW"), tr("≥ 100 kW"), tr("≥ 250 kW")});
+        pwr->setCurrentIndex(qBound(0, eibi_->minPower(), 3));
+        connect(pwr, QOverload<int>::of(&QComboBox::currentIndexChanged), eibi_,
+                [this](int i) { eibi_->setMinPower(i); });
+        pwrRow->addWidget(pwr);
+        pwrRow->addStretch(1);
+        sv->addLayout(pwrRow);
+
+        auto *status = new QLabel(eibi_->statusText(), sw);
+        status->setWordWrap(true);
+        status->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+        connect(eibi_, &EibiStore::changed, status,
+                [this, status]() { status->setText(eibi_->statusText()); });
+
+        auto *swBtns = new QHBoxLayout;
+        auto *upd = new QPushButton(tr("Update database now"), sw);
+        connect(upd, &QPushButton::clicked, sw, [this, upd]() {
+            upd->setEnabled(false);
+            upd->setText(tr("Downloading…"));
+            eibi_->update();
+        });
+        connect(eibi_, &EibiStore::downloadFinished, upd,
+                [this, upd](bool ok, const QString &msg) {
+            upd->setEnabled(true);
+            upd->setText(tr("Update database now"));
+            if (ok) QMessageBox::information(this, tr("EiBi"), msg);
+            else    QMessageBox::warning(this, tr("EiBi"), msg);
+        });
+        auto *loadBtn = new QPushButton(tr("Load CSV file…"), sw);
+        connect(loadBtn, &QPushButton::clicked, sw, [this]() {
+            const QString fn = QFileDialog::getOpenFileName(this,
+                tr("Import EiBi CSV"), QString(),
+                tr("CSV files (*.csv);;All files (*)"));
+            if (fn.isEmpty()) return;
+            if (eibi_->importFile(fn))
+                QMessageBox::information(this, tr("EiBi"), eibi_->statusText());
+            else
+                QMessageBox::warning(this, tr("EiBi"),
+                    tr("Could not read or parse that file. EiBi CSVs are "
+                       "semicolon-delimited (KHZ;TIM;DAY;ITU;STN;…)."));
+        });
+        auto *page2 = new QPushButton(tr("Open EiBi website…"), sw);
+        connect(page2, &QPushButton::clicked, sw, []() {
+            QDesktopServices::openUrl(QUrl(QStringLiteral("https://eibispace.de/")));
+        });
+        swBtns->addWidget(upd);
+        swBtns->addWidget(loadBtn);
+        swBtns->addWidget(page2);
+        swBtns->addStretch(1);
+        sv->addLayout(swBtns);
+        sv->addWidget(status);
+
+        auto *swHint = new QLabel(
+            tr("EiBi (eibispace.de) is a free shortwave-broadcast schedule. "
+               "Click “Update database now” to download the current season "
+               "(~3 MB). If the download fails (their TLS certificate expires "
+               "from time to time), download the sked-<season>.csv yourself "
+               "from the EiBi site and use “Load CSV file…”. Active stations "
+               "then appear on the panadapter; cyan = on-air now, grey = "
+               "scheduled but off-air. Click a station to tune it in AM."), sw);
+        swHint->setWordWrap(true);
+        swHint->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+        sv->addWidget(swHint);
+        sv->addStretch(1);
+
+        sub->addTab(sw, tr("SW Database"));
+    }
+
+    outer->addWidget(sub);
     return page;
 }
 
@@ -316,6 +553,25 @@ QWidget *SettingsDialog::buildHardwareTab() {
         ch->addStretch(1);
         g->addWidget(colorRow, 5, 1);
 
+        form->addRow(grp);
+    }
+
+    // --- Band panel options ---
+    {
+        auto *grp = new QGroupBox(tr("Band panel"), page);
+        auto *v = new QVBoxLayout(grp);
+        auto *cb = new QCheckBox(
+            tr("Show 11m / CB band row (26.965–27.405 MHz)"), grp);
+        cb->setChecked(prefs_->cbBandEnabled());
+        cb->setToolTip(tr("Adds a CB / 11-meter row to the Band panel for "
+                          "Citizens Band listening."));
+        connect(cb, &QCheckBox::toggled, grp,
+                [this](bool on) { prefs_->setCbBandEnabled(on); });
+        connect(prefs_, &Prefs::cbBandEnabledChanged, cb, [this, cb]() {
+            if (cb->isChecked() != prefs_->cbBandEnabled())
+                cb->setChecked(prefs_->cbBandEnabled());
+        });
+        v->addWidget(cb);
         form->addRow(grp);
     }
 
@@ -595,6 +851,8 @@ void SettingsDialog::selectTopic(const QString &topic) {
         {QStringLiteral("hardware"),   QStringLiteral("Hardware")},
         {QStringLiteral("radio"),      QStringLiteral("Hardware")},
         {QStringLiteral("audio"),      QStringLiteral("Audio")},
+        {QStringLiteral("memory"),     QStringLiteral("Bands")},
+        {QStringLiteral("bands"),      QStringLiteral("Bands")},
         // tuning has no dedicated tab yet -> falls through to the first
         // tab so the dialog still opens somewhere sensible.
     };

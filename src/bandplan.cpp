@@ -247,6 +247,36 @@ QString BandPlan::ncdxfStation(double freqHz) const {
                                          QString::fromLatin1(qth[st]));
 }
 
+QVariantList BandPlan::cbChannels(double centerHz, double spanHz) const {
+    QVariantList out;
+    if (spanHz <= 0 || !prefs_ || !prefs_->cbBandEnabled()) return out;
+    // US 40-channel CB plan (channel number → kHz), incl. the 23/24/25
+    // ordering anomaly.  A few channels carry their well-known nicknames.
+    static const struct { int ch; int khz; const char *note; } chans[40] = {
+        {1,26965,""},{2,26975,""},{3,26985,""},{4,27005,""},{5,27015,""},
+        {6,27025,"Super Bowl"},{7,27035,""},{8,27055,""},
+        {9,27065,"Emergency"},{10,27075,""},{11,27085,"Calling"},
+        {12,27105,""},{13,27115,""},{14,27125,""},{15,27135,""},{16,27155,""},
+        {17,27165,""},{18,27175,""},{19,27185,"Highway / truckers"},
+        {20,27205,""},{21,27215,""},{22,27225,""},{23,27255,""},{24,27235,""},
+        {25,27245,""},{26,27265,""},{27,27275,""},{28,27285,""},{29,27295,""},
+        {30,27305,""},{31,27315,""},{32,27325,""},{33,27335,""},{34,27345,""},
+        {35,27355,""},{36,27365,""},{37,27375,""},{38,27385,"SSB LSB"},
+        {39,27395,""},{40,27405,"SSB"}};
+    const double lo = centerHz - spanHz / 2;
+    const double hi = centerHz + spanHz / 2;
+    for (const auto &c : chans) {
+        const double f = double(c.khz) * 1000.0;
+        if (f < lo || f > hi) continue;
+        QVariantMap m;
+        m["freq"]  = f;
+        m["label"] = QStringLiteral("Ch%1").arg(c.ch);
+        m["note"]  = QString::fromLatin1(c.note);
+        out.append(m);
+    }
+    return out;
+}
+
 QString BandPlan::bandContaining(double freqHz) const {
     const QString reg = region();
     if (reg == QLatin1String("NONE")) return QString();

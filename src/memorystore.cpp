@@ -1,0 +1,197 @@
+// Lyra — frequency memory bank.  See memorystore.h.
+
+#include "memorystore.h"
+
+#include "hl2_stream.h"
+#include "prefs.h"
+
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSettings>
+#include <QTextStream>
+#include <QVariantMap>
+
+namespace lyra::ui {
+
+namespace {
+constexpr auto kKey = "memory/presets";
+}
+
+MemoryStore::MemoryStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
+                         QObject *parent)
+    : QObject(parent), prefs_(prefs), stream_(stream) {
+    load();
+}
+
+void MemoryStore::load() {
+    presets_.clear();
+    const QByteArray raw =
+        QSettings().value(QString::fromLatin1(kKey)).toByteArray();
+    const QJsonArray arr = QJsonDocument::fromJson(raw).array();
+    for (const QJsonValue &v : arr) {
+        const QJsonObject o = v.toObject();
+        Preset p;
+        p.name  = o.value(QStringLiteral("name")).toString().left(kMaxName);
+        p.freq  = qint64(o.value(QStringLiteral("freq")).toDouble());
+        p.mode  = o.value(QStringLiteral("mode")).toString();
+        p.rxBw  = o.value(QStringLiteral("rxBw")).toInt();
+        p.notes = o.value(QStringLiteral("notes")).toString().left(kMaxNotes);
+        if (p.freq > 0 && presets_.size() < kMax) presets_.append(p);
+    }
+}
+
+void MemoryStore::save() const {
+    QJsonArray arr;
+    for (const Preset &p : presets_) {
+        QJsonObject o;
+        o[QStringLiteral("name")]  = p.name;
+        o[QStringLiteral("freq")]  = double(p.freq);
+        o[QStringLiteral("mode")]  = p.mode;
+        o[QStringLiteral("rxBw")]  = p.rxBw;
+        o[QStringLiteral("notes")] = p.notes;
+        arr.append(o);
+    }
+    QSettings().setValue(QString::fromLatin1(kKey),
+                         QJsonDocument(arr).toJson(QJsonDocument::Compact));
+}
+
+QVariantList MemoryStore::list() const {
+    QVariantList out;
+    for (const Preset &p : presets_) {
+        QVariantMap m;
+        m[QStringLiteral("name")]   = p.name;
+        m[QStringLiteral("freq")]   = double(p.freq);
+        m[QStringLiteral("freqMHz")]= QString::number(p.freq / 1.0e6, 'f', 4);
+        m[QStringLiteral("mode")]   = p.mode;
+        m[QStringLiteral("rxBw")]   = p.rxBw;
+        m[QStringLiteral("notes")]  = p.notes;
+        out.append(m);
+    }
+    return out;
+}
+
+void MemoryStore::recall(int index) {
+    if (index < 0 || index >= presets_.size()) return;
+    const Preset &p = presets_[index];
+    if (prefs_ && !p.mode.isEmpty()) prefs_->setMode(p.mode);   // mode first
+    if (stream_) stream_->setRx1FreqHz(quint32(p.freq));
+    if (prefs_ && p.rxBw > 0) prefs_->setRxBandwidth(p.rxBw);   // optional BW
+}
+
+QString MemoryStore::currentAutoName() const {
+    const double f = stream_ ? double(stream_->rx1FreqHz()) : 0.0;
+    const QString mode = prefs_ ? prefs_->mode() : QString();
+    return QStringLiteral("%1 %2").arg(f / 1.0e6, 0, 'f', 3).arg(mode);
+}
+
+bool MemoryStore::addCurrent(const QString &name) {
+    if (full() || !stream_) return false;
+    Preset p;
+    p.name = (name.trimmed().isEmpty() ? currentAutoName()
+                                       : name.trimmed()).left(kMaxName);
+    p.freq = stream_->rx1FreqHz();
+    p.mode = prefs_ ? prefs_->mode() : QString();
+    p.rxBw = 0;
+    presets_.append(p);
+    save();
+    emit changed();
+    return true;
+}
+
+bool MemoryStore::addPreset(const Preset &p) {
+    if (full() || p.freq <= 0) return false;
+    presets_.append(p);
+    save();
+    emit changed();
+    return true;
+}
+
+void MemoryStore::setPreset(int index, const Preset &p) {
+    if (index < 0 || index >= presets_.size()) return;
+    presets_[index] = p;
+    save();
+    emit changed();
+}
+
+void MemoryStore::remove(int index) {
+    if (index < 0 || index >= presets_.size()) return;
+    presets_.remove(index);
+    save();
+    emit changed();
+}
+
+void MemoryStore::clearAll() {
+    if (presets_.isEmpty()) return;
+    presets_.clear();
+    save();
+    emit changed();
+}
+
+bool MemoryStore::exportCsv(const QString &path) const {
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    QTextStream ts(&f);
+    auto esc = [](QString s) {
+        s.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        return (s.contains(QLatin1Char(',')) || s.contains(QLatin1Char('"')))
+            ? QStringLiteral("\"%1\"").arg(s) : s;
+    };
+    ts << "Name,Freq_Hz,Mode,RX_BW_Hz,Notes\n";
+    for (const Preset &p : presets_) {
+        ts << esc(p.name) << ',' << p.freq << ',' << p.mode << ','
+           << (p.rxBw > 0 ? QString::number(p.rxBw) : QString()) << ','
+           << esc(p.notes) << '\n';
+    }
+    return true;
+}
+
+MemoryStore::ImportResult MemoryStore::importCsv(const QString &path,
+                                                 bool replace) {
+    ImportResult r;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        r.error = tr("Could not open the file.");
+        return r;
+    }
+    QVector<Preset> incoming;
+    QTextStream ts(&f);
+    bool first = true;
+    while (!ts.atEnd()) {
+        const QString line = ts.readLine();
+        if (first) { first = false; continue; }   // skip header
+        if (line.trimmed().isEmpty()) continue;
+        // Simple split (handles unquoted fields + basic quoted name/notes).
+        QStringList c;
+        QString cur; bool inq = false;
+        for (const QChar ch : line) {
+            if (ch == QLatin1Char('"')) { inq = !inq; }
+            else if (ch == QLatin1Char(',') && !inq) { c << cur; cur.clear(); }
+            else cur += ch;
+        }
+        c << cur;
+        if (c.size() < 3) { r.skipped++; continue; }
+        bool ok = false;
+        const qint64 hz = qint64(c[1].trimmed().toDouble(&ok));
+        if (!ok || hz <= 0) { r.skipped++; continue; }
+        Preset p;
+        p.name  = c[0].trimmed().left(kMaxName);
+        p.freq  = hz;
+        p.mode  = c[2].trimmed().toUpper();
+        p.rxBw  = (c.size() > 3) ? c[3].trimmed().toInt() : 0;
+        p.notes = (c.size() > 4) ? c[4].trimmed().left(kMaxNotes) : QString();
+        incoming.append(p);
+    }
+    if (replace) presets_.clear();
+    for (const Preset &p : incoming) {
+        if (presets_.size() >= kMax) break;
+        presets_.append(p);
+        r.added++;
+    }
+    save();
+    emit changed();
+    return r;
+}
+
+} // namespace lyra::ui

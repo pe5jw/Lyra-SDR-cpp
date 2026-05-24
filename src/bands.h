@@ -30,8 +30,19 @@ struct Band {
 // The 11 HF/6m amateur bands, low → high.
 const std::vector<Band> &amateurBands();
 
-// Index of the band whose [low,high] contains hz, else -1.
+// The shortwave broadcast meter bands (120m … 13m bc), low → high.
+const std::vector<Band> &broadcastBands();
+
+// The 11m / CB Citizens Band (26.965–27.405 MHz).  Optional row, enabled
+// via Settings → Hardware.
+const std::vector<Band> &cbBands();
+
+// Index of the amateur band whose [low,high] contains hz, else -1.
 int bandIndexForFreq(int hz);
+// Index of the broadcast band whose [low,high] contains hz, else -1.
+int broadcastBandIndexForFreq(int hz);
+// Index of the CB band whose [low,high] contains hz, else -1.
+int cbBandIndexForFreq(int hz);
 
 // N2ADR HL2 filter-board OC pattern for amateur band <bandIndex>.
 // Returns the 7-bit J16 open-collector pattern (pin N -> bit 1<<(N-1));
@@ -59,8 +70,16 @@ public:
     // Band list for a QML Repeater: each entry a map
     // {name, low, high, hz, mode}.
     Q_INVOKABLE QVariantList amateur() const;
+    // Broadcast (SW) band list for a QML Repeater (same map shape).
+    Q_INVOKABLE QVariantList broadcast() const;
+    // CB / 11m band list for a QML Repeater (same map shape).
+    Q_INVOKABLE QVariantList cb() const;
     // Active-band index for highlighting (-1 = outside all bands).
     Q_INVOKABLE int indexForFreq(double hz) const;
+    // Active broadcast-band index for highlighting (-1 = none).
+    Q_INVOKABLE int broadcastIndexForFreq(double hz) const;
+    // Active CB-band index for highlighting (-1 = none).
+    Q_INVOKABLE int cbIndexForFreq(double hz) const;
 };
 
 } // namespace ui

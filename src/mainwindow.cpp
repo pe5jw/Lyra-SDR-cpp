@@ -7,6 +7,10 @@
 #include "statusbus.h"
 #include "timesync.h"
 #include "bandmemory.h"
+#include "genslots.h"
+#include "time_stations.h"
+#include "memorystore.h"
+#include "eibistore.h"
 #include "help.h"
 #include "helpdialog.h"
 #include "logdialog.h"
@@ -152,6 +156,21 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     bandMemory_ = new BandMemory(
         prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
 
+    // GEN1/2/3 general-coverage slots (shortwave / MW quick-tune).
+    gen_ = new GenSlots(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
+    // HF time-station TIME cycle (TIME button on the GEN row).
+    time_ = new TimeStations(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
+    // Frequency memory bank (Mem button + Settings → Bands → Memory).
+    memory_ = new MemoryStore(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
+    // EiBi shortwave-broadcaster overlay (Settings → Bands → SW Database).
+    eibi_ = new EibiStore(prefs_, bands_, this);
+
     // Solar / HF-propagation service — fetches HamQSL, derives per-band
     // ratings for the operator's day/night.  Drives the PROP dock.  It
     // re-arms itself on a Prefs location change internally.
@@ -237,6 +256,14 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Status"), statusBus_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("BandMemory"), bandMemory_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Gen"), gen_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Time"), time_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Memory"), memory_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Eibi"), eibi_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -459,8 +486,19 @@ void MainWindow::buildMenus() {
     helpMenu->addSeparator();
     helpMenu->addAction(tr("&About Lyra…"), this, [this]() {
         const QString ver = QStringLiteral(LYRA_VERSION);
-        QMessageBox::about(
-            this, tr("About Lyra"),
+        // Verbatim PayPal donate target from old Lyra (item_name text shows
+        // on the PayPal page — keep the encoding byte-for-byte).  Kept out
+        // of the tr()/.arg() body so its % escapes aren't treated as args.
+        const QString payPal = QStringLiteral(
+            "https://www.paypal.com/donate/?business=NP2ZQS4LR454L"
+            "&no_recurring=0&item_name=Built+by+a+fellow+ham%2C+for+the+"
+            "community.++Free+to+use%2C+free+to+share.+A+small+donation+"
+            "keeps+the+code+flowing.+73+de+N8SDR&currency_code=USD");
+        QMessageBox box(this);
+        box.setWindowTitle(tr("About Lyra"));
+        box.setTextFormat(Qt::RichText);
+        box.setIcon(QMessageBox::Information);
+        box.setText(
             tr("<h2 style='margin-bottom:2px'>Lyra "
                "<span style='color:#00e5ff'>v%1</span></h2>"
                "<p style='color:#8a9aac;margin-top:0'>"
@@ -472,14 +510,26 @@ void MainWindow::buildMenus() {
                "the constellation Lyra — home of Vega. (See the User "
                "Guide for the full story.)</i></p>"
                "<p>Author: <b>Rick Langford (N8SDR)</b><br>"
+               "With <b>Brent Crier (N9BC)</b> and "
+               "<b>Timmy Davis (KC8TYK)</b><br>"
                "Repository: <a href='https://github.com/N8SDR1/Lyra-SDR-cpp'>"
                "github.com/N8SDR1/Lyra-SDR-cpp</a><br>"
                "License: <b>GPL v3 or later</b></p>"
+               "<p>Lyra is <b>free</b> and ad-free, built by a fellow ham "
+               "for the community. If it's useful to you, consider buying "
+               "the developer a coffee — 73 de N8SDR. ☕</p>"
                "<p style='color:#8a9aac;font-size:11px'>"
                "DSP engine: WDSP (Warren Pratt, NR0V), GPL v3+.<br>"
                "TCI server protocol © EESDR Expert Electronics, "
                "implemented from the public TCI v1.9 / v2.0 spec."
                "</p>").arg(ver));
+        QPushButton *donate =
+            box.addButton(tr("☕ Donate via PayPal"), QMessageBox::ActionRole);
+        box.addButton(QMessageBox::Close);
+        box.setDefaultButton(QMessageBox::Close);
+        box.exec();
+        if (box.clickedButton() == donate)
+            QDesktopServices::openUrl(QUrl(payPal));
     });
 }
 
@@ -489,7 +539,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, this);
+            wx_, memory_, eibi_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();

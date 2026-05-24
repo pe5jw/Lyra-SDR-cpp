@@ -47,6 +47,9 @@ public:
     // Name of the amateur band containing freqHz ("40m"…), or "" if the
     // freq is outside every allocation in the current region (or NONE).
     Q_INVOKABLE QString bandContaining(double freqHz) const;
+    // The 40 US CB channels visible in the window, each { freq, label }.
+    // Empty unless the 11m/CB band is enabled (Settings → Hardware).
+    Q_INVOKABLE QVariantList cbChannels(double centerHz, double spanHz) const;
 
 signals:
     void regionChanged();
