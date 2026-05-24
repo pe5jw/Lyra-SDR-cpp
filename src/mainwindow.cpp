@@ -414,7 +414,7 @@ void MainWindow::buildToolbar() {
     clockLocal_->setContentsMargins(8, 0, 4, 0);
     clockLocal_->setStyleSheet(QStringLiteral(
         "QLabel{color:#ffd54f;font-family:Consolas,monospace;"
-        "font-weight:700;font-size:18px;}"));     // amber = PC local
+        "font-weight:700;font-size:22px;}"));     // amber = PC local
     clockLocal_->setToolTip(tr("PC local time"));
     tb->addWidget(clockLocal_);
 
@@ -422,9 +422,16 @@ void MainWindow::buildToolbar() {
     clockUtc_->setContentsMargins(4, 0, 8, 0);
     clockUtc_->setStyleSheet(QStringLiteral(
         "QLabel{color:#80d8ff;font-family:Consolas,monospace;"
-        "font-weight:700;font-size:18px;}"));      // cyan = UTC/Zulu
+        "font-weight:700;font-size:22px;}"));      // cyan = UTC/Zulu
     clockUtc_->setToolTip(tr("UTC / Zulu time"));
     tb->addWidget(clockUtc_);
+
+    // Trailing flexible spacer — balances clockSpacer on the left so the
+    // clocks sit centered in the header strip rather than hard against
+    // the right edge (old-Lyra placement).
+    auto *clockSpacerR = new QWidget(tb);
+    clockSpacerR->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(clockSpacerR);
 
     clockTimer_ = new QTimer(this);
     clockTimer_->setInterval(1000);
