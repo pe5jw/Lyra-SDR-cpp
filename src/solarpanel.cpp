@@ -36,6 +36,14 @@ QFrame *vdivider(QWidget *parent) {
 
 SolarPanel::SolarPanel(SolarService *svc, NcdxfFollow *follow, QWidget *parent)
     : QWidget(parent), svc_(svc), follow_(follow) {
+    // Match the shared panel theme (the QML panels are #101820 / #2a4a5a).
+    // ID-scoped so it styles only this panel's background, not the child
+    // value boxes (which keep their own rgba cell backgrounds).
+    // The `QWidget#solarPanel` rule in the app stylesheet (theme.h) gives
+    // this panel the same surface as the QML panels.  WA_StyledBackground
+    // ensures a plain QWidget subclass actually paints that background.
+    setObjectName(QStringLiteral("solarPanel"));
+    setAttribute(Qt::WA_StyledBackground, true);
     auto *row = new QHBoxLayout(this);
     row->setContentsMargins(10, 6, 10, 6);
     row->setSpacing(10);

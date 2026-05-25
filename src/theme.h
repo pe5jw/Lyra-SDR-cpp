@@ -99,6 +99,11 @@ QStatusBar {
     border-top: 1px solid rgb(30,42,58);
 }
 
+/* Solar / Propagation panel — a QtWidgets strip; give its root the same
+   surface as the QML panels (#101820 / #2a4a5a) so it doesn't show the
+   darker app background.  ID-scoped so child value boxes keep their own. */
+QWidget#solarPanel { background: rgb(16,24,32); border: 1px solid rgb(42,74,90); }
+
 /* Dockable panels */
 QDockWidget {
     color: rgb(205,217,229);
