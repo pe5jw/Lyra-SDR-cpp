@@ -13,6 +13,7 @@
 #include "eibistore.h"
 #include "spotstore.h"
 #include "tci_server.h"
+#include "metermodel.h"
 #include "wdsp_engine.h"
 #include "help.h"
 #include "helpdialog.h"
@@ -174,6 +175,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // EiBi shortwave-broadcaster overlay (Settings → Bands → SW Database).
     eibi_ = new EibiStore(prefs_, bands_, this);
 
+    // RX signal-strength meter (Horizon Arc / Plasma Bar panel).
+    // Source = WDSP RXA_S_PK (in-passband), Thetis-style S-unit scale.
+    meter_ = new MeterModel(qobject_cast<lyra::ipc::HL2Stream *>(stream_),
+                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
+                            this);
+
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
@@ -314,6 +321,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Eibi"), eibi_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Spots"), spots_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Meter"), meter_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -473,6 +482,11 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("band"), tr("Band"),
                  QStringLiteral("BandPanel.qml"),
                  QStringLiteral("band"), Qt::BottomDockWidgetArea);
+    // Meter — RX signal-strength S-meter (Horizon Arc / Plasma Bar).
+    // Docks on the right by default (squarish); operator can drag/float it.
+    addQuickDock(QStringLiteral("meter"), tr("Meter"),
+                 QStringLiteral("MeterPanel.qml"),
+                 QStringLiteral("meter"), Qt::RightDockWidgetArea);
     // Solar / Propagation — HamQSL SFI/A/K + 10-band day/night heat-map.
     // A plain QtWidgets strip (not QML); docks at the bottom like the
     // other control panels.

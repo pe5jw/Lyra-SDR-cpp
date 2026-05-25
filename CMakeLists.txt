@@ -98,6 +98,8 @@ qt_add_executable(lyra
     src/spotstore.cpp
     src/dxcc.h
     src/dxcc.cpp
+    src/metermodel.h
+    src/metermodel.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -136,6 +138,9 @@ qt_add_qml_module(lyra
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml
         src/qml/ModeFilterPanel.qml
+        src/qml/MeterPanel.qml
+        src/qml/HorizonArc.qml
+        src/qml/PlasmaBar.qml
     RESOURCES
         src/assets/watermarks/lyra-watermark.jpg
         src/assets/logo/lyra-icon-128.png

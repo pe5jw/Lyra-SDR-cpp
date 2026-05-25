@@ -32,6 +32,7 @@ not programmers — if you can click a menu, you can use this.
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
 - [Display panel](#display-panel)
+- [Meter panel](#meter-panel)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
 - [Updates](#updates)
@@ -441,6 +442,48 @@ is laid out in old Lyra's three-row arrangement:
 
 The look-and-feel settings — palettes, smoothing, glow, gridline, peak
 style/color, noise floor — live in **Settings → Visuals**.
+
+---
+
+## Meter panel
+
+A GPU-drawn **RX signal-strength meter** with two looks — pick whichever
+you like with the small **Arc | Bar** toggle in the panel's top-right
+corner (your choice is remembered):
+
+- **Horizon Arc** (default) — a sweep dial against a fixed, calibrated
+  S-scale. The fill climbs through colour zones (cyan → green → amber →
+  red over S9) with a glowing "comet head" at the current level, a thin
+  **peak-hold** pip that holds then fades, and a faint **history trail**
+  in the dial's belly showing the last few seconds (handy for watching
+  QSB / a station rising). Big **S-unit** readout in the centre with the
+  **dBm** and **SNR** lines beneath.
+- **Plasma Bar** — a continuous level bar through the same colour zones,
+  with a bright leading edge, peak-hold cap, a glass reflection beneath,
+  and the readout (S-units / dBm / SNR) along the top.
+
+What the meter shows:
+
+- **S-units** — standard scale (S1…S9, then +20/+40/+60 dB over S9). The
+  scale follows the band: S9 = −73 dBm below 30 MHz, −93 dBm above, the
+  same convention major HF SDR software uses.
+- **dBm** — the calibrated signal level.
+- **SNR** — signal *above the noise floor* in dB (shows `—` when there's
+  nothing above the floor). The faint band/marker on the meter is the
+  current noise floor, so you can see at a glance how far a signal stands
+  out — i.e. how readable it is, not just how strong.
+
+The meter reads the in-passband signal level from the DSP engine (the
+same source professional SDR software uses) and only moves while you're
+receiving (press **▶ Start** first; it rests at S0 when idle).
+
+> **Calibration:** the absolute dBm/S reading depends on a one-time
+> calibration trim that matches the meter to a known signal (a future
+> Settings control). Until then the *relative* movement, peak-hold, SNR,
+> and noise-floor behaviour are all live and correct.
+>
+> Transmit meters (Power / SWR / ALC / Mic, etc.) arrive with the
+> transmit feature — the meter panel will gain those sources then.
 
 ---
 

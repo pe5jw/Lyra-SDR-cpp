@@ -794,6 +794,17 @@ double WdspEngine::volumeDb() const
     return posToDb(volume_.load(std::memory_order_relaxed));
 }
 
+double WdspEngine::sMeterDbm() const
+{
+    if (!running_ || !wdsp_) return -200.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetRXAMeter) return -200.0;
+    // 0 = RXA_S_PK (peak signal strength).  WDSP computes this in the
+    // RX worker; GetRXAMeter just reads the latest stored value, so it
+    // is safe to poll from the UI thread.
+    return api.GetRXAMeter(channel_, 0);
+}
+
 void WdspEngine::setVolume(double v)
 {
     v = std::clamp(v, 0.0, 1.0);

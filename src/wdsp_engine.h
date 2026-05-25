@@ -124,6 +124,12 @@ public:
         return audioDbFs_.load(std::memory_order_relaxed);
     }
 
+    // In-passband RX signal strength (WDSP RXA_S_PK), in WDSP's raw
+    // dBm-ish units — the same source Thetis reads for its S-meter.
+    // Returns -200 when the RX channel isn't running.  Safe to call
+    // from the UI thread (just reads WDSP's latest stored meter value).
+    double sMeterDbm() const;
+
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }

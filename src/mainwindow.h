@@ -46,6 +46,7 @@ class MemoryStore;
 class EibiStore;
 class SpotStore;
 class TciServer;
+class MeterModel;
 class UsbBcd;
 class UpdateChecker;
 class WxIndicator;
@@ -178,6 +179,7 @@ private:
     EibiStore                  *eibi_  = nullptr;     // EiBi shortwave overlay
     SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
+    MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };
