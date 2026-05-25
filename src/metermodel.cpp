@@ -32,13 +32,17 @@ constexpr double kS9FreqHz = 30.0e6;
 constexpr int    kTickMs        = 50;     // 20 Hz
 constexpr int    kPeakHoldTicks = 16;     // ~0.8 s dwell
 constexpr double kPeakDecay     = 0.080;  // ~0.6 s fall
+constexpr double kMaxDecay      = 0.012;  // max-hold gentle fall (~4 s)
 constexpr double kGlowDecay     = 0.160;  // ~0.3 s afterglow
 constexpr double kNoiseLeak     = 0.05;   // floor leaks up ~1 dB/s
 constexpr double kSmooth        = 0.55;
 constexpr int    kHistory       = 90;     // ~4.5 s trail
 
-constexpr auto kKeyStyle = "meter/style";
-constexpr auto kKeyCal   = "meter/calDb";
+constexpr auto kKeyStyle    = "meter/style";
+constexpr auto kKeyCal      = "meter/calDb";
+constexpr auto kKeyPeakHold = "meter/peakHoldMs";
+constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
+constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
 
 // Thetis SMeterFromDBM, compact form. Ascending (upperBound, label):
 // return the first row whose dbm <= upperBound.
@@ -63,6 +67,13 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     QSettings s;
     style_ = s.value(QString::fromLatin1(kKeyStyle), 0).toInt();
     calDb_ = s.value(QString::fromLatin1(kKeyCal), 0.0).toDouble();
+    peakHoldMs_ = std::clamp(
+        s.value(QString::fromLatin1(kKeyPeakHold), 800).toInt(), 100, 5000);
+    peakHoldTicks_ = std::max(1, peakHoldMs_ / kTickMs);
+    maxPeakEnabled_ = s.value(QString::fromLatin1(kKeyMaxOn), true).toBool();
+    maxHoldMs_ = std::clamp(
+        s.value(QString::fromLatin1(kKeyMaxHold), 3000).toInt(), 500, 60000);
+    maxHoldTicks_ = std::max(1, maxHoldMs_ / kTickMs);
 
     hist_.assign(kHistory, 0.0);
     history_.reserve(kHistory);
@@ -113,6 +124,32 @@ void MeterModel::setCalDb(double d) {
     emit calChanged();
 }
 
+void MeterModel::setPeakHoldMs(int ms) {
+    ms = std::clamp(ms, 100, 5000);
+    if (ms == peakHoldMs_) return;
+    peakHoldMs_ = ms;
+    peakHoldTicks_ = std::max(1, peakHoldMs_ / kTickMs);
+    QSettings().setValue(QString::fromLatin1(kKeyPeakHold), peakHoldMs_);
+    emit peakHoldChanged();
+}
+
+void MeterModel::setMaxPeakEnabled(bool on) {
+    if (on == maxPeakEnabled_) return;
+    maxPeakEnabled_ = on;
+    if (!on) { maxPeak_ = 0.0; maxHoldCtr_ = 0; }
+    QSettings().setValue(QString::fromLatin1(kKeyMaxOn), maxPeakEnabled_);
+    emit maxPeakCfgChanged();
+}
+
+void MeterModel::setMaxHoldMs(int ms) {
+    ms = std::clamp(ms, 500, 60000);
+    if (ms == maxHoldMs_) return;
+    maxHoldMs_ = ms;
+    maxHoldTicks_ = std::max(1, maxHoldMs_ / kTickMs);
+    QSettings().setValue(QString::fromLatin1(kKeyMaxHold), maxHoldMs_);
+    emit maxPeakCfgChanged();
+}
+
 QVariantList MeterModel::tickMarks() const {
     QVariantList out;
     auto add = [&](double dbm, const QString &label, bool major) {
@@ -134,22 +171,44 @@ void MeterModel::tick() {
     updateScale();
 
     const double raw = wdsp_ ? wdsp_->sMeterDbm() : -200.0;
-    const double dbm = raw + calDb_;
+    // Reference the reading back to the antenna so it stays TRUE TO SOURCE
+    // regardless of LNA: RXA_S_PK is measured after the hardware PGA, so
+    // subtract the current LNA gain.  calDb_ then trims the absolute level
+    // once (set at any LNA setting); changing LNA no longer moves the S
+    // reading.  (Sentinel raw≈−200 when not running → handled downstream.)
+    const double lna = stream_ ? static_cast<double>(stream_->lnaGainDb()) : 0.0;
+    const double dbm = raw + calDb_ - lna;
 
     dispDbm_ += kSmooth * (dbm - dispDbm_);
     const double n = normForDbm(dispDbm_);
     level_ = n;
 
-    if (n >= peak_) { peak_ = n; holdCtr_ = kPeakHoldTicks; }
+    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
     else if (holdCtr_ > 0) { --holdCtr_; }
     else { peak_ = std::max(0.0, peak_ - kPeakDecay); }
 
+    // Max-hold "high-water mark": latch the highest level, hold for
+    // maxHoldTicks_, then ease down gently (kMaxDecay << kPeakDecay) so a
+    // fleeting DX / QSB crest stays readable long after the fast pip fell.
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kMaxDecay); }
+    } else {
+        maxPeak_ = 0.0;
+    }
+
     glow_ = (n >= glow_) ? n : std::max(n, glow_ - kGlowDecay);
 
-    // Noise floor: track the level's rolling minimum, leaking up slowly
-    // so it follows a rising floor instead of sticking at an old low.
-    if (dispDbm_ < noiseFloorDbm_) noiseFloorDbm_ = dispDbm_;
-    else noiseFloorDbm_ = std::min(dispDbm_, noiseFloorDbm_ + kNoiseLeak);
+    // Noise floor: rolling minimum that leaks up slowly so it follows the
+    // band's quiet floor (the original, operator-validated behaviour).
+    // THE FIX: skip the −200 "not running / no data" sentinel that
+    // sMeterDbm() returns on stop/start + rate changes — feeding it pinned
+    // the floor at −200 with no recovery, which is what jammed SNR at 99.
+    if (raw > -190.0) {
+        if (dispDbm_ < noiseFloorDbm_) noiseFloorDbm_ = dispDbm_;
+        else noiseFloorDbm_ = std::min(dispDbm_, noiseFloorDbm_ + kNoiseLeak);
+    }
     noiseLevel_ = normForDbm(noiseFloorDbm_);
     const double snr = dispDbm_ - noiseFloorDbm_;
     snrText_ = (level_ <= 0.01 || snr < 1.0)

@@ -28,6 +28,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDebug>
 #include <QEvent>
 #include <QDir>
 #include <QFile>
@@ -603,7 +604,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, tci_, spots_, this);
+            wx_, memory_, eibi_, tci_, spots_, meter_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
@@ -737,7 +738,13 @@ void MainWindow::buildToolbar() {
                 tray_ = new QSystemTrayIcon(windowIcon(), this);
                 tray_->show();
             }
-            tray_->showMessage(title, body, QSystemTrayIcon::Warning, 8000);
+            // Prefix so the OPERATOR can always tell a Lyra alert apart from
+            // other weather notifiers (Ambient app, Windows widget, stale
+            // Action-Center items) — and log it so the in-app Log records
+            // exactly what Lyra emitted, when.
+            const QString t = QStringLiteral("Lyra — ") + title;
+            tray_->showMessage(t, body, QSystemTrayIcon::Warning, 8000);
+            qWarning().noquote() << "[wx] DESKTOP NOTICE FIRED:" << t << "—" << body;
         });
         connect(wx_, &lyra::wx::WxService::chime, this,
                 []() { QApplication::beep(); });

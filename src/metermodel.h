@@ -34,6 +34,14 @@ class MeterModel : public QObject {
     // One NOTIFY for the fast-changing values — QML repaints on `updated`.
     Q_PROPERTY(double level    READ level    NOTIFY updated)
     Q_PROPERTY(double peak     READ peak     NOTIFY updated)
+    // Max-hold "high-water mark" — a second marker that latches the
+    // highest level seen, holds for maxHoldMs, then eases down gently
+    // (slower than the fast peak pip).  Distinct marker in the renderers.
+    Q_PROPERTY(double maxPeak  READ maxPeak  NOTIFY updated)
+    Q_PROPERTY(bool maxPeakEnabled READ maxPeakEnabled WRITE setMaxPeakEnabled
+               NOTIFY maxPeakCfgChanged)
+    Q_PROPERTY(int  maxHoldMs READ maxHoldMs WRITE setMaxHoldMs
+               NOTIFY maxPeakCfgChanged)
     Q_PROPERTY(double glow     READ glow     NOTIFY updated)
     Q_PROPERTY(QString text    READ text     NOTIFY updated)
     Q_PROPERTY(QString dbmText READ dbmText  NOTIFY updated)
@@ -49,6 +57,10 @@ class MeterModel : public QObject {
     Q_PROPERTY(int style READ style WRITE setStyle NOTIFY styleChanged)
     // dBFS→dBm calibration trim (operator-tunable; persisted).
     Q_PROPERTY(double calDb READ calDb WRITE setCalDb NOTIFY calChanged)
+    // Peak-hold dwell time in ms before the peak marker starts to decay
+    // (operator-tunable in Settings → Meter; persisted).
+    Q_PROPERTY(int peakHoldMs READ peakHoldMs WRITE setPeakHoldMs
+               NOTIFY peakHoldChanged)
 
 public:
     explicit MeterModel(lyra::ipc::HL2Stream *stream,
@@ -57,6 +69,11 @@ public:
 
     double  level()    const { return level_; }
     double  peak()     const { return peak_; }
+    double  maxPeak()  const { return maxPeak_; }
+    bool    maxPeakEnabled() const { return maxPeakEnabled_; }
+    int     maxHoldMs() const { return maxHoldMs_; }
+    void    setMaxPeakEnabled(bool on);
+    void    setMaxHoldMs(int ms);
     double  glow()     const { return glow_; }
     double  noiseLevel() const { return noiseLevel_; }
     QString snrText()  const { return snrText_; }
@@ -69,6 +86,8 @@ public:
     void setStyle(int s);
     double calDb() const { return calDb_; }
     void setCalDb(double d);
+    int  peakHoldMs() const { return peakHoldMs_; }
+    void setPeakHoldMs(int ms);
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -77,6 +96,8 @@ signals:
     void updated();
     void styleChanged();
     void calChanged();
+    void peakHoldChanged();
+    void maxPeakCfgChanged();
 
 private:
     void tick();
@@ -97,14 +118,21 @@ private:
 
     double level_ = 0.0;       // smoothed normalized value
     double peak_  = 0.0;       // peak-hold normalized
+    double maxPeak_ = 0.0;     // max-hold "high-water mark" normalized
     double glow_  = 0.0;       // afterglow normalized
     int    holdCtr_ = 0;       // peak-hold dwell counter
+    int    maxHoldCtr_ = 0;    // max-hold dwell counter
     double dispDbm_ = -140.0;  // smoothed dBm for the readout
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
     double noiseLevel_ = 0.0;  // floor position on the scale (0..1)
     QString snrText_ = QStringLiteral("—");
 
     double  calDb_ = 0.0;
+    int     peakHoldMs_    = 800;   // dwell before decay (operator-tunable)
+    int     peakHoldTicks_ = 16;    // = peakHoldMs_ / tick interval
+    bool    maxPeakEnabled_ = true; // show the max-hold high-water marker
+    int     maxHoldMs_      = 3000; // max-hold dwell (operator-tunable)
+    int     maxHoldTicks_   = 60;   // = maxHoldMs_ / tick interval
     int     style_ = 0;
     QString text_    = QStringLiteral("S0");
     QString dbmText_ = QStringLiteral("—");

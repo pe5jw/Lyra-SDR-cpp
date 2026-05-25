@@ -1,10 +1,13 @@
 // Lyra — per-band settings memory (ported from old Lyra's band_memory).
 //
 // Remembers, per amateur band, the operator's demod MODE, panadapter dB
-// min/max, and waterfall dB min/max.  As you move across a band edge it
-// restores that band's saved values; while you're on a band, any change
-// is saved live to it.  Auto-scale on/off and RX bandwidth stay global /
-// per-mode (matching old Lyra — bandwidth is already per-mode in Prefs).
+// min/max, waterfall dB min/max, and manual LNA gain.  As you move across
+// a band edge it restores that band's saved values; while you're on a
+// band, any change is saved live to it.  The LNA value saved is the
+// operator's MANUAL set point only (via lnaSetByOperator) — Auto-LNA's
+// roaming is never captured; Auto simply roams from the restored set
+// point.  Auto-scale on/off and RX bandwidth stay global / per-mode
+// (matching old Lyra — bandwidth is already per-mode in Prefs).
 //
 // Pure C++: watches the stream's RX1 frequency, maps it to a band via the
 // amateur band table, and drives the shared Prefs (which the panadapter /

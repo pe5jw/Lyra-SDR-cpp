@@ -3,11 +3,23 @@
 
 #include "wdsp_engine.h"
 
+#include "capturedprofile.h"
+#include "noisereducer.h"
+
 #include <QAudioDevice>
 #include <QAudioFormat>
 #include <QAudioSink>
 #include <QByteArray>
+#include <QDataStream>
+#include <QDateTime>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QStandardPaths>
 #include <QIODevice>
 #include <QMediaDevices>
 #include <QSettings>
@@ -27,7 +39,12 @@ namespace {
 // upstream WDSP source.  Do NOT change without re-verifying — these
 // map directly onto WDSP's RXA mode + wcpAGC mode switch statements.
 constexpr int    kRxaModeUSB = 1;   // RxaMode.USB
-constexpr int    kAgcModeMed = 3;   // AgcMode.MED
+// wcpAGC mode enum (Thetis AGCMode): FIXD=0 LONG=1 SLOW=2 MED=3 FAST=4.
+// "off" maps to FIXD (fixed gain) — the operator-facing AGC-off.
+constexpr int    kAgcModeOff  = 0;  // AgcMode.FIXD (fixed gain)
+constexpr int    kAgcModeSlow = 2;  // AgcMode.SLOW
+constexpr int    kAgcModeMed  = 3;  // AgcMode.MED
+constexpr int    kAgcModeFast = 4;  // AgcMode.FAST
 constexpr double kUsbLowHz   = 0.0;   // SSB/DIG low cut starts at centre (op req)
 constexpr double kUsbHighHz  = 3000.0;
 
@@ -243,8 +260,17 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // 5 Hz UI poll: emit levelsChanged so the QML audioDbFs binding
     // re-reads the atomic (mirrors HL2Stream's statsTimer cadence).
     levelsTimer_.setInterval(200);
-    connect(&levelsTimer_, &QTimer::timeout,
-            this, &WdspEngine::levelsChanged);
+    connect(&levelsTimer_, &QTimer::timeout, this, [this]() {
+        emit levelsChanged();
+        // Captured-profile capture progress: the RX worker updates the
+        // atomics inside feedIq; surface them to the UI on this poll.
+        // Emit while a capture is running and once on its falling edge.
+        const bool cap = noiseCapturing_.load(std::memory_order_relaxed);
+        if (cap || cap != npLastCapturing_) {
+            npLastCapturing_ = cap;
+            emit noiseCaptureChanged();
+        }
+    });
 
     // Step 3e: enumerate the operator's PC output devices + default.
     devices_ = QMediaDevices::audioOutputs();
@@ -283,7 +309,56 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
                       QStringLiteral("hl2")).toString() != QLatin1String("pc");
     cwPitchHz_ = std::clamp(
         s.value(QStringLiteral("dsp/cwPitchHz"), 600).toInt(), 200, 1500);
+    // RX DSP operator state (NR + AGC mode).  Defaults match old Lyra's
+    // first-light: NR off, Mode 3 (MMSE-LSA), AEPF on, NPE OSMS, AGC med.
+    nrEnabled_   = s.value(QStringLiteral("dsp/nrEnabled"), false).toBool();
+    nrMode_      = std::clamp(
+        s.value(QStringLiteral("dsp/nrMode"), 3).toInt(), 1, 4);
+    aepfEnabled_ = s.value(QStringLiteral("dsp/aepf"), true).toBool();
+    npeMethod_   = std::clamp(
+        s.value(QStringLiteral("dsp/npeMethod"), 0).toInt(), 0, 1);
+    agcMode_     = s.value(QStringLiteral("dsp/agcMode"),
+                           QStringLiteral("med")).toString();
+    anfEnabled_  = s.value(QStringLiteral("dsp/anfEnabled"), false).toBool();
+    lmsEnabled_  = s.value(QStringLiteral("dsp/lmsEnabled"), false).toBool();
+    lmsStrength_ = std::clamp(
+        s.value(QStringLiteral("dsp/lmsStrength"), 0.5).toDouble(), 0.0, 1.0);
+    // Manual notches — each persisted as "offsetHz|widthHz|active".
+    squelchEnabled_ = s.value(QStringLiteral("dsp/squelchEnabled"), false).toBool();
+    squelchThreshold_ = std::clamp(
+        s.value(QStringLiteral("dsp/squelchThreshold"), 0.20).toDouble(), 0.0, 1.0);
+    nbEnabled_  = s.value(QStringLiteral("dsp/nbEnabled"), false).toBool();
+    nbStrength_ = std::clamp(
+        s.value(QStringLiteral("dsp/nbStrength"), 0.5).toDouble(), 0.0, 1.0);
+    apfEnabled_ = s.value(QStringLiteral("dsp/apfEnabled"), false).toBool();
+    apfGainDb_  = std::clamp(
+        s.value(QStringLiteral("dsp/apfGainDb"), 12.0).toDouble(), 0.0, 24.0);
+    binEnabled_ = s.value(QStringLiteral("dsp/binEnabled"), false).toBool();
+    binDepth_   = std::clamp(
+        s.value(QStringLiteral("dsp/binDepth"), 0.7).toDouble(), 0.0, 1.0);
+    buildBinaural();   // Hilbert FIR + history (rate-agnostic, built once)
+    notchEnabled_ = s.value(QStringLiteral("dsp/notchEnabled"), false).toBool();
+    const QStringList savedNotches =
+        s.value(QStringLiteral("dsp/notches")).toStringList();
+    for (const QString &entry : savedNotches) {
+        const QStringList p = entry.split(QLatin1Char('|'));
+        if (p.size() == 3)
+            notches_.push_back({p[0].toDouble(),
+                                std::max(10.0, p[1].toDouble()),
+                                p[2].toInt() != 0});
+    }
     recomputePassband();   // seed passband edges from the loaded mode/bw/pitch
+    // Captured-profile settings + saved profiles.
+    {
+        const int fft = s.value(QStringLiteral("dsp/npFftSize"), 4096).toInt();
+        npFftSize_ = (fft == 2048 || fft == 4096 || fft == 8192) ? fft : 4096;
+        const double sec = s.value(QStringLiteral("dsp/npCaptureSeconds"), 5.0).toDouble();
+        npCaptureSeconds_ = (sec == 3.0 || sec == 5.0 || sec == 10.0) ? sec : 5.0;
+        npAlpha_     = std::clamp(s.value(QStringLiteral("dsp/npAlpha"), 1.0).toDouble(), 1.0, 5.0);
+        npFloorDb_   = std::clamp(s.value(QStringLiteral("dsp/npFloorDb"), -12.0).toDouble(), -30.0, -3.0);
+        npSmoothing_ = std::clamp(s.value(QStringLiteral("dsp/npSmoothing"), 0.6).toDouble(), 0.0, 0.95);
+    }
+    loadProfiles();
 }
 
 WdspEngine::~WdspEngine()
@@ -343,8 +418,8 @@ bool WdspEngine::openRx1()
     // BP1 + the SNBA filter in one call (§14.2).
     applyModeFilter();
 
-    // AGC medium.
-    api.SetRXAAGCMode(channel_, kAgcModeMed);
+    // AGC mode (operator-selected, persisted; default med).
+    pushAgcMode();
 
     // Level calibration: replace WDSP's hot create-time AGC default
     // (max_gain = 10000 / 80 dB, which overshoots 0 dBFS) with a
@@ -362,6 +437,27 @@ bool WdspEngine::openRx1()
     if (api.SetRXAPanelGain1) {
         api.SetRXAPanelGain1(channel_, 1.0);
     }
+
+    // RX noise reduction (EMNR) + auto-notch + LMS — persisted state.
+    pushNrState();
+    pushAnfState();
+    pushLmsState();
+    pushNotches();
+    pushSquelchState();
+
+    // Noise blanker (EXT NOB-II): create the per-channel blanker sized to
+    // our IQ block + rate, then push threshold/run.  feedIq splices
+    // xnobEXT on the raw IQ before fexchange0 when NB is on.  Impulse-only
+    // tuning (tight slew/hang/adv); destroyed in closeRx1.
+    if (api.create_nobEXT && !nbCreated_) {
+        nbBuf_.assign(static_cast<size_t>(2 * cfg_.inSize), 0.0);
+        api.create_nobEXT(channel_, 0, 0, cfg_.inSize,
+                          static_cast<double>(cfg_.inRate),
+                          0.0001, 0.0001, 0.0001, 0.020, 20.0);
+        nbCreated_ = true;
+    }
+    pushNbState();
+    pushApfState();
 
     // Step 5: create + configure the spectral analyzer (panadapter
     // source).  Independent of the DSP channel; fed the same IQ.
@@ -463,6 +559,10 @@ void WdspEngine::closeRx1()
     // before CloseChannel tears the channel down.
     if (api.SetChannelState) {
         api.SetChannelState(channel_, 0, 1);
+    }
+    if (nbCreated_ && api.destroy_nobEXT) {
+        api.destroy_nobEXT(channel_);
+        nbCreated_ = false;
     }
     if (api.CloseChannel) {
         api.CloseChannel(channel_);
@@ -585,6 +685,7 @@ void WdspEngine::setCwPitchHz(int hz)
     QSettings().setValue(QStringLiteral("dsp/cwPitchHz"), hz);
     recomputePassband();   // CW filter recentres on the new pitch
     applyModeFilter();
+    pushApfState();        // APF peak tracks the CW pitch
     emit cwPitchChanged();
     emit markerOffsetChanged();   // VFO↔DDS offset changed (CW modes)
 }
@@ -597,6 +698,8 @@ void WdspEngine::setMode(const QString &m)
     mode_ = m;
     recomputePassband();   // overlay edges (even when closed)
     applyModeFilter();     // SetRXAMode + new passband (no-op if closed)
+    pushSquelchState();    // re-route SSQL/FMSQ/AMSQ for the new mode
+    pushApfState();        // APF engages only in CW — re-gate on mode change
     emit modeChanged();
     emit markerOffsetChanged();   // CW carrier offset flips with mode
 }
@@ -805,6 +908,19 @@ double WdspEngine::sMeterDbm() const
     return api.GetRXAMeter(channel_, 0);
 }
 
+double WdspEngine::agcGainDb() const
+{
+    if (!running_ || !wdsp_) return 0.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetRXAMeter) return 0.0;
+    return api.GetRXAMeter(channel_, 4);   // 4 = RXA_AGC_GAIN (gain action, dB)
+}
+
+double WdspEngine::agcThreshDb() const
+{
+    return kAgcThreshDbFs;                 // fixed first-light threshold
+}
+
 void WdspEngine::setVolume(double v)
 {
     v = std::clamp(v, 0.0, 1.0);
@@ -821,6 +937,873 @@ void WdspEngine::setMuted(bool m)
     emitLog(m ? QStringLiteral("[wdsp] audio: muted")
               : QStringLiteral("[wdsp] audio: unmuted (volume %1 dB)")
                     .arg(static_cast<int>(posToDb(volume_.load()))));
+}
+
+// ── RX DSP operator controls ──────────────────────────────────────
+// Each setter: clamp/validate, store, persist (QSettings), push to
+// WDSP when the channel is open, emit NOTIFY.  The push helpers below
+// are channel-parameterized (use channel_) so RX2 reuses them verbatim.
+
+void WdspEngine::pushNrState()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXAEMNRRun) return;   // EMNR not resolved -> nothing to push
+    // Mode 1..4 (UI) -> WDSP gain_method 0..3.
+    if (api.SetRXAEMNRgainMethod)
+        api.SetRXAEMNRgainMethod(channel_, std::clamp(nrMode_, 1, 4) - 1);
+    if (api.SetRXAEMNRnpeMethod)
+        api.SetRXAEMNRnpeMethod(channel_, std::clamp(npeMethod_, 0, 1));
+    if (api.SetRXAEMNRaeRun)
+        api.SetRXAEMNRaeRun(channel_, aepfEnabled_ ? 1 : 0);
+    // AEPF also engages WDSP's post-filter ("post2") — the dedicated
+    // anti-musical-noise stage that stock WDSP leaves off.  Params stay
+    // at WDSP's gentle create defaults (0.15/0.15/5.0/0.12); MMSE-LSA
+    // upstream keeps the voice natural, so the extra stage removes
+    // musical artifacts without a robotic character.
+    if (api.SetRXAEMNRpost2Run)
+        api.SetRXAEMNRpost2Run(channel_, aepfEnabled_ ? 1 : 0);
+    if (api.SetRXAEMNRPosition)
+        api.SetRXAEMNRPosition(channel_, 1);   // after AGC (standard position)
+    api.SetRXAEMNRRun(channel_, nrEnabled_ ? 1 : 0);
+}
+
+void WdspEngine::pushAgcMode()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXAAGCMode) return;
+    int mode = kAgcModeMed;
+    if      (agcMode_ == QLatin1String("off"))  mode = kAgcModeOff;
+    else if (agcMode_ == QLatin1String("fast")) mode = kAgcModeFast;
+    else if (agcMode_ == QLatin1String("slow")) mode = kAgcModeSlow;
+    else                                        mode = kAgcModeMed;
+    api.SetRXAAGCMode(channel_, mode);
+    // Set the time constants EXPLICITLY per mode (the standard per-mode
+    // values) so Fast/Med/Slow are unmistakably distinct — the audible
+    // difference is mostly the HANG (Fast/Med = none, Slow = 1 s hold)
+    // plus the decay rate.  SetRXAAGCMode sets WDSP internal defaults
+    // too, but pushing them ourselves removes any doubt about the values.
+    // (Off = FIXD/fixed gain — decay/hang are irrelevant, left alone.)
+    if (mode != kAgcModeOff) {
+        int decayMs = 250, hangMs = 0, hangThr = 100;   // med
+        if (mode == kAgcModeFast)      { decayMs =  50; hangMs =    0; hangThr = 100; }
+        else if (mode == kAgcModeSlow) { decayMs = 500; hangMs = 1000; hangThr =   0; }
+        if (api.SetRXAAGCDecay)         api.SetRXAAGCDecay(channel_, decayMs);
+        if (api.SetRXAAGCHang)          api.SetRXAAGCHang(channel_, hangMs);
+        if (api.SetRXAAGCHangThreshold) api.SetRXAAGCHangThreshold(channel_, hangThr);
+    }
+}
+
+void WdspEngine::setNrEnabled(bool on)
+{
+    if (nrEnabled_ == on) return;
+    nrEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/nrEnabled"), on);
+    pushNrState();
+    emit nrChanged();
+    emitLog(QStringLiteral("[wdsp] NR %1 (Mode %2)")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off"))
+                .arg(nrMode_));
+}
+
+void WdspEngine::setNrMode(int mode)
+{
+    mode = std::clamp(mode, 1, 4);
+    if (nrMode_ == mode) return;
+    nrMode_ = mode;
+    QSettings().setValue(QStringLiteral("dsp/nrMode"), mode);
+    pushNrState();
+    emit nrChanged();
+}
+
+void WdspEngine::setAepfEnabled(bool on)
+{
+    if (aepfEnabled_ == on) return;
+    aepfEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/aepf"), on);
+    pushNrState();
+    emit nrChanged();
+}
+
+void WdspEngine::setNpeMethod(int method)
+{
+    method = std::clamp(method, 0, 1);
+    if (npeMethod_ == method) return;
+    npeMethod_ = method;
+    QSettings().setValue(QStringLiteral("dsp/npeMethod"), method);
+    pushNrState();
+    emit nrChanged();
+}
+
+void WdspEngine::setAgcMode(const QString &mode)
+{
+    const QString m = mode.toLower();
+    if (m != QLatin1String("off") && m != QLatin1String("fast") &&
+        m != QLatin1String("slow") && m != QLatin1String("med"))
+        return;   // ignore unknown values
+    if (agcMode_ == m) return;
+    agcMode_ = m;
+    QSettings().setValue(QStringLiteral("dsp/agcMode"), m);
+    pushAgcMode();
+    emit agcModeChanged();
+    emitLog(QStringLiteral("[wdsp] AGC mode %1").arg(m));
+}
+
+void WdspEngine::pushAnfState()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXAANFRun) return;
+    if (api.SetRXAANFVals)            // carrier-null defaults (taps/delay/gain/leak)
+        api.SetRXAANFVals(channel_, 64, 16, 1.0e-3, 1.0e-7);
+    api.SetRXAANFRun(channel_, anfEnabled_ ? 1 : 0);
+}
+
+void WdspEngine::pushLmsState()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXAANRRun) return;
+    if (api.SetRXAANRVals) {
+        // strength 0..1 -> taps 32..128 + adapt rate (gain) 8e-5..16e-4.
+        const double s    = std::clamp(lmsStrength_, 0.0, 1.0);
+        const int    taps = 32 + static_cast<int>(std::lround(96.0 * s));
+        const double gain = 8.0e-5 + (16.0e-4 - 8.0e-5) * s;
+        api.SetRXAANRVals(channel_, taps, 16, gain, 1.0e-7);
+    }
+    api.SetRXAANRRun(channel_, lmsEnabled_ ? 1 : 0);
+}
+
+void WdspEngine::setAnfEnabled(bool on)
+{
+    if (anfEnabled_ == on) return;
+    anfEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/anfEnabled"), on);
+    pushAnfState();
+    emit anfChanged();
+    emitLog(QStringLiteral("[wdsp] ANF %1")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off")));
+}
+
+void WdspEngine::setLmsEnabled(bool on)
+{
+    if (lmsEnabled_ == on) return;
+    lmsEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/lmsEnabled"), on);
+    pushLmsState();
+    emit lmsChanged();
+    emitLog(QStringLiteral("[wdsp] LMS %1 (strength %2%)")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off"))
+                .arg(static_cast<int>(lmsStrength_ * 100.0 + 0.5)));
+}
+
+void WdspEngine::setLmsStrength(double s)
+{
+    s = std::clamp(s, 0.0, 1.0);
+    if (std::abs(s - lmsStrength_) < 1e-6) return;
+    lmsStrength_ = s;
+    QSettings().setValue(QStringLiteral("dsp/lmsStrength"), s);
+    pushLmsState();   // re-push taps/gain even while enabled (live tune)
+    emit lmsChanged();
+}
+
+// ── Manual notches (NBP database) ─────────────────────────────────
+
+QVariantList WdspEngine::notches() const
+{
+    QVariantList out;
+    for (const Notch &n : notches_) {
+        QVariantMap m;
+        m[QStringLiteral("offsetHz")] = n.offsetHz;
+        m[QStringLiteral("widthHz")]  = n.widthHz;
+        m[QStringLiteral("active")]   = n.active;
+        out.append(m);
+    }
+    return out;
+}
+
+void WdspEngine::persistNotches()
+{
+    QStringList items;
+    items.reserve(static_cast<int>(notches_.size()));
+    for (const Notch &n : notches_)
+        items << QStringLiteral("%1|%2|%3")
+                     .arg(n.offsetHz).arg(n.widthHz).arg(n.active ? 1 : 0);
+    QSettings().setValue(QStringLiteral("dsp/notches"), items);
+}
+
+void WdspEngine::pushNotches()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.RXANBPAddNotch || !api.RXANBPSetNotchesRun) return;
+    // Rebuild the WDSP DB from the Lyra list (the DB is recreated empty
+    // on every channel open).  Delete existing high->low to avoid the
+    // index reshuffle that deleting index 0 repeatedly would cause.
+    if (api.RXANBPDeleteNotch) {
+        for (int i = wdspNotchCount_ - 1; i >= 0; --i)
+            api.RXANBPDeleteNotch(channel_, i);
+    }
+    for (int i = 0; i < static_cast<int>(notches_.size()); ++i) {
+        const Notch &n = notches_[i];
+        api.RXANBPAddNotch(channel_, i, n.offsetHz, n.widthHz,
+                           n.active ? 1 : 0);
+    }
+    wdspNotchCount_ = static_cast<int>(notches_.size());
+    api.RXANBPSetNotchesRun(
+        channel_, (notchEnabled_ && !notches_.empty()) ? 1 : 0);
+}
+
+void WdspEngine::setNotchEnabled(bool on)
+{
+    if (notchEnabled_ == on) return;
+    notchEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/notchEnabled"), on);
+    pushNotches();
+    emit notchesChanged();
+}
+
+int WdspEngine::addNotch(double offsetHz, double widthHz)
+{
+    notches_.push_back({offsetHz, std::max(10.0, widthHz), true});
+    notchEnabled_ = true;   // dropping a notch implies NF on
+    QSettings().setValue(QStringLiteral("dsp/notchEnabled"), true);
+    persistNotches();
+    pushNotches();
+    emit notchesChanged();
+    return static_cast<int>(notches_.size()) - 1;
+}
+
+void WdspEngine::removeNotch(int index)
+{
+    if (index < 0 || index >= static_cast<int>(notches_.size())) return;
+    notches_.erase(notches_.begin() + index);
+    persistNotches();
+    pushNotches();
+    emit notchesChanged();
+}
+
+void WdspEngine::moveNotch(int index, double offsetHz)
+{
+    if (index < 0 || index >= static_cast<int>(notches_.size())) return;
+    notches_[index].offsetHz = offsetHz;
+    persistNotches();
+    pushNotches();
+    emit notchesChanged();
+}
+
+void WdspEngine::setNotchWidth(int index, double widthHz)
+{
+    if (index < 0 || index >= static_cast<int>(notches_.size())) return;
+    notches_[index].widthHz = std::clamp(widthHz, 10.0, 20000.0);
+    persistNotches();
+    pushNotches();
+    emit notchesChanged();
+}
+
+void WdspEngine::carveNotches(float *db, int n, double floorDb) const
+{
+    if (!db || n < 2 || !notchEnabled_ || notches_.empty()) return;
+    const double span = static_cast<double>(spanHz());
+    if (span <= 0.0) return;
+    const float floorF = static_cast<float>(floorDb);
+    for (const Notch &nt : notches_) {
+        if (!nt.active) continue;
+        const double cCol  = (nt.offsetHz / span + 0.5) * (n - 1);
+        double       halfW = 0.5 * (nt.widthHz / span) * (n - 1);
+        if (halfW < 0.75) halfW = 0.75;             // ≥ ~1.5 columns visible
+        int lo = static_cast<int>(std::floor(cCol - halfW));
+        int hi = static_cast<int>(std::ceil (cCol + halfW));
+        if (lo < 0)      lo = 0;
+        if (hi > n - 1)  hi = n - 1;
+        for (int i = lo; i <= hi; ++i)
+            if (db[i] > floorF) db[i] = floorF;     // clamp down to floor
+    }
+}
+
+int WdspEngine::notchNear(double offsetHz, double tolHz) const
+{
+    int best = -1;
+    double bestD = tolHz;
+    for (int i = 0; i < static_cast<int>(notches_.size()); ++i) {
+        const double d = std::abs(notches_[i].offsetHz - offsetHz);
+        if (d <= bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+// ── All-mode squelch (SSQL / FMSQ / AMSQ, routed by mode) ─────────
+
+void WdspEngine::pushSquelchState()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    const bool fm  = (mode_ == QLatin1String("FM"));
+    const bool am  = (mode_ == QLatin1String("AM") ||
+                      mode_ == QLatin1String("SAM") ||
+                      mode_ == QLatin1String("DSB"));
+    const bool ssb = !fm && !am;   // USB/LSB/CWU/CWL/DIGU/DIGL/SPEC
+    const bool on  = squelchEnabled_;
+    const double t = std::clamp(squelchThreshold_, 0.0, 1.0);
+
+    // SSQL — SSB/CW/DIG voice-presence squelch.  *0.65 scale puts the
+    // WU2O-tested-good default (~0.16) at a comfortable slider zone; the
+    // tau pair gives a snappy unmute + a hang that doesn't clamp between
+    // syllables (bench-tunable).
+    if (api.SetRXASSQLRun) {
+        if (api.SetRXASSQLTauMute)   api.SetRXASSQLTauMute(channel_, 0.7);
+        if (api.SetRXASSQLTauUnMute) api.SetRXASSQLTauUnMute(channel_, 0.1);
+        if (api.SetRXASSQLThreshold) api.SetRXASSQLThreshold(channel_, t * 0.65);
+        api.SetRXASSQLRun(channel_, (on && ssb) ? 1 : 0);
+    }
+    // FM squelch (noise-level threshold; log map so the slider feels even).
+    if (api.SetRXAFMSQRun) {
+        if (api.SetRXAFMSQThreshold)
+            api.SetRXAFMSQThreshold(channel_, std::pow(10.0, -2.0 * t));
+        api.SetRXAFMSQRun(channel_, (on && fm) ? 1 : 0);
+    }
+    // AM squelch (carrier-level threshold, ~-160..-30 dB; short tail).
+    if (api.SetRXAAMSQRun) {
+        if (api.SetRXAAMSQMaxTail)   api.SetRXAAMSQMaxTail(channel_, 0.5);
+        if (api.SetRXAAMSQThreshold)
+            api.SetRXAAMSQThreshold(channel_, -160.0 + t * 130.0);
+        api.SetRXAAMSQRun(channel_, (on && am) ? 1 : 0);
+    }
+}
+
+void WdspEngine::setSquelchEnabled(bool on)
+{
+    if (squelchEnabled_ == on) return;
+    squelchEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/squelchEnabled"), on);
+    pushSquelchState();
+    emit squelchChanged();
+    emitLog(QStringLiteral("[wdsp] squelch %1")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off")));
+}
+
+void WdspEngine::setSquelchThreshold(double t)
+{
+    t = std::clamp(t, 0.0, 1.0);
+    if (std::abs(t - squelchThreshold_) < 1e-6) return;
+    squelchThreshold_ = t;
+    QSettings().setValue(QStringLiteral("dsp/squelchThreshold"), t);
+    pushSquelchState();
+    emit squelchChanged();
+}
+
+// ── Noise blanker (EXT NOB-II) ────────────────────────────────────
+
+void WdspEngine::pushNbState()
+{
+    if (!opened_ || !nbCreated_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (api.SetEXTNOBThreshold) {
+        // strength 0..1 -> threshold 12..2.5 (light..heavy).  LOWER
+        // threshold = more aggressive blanking; clamp to the working
+        // 1.5..50 range (light≈10, heavy≈3 ported from the Python tree).
+        double th = 12.0 - 9.5 * std::clamp(nbStrength_, 0.0, 1.0);
+        th = std::clamp(th, 1.5, 50.0);
+        api.SetEXTNOBThreshold(channel_, th);
+    }
+    if (api.SetEXTNOBRun)
+        api.SetEXTNOBRun(channel_, nbEnabled_ ? 1 : 0);
+}
+
+void WdspEngine::setNbEnabled(bool on)
+{
+    if (nbEnabled_ == on) return;
+    nbEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/nbEnabled"), on);
+    pushNbState();
+    emit nbChanged();
+    emitLog(QStringLiteral("[wdsp] NB %1 (strength %2%)")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off"))
+                .arg(static_cast<int>(nbStrength_ * 100.0 + 0.5)));
+}
+
+void WdspEngine::setNbStrength(double s)
+{
+    s = std::clamp(s, 0.0, 1.0);
+    if (std::abs(s - nbStrength_) < 1e-6) return;
+    nbStrength_ = s;
+    QSettings().setValue(QStringLiteral("dsp/nbStrength"), s);
+    pushNbState();   // re-tune threshold live
+    emit nbChanged();
+}
+
+// ── APF (CW audio peaking filter — in-chain biquad) ───────────────
+
+void WdspEngine::pushApfState()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXABiQuadRun) return;
+    const bool cw = (mode_ == QLatin1String("CWU") ||
+                     mode_ == QLatin1String("CWL"));
+    // Peak centred on the CW pitch, ~75 Hz wide, operator-set gain (dB→linear).
+    if (api.SetRXABiQuadFreq)      api.SetRXABiQuadFreq(channel_, cwPitchHz_);
+    if (api.SetRXABiQuadBandwidth) api.SetRXABiQuadBandwidth(channel_, 75.0);
+    if (api.SetRXABiQuadGain)
+        api.SetRXABiQuadGain(channel_, std::pow(10.0, apfGainDb_ / 20.0));
+    api.SetRXABiQuadRun(channel_, (apfEnabled_ && cw) ? 1 : 0);
+}
+
+void WdspEngine::setApfEnabled(bool on)
+{
+    if (apfEnabled_ == on) return;
+    apfEnabled_ = on;
+    QSettings().setValue(QStringLiteral("dsp/apfEnabled"), on);
+    pushApfState();
+    emit apfChanged();
+    emitLog(QStringLiteral("[wdsp] APF %1")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off")));
+}
+
+void WdspEngine::setApfGainDb(double db)
+{
+    db = std::clamp(db, 0.0, 24.0);
+    if (std::abs(db - apfGainDb_) < 1e-6) return;
+    apfGainDb_ = db;
+    QSettings().setValue(QStringLiteral("dsp/apfGainDb"), db);
+    pushApfState();   // re-apply the biquad gain live
+    emit apfChanged();
+}
+
+// ── BIN — binaural pseudo-stereo (Lyra-native Hilbert post-proc) ──
+
+void WdspEngine::buildBinaural()
+{
+    constexpr double kPi = 3.14159265358979323846;
+    const int N = 63;                       // taps (group delay 31)
+    binH_.assign(static_cast<size_t>(N), 0.0);
+    const int n = (N - 1) / 2;
+    // Truncated 2/(pi*k) Hilbert response (odd k), Hamming-windowed.
+    for (int k = -n; k <= n; ++k) {
+        if (k != 0 && (k % 2) != 0)
+            binH_[static_cast<size_t>(k + n)] = 2.0 / (kPi * k);
+    }
+    for (int i = 0; i < N; ++i)
+        binH_[static_cast<size_t>(i)] *=
+            0.54 - 0.46 * std::cos(2.0 * kPi * i / (N - 1));
+    binHist_.assign(static_cast<size_t>(N), 0.0);
+    binPos_ = 0;
+}
+
+void WdspEngine::resetBinaural()
+{
+    std::fill(binHist_.begin(), binHist_.end(), 0.0);
+    binPos_ = 0;
+}
+
+void WdspEngine::binauralStep(double mono, double *l, double *r)
+{
+    const int N = static_cast<int>(binHist_.size());   // 63
+    binHist_[static_cast<size_t>(binPos_)] = mono;
+    // Hilbert-shifted = FIR conv over the history (newest at binPos_).
+    double shifted = 0.0;
+    int idx = binPos_;
+    for (int k = 0; k < N; ++k) {
+        shifted += binH_[static_cast<size_t>(k)] *
+                   binHist_[static_cast<size_t>(idx)];
+        if (--idx < 0) idx = N - 1;
+    }
+    // In-phase path delayed by the group delay (31) to align with shifted.
+    int didx = binPos_ - 31;
+    if (didx < 0) didx += N;
+    const double delayed = binHist_[static_cast<size_t>(didx)];
+    if (++binPos_ >= N) binPos_ = 0;
+    // Sum/diff mix + equal-loudness normalization (d=0 → mono).
+    const double d  = binDepth_;
+    const double ds = d * shifted;
+    const double norm = 1.0 / std::sqrt(1.0 + d * d);
+    *l = (delayed - ds) * norm;
+    *r = (delayed + ds) * norm;
+}
+
+void WdspEngine::setBinEnabled(bool on)
+{
+    if (binEnabled_ == on) return;
+    binEnabled_ = on;
+    if (on) resetBinaural();   // clean state on engage (click-free)
+    QSettings().setValue(QStringLiteral("dsp/binEnabled"), on);
+    emit binChanged();
+    emitLog(QStringLiteral("[wdsp] BIN %1")
+                .arg(on ? QStringLiteral("on") : QStringLiteral("off")));
+}
+
+void WdspEngine::setBinDepth(double d)
+{
+    d = std::clamp(d, 0.0, 1.0);
+    if (std::abs(d - binDepth_) < 1e-6) return;
+    binDepth_ = d;
+    QSettings().setValue(QStringLiteral("dsp/binDepth"), d);
+    emit binChanged();
+}
+
+void WdspEngine::startNoiseCapture(double seconds)
+{
+    // Hold channelMtx_ so we can't arm/reset the profile while feedIq is
+    // mid-block on the RX worker thread (it feeds noiseProfile_ under the
+    // same lock).  (Re)create the profile if its FFT size changed.
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (!noiseProfile_ || noiseProfile_->fftSize() != npFftSize_) {
+            noiseProfile_ = std::make_unique<CapturedProfile>(npFftSize_);
+        }
+        noiseProfile_->begin(cfg_.inRate, seconds);
+        noiseProfileValid_.store(false, std::memory_order_relaxed);
+        noiseProgress_.store(0.0, std::memory_order_relaxed);
+        noiseCapturing_.store(true, std::memory_order_relaxed);
+    }
+    emitLog(QStringLiteral("Noise capture: %1 s @ %2 Hz, FFT %3")
+                .arg(seconds).arg(cfg_.inRate).arg(npFftSize_));
+    emit noiseCaptureChanged();
+}
+
+void WdspEngine::cancelNoiseCapture()
+{
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        noiseCapturing_.store(false, std::memory_order_relaxed);
+        if (noiseProfile_) noiseProfile_->cancel();
+    }
+    emit noiseCaptureChanged();
+}
+
+void WdspEngine::setNoiseApply(bool on)
+{
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (on) {
+            // (Re)create the reducer at the current captured-profile FFT
+            // size and load the current profile if one is valid + matches.
+            if (!reducer_ || reducer_->fftSize() != npFftSize_) {
+                reducer_ = std::make_unique<NoiseReducer>(npFftSize_);
+            }
+            applyReducerParams();
+            if (noiseProfile_ && noiseProfile_->valid() &&
+                noiseProfile_->fftSize() == npFftSize_) {
+                reducer_->setProfile(noiseProfile_->noisePower());
+            }
+        }
+        applyEnabled_.store(on, std::memory_order_relaxed);
+    }
+    emitLog(on ? QStringLiteral("Noise apply: ON")
+               : QStringLiteral("Noise apply: OFF"));
+    emit noiseApplyChanged();
+}
+
+void WdspEngine::applyReducerParams()
+{
+    // Caller holds channelMtx_.  Pushes the persisted tunables onto the
+    // reducer (no-op if it doesn't exist yet).
+    if (!reducer_) return;
+    reducer_->setAlpha(npAlpha_);
+    reducer_->setFloorDb(npFloorDb_);
+    reducer_->setSmoothing(npSmoothing_);
+}
+
+void WdspEngine::setNoiseStrength(double a)
+{
+    a = std::clamp(a, 1.0, 5.0);
+    if (std::abs(a - npAlpha_) < 1e-6) return;
+    npAlpha_ = a;
+    QSettings().setValue(QStringLiteral("dsp/npAlpha"), a);
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (reducer_) reducer_->setAlpha(a);
+    }
+    emit noiseTuningChanged();
+}
+
+void WdspEngine::setNoiseFloorDb(double db)
+{
+    db = std::clamp(db, -30.0, -3.0);
+    if (std::abs(db - npFloorDb_) < 1e-6) return;
+    npFloorDb_ = db;
+    QSettings().setValue(QStringLiteral("dsp/npFloorDb"), db);
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (reducer_) reducer_->setFloorDb(db);
+    }
+    emit noiseTuningChanged();
+}
+
+void WdspEngine::setNoiseSmoothing(double sm)
+{
+    sm = std::clamp(sm, 0.0, 0.95);
+    if (std::abs(sm - npSmoothing_) < 1e-6) return;
+    npSmoothing_ = sm;
+    QSettings().setValue(QStringLiteral("dsp/npSmoothing"), sm);
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (reducer_) reducer_->setSmoothing(sm);
+    }
+    emit noiseTuningChanged();
+}
+
+QStringList WdspEngine::noiseProfiles() const
+{
+    QStringList names;
+    for (const auto &p : profiles_) names << p.name;
+    return names;
+}
+
+QString WdspEngine::noiseProfileInfo(const QString &name) const
+{
+    for (const auto &p : profiles_) {
+        if (p.name == name) {
+            const QString r = (p.rate % 1000 == 0)
+                ? QStringLiteral("%1k").arg(p.rate / 1000)
+                : QString::number(p.rate);
+            return QStringLiteral("%1 · %2 · %3").arg(r).arg(p.fft).arg(p.date);
+        }
+    }
+    return QString();
+}
+
+void WdspEngine::setNoiseFftSize(int n)
+{
+    if (n != 2048 && n != 4096 && n != 8192) return;
+    if (n == npFftSize_) return;
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        npFftSize_ = n;
+        // A profile is FFT-size-specific: drop the live capture, the
+        // reducer, and apply — the operator re-captures at the new size.
+        noiseCapturing_.store(false, std::memory_order_relaxed);
+        if (noiseProfile_) noiseProfile_->cancel();
+        noiseProfileValid_.store(false, std::memory_order_relaxed);
+        reducer_.reset();
+        applyEnabled_.store(false, std::memory_order_relaxed);
+        npActiveName_.clear();
+    }
+    QSettings().setValue(QStringLiteral("dsp/npFftSize"), n);
+    emit noiseSettingsChanged();
+    emit noiseCaptureChanged();
+    emit noiseApplyChanged();
+    emit noiseProfilesChanged();
+}
+
+void WdspEngine::setNoiseCaptureSeconds(double sec)
+{
+    if (sec != 3.0 && sec != 5.0 && sec != 10.0) return;
+    if (sec == npCaptureSeconds_) return;
+    npCaptureSeconds_ = sec;
+    QSettings().setValue(QStringLiteral("dsp/npCaptureSeconds"), sec);
+    emit noiseSettingsChanged();
+}
+
+QString WdspEngine::profilesDir() const
+{
+    // Beside the FFT-wisdom folder (wdsp_native): N8SDR/Lyra-cpp/profiles
+    // under the platform's generic data location.  Created on demand.
+    const QString base = QStandardPaths::writableLocation(
+        QStandardPaths::GenericDataLocation);
+    const QString dir = QDir::cleanPath(
+        base + QStringLiteral("/N8SDR/Lyra-cpp/profiles"));
+    QDir().mkpath(dir);
+    return dir;
+}
+
+QString WdspEngine::noiseProfilesDir() const
+{
+    return QDir::toNativeSeparators(profilesDir());
+}
+
+bool WdspEngine::saveNoiseProfile(const QString &name)
+{
+    const QString nm = name.trimmed();
+    if (nm.isEmpty()) return false;
+    StoredProfile sp;
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (!noiseProfile_ || !noiseProfile_->valid()) return false;
+        sp.rate  = noiseProfile_->sampleRate();
+        sp.fft   = noiseProfile_->fftSize();
+        sp.power = noiseProfile_->noisePower();
+    }
+    sp.name = nm;
+    sp.date = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd"));
+    // Overwrite a same-named profile (reuse its file), else append.
+    StoredProfile *slot = nullptr;
+    for (auto &p : profiles_) {
+        if (p.name == nm) { sp.file = p.file; p = sp; slot = &p; break; }
+    }
+    if (!slot) { profiles_.push_back(sp); slot = &profiles_.back(); }
+    if (!writeProfileFile(*slot)) return false;
+    npActiveName_ = nm;
+    emit noiseProfilesChanged();
+    return true;
+}
+
+bool WdspEngine::loadNoiseProfile(const QString &name)
+{
+    const StoredProfile *found = nullptr;
+    for (const auto &p : profiles_) {
+        if (p.name == name) { found = &p; break; }
+    }
+    if (!found) return false;
+    if (found->rate != cfg_.inRate) {
+        emitLog(QStringLiteral("Profile '%1' was captured at %2 Hz; current "
+                               "rate is %3 Hz — recapture at this rate.")
+                    .arg(name).arg(found->rate).arg(cfg_.inRate));
+        return false;   // rate mismatch — caller surfaces the hint
+    }
+    {
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (found->fft != npFftSize_) {
+            npFftSize_ = found->fft;   // adopt the profile's FFT size
+            QSettings().setValue(QStringLiteral("dsp/npFftSize"), npFftSize_);
+        }
+        if (!reducer_ || reducer_->fftSize() != npFftSize_) {
+            reducer_ = std::make_unique<NoiseReducer>(npFftSize_);
+        }
+        applyReducerParams();
+        reducer_->setProfile(found->power);
+        npActiveName_ = name;
+    }
+    emit noiseSettingsChanged();
+    emit noiseProfilesChanged();
+    return true;
+}
+
+void WdspEngine::deleteNoiseProfile(const QString &name)
+{
+    for (auto it = profiles_.begin(); it != profiles_.end(); ++it) {
+        if (it->name == name) {
+            removeProfileFile(*it);
+            profiles_.erase(it);
+            if (npActiveName_ == name) npActiveName_.clear();
+            emit noiseProfilesChanged();
+            return;
+        }
+    }
+}
+
+bool WdspEngine::promptSaveProfile()
+{
+    if (!noiseProfileValid_.load(std::memory_order_relaxed)) {
+        QMessageBox::information(nullptr, tr("Save noise profile"),
+            tr("Capture a profile first — press 📷 Cap on a quiet, "
+               "signal-free frequency."));
+        return false;
+    }
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        nullptr, tr("Save noise profile"),
+        tr("Name (e.g. 40m-night, 20m-ESSB):"),
+        QLineEdit::Normal, npActiveName_, &ok);
+    if (!ok || name.trimmed().isEmpty()) return false;
+    return saveNoiseProfile(name);
+}
+
+void WdspEngine::loadProfileOrWarn(const QString &name)
+{
+    if (!loadNoiseProfile(name)) {
+        QMessageBox::information(nullptr, tr("Profile not loaded"),
+            tr("“%1” was captured at a different sample rate than the "
+               "radio is using now.\nSwitch to that rate, or recapture at the "
+               "current rate.").arg(name));
+    }
+}
+
+bool WdspEngine::renameNoiseProfile(const QString &oldName, const QString &newName)
+{
+    const QString nn = newName.trimmed();
+    if (nn.isEmpty() || nn == oldName) return false;
+    StoredProfile *p = nullptr;
+    for (auto &q : profiles_) if (q.name == oldName) { p = &q; break; }
+    if (!p) return false;
+    for (const auto &q : profiles_)            // reject collision
+        if (&q != p && q.name == nn) return false;
+    const QString oldFile = p->file;
+    p->name = nn;
+    p->file.clear();                           // force a new filename
+    if (!writeProfileFile(*p)) { p->name = oldName; p->file = oldFile; return false; }
+    if (!oldFile.isEmpty() && oldFile != p->file) QFile::remove(oldFile);
+    if (npActiveName_ == oldName) npActiveName_ = nn;
+    emit noiseProfilesChanged();
+    return true;
+}
+
+void WdspEngine::loadProfiles()
+{
+    profiles_.clear();
+    const QDir dir(profilesDir());
+    const QStringList files = dir.entryList(
+        QStringList{QStringLiteral("*.lnp")}, QDir::Files, QDir::Name);
+    for (const QString &fn : files) {
+        const QString path = dir.filePath(fn);
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        QDataStream ds(&f);
+        ds.setVersion(QDataStream::Qt_6_0);
+        quint32 magic = 0, ver = 0;
+        ds >> magic >> ver;
+        if (magic != 0x4C4E5031u) continue;        // "LNP1"
+        StoredProfile sp;
+        qint32 rate = 0, fft = 0;
+        QByteArray pw;
+        ds >> sp.name >> rate >> fft >> sp.date >> pw;
+        if (ds.status() != QDataStream::Ok) continue;
+        sp.rate = rate; sp.fft = fft; sp.file = path;
+        if (sp.name.isEmpty() || fft <= 0) continue;
+        if (pw.size() == static_cast<int>(fft * sizeof(double))) {
+            sp.power.resize(static_cast<size_t>(fft));
+            std::memcpy(sp.power.data(), pw.constData(),
+                        static_cast<size_t>(pw.size()));
+            profiles_.push_back(std::move(sp));
+        }
+    }
+}
+
+bool WdspEngine::writeProfileFile(StoredProfile &p)
+{
+    if (p.file.isEmpty()) {
+        // Derive a safe, unique filename from the (operator) name.
+        QString safe;
+        for (const QChar c : p.name)
+            safe += (c.isLetterOrNumber() || c == QLatin1Char('_') ||
+                     c == QLatin1Char('-') || c == QLatin1Char(' '))
+                        ? c : QLatin1Char('_');
+        safe = safe.trimmed();
+        if (safe.isEmpty()) safe = QStringLiteral("profile");
+        const QString dir = profilesDir();
+        QString cand = QDir(dir).filePath(safe + QStringLiteral(".lnp"));
+        int n = 2;
+        while (QFileInfo::exists(cand)) {
+            bool ownedByOther = false;     // collision with a DIFFERENT profile
+            for (const auto &q : profiles_)
+                if (&q != &p && q.file == cand) { ownedByOther = true; break; }
+            if (!ownedByOther) break;      // free / ours -> overwrite is fine
+            cand = QDir(dir).filePath(
+                QStringLiteral("%1_%2.lnp").arg(safe).arg(n++));
+        }
+        p.file = cand;
+    }
+    QFile f(p.file);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        emitLog(QStringLiteral("Profile save FAILED — cannot write %1").arg(p.file));
+        return false;
+    }
+    QDataStream ds(&f);
+    ds.setVersion(QDataStream::Qt_6_0);
+    ds << quint32(0x4C4E5031u) << quint32(1)
+       << p.name << qint32(p.rate) << qint32(p.fft) << p.date;
+    const QByteArray pw(reinterpret_cast<const char *>(p.power.data()),
+                        static_cast<int>(p.power.size() * sizeof(double)));
+    ds << pw;
+    f.close();
+    emitLog(QStringLiteral("Profile saved → %1").arg(p.file));
+    return true;
+}
+
+void WdspEngine::removeProfileFile(const StoredProfile &p)
+{
+    if (!p.file.isEmpty()) QFile::remove(p.file);
 }
 
 void WdspEngine::setHl2AudioSink(
@@ -914,11 +1897,57 @@ void WdspEngine::feedIq(const double *iq, int nframes)
     // 2*in_size interleaved doubles in, 2*outSize_ doubles out.
     const size_t blockDoubles = static_cast<size_t>(2 * cfg_.inSize);
     while (accum_.size() >= blockDoubles) {
-        api.fexchange0(channel_, accum_.data(), outBuf_.data(), &fexErr_);
+        // Noise blanker (EXT): splice the impulse blanker on the raw IQ
+        // block BEFORE WDSP's RXA chain — xnobEXT cleans accum_ front into
+        // nbBuf_, and the cleaned block then drives BOTH the demod and the
+        // analyzer so audio + panadapter match.  NB off → use accum_.
+        double *blockPtr = accum_.data();
+        if (nbEnabled_ && nbCreated_ && api.xnobEXT &&
+            nbBuf_.size() >= blockDoubles) {
+            api.xnobEXT(channel_, accum_.data(), nbBuf_.data());
+            blockPtr = nbBuf_.data();
+        }
+        // Captured noise profile (slice 2): during a capture window,
+        // average this post-NB IQ block's per-bin noise power.  feed()
+        // only READS blockPtr (runs its own STFT internally) and never
+        // alters it — observe-only, audio is unchanged.  noiseProfile_ is
+        // touched here + in startNoiseCapture, both under channelMtx_.
+        if (noiseCapturing_.load(std::memory_order_relaxed) && noiseProfile_) {
+            noiseProfile_->feed(blockPtr, cfg_.inSize);
+            noiseProgress_.store(noiseProfile_->progress(),
+                                 std::memory_order_relaxed);
+            if (!noiseProfile_->capturing()) {
+                noiseProfileValid_.store(noiseProfile_->valid(),
+                                         std::memory_order_relaxed);
+                noiseCapturing_.store(false, std::memory_order_relaxed);
+                // Auto-load a freshly-captured profile if apply is on.
+                if (applyEnabled_.load(std::memory_order_relaxed) && reducer_ &&
+                    noiseProfile_->valid() &&
+                    reducer_->fftSize() == noiseProfile_->fftSize()) {
+                    reducer_->setProfile(noiseProfile_->noisePower());
+                }
+            }
+        }
+        // Slice 3 apply: when enabled + a valid profile is loaded, clean
+        // the post-NB IQ block (Wiener-from-profile) and run WDSP + the
+        // analyzer on the CLEANED block so audio and panadapter match.
+        // Same-count interface → just swap the pointer (one window of
+        // latency lives inside the reducer).  Off/no-profile → unchanged.
+        double *dspPtr = blockPtr;
+        if (applyEnabled_.load(std::memory_order_relaxed) && reducer_ &&
+            reducer_->ready()) {
+            if (static_cast<int>(cleanBuf_.size()) < 2 * cfg_.inSize) {
+                cleanBuf_.resize(static_cast<size_t>(2 * cfg_.inSize));
+            }
+            reducer_->process(blockPtr, cfg_.inSize, cleanBuf_.data());
+            dspPtr = cleanBuf_.data();
+        }
+        api.fexchange0(channel_, dspPtr, outBuf_.data(), &fexErr_);
 
-        // Step 5: feed the same IQ block to the panadapter analyzer.
+        // Step 5: feed the SAME block WDSP saw (cleaned when applying) to
+        // the panadapter so the trace matches the audio.
         if (analyzerOpen_ && api.Spectrum0) {
-            api.Spectrum0(1, kAnDisp, 0, 0, accum_.data());
+            api.Spectrum0(1, kAnDisp, 0, 0, dspPtr);
         }
 
         // TCI IQ stream tap: copy this block's interleaved I,Q as float32
@@ -968,10 +1997,14 @@ void WdspEngine::feedIq(const double *iq, int nframes)
                 gain *= kHl2OutAtten;   // tame the hotter AK4951 output
             }
             for (int f = 0; f < outSize_; ++f) {
-                double l = std::clamp(
-                    outBuf_[static_cast<size_t>(2 * f + 0)] * gain, -1.0, 1.0);
-                double r = std::clamp(
-                    outBuf_[static_cast<size_t>(2 * f + 1)] * gain, -1.0, 1.0);
+                double l = outBuf_[static_cast<size_t>(2 * f + 0)] * gain;
+                double r = outBuf_[static_cast<size_t>(2 * f + 1)] * gain;
+                // BIN — synthesize the stereo pair from the mono (L=R)
+                // signal via the Hilbert post-processor (last stage).
+                if (binEnabled_)
+                    binauralStep(l, &l, &r);
+                l = std::clamp(l, -1.0, 1.0);
+                r = std::clamp(r, -1.0, 1.0);
                 pcm16_[static_cast<size_t>(2 * f + 0)] =
                     static_cast<qint16>(l * 32767.0);
                 pcm16_[static_cast<size_t>(2 * f + 1)] =

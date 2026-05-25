@@ -106,6 +106,24 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double  rx1DbFs              READ rx1DbFs              NOTIFY statsChanged)
     // RX1 (DDC0) receive frequency, Hz — tuning from C++ (Step 4)
     Q_PROPERTY(quint32 rx1FreqHz            READ rx1FreqHz            NOTIFY rx1FreqChanged)
+    // RX1 LNA gain (AD9866 PGA), dB.  Range −12…+48; sent on the C&C
+    // 0x14 register (C4 = 0x40 | ((dB+12)&0x3F)), rotated into the EP2
+    // C&C cadence at ~20 Hz.  Persisted.
+    Q_PROPERTY(int lnaGainDb READ lnaGainDb WRITE setLnaGainDb NOTIFY lnaGainChanged)
+    // Auto-LNA — overload-triggered gain protection (Thetis-style).
+    // When on, sustained ADC overload backs the LNA off 3 dB; when the
+    // band is clear it creeps gain back up 1 dB per hold interval,
+    // riding the overload edge.  Roams the full −12…+48 range
+    // independently of the manual set point; auto adjustments are NOT
+    // persisted (the manual slider value remains the stored set point,
+    // restored when Auto is turned off).  Fresh-install default ON
+    // (matches the operator's Thetis chkAutoStepAttenuator=True).
+    Q_PROPERTY(bool autoLna       READ autoLna        WRITE setAutoLna        NOTIFY autoLnaChanged)
+    Q_PROPERTY(bool autoLnaUndo   READ autoLnaUndo    WRITE setAutoLnaUndo    NOTIFY autoLnaChanged)
+    Q_PROPERTY(int  autoLnaHoldSec READ autoLnaHoldSec WRITE setAutoLnaHoldSec NOTIFY autoLnaChanged)
+    // Live ADC-overload indicator — true when the HL2 gateware reported
+    // ADC clipping in the last ~400 ms window (EP6 status C1 bit 0).
+    Q_PROPERTY(bool adcOverload   READ adcOverload    NOTIFY adcOverloadChanged)
     // External filter board (N2ADR): when enabled, the per-band OC
     // pattern is driven on frame-0 C2 so the board's RX band-pass +
     // 3 MHz HPF relays follow the band (front-end protection).  ocBits
@@ -141,6 +159,18 @@ public:
     // initial sentinel -200.0 means "no samples yet."
     double  rx1DbFs()           const { return rx1DbFs_.load(std::memory_order_relaxed); }
     quint32 rx1FreqHz()         const { return rx1FreqHz_.load(std::memory_order_relaxed); }
+    int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
+    bool    autoLna()           const { return autoLnaEnabled_; }
+    bool    autoLnaUndo()       const { return autoLnaUndo_; }
+    int     autoLnaHoldSec()    const { return autoLnaHoldSec_; }
+    bool    adcOverload()       const { return adcOverload_; }
+    // Operator gain bounds = the AD9866 LNA hardware range in full-range
+    // mode (HL2 wiki: code 0…60 → −12…+48 dB; frame-11 C4 bit 6 = the
+    // full-range enable, which Lyra sets).  +48 is the true ceiling
+    // (old Lyra software-capped at +31 on an "above this is IMD" call —
+    // now the operator's choice, with Auto-LNA managing the edge).
+    static constexpr int kLnaMinDb = -12;
+    static constexpr int kLnaMaxDb =  48;
     bool    filterBoardEnabled() const { return filterBoardEnabled_; }
     int     ocBits()             const { return ocPattern_; }
 
@@ -188,6 +218,17 @@ public slots:
     // apply post-priming RX-freq updates (CLAUDE.md §3.2).  Thread-safe.
     void setRx1FreqHz(quint32 hz);
 
+    // Set the RX1 LNA gain (−12…+48 dB).  Stored in an atomic the EP2
+    // writer encodes into the 0x14 C&C register; persisted.  Thread-safe.
+    void setLnaGainDb(int db);
+
+    // Auto-LNA controls (main thread).  setAutoLna(false) restores the
+    // operator's persisted manual gain; setAutoLna(true) hands the LNA
+    // to the overload-protection loop.  Undo + hold time are persisted.
+    void setAutoLna(bool on);
+    void setAutoLnaUndo(bool on);
+    void setAutoLnaHoldSec(int sec);
+
     // Set the IQ sample rate (96 / 192 / 384 kHz).  Updates the frame-0
     // C1 speed bits the EP2 writer sends each datagram; takes effect on
     // the next send.  The DSP-side rate switch (WDSP channel reopen) is
@@ -206,12 +247,21 @@ signals:
     void runningChanged();
     void statsChanged();
     void rx1FreqChanged();
+    void lnaGainChanged();
+    // Emitted ONLY by the manual setLnaGainDb() path (operator slider /
+    // wheel / per-band restore) — NOT by Auto-LNA's roaming.  Lets
+    // BandMemory save the operator's per-band manual set point without
+    // capturing an auto-roamed value.
+    void lnaSetByOperator(int db);
+    void autoLnaChanged();
+    void adcOverloadChanged();
     void filterBoardChanged(bool on);
     void ocBitsChanged(int pattern);
     void logLine(QString line);
 
 private slots:
     void onStatsTick();
+    void onAutoLnaTick();
     void onFatalError(QString reason);
 
 private:
@@ -221,6 +271,11 @@ private:
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.
     void updateOcPattern();
+    // Apply an LNA gain to the live wire value WITHOUT persisting it —
+    // used by Auto-LNA so its transient adjustments never overwrite the
+    // operator's manual set point in QSettings.  Emits lnaGainChanged
+    // so the slider / dB readout / S-meter compensation all track.
+    void applyLnaGainNoPersist(int db);
 
     SocketHandle         socket_ = kInvalidSocket;
     std::jthread         rxWorker_;
@@ -243,6 +298,34 @@ private:
     // each send.  Default 7.074 MHz (40m FT8) so first launch lands on
     // a known-active spot.  std::atomic<quint32> is lock-free on x86_64.
     std::atomic<quint32> rx1FreqHz_{7074000};
+    // RX1 LNA gain (dB, −12…+48).  Read by the EP2 writer each cadence
+    // tick.  Default +31 dB — old Lyra's practical-max set point: a
+    // strong starting gain that's still below the +48 hardware ceiling,
+    // with Auto-LNA (default on) backing it off on overload.  Overridden
+    // from QSettings in the ctor once the operator sets it.
+    std::atomic<int>     lnaGainDb_{31};
+    // EP2 C&C round-robin phase — cycles the 0x14 LNA register into the
+    // second C&C slot every Nth datagram (≈20 Hz) so the gateware keeps
+    // the override bit fresh; freq holds the slot the rest of the time.
+    std::atomic<quint32> ccPhase_{0};
+    // ADC-overload telemetry + Auto-LNA (Thetis-style, gain-sense).
+    // adcOverloadNow_ holds the ADC0 overload bit from the MOST RECENT
+    // EP6 address-0 status frame (direct overwrite — NOT a window-OR
+    // latch).  The 400 ms tick samples it INSTANTANEOUSLY, matching the
+    // reference HL2 read loop's getAndResetADC_Overload poll: a window-
+    // OR over the ~1000 address-0 frames per 400 ms over-reported on a
+    // strong front end (one micro-clip pinned overload every cycle →
+    // gain driven to the floor).  adcOverload_ / overloadLevel_ /
+    // autoLna*_ are main-thread state owned by onAutoLnaTick().
+    std::atomic<bool>    adcOverloadNow_{false};
+    bool                 adcOverload_    = false;
+    int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
+    bool                 autoLnaEnabled_ = false;
+    bool                 autoLnaUndo_    = true;
+    int                  autoLnaHoldSec_ = 4;      // "Undo N s" creep interval
+    QTimer               autoLnaTimer_;
+    QElapsedTimer        holdClock_;               // since last auto gain change
+    bool                 recovering_     = false;  // creeping gain back up
     // External filter board (N2ADR).  ocC2_ is the frame-0 C2 byte the
     // EP2 writer reads each send (= 7-bit OC pattern << 1; C2[0] stays 0).
     // filterBoardEnabled_ / ocPattern_ are main-thread state (the
@@ -285,6 +368,13 @@ private:
     // per datagram (63 LRIQ tuples × 2 USB frames) = 380.95 dg/sec
     // → 2.6316 ms period.  Same cadence Thetis/pihpsdr/Quisk fire.
     static constexpr int     kEp2RateHz    = 380;
+    // Auto-LNA overload-poll cadence (matches the reference ~400 ms loop).
+    static constexpr int     kAutoLnaPeriodMs = 400;
+    // Once recovery begins (after the hold time confirms the band is
+    // clear), creep gain back up at this brisker fixed cadence so the
+    // operator isn't left deaf for minutes — pull-DOWNs still honor the
+    // operator's hold-time setting; only the pull-UP is sped up.
+    static constexpr int     kAutoLnaRecoverMs = 1000;
 };
 
 } // namespace lyra::ipc

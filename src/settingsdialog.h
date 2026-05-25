@@ -24,6 +24,7 @@ class MemoryStore;
 class EibiStore;
 class TciServer;
 class SpotStore;
+class MeterModel;
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -37,7 +38,7 @@ public:
                    UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                    lyra::wx::WxService *wx, MemoryStore *memory,
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
-                   QWidget *parent = nullptr);
+                   MeterModel *meter, QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
     void selectTopic(const QString &topic);
@@ -46,9 +47,11 @@ private:
     QWidget *buildVisualsTab();
     QWidget *buildHardwareTab();
     QWidget *buildAudioTab();    // RX audio output device chooser
+    QWidget *buildNoiseTab();    // captured-profile manager (list/rename/delete)
     QWidget *buildWeatherTab();  // weather-alert sources + thresholds + keys
     QWidget *buildBandsTab();    // Memory bank (+ Time Stations / SW DB later)
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
+    QWidget *buildMeterTab();    // S-meter calibration trim
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
@@ -60,6 +63,7 @@ private:
     EibiStore              *eibi_      = nullptr;
     TciServer              *tci_       = nullptr;
     SpotStore              *spots_     = nullptr;
+    MeterModel             *meter_     = nullptr;
     QTabWidget             *tabs_      = nullptr;
 };
 

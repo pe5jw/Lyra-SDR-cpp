@@ -18,6 +18,8 @@
 #include <QGroupBox>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QInputDialog>
+#include <QUrl>
 #include <QColor>
 #include <QColorDialog>
 #include <QComboBox>
@@ -46,6 +48,7 @@
 #include "eibistore.h"
 #include "tci_server.h"
 #include "spotstore.h"
+#include "metermodel.h"
 #include <QDesktopServices>
 #include <memory>
 #include <QVBoxLayout>
@@ -61,10 +64,12 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                                lyra::wx::WxService *wx, MemoryStore *memory,
                                EibiStore *eibi, TciServer *tci,
-                               SpotStore *spots, QWidget *parent)
+                               SpotStore *spots, MeterModel *meter,
+                               QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
-      memory_(memory), eibi_(eibi), tci_(tci), spots_(spots) {
+      memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
+      meter_(meter) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
@@ -72,6 +77,10 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     tabs_->addTab(buildVisualsTab(), tr("Visuals"));
     if (engine_) {
         tabs_->addTab(buildAudioTab(), tr("Audio"));
+        tabs_->addTab(buildNoiseTab(), tr("Noise"));
+    }
+    if (meter_) {
+        tabs_->addTab(buildMeterTab(), tr("Meter"));
     }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(buildHardwareTab(), tr("Hardware"));
@@ -969,6 +978,49 @@ QWidget *SettingsDialog::buildHardwareTab() {
     }
     form->addRow(tr("OC outputs"), oc);
 
+    // --- Auto-LNA (overload-triggered front-end protection) ---
+    // On sustained ADC overload the LNA backs off; when the band clears
+    // it creeps gain back up, riding the overload edge.  The master
+    // on/off lives on the DSP+Audio panel (Row 1 "Auto"); these are the
+    // tuning knobs (mirrors the reference Ant/Filters Auto-ATT options).
+    {
+        auto *undo = new QCheckBox(
+            tr("Creep gain back up when the band clears (Undo)"), page);
+        undo->setChecked(stream_ && stream_->autoLnaUndo());
+        undo->setToolTip(tr(
+            "On: after backing off on overload, Auto-LNA raises the gain "
+            "1 dB per hold interval once clipping stops.\n"
+            "Off: Auto-LNA only ever backs the gain off and holds it there."));
+        if (stream_) {
+            connect(undo, &QCheckBox::toggled, stream_,
+                    &lyra::ipc::HL2Stream::setAutoLnaUndo);
+            connect(stream_, &lyra::ipc::HL2Stream::autoLnaChanged, undo,
+                    [this, undo]() {
+                        const bool on = stream_->autoLnaUndo();
+                        if (undo->isChecked() != on) undo->setChecked(on);
+                    });
+        }
+        form->addRow(tr("Auto-LNA"), undo);
+
+        auto *hold = new QSpinBox(page);
+        hold->setRange(1, 60);
+        hold->setSuffix(tr(" s"));
+        hold->setValue(stream_ ? stream_->autoLnaHoldSec() : 4);
+        hold->setToolTip(tr(
+            "How long to wait after clipping stops before creeping the gain "
+            "back up — and the interval between each +1 dB step."));
+        if (stream_) {
+            connect(hold, qOverload<int>(&QSpinBox::valueChanged), stream_,
+                    &lyra::ipc::HL2Stream::setAutoLnaHoldSec);
+            connect(stream_, &lyra::ipc::HL2Stream::autoLnaChanged, hold,
+                    [this, hold]() {
+                        const int s = stream_->autoLnaHoldSec();
+                        if (hold->value() != s) hold->setValue(s);
+                    });
+        }
+        form->addRow(tr("Hold time"), hold);
+    }
+
     // --- USB-BCD output (external linear-amp band switching) ---
     // FTDI cable that outputs the Yaesu BCD band code so an amp's
     // auto-bandswitch follows Lyra.  Default OFF; ⚠ the wrong code at
@@ -1030,6 +1082,86 @@ QWidget *SettingsDialog::buildHardwareTab() {
             form->addRow(tr("BCD output"), code);
         }
     }
+
+    return page;
+}
+
+QWidget *SettingsDialog::buildMeterTab() {
+    auto *page = new QWidget(this);
+    auto *form = new QFormLayout(page);
+
+    // S-meter calibration trim (calDb) — applied live + persisted by the
+    // MeterModel.  The meter reads WDSP RXA_S_PK; this offset lands it on
+    // an absolute dBm / S-unit scale.  With RXA_S_PK the trim is small.
+    auto *cal = new QDoubleSpinBox(page);
+    cal->setRange(-60.0, 60.0);
+    cal->setDecimals(1);
+    cal->setSingleStep(0.5);
+    cal->setSuffix(tr(" dB"));
+    cal->setValue(meter_ ? meter_->calDb() : 0.0);
+    cal->setToolTip(tr(
+        "S-meter calibration trim.\n\n"
+        "The meter reads WDSP's in-passband RXA_S_PK level; this offset "
+        "lands it on an absolute dBm / S-unit scale. Tune to a known-level "
+        "reference — WWV, or a signal "
+        "generator at a known dBm — and adjust until the S-reading "
+        "matches. With RXA_S_PK the needed trim is only a few dB."));
+    connect(cal, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) { if (meter_) meter_->setCalDb(v); });
+    form->addRow(tr("S-meter calibration:"), cal);
+
+    // Peak-hold dwell — how long the peak marker hangs at a new high
+    // before it starts to fall.  Operator-tunable; applied live + persisted.
+    auto *hold = new QSpinBox(page);
+    hold->setRange(100, 5000);
+    hold->setSingleStep(100);
+    hold->setSuffix(tr(" ms"));
+    hold->setValue(meter_ ? meter_->peakHoldMs() : 800);
+    hold->setToolTip(tr(
+        "Peak-hold time — how long the meter's peak marker hangs at a new "
+        "high before decaying. Raise it to make brief peaks linger longer "
+        "(easier to catch a fleeting signal / QSB crest); lower it for a "
+        "snappier marker. Default 800 ms."));
+    connect(hold, &QSpinBox::valueChanged, this,
+            [this](int v) { if (meter_) meter_->setPeakHoldMs(v); });
+    form->addRow(tr("Meter peak-hold:"), hold);
+
+    // Max-hold "high-water mark" — a second, slower marker that latches
+    // the highest level seen and eases down gently (distinct red marker
+    // on the Arc / Bar).  Enable + its own dwell time.
+    auto *maxOn = new QCheckBox(tr("Show max-peak marker"), page);
+    maxOn->setChecked(meter_ ? meter_->maxPeakEnabled() : true);
+    maxOn->setToolTip(tr(
+        "A second meter marker (red) that latches the highest level "
+        "reached and falls back gently — a 'high-water mark' that lets you "
+        "read a fleeting DX or QSB crest long after the fast peak pip has "
+        "dropped."));
+    connect(maxOn, &QCheckBox::toggled, this,
+            [this](bool on) { if (meter_) meter_->setMaxPeakEnabled(on); });
+    form->addRow(QString(), maxOn);
+
+    auto *maxHold = new QSpinBox(page);
+    maxHold->setRange(1, 60);
+    maxHold->setSingleStep(1);
+    maxHold->setSuffix(tr(" s"));
+    maxHold->setValue(meter_ ? meter_->maxHoldMs() / 1000 : 3);
+    maxHold->setToolTip(tr(
+        "How long the max-peak marker holds at a new high before it "
+        "begins its gentle fall. Longer = the high-water mark lingers "
+        "more before easing down. Default 3 s."));
+    maxHold->setEnabled(maxOn->isChecked());
+    connect(maxOn, &QCheckBox::toggled, maxHold, &QWidget::setEnabled);
+    connect(maxHold, &QSpinBox::valueChanged, this,
+            [this](int v) { if (meter_) meter_->setMaxHoldMs(v * 1000); });
+    form->addRow(tr("Max-peak hold:"), maxHold);
+
+    auto *hint = new QLabel(tr(
+        "Set this once against a known signal. The meter compensates for "
+        "the LNA gain automatically, so the reading stays put as you "
+        "adjust LNA — you can calibrate at any setting."), page);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#8a9aac;"));
+    form->addRow(hint);
 
     return page;
 }
@@ -1796,6 +1928,99 @@ QWidget *SettingsDialog::buildVisualsTab() {
     return page;
 }
 
+QWidget *SettingsDialog::buildNoiseTab() {
+    // Captured noise-profile manager: list the saved profiles (one .lnp
+    // file each) with their rate/FFT/date, and rename / delete (multi) /
+    // open the folder.  Live capture + apply + tuning live on the
+    // DSP+Audio panel; this tab is curation.
+    auto *page = new QWidget(this);
+    auto *outer = new QVBoxLayout(page);
+
+    auto *grp = new QGroupBox(tr("Captured noise profiles"), page);
+    auto *g = new QVBoxLayout(grp);
+
+    auto *list = new QListWidget(grp);
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    auto refresh = [this, list]() {
+        list->clear();
+        const QStringList names = engine_->noiseProfiles();
+        for (const QString &n : names) {
+            const QString info = engine_->noiseProfileInfo(n);
+            auto *it = new QListWidgetItem(
+                info.isEmpty() ? n : QStringLiteral("%1   —   %2").arg(n, info));
+            it->setData(Qt::UserRole, n);
+            list->addItem(it);
+        }
+    };
+    refresh();
+    connect(engine_, &lyra::dsp::WdspEngine::noiseProfilesChanged, list, refresh);
+    g->addWidget(list);
+
+    auto *btnRow = new QHBoxLayout;
+    auto *renameBtn = new QPushButton(tr("Rename…"), grp);
+    auto *delBtn    = new QPushButton(tr("Delete"), grp);
+    auto *revealBtn = new QPushButton(tr("Open folder"), grp);
+    btnRow->addWidget(renameBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(revealBtn);
+    g->addLayout(btnRow);
+
+    auto selectionUpdate = [list, renameBtn, delBtn]() {
+        const int n = list->selectedItems().size();
+        renameBtn->setEnabled(n == 1);
+        delBtn->setEnabled(n >= 1);
+    };
+    selectionUpdate();
+    connect(list, &QListWidget::itemSelectionChanged, grp, selectionUpdate);
+    connect(engine_, &lyra::dsp::WdspEngine::noiseProfilesChanged, grp, selectionUpdate);
+
+    connect(renameBtn, &QPushButton::clicked, grp, [this, list]() {
+        const auto items = list->selectedItems();
+        if (items.size() != 1) return;
+        const QString old = items.first()->data(Qt::UserRole).toString();
+        bool ok = false;
+        const QString nn = QInputDialog::getText(
+            this, tr("Rename profile"), tr("New name:"),
+            QLineEdit::Normal, old, &ok);
+        if (ok && !nn.trimmed().isEmpty()) {
+            if (!engine_->renameNoiseProfile(old, nn))
+                QMessageBox::information(this, tr("Rename"),
+                    tr("Couldn't rename — that name is already in use."));
+        }
+    });
+
+    connect(delBtn, &QPushButton::clicked, grp, [this, list]() {
+        const auto items = list->selectedItems();
+        if (items.isEmpty()) return;
+        const int n = items.size();
+        if (QMessageBox::question(this, tr("Delete profiles"),
+                tr("Delete %1 selected profile%2? This removes the file(s).")
+                    .arg(n).arg(n == 1 ? QString() : QStringLiteral("s")))
+            != QMessageBox::Yes)
+            return;
+        QStringList names;
+        for (auto *it : items) names << it->data(Qt::UserRole).toString();
+        for (const QString &nm : names) engine_->deleteNoiseProfile(nm);
+    });
+
+    connect(revealBtn, &QPushButton::clicked, grp, [this]() {
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(engine_->noiseProfilesDir()));
+    });
+
+    outer->addWidget(grp);
+
+    auto *path = new QLabel(
+        tr("Profiles are stored as .lnp files in:\n%1")
+            .arg(engine_->noiseProfilesDir()), page);
+    path->setWordWrap(true);
+    path->setStyleSheet(QStringLiteral("color:#8a9aac; font-size:11px;"));
+    outer->addWidget(path);
+    outer->addStretch(1);
+    return page;
+}
+
 QWidget *SettingsDialog::buildWeatherTab() {
     auto *page = new QWidget(this);
     auto *outer = new QVBoxLayout(page);
@@ -1952,6 +2177,21 @@ QWidget *SettingsDialog::buildWeatherTab() {
             apply();
         });
         v->addWidget(audioCb);
+        auto *nwsWindCb = new QCheckBox(
+            tr("Pop NWS High/Extreme Wind Warnings"), page);
+        nwsWindCb->setChecked(QSettings()
+            .value(QStringLiteral("wx/nws_wind_toast"), false).toBool());
+        nwsWindCb->setToolTip(tr(
+            "When on, an active NWS High/Extreme Wind Warning for your "
+            "location pops a wind toast even if your local readings are "
+            "below the sustained/gust thresholds above.  When off (default), "
+            "the wind toast follows your thresholds only — the header badge "
+            "still reflects the NWS warning either way."));
+        connect(nwsWindCb, &QCheckBox::toggled, page, [apply](bool on) {
+            QSettings().setValue(QStringLiteral("wx/nws_wind_toast"), on);
+            apply();
+        });
+        v->addWidget(nwsWindCb);
         auto *test = new QPushButton(tr("Send test alert"), page);
         test->setToolTip(tr("Light the header badges + fire one toast for "
                             "a few seconds."));

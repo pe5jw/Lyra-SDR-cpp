@@ -93,13 +93,18 @@ void WxIndicator::onSnapshot(const WxSnapshot &snap) {
     }
 
     // ---- Wind ----
-    if (snap.wind == Wind::None) {
+    // Show the badge ONLY once wind reaches the operator's SET threshold:
+    // High (sustained or gust ≥ threshold) or Extreme.  None and the
+    // "approaching" Elevated tier (threshold − 10, which goes ≤ 0 for low
+    // thresholds) show nothing — so a dead-calm 1 mph reading never lights
+    // the header.  This is the operator's "respect my set values" fix.
+    if (snap.wind == Wind::None || snap.wind == Wind::Elevated) {
         windColor_.clear();
+        windAlert_ = false;
         wind_->setVisible(false);
     } else {
         windColor_ = (snap.wind == Wind::Extreme)  ? QString::fromLatin1(kRed)
-                   : (snap.wind == Wind::High)      ? QString::fromLatin1(kOrange)
-                                                    : QString::fromLatin1(kYellow);
+                                                    : QString::fromLatin1(kOrange); // High
         windAlert_ = (snap.wind == Wind::Extreme);
         const bool gust = snap.windGustMph > 0;
         double v = gust ? snap.windGustMph : snap.windSustainedMph;

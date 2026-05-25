@@ -148,7 +148,9 @@ after is fast. Let it finish.
 - **Mode + Filter panel** — pick the **mode** (USB/LSB/CW/…) and **filter
   bandwidth**; see [Mode + Filter panel](#mode--filter-panel).
 - **Band panel** — jump between bands.
-- **Audio panel** — **Mute / Unmute** and set **Vol**. Choose the output
+- **Audio panel** — the **DSP + AUDIO** strip: **Vol / MUTE**, the **AGC**
+  cycle, and **Noise Reduction** (NR on/off + Mode 1–4 + AEPF + NPE).
+  Choose the output
   device in **Settings → Audio**.
 - **Panadapter** — click/drag/wheel to tune; drag the right edge to set
   the signal-strength scale. See [The panadapter](#the-panadapter-spectrum-display).
@@ -390,16 +392,107 @@ adjust, and persists across sessions.
 
 ## Audio panel
 
-Controls what you hear.
+The **DSP + AUDIO** panel — what you hear and how it's cleaned up. It's
+laid out in old Lyra's three-row arrangement:
 
-- **Mute / Unmute** — silences or restores the audio; the **LIVE / MUTED**
-  label shows the current state at a glance. (Lyra starts **unmuted**.)
+**Row 1 — Levels**
 - **Vol** — output volume, shown in dB beside the slider (−∞ when fully
-  down).
+  down). The mouse wheel nudges it in fine steps.
+- **MUTE** — silences or restores the audio without disturbing the Vol
+  slider; the button reads **MUTED** while engaged. (Lyra starts
+  **unmuted**.)
+- **LNA** — RF input gain on the HL2's AD9866 PGA (−12…+31 dB; slider or
+  mouse-wheel). Higher = more sensitivity; back off on strong bands to
+  avoid ADC overload. The S-meter compensates for it automatically, so
+  changing LNA doesn't shift the signal reading. **Auto · AF · Bal · Out**
+  are still greyed in their final positions — each lights up as its
+  control is wired in. Choosing **where** the audio goes (HL2 headphone
+  jack vs. a PC sound device) lives in **[Settings → Audio](#settings--audio)**.
 
-Choosing **where** the audio goes (HL2 headphone jack vs. a PC sound
-device) lives in **[Settings → Audio](#settings--audio)** — it's a
-set-once choice, not an everyday control.
+**Row 2 — DSP toggles + AGC**
+- A row of effect buttons **NB · BIN · NR · ANF · LMS · SQ · APF · NF**.
+  **NR** (Noise Reduction), **ANF** (Auto Notch — nulls carriers/
+  heterodynes automatically), **LMS** (Line Enhancer — lifts CW/tones out
+  of the noise), **NF** (manual Notch Filter), **SQ** (all-mode squelch),
+  **NB** (Noise Blanker), **APF** (Audio Peak Filter), and **BIN**
+  (Binaural) are all live. NR and LMS are *complementary* — NR subtracts
+  broadband noise, LMS predicts the periodic signal, so both can run
+  together on weak CW.
+- **BIN — binaural pseudo-stereo:** widens the soundstage on **headphones**
+  by sending the signal to one ear and a 90°-phase-shifted copy to the
+  other, so weak CW/SSB seems to lift out of the noise and voices gain a
+  sense of space. A **depth** slider appears in the bottom row while BIN
+  is on (0 = mono → 100 = full); loudness stays constant as you sweep it.
+  (Headphones only — on speakers the effect collapses.)
+- **APF — CW peaking:** a narrow peak parked on your CW pitch that lifts
+  a CW tone out of the surrounding hiss. It engages only in **CWU/CWL**
+  (no effect in SSB/AM/FM) and re-centres automatically when you change
+  the CW pitch. A **gain** slider appears in the bottom row while APF is
+  on — pick how hard it lifts (3–18 dB in 3 dB steps; default 12). Stacks
+  well with LMS for weak-signal CW.
+- **NB — noise blanker:** suppresses *impulse* noise (ignition, power-line
+  arcing, lightning crashes) by gating it out of the raw IQ before demod.
+  A **strength** slider appears in the bottom row while NB is on — higher
+  = more aggressive blanking; back it off if it starts chewing CW/SSB
+  transients. (For a steady carrier-type interferer use a manual notch or
+  ANF instead — NB is for clicks/pops, not tones.)
+- **SQ — all-mode squelch:** mutes the audio between transmissions and
+  unmutes when a signal opens it. It routes automatically by mode — a
+  voice-presence detector (SSQL) on SSB/CW/DIG, the FM noise squelch on
+  FM, and the carrier squelch on AM/SAM/DSB. A **threshold** slider
+  appears in the bottom row while SQ is on: higher = tighter (only
+  stronger signals open it); the usual sweet spot is ~10–30.
+- **NF — manual notches** (right-click the panadapter to use):
+  - **Right-click empty spectrum** drops a notch at that frequency
+    (200 Hz wide) and turns NF on.
+  - **Drag** a red band to slide it onto the offending carrier.
+  - **Mouse-wheel** over a band: down = wider, up = narrower.
+  - **Right-click** a band to remove it.
+
+  Each notch **visibly cuts the spectrum trace and the waterfall** in
+  that region — the trace drops to the noise floor and the waterfall
+  shows a dark stripe across the notch width, so you can see exactly
+  what's being removed instead of guessing. The notches are deep and
+  sharp by design — Lyra uses WDSP's NBP filter in a deep
+  rectangular-window, 2048-tap configuration, so a carrier drops into the
+  noise rather than just dipping. The **NF** button toggles all notches
+  at once without losing their positions; the count shows beside the
+  button. ANF (the auto-notch) likewise runs deep adaptive settings — a
+  marked step up from the softer notching in the Python build.
+- **AGC** — click anywhere on the AGC cell (it highlights on hover) to
+  cycle **Off → Fast → Med → Slow**. Med is the everyday default; Fast for
+  fast-changing signals, Slow for steady ones, Off for fixed gain (digital
+  modes / measurement). The three modes are genuinely distinct — Fast
+  recovers in ~50 ms with no hang, Med in ~250 ms, Slow holds ~1 s then
+  decays over ~500 ms (industry-standard time constants). The cell shows the AGC
+  **threshold** and the **live gain action** (dB) beside the mode.
+
+**Row 3 — Noise Reduction character**
+- **NR Mode (1–4)** — picks the WDSP denoiser's gain function:
+  **1** Wiener + speech-presence, **2** plain Wiener (edgier), **3**
+  MMSE-LSA (the smoothest, default), **4** trained-adaptive (most
+  aggressive). Turn **NR** on in Row 2, then sweep modes to find the best
+  sound for the band.
+- **AEPF** — anti-musical-noise smoother. On (default) engages *both* of
+  WDSP's cleanup stages — artifact elimination **and** the post-filter
+  that stock WDSP leaves off by default — so the "musical twinkle" is
+  knocked down hard while MMSE-LSA (Mode 3) keeps the voice natural
+  rather than robotic.
+  Turn it off to hear raw EMNR on already-quiet bands. If you still want
+  the most natural voice, stay on **Mode 3** (Mode 4 trades smoothness for
+  aggression and brings musical noise back).
+- **NPE** — how the denoiser tracks the noise floor: **OSMS** (smooth,
+  best for steady atmospheric hiss) or **MCRA** (faster-tracking, better
+  for changing/intermittent QRM).
+- **LMS strength** — appears in this row only while **LMS** is on: 0 is
+  subtle, 50 is the WDSP-class default, 100 is full prediction (more taps,
+  harder pull). Most useful digging weak CW out of band hiss.
+
+Surfacing NR Mode + AEPF + NPE as separate knobs is one of Lyra's
+differentiators — most SDR apps hide them. All three persist across
+restarts.
+
+The **Cap** (captured noise profile) arrives in a later build.
 
 ---
 
@@ -462,6 +555,17 @@ corner (your choice is remembered):
   with a bright leading edge, peak-hold cap, a glass reflection beneath,
   and the readout (S-units / dBm / SNR) along the top.
 
+Both styles also carry an optional **max-peak marker** — a second, **red**
+"high-water mark" that latches the highest level reached and falls back
+*gently*, so a fleeting DX or QSB crest stays readable long after the fast
+yellow peak pip has dropped. The fast pip tracks recent activity; the red
+max marker remembers the loudest moment.
+
+In **[Settings → Meter](#settings--audio)** you can tune both timings:
+**peak-hold** (how long the fast pip hangs before falling, default 800 ms)
+and the **max-peak marker** (on/off + its own hold time, default 3 s)
+before its gentle decay.
+
 What the meter shows:
 
 - **S-units** — standard scale (S1…S9, then +20/+40/+60 dB over S9). The
@@ -477,10 +581,17 @@ The meter reads the in-passband signal level from the DSP engine (the
 same source professional SDR software uses) and only moves while you're
 receiving (press **▶ Start** first; it rests at S0 when idle).
 
-> **Calibration:** the absolute dBm/S reading depends on a one-time
-> calibration trim that matches the meter to a known signal (a future
-> Settings control). Until then the *relative* movement, peak-hold, SNR,
-> and noise-floor behaviour are all live and correct.
+> **Calibration:** the meter taps WDSP's in-passband `RXA_S_PK` level —
+> the standard in-passband signal-strength point — and maps it through
+> the HF/VHF S-unit scale (S9 = −73 dBm below 30 MHz, −93 dBm above). To make the
+> *absolute* dBm/S reading exact, trim it once in
+> **[Settings → Meter](#settings--audio)**: tune to a known reference
+> (WWV, or a signal generator at a known level) and adjust the **S-meter
+> calibration** offset until it matches. With this tap the trim is only a
+> few dB. The meter compensates for the **LNA gain** automatically, so the
+> reading stays put as you adjust LNA — you can calibrate at any setting.
+> The relative movement, peak-hold, SNR, and
+> noise-floor behaviour are all live regardless.
 >
 > Transmit meters (Power / SWR / ALC / Mic, etc.) arrive with the
 > transmit feature — the meter panel will gain those sources then.

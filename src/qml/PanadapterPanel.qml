@@ -531,10 +531,16 @@ Item {
             MouseArea {
                 id: specMouse
                 anchors.fill: parent
-                acceptedButtons: Qt.LeftButton
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 hoverEnabled: true
                 readonly property int zonePx: 50
                 readonly property int dragThreshPx: 6
+                // Right-button = manual-notch placement on empty spectrum
+                // (right-click ON a notch is handled by the notch's own
+                // hit-area MouseArea in notchOverlay, which steals the press).
+                property bool rightPress: false
+                property bool rightDragged: false
+                property real rightX: 0
 
                 // dB-drag (right edge) state
                 property string dbMode: ""
@@ -592,6 +598,12 @@ Item {
                                                   : Qt.CrossCursor)
 
                 onPressed: (mouse) => {
+                    if (mouse.button === Qt.RightButton) {
+                        rightPress = true
+                        rightDragged = false
+                        rightX = mouse.x
+                        return
+                    }
                     dbMode = dbModeAt(mouse.x, mouse.y)
                     if (dbMode !== "") {
                         // Dragging the dB scale takes MANUAL control: if
@@ -614,6 +626,16 @@ Item {
                     }
                 }
                 onReleased: (mouse) => {
+                    if (mouse.button === Qt.RightButton) {
+                        // Right-click on empty spectrum drops a 200 Hz notch
+                        // (default 200 Hz width) at the clicked frequency.
+                        if (!rightDragged)
+                            WdspEngine.addNotch(
+                                freqAtX(rightX) - root.centerHz, 200)
+                        rightPress = false
+                        rightDragged = false
+                        return
+                    }
                     if (dbMode === "" && tuning && !dragged) {
                         // plain click → tune the CARRIER to the clicked RF
                         // point (round-to-100 + CW pitch offset handled in
@@ -625,6 +647,11 @@ Item {
                     dragged = false
                 }
                 onPositionChanged: (mouse) => {
+                    if (rightPress) {
+                        if (Math.abs(mouse.x - rightX) > dragThreshPx)
+                            rightDragged = true
+                        return
+                    }
                     if (dbMode !== "") {
                         var h = Math.max(1, spectrumArea.height)
                         var span = startMax - startMin
@@ -668,6 +695,103 @@ Item {
                         tuneCarrier(carrier + dir * Prefs.panScrollStepHz)
                     }
                     wheel.accepted = true
+                }
+            }
+
+            // ---- Manual-notch overlay (NF) ----
+            // Translucent red bands over each notch.  Right-click empty
+            // spectrum drops one (handled in specMouse); here each band
+            // can be DRAGGED to move, WHEELED to widen/narrow, and
+            // RIGHT-CLICKED to remove.  Notch depth itself is deep
+            // (WDSP NBP0: rectangular window, 2048-tap FIR) — see engine.
+            Item {
+                id: notchOverlay
+                anchors.fill: parent
+                z: 5
+                readonly property real spanHz: Math.max(1, WdspEngine.spanHz)
+                function xOf(offHz) {
+                    return spectrumArea.width * (0.5 + offHz / spanHz)
+                }
+                Repeater {
+                    model: WdspEngine.notches
+                    delegate: Item {
+                        id: notchItem
+                        required property int index
+                        required property var modelData
+                        readonly property real cx: notchOverlay.xOf(modelData.offsetHz)
+                        readonly property real wPx: Math.max(3,
+                            spectrumArea.width * modelData.widthHz
+                            / notchOverlay.spanHz)
+                        readonly property real hitW: Math.max(wPx, 14)
+                        x: cx - hitW / 2
+                        y: 0; width: hitW; height: spectrumArea.height
+                        // Translucent fill band.  Kept low so it doesn't
+                        // wash out the trace — the brightness comes from the
+                        // crisp edges below, NOT the fill (a Rectangle's
+                        // opacity dims its border too, which is what made the
+                        // old single-rect notch read as a mushy brown smear
+                        // against the glassy sheen).
+                        Rectangle {
+                            id: notchFill
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            y: 0; width: notchItem.wPx; height: parent.height
+                            color: notchItem.modelData.active
+                                   ? "#ff4d4d" : "#ff7a7a"
+                            opacity: notchItem.modelData.active ? 0.16 : 0.08
+                        }
+                        // Crisp full-opacity edges — these are what the eye
+                        // catches.  Bright hot-coral so they pop over the
+                        // panadapter glow; dimmer/thinner when the notch is
+                        // bypassed (inactive).
+                        Repeater {
+                            model: [0, 1]
+                            delegate: Rectangle {
+                                required property int modelData
+                                x: notchFill.x + (modelData === 0
+                                       ? 0 : notchFill.width - width)
+                                y: 0
+                                width: notchItem.modelData.active ? 2 : 1
+                                height: parent.height
+                                color: notchItem.modelData.active
+                                       ? "#ff5555" : "#b86a6a"
+                                opacity: notchItem.modelData.active ? 0.95 : 0.6
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            cursorShape: Qt.SizeHorCursor
+                            preventStealing: true
+                            property bool moved: false
+                            property real downX: 0
+                            property double lastMs: 0
+                            onPressed: (m) => { moved = false; downX = m.x }
+                            onPositionChanged: (m) => {
+                                if (!(pressedButtons
+                                      & (Qt.LeftButton | Qt.RightButton))) return
+                                if (Math.abs(m.x - downX) > 4) moved = true
+                                var nowMs = Date.now()
+                                if (nowMs - lastMs < 33) return
+                                lastMs = nowMs
+                                // local x -> absolute spectrum x -> centre offset
+                                var gx = notchItem.x + m.x
+                                var offHz = (gx / Math.max(1, spectrumArea.width)
+                                             - 0.5) * notchOverlay.spanHz
+                                WdspEngine.moveNotch(notchItem.index, offHz)
+                            }
+                            onReleased: (m) => {
+                                if (!moved && m.button === Qt.RightButton)
+                                    WdspEngine.removeNotch(notchItem.index)
+                            }
+                            // Wheel: down = wider, up = narrower (old-Lyra gesture).
+                            onWheel: (w) => {
+                                var f = w.angleDelta.y > 0 ? 0.8 : 1.25
+                                WdspEngine.setNotchWidth(
+                                    notchItem.index, notchItem.modelData.widthHz * f)
+                                w.accepted = true
+                            }
+                        }
+                    }
                 }
             }
 

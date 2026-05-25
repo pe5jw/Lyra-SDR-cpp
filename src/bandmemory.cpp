@@ -17,9 +17,20 @@ constexpr auto kPfx = "band_mem/";   // band_mem/<band>/<field>
 BandMemory::BandMemory(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                        QObject *parent)
     : QObject(parent), prefs_(prefs), stream_(stream) {
-    if (stream_)
+    if (stream_) {
         connect(stream_, &lyra::ipc::HL2Stream::rx1FreqChanged,
                 this, &BandMemory::onFreqChanged);
+        // Save the operator's MANUAL LNA set point to the current band.
+        // Fires only on manual sets (not Auto-LNA roaming); applying_
+        // guards out the set we make while restoring a band.
+        connect(stream_, &lyra::ipc::HL2Stream::lnaSetByOperator, this,
+                [this](int db) {
+                    if (applying_ || currentBand_.isEmpty()) return;
+                    QSettings().setValue(
+                        QString::fromLatin1(kPfx) + currentBand_ +
+                        QStringLiteral("/lna"), db);
+                });
+    }
     if (prefs_) {
         // Live-save the current band whenever a remembered setting changes
         // (so values are kept even if the operator never leaves the band).
@@ -30,6 +41,17 @@ BandMemory::BandMemory(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         connect(prefs_, &Prefs::dbMaxChanged,          this, live);
         connect(prefs_, &Prefs::waterfallDbMinChanged, this, live);
         connect(prefs_, &Prefs::waterfallDbMaxChanged, this, live);
+    }
+    // Apply the current band's saved settings ONCE at startup.  The
+    // stream restores its RX1 frequency in its own ctor via an atomic
+    // store that does NOT emit rx1FreqChanged, so onFreqChanged never
+    // fires for the initial frequency.  Without this, each band's saved
+    // mode / panadapter dB / waterfall dB only restore after the first
+    // band-edge crossing — so on restart they appeared not to persist.
+    if (stream_) {
+        currentBand_ = bandNameFor(int(stream_->rx1FreqHz()));
+        if (!currentBand_.isEmpty())
+            applyBand(currentBand_);
     }
 }
 
@@ -99,6 +121,14 @@ void BandMemory::applyBand(const QString &band) {
     if (!prefs_) return;
     QSettings s;
     const QString p = QString::fromLatin1(kPfx) + band + QLatin1Char('/');
+    // Per-band manual LNA — restored independently of the mode/dB block
+    // below (a band may have an LNA set point but no stored mode).  The
+    // applying_ guard keeps the resulting lnaSetByOperator from re-saving.
+    if (stream_ && s.contains(p + QStringLiteral("lna"))) {
+        applying_ = true;
+        stream_->setLnaGainDb(s.value(p + QStringLiteral("lna")).toInt());
+        applying_ = false;
+    }
     if (!s.contains(p + QStringLiteral("mode"))) {
         // Never configured: apply the band's default mode (band-appropriate
         // — LSB on 40m, AM on broadcast/CB), leaving dB ranges global.

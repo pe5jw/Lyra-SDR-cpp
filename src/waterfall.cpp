@@ -203,6 +203,11 @@ void Waterfall::onFrame() {
     const double effMax = autoScale_ ? autoScaler_.ceilDb()  : dbMax_;
     const double span = (effMax > effMin) ? (effMax - effMin) : 1.0;
     uchar *row0 = base;   // scanLine(0)
+    // Notch cut: drop the notched columns to the bottom of
+    // the colour scale so the cut shows as a dark vertical stripe in the
+    // waterfall history (display-only; auto-scale fed the un-carved row).
+    if (engine_)
+        engine_->carveNotches(pendingMax_.data(), n, effMin);
     for (int x = 0; x < n; ++x) {
         double t = (static_cast<double>(pendingMax_[static_cast<size_t>(x)])
                     - effMin) / span;

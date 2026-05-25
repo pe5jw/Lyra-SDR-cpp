@@ -155,6 +155,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     statsTimer_.setInterval(kStatPeriodMs);
     connect(&statsTimer_, &QTimer::timeout,
             this, &HL2Stream::onStatsTick);
+    autoLnaTimer_.setInterval(kAutoLnaPeriodMs);
+    connect(&autoLnaTimer_, &QTimer::timeout,
+            this, &HL2Stream::onAutoLnaTick);
     // Radio memory: restore the last tuned RX1 frequency.  QSettings
     // resolves to %APPDATA%\N8SDR\Lyra-cpp\ (org/app set in main()
     // before this object is constructed).
@@ -166,6 +169,147 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     filterBoardEnabled_ =
         QSettings().value(QStringLiteral("hw/filterBoard"), false).toBool();
     updateOcPattern();
+    // RX1 LNA gain (AD9866 PGA) — restore the operator's last setting.
+    lnaGainDb_.store(
+        std::clamp(QSettings().value(QStringLiteral("rx/lnaGainDb"), 31).toInt(),
+                   kLnaMinDb, kLnaMaxDb),
+        std::memory_order_relaxed);
+    // Auto-LNA: restore enable + undo + hold time.  Fresh-install
+    // defaults match the operator's Thetis station export
+    // (chkAutoStepAttenuator=True, chkAutoAttUndoRX1=True,
+    // nudAutoAttHoldRX1=4): Auto ON / undo ON / 4 s hold.
+    autoLnaEnabled_ = QSettings().value(QStringLiteral("rx/autoLna"), true).toBool();
+    autoLnaUndo_    = QSettings().value(QStringLiteral("rx/autoLnaUndo"), true).toBool();
+    autoLnaHoldSec_ = std::clamp(
+        QSettings().value(QStringLiteral("rx/autoLnaHoldSec"), 4).toInt(), 1, 60);
+}
+
+void HL2Stream::setLnaGainDb(int db)
+{
+    db = std::clamp(db, kLnaMinDb, kLnaMaxDb);
+    if (db == lnaGainDb_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    lnaGainDb_.store(db, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("rx/lnaGainDb"), db);
+    emit lnaGainChanged();
+    emit lnaSetByOperator(db);   // manual change → BandMemory saves per-band
+    emit logLine(QStringLiteral("[hl2] LNA gain %1 dB").arg(db));
+}
+
+void HL2Stream::applyLnaGainNoPersist(int db)
+{
+    db = std::clamp(db, kLnaMinDb, kLnaMaxDb);
+    if (db == lnaGainDb_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    lnaGainDb_.store(db, std::memory_order_relaxed);
+    emit lnaGainChanged();   // slider / dB readout / S-meter comp all track
+}
+
+void HL2Stream::setAutoLna(bool on)
+{
+    if (on == autoLnaEnabled_) {
+        return;
+    }
+    autoLnaEnabled_ = on;
+    QSettings().setValue(QStringLiteral("rx/autoLna"), on);
+    if (on) {
+        overloadLevel_ = 0;
+        recovering_ = false;
+        holdClock_.restart();
+        emit logLine(QStringLiteral("[hl2] Auto-LNA on"));
+    } else {
+        // Auto roamed the gain freely — hand the LNA back to the
+        // operator's stored manual set point.
+        const int manual = std::clamp(
+            QSettings().value(QStringLiteral("rx/lnaGainDb"), 31).toInt(),
+            kLnaMinDb, kLnaMaxDb);
+        applyLnaGainNoPersist(manual);
+        emit logLine(QStringLiteral("[hl2] Auto-LNA off, restored %1 dB").arg(manual));
+    }
+    emit autoLnaChanged();
+}
+
+void HL2Stream::setAutoLnaUndo(bool on)
+{
+    if (on == autoLnaUndo_) {
+        return;
+    }
+    autoLnaUndo_ = on;
+    QSettings().setValue(QStringLiteral("rx/autoLnaUndo"), on);
+    emit autoLnaChanged();
+}
+
+void HL2Stream::setAutoLnaHoldSec(int sec)
+{
+    sec = std::clamp(sec, 1, 60);
+    if (sec == autoLnaHoldSec_) {
+        return;
+    }
+    autoLnaHoldSec_ = sec;
+    QSettings().setValue(QStringLiteral("rx/autoLnaHoldSec"), sec);
+    emit autoLnaChanged();
+}
+
+// 400 ms overload monitor + Auto-LNA loop (main thread).  Always runs
+// while the stream is up so the overload lamp tracks regardless of
+// Auto; gain is only touched when Auto is enabled.  Gain-sense mirror
+// of the reference HERMESLITE auto-attenuator: confirm sustained
+// overload (>3 cycles), back off 3 dB; when clear, creep +1 dB per
+// hold interval up to the +48 ceiling (ride the overload edge).
+void HL2Stream::onAutoLnaTick()
+{
+    if (!running_.load(std::memory_order_acquire)) {
+        return;
+    }
+    // Sample overload INSTANTANEOUSLY at poll time (most-recent
+    // address-0 frame), matching the reference HL2 poll — a window-OR
+    // over-triggered on a strong front end and pinned gain to the floor.
+    const bool ov = adcOverloadNow_.load(std::memory_order_relaxed);
+    overloadLevel_ = ov ? std::min(overloadLevel_ + 1, 5)
+                        : std::max(overloadLevel_ - 1, 0);
+    // Lamp + back-off both key on SUSTAINED overload (level > 3 ≈ 1.6 s
+    // of genuine clipping), matching the reference "red after 3 cycles".
+    const bool sustained = ov && overloadLevel_ > 3;
+    if (sustained != adcOverload_) {
+        adcOverload_ = sustained;
+        emit adcOverloadChanged();
+    }
+    if (!autoLnaEnabled_) {
+        return;
+    }
+
+    const int g = lnaGainDb_.load(std::memory_order_relaxed);
+    if (sustained) {
+        // Sustained overload — back off 3 dB to protect the ADC.  Reset
+        // recovery so the next pull-up waits the full hold time.
+        const int ng = std::max(g - 3, kLnaMinDb);
+        if (ng != g) {
+            applyLnaGainNoPersist(ng);
+            emit logLine(QStringLiteral("[hl2] Auto-LNA back-off → %1 dB").arg(ng));
+        }
+        recovering_ = false;
+        holdClock_.restart();
+    } else if (ov) {
+        // Transient overload (not yet sustained) — hold, don't recover.
+        recovering_ = false;
+    } else if (autoLnaUndo_) {
+        // Band clear.  The FIRST pull-up waits the operator's full hold
+        // time (so a brief lull doesn't yank gain back up); subsequent
+        // steps creep at the brisker recover cadence so we climb back
+        // quickly.  Pull-downs above are unaffected by this.
+        const qint64 need = recovering_
+            ? static_cast<qint64>(kAutoLnaRecoverMs)
+            : static_cast<qint64>(autoLnaHoldSec_) * 1000;
+        if (holdClock_.elapsed() >= need) {
+            if (g < kLnaMaxDb) {
+                applyLnaGainNoPersist(g + 1);
+            }
+            recovering_ = true;
+            holdClock_.restart();
+        }
+    }
 }
 
 HL2Stream::~HL2Stream() {
@@ -212,6 +356,12 @@ void HL2Stream::open(const QString &ip) {
 
     statsTimer_.start();
     statsClock_.start();   // baseline for actual-elapsed dg/s
+    // Auto-LNA / overload monitor: fresh accumulator + hold clock.
+    overloadLevel_ = 0;
+    recovering_ = false;
+    adcOverloadNow_.store(false, std::memory_order_relaxed);
+    holdClock_.start();
+    autoLnaTimer_.start();
 
     // Radio memory: remember this radio so the next launch can
     // auto-connect without a Discover (read in main()).
@@ -265,6 +415,8 @@ void HL2Stream::close() {
     }
 
     statsTimer_.stop();
+    autoLnaTimer_.stop();
+    if (adcOverload_) { adcOverload_ = false; emit adcOverloadChanged(); }
     onStatsTick();  // flush the final window so the UI shows true totals
     running_.store(false, std::memory_order_release);
     emit runningChanged();
@@ -426,6 +578,27 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         }
         totalDg_.fetch_add(1, std::memory_order_relaxed);
         windowDg_.fetch_add(1, std::memory_order_relaxed);
+
+        // ---- ADC-overload telemetry (EP6 status C&C) ---------
+        // Each USB frame's status bytes sit at frame-offset 3..7
+        // (C0..C4) → absolute offsets 11 and 523.  The gateware
+        // rotates C0's address field (bits [7:3]) through 0x00 /
+        // 0x08 / 0x10 / 0x18; ADC0 overload lives in C1 bit 0 ONLY
+        // at address 0.  At the other addresses C1 carries power /
+        // voltage telemetry whose bit 0 is usually set, so reading
+        // it there reports "always clipping".  Also skip I2C-readback
+        // frames (C0 bit 7).  Store the bit by DIRECT OVERWRITE (most-
+        // recent address-0 frame wins) — NOT a window-OR — so the
+        // 400 ms tick samples it instantaneously, exactly like the
+        // reference HL2 read loop (networkproto1.c:502).
+        for (int f = 0; f < 2; ++f) {
+            const std::uint8_t *st = u + (f == 0 ? 11 : 523);  // C0..C4
+            const std::uint8_t c0 = st[0];
+            if (!(c0 & 0x80) && (c0 & 0xF8) == 0) {
+                adcOverloadNow_.store((st[1] & 0x01) != 0,
+                                      std::memory_order_relaxed);
+            }
+        }
 
         // ---- Step 2c/3d: parse DDC0 IQ -----------------------
         // Two USB frames per datagram at offsets 8 and 520; each
@@ -627,12 +800,29 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         pktBytes[6] = static_cast<std::uint8_t>((seq >>  8) & 0xFF);
         pktBytes[7] = static_cast<std::uint8_t>( seq        & 0xFF);
 
-        // RX1 VFO freq (frame 2 C&C [524..527]) — live, every datagram.
-        const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
-        pktBytes[524] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
-        pktBytes[525] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
-        pktBytes[526] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
-        pktBytes[527] = static_cast<std::uint8_t>( f        & 0xFF);
+        // USB-frame-2 C&C slot ([523]=C0, [524..527]=C1..C4) carries the
+        // RX1 VFO freq every datagram EXCEPT every 19th, where it instead
+        // carries the 0x14 LNA register (≈20 Hz) — the HL2 gateware wants
+        // the C4 override bit (0x40) refreshed at that cadence.  Freq +
+        // LNA are both latched, so freq at ~360 Hz stays plenty responsive.
+        const quint32 phase = ccPhase_.fetch_add(1, std::memory_order_relaxed);
+        if ((phase % 19u) == 0u) {
+            const int g = std::clamp(
+                lnaGainDb_.load(std::memory_order_relaxed), kLnaMinDb, kLnaMaxDb);
+            const int v = g + 12;                 // HPSDR P1 0x14 +12 bias
+            pktBytes[523] = 0x14;                 // C0 = addr 0x0a (LNA frame)
+            pktBytes[524] = 0x00;                 // C1
+            pktBytes[525] = 0x00;                 // C2
+            pktBytes[526] = 0x00;                 // C3
+            pktBytes[527] = static_cast<std::uint8_t>(0x40 | (v & 0x3F)); // C4
+        } else {
+            const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
+            pktBytes[523] = 0x04;                 // C0 = addr 2 (RX1 freq)
+            pktBytes[524] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+            pktBytes[525] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+            pktBytes[526] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+            pktBytes[527] = static_cast<std::uint8_t>( f        & 0xFF);
+        }
 
         // Frame-0 C2 [13]: external filter-board OC pins.
         pktBytes[13] = static_cast<std::uint8_t>(

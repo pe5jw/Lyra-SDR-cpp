@@ -645,6 +645,11 @@ QSGNode *Panadapter::updatePaintNode(QSGNode *oldNode,
             }
             colDb_[static_cast<size_t>(x)] = db;
         }
+        // Notch cut: carve the trace down to the noise floor
+        // under each active manual notch (display-only — runs AFTER the
+        // noise-floor estimate above so a deep notch can't fool it).
+        if (engine_)
+            engine_->carveNotches(colDb_.data(), W, noiseFloorDb_);
         const float *curve = colDb_.data();
 
         // Step 2: build the translucent FILL (triangle strip) AND the

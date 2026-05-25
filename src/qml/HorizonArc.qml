@@ -16,18 +16,50 @@ Item {
     id: arc
     anchors.fill: parent
 
-    // 220° sweep, opening at the bottom (gap centred on south).
-    readonly property real startDeg: 160
-    readonly property real sweepDeg: 220
+    // ── EXPERIMENT: "angled gauge" look ───────────────────────────────
+    // Widen the dial slightly and tilt the WHOLE thing back at the top
+    // with a real 3D X-axis perspective rotation (arc + centre readout
+    // tilt together, like an angled dashboard gauge).  Pure render
+    // transform — the drawing geometry + readouts are unchanged.  To
+    // REVERT to the flat arc, delete this `transform:` block.  If it
+    // leans the wrong way (forward instead of back), flip `angle` to -16.
+    transform: [
+        Scale {
+            origin.x: arc.width / 2; origin.y: arc.height / 2
+            xScale: 1.18; yScale: 1.0
+        },
+        Rotation {
+            origin.x: arc.width / 2; origin.y: arc.height / 2
+            axis { x: 1; y: 0; z: 0 }
+            angle: 20
+        }
+    ]
+
+    // Sweep opening at the bottom (gap centred on south).  A SMALLER
+    // sweep widens the gap between the two bottom legs — a lower, wider
+    // "stance" that flattens the arc.  startDeg is derived so the gap
+    // stays centred on the bottom no matter the sweep (one knob: sweepDeg;
+    // 220 = original, 200 = slightly wider stance).
+    readonly property real sweepDeg: 200
+    readonly property real startDeg: 270 - sweepDeg / 2
 
     // Responsive geometry: radius bounded by BOTH the half-width and the
     // height (the arc's lower legs + the tick ring must fit either way).
-    readonly property real mm:  6
-    readonly property real rad: Math.max(20,
-        Math.min((width / 2 - mm) / 1.222, (height - 2 * mm) / 1.445))
+    // The height divisor budgets BOTH the top clearance (band + the apex
+    // tick label) and the lower legs/centre readout, so the "+20" label
+    // at the top isn't crushed against the panel edge and the SNR line at
+    // the bottom still fits.
+    readonly property real mm:  4
     readonly property real ccx: width / 2
-    readonly property real ccy: mm + rad
+    readonly property real rad: Math.max(20,
+        Math.min((width / 2 - mm) / 1.222, (height - 2 * mm) / 1.62))
     readonly property real lw:  Math.max(7, rad * 0.17)
+    // Tick-label font + the top clearance it (and the band) need above the
+    // arc apex.  Outer labels sit at rad + lw*0.78; this reserves that
+    // plus half the glyph height so the apex label clears the panel top.
+    readonly property real tickFont: Math.max(11, rad * 0.17)
+    readonly property real topClear: lw * 0.82 + tickFont * 0.6
+    readonly property real ccy: mm + topClear + rad
 
     function zoneColor(v) {
         var s9 = Meter.normAtS9
@@ -51,6 +83,8 @@ Item {
 
             var level = Meter.level
             var peak  = Meter.peak
+            var maxPk = Meter.maxPeak
+            var maxOn = Meter.maxPeakEnabled
             var glow  = Meter.glow
             var col   = arc.zoneColor(level)
 
@@ -141,8 +175,21 @@ Item {
                 ctx.stroke()
             }
 
+            // ── Max-hold high-water marker (distinct red, longer reach,
+            // eases down gently — see MeterModel max-hold) ──
+            if (maxOn && maxPk > 0.01) {
+                var aM = a0 + sweep * maxPk
+                var cM = Math.cos(aM), sM = Math.sin(aM)
+                ctx.strokeStyle = "#ff5a5a"
+                ctx.lineWidth = Math.max(2, lw * 0.16)
+                ctx.beginPath()
+                ctx.moveTo(cx + (r - lw * 0.78) * cM, cy + (r - lw * 0.78) * sM)
+                ctx.lineTo(cx + (r + lw * 0.72) * cM, cy + (r + lw * 0.72) * sM)
+                ctx.stroke()
+            }
+
             // ── Tick labels around the outer edge ──
-            ctx.font = Math.round(Math.max(11, r * 0.155)) + "px Consolas"
+            ctx.font = Math.round(arc.tickFont) + "px Consolas"
             ctx.textAlign = "center"
             ctx.textBaseline = "middle"
             var ticks = Meter.tickMarks()
@@ -175,13 +222,31 @@ Item {
                 ctx.stroke()
                 ctx.restore()
             }
+
+            // ── Glass gloss: soft bright crescents along the upper rim,
+            // like light glinting off a glass cover over the gauge.
+            // "lighter" blend so it glows over the coloured arc. ──
+            ctx.save()
+            ctx.globalCompositeOperation = "lighter"
+            ctx.lineCap = "round"
+            ctx.strokeStyle = "rgba(255,255,255,0.11)"
+            ctx.lineWidth = lw * 0.44
+            ctx.beginPath()
+            ctx.arc(cx, cy, r - lw * 0.10, a0 + sweep * 0.06, a0 + sweep * 0.44, false)
+            ctx.stroke()
+            ctx.strokeStyle = "rgba(255,255,255,0.10)"
+            ctx.lineWidth = lw * 0.18
+            ctx.beginPath()
+            ctx.arc(cx, cy, r + lw * 0.34, a0 + sweep * 0.10, a0 + sweep * 0.30, false)
+            ctx.stroke()
+            ctx.restore()
         }
     }
 
     // ── Centre numerics (crisp QML text) ──
     Column {
         x: arc.ccx - width / 2
-        y: arc.ccy - arc.rad * 0.34
+        y: arc.ccy - arc.rad * 0.42
         width: arc.width
         spacing: 0
         Text {

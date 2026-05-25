@@ -41,6 +41,8 @@ Item {
 
             var level = Meter.level
             var peak  = Meter.peak
+            var maxPk = Meter.maxPeak
+            var maxOn = Meter.maxPeakEnabled
             var glow  = Meter.glow
             var noise = Meter.noiseLevel
             var s9    = Meter.normAtS9
@@ -124,6 +126,20 @@ Item {
                 var px = barX + barW * peak
                 ctx.fillStyle = "#ffe48a"
                 ctx.fillRect(px - 1.5, barY - 2, 3, barH + 4)
+            }
+
+            // ── Max-hold high-water marker (distinct red, taller, eases
+            // down gently — see MeterModel max-hold) ──
+            if (maxOn && maxPk > 0.01) {
+                var mx = barX + barW * maxPk
+                ctx.fillStyle = "#ff5a5a"
+                ctx.fillRect(mx - 1, barY - 5, 2, barH + 10)
+                // small downward tick so it reads as a distinct cap
+                ctx.beginPath()
+                ctx.moveTo(mx - 4, barY - 5)
+                ctx.lineTo(mx + 4, barY - 5)
+                ctx.lineTo(mx, barY - 1)
+                ctx.closePath(); ctx.fill()
             }
 
             // ── S9 boundary (faint divider into the red zone) ──

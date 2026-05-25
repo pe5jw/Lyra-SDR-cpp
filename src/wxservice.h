@@ -49,6 +49,12 @@ struct WxConfig {
     // notifications
     bool   desktopEnabled = true;
     bool   audioEnabled   = true;
+    // Pop a desktop toast for NWS High/Extreme Wind Warnings.  These are
+    // area-wide NWS headlines independent of the operator's local wind
+    // thresholds; default OFF so the wind toast is governed purely by the
+    // sustained/gust thresholds.  The header badge still reflects the
+    // warning regardless of this toggle.
+    bool   nwsWindToast   = false;
     // operator location (resolved from Prefs)
     bool   haveLoc = false;
     double lat = 0.0, lon = 0.0;
@@ -65,6 +71,7 @@ struct WxSnapshot {
     Severe    severe      = Severe::None;
     QString   severeHeadline;
     QString   windHeadline;
+    bool      windNwsWarning = false; // wind tier forced by an NWS warning
     QString   error;                // non-empty if all enabled sources failed
 };
 

@@ -74,6 +74,87 @@ using fn_SetRXAPanelGain1_t    = void (*)(int channel, double gain);
 // meterType 0 = RXA_S_PK (peak signal strength, dBm-ish), 1 = RXA_S_AV.
 // The in-passband S-meter source Thetis reads for signal strength.
 using fn_GetRXAMeter_t         = double (*)(int channel, int meterType);
+// RX noise reduction (EMNR / "NR2") — the operator NR-mode surface.
+// gainMethod 0..3 = Lyra NR Mode 1..4 (Wiener+SPP / Wiener / MMSE-LSA /
+// trained); npeMethod 0=OSMS 1=MCRA; aeRun = AEPF anti-musical-noise
+// post-filter; position 1 = after AGC (standard position).  See the
+// project notes for the NR-mode mapping ported from the Python tree.
+using fn_SetRXAEMNRRun_t        = void (*)(int channel, int run);
+using fn_SetRXAEMNRgainMethod_t = void (*)(int channel, int method);
+using fn_SetRXAEMNRnpeMethod_t  = void (*)(int channel, int method);
+using fn_SetRXAEMNRaeRun_t      = void (*)(int channel, int run);
+using fn_SetRXAEMNRPosition_t   = void (*)(int channel, int position);
+// EMNR post-filter ("post2") — WDSP's dedicated anti-musical-noise
+// stage.  Stock WDSP leaves it OFF; enabling it (with WDSP's
+// gentle create defaults) cuts musical noise while MMSE-LSA preserves
+// voice.  We drive post2Run with the AEPF control; params stay at the
+// WDSP create defaults (0.15 / 0.15 / 5.0 / 0.12) — not overridden.
+using fn_SetRXAEMNRpost2Run_t   = void (*)(int channel, int run);
+// AGC time constants — set explicitly per mode so Fast/Med/Slow are
+// audibly distinct (decay/hang in ms; hang threshold 0..100).
+using fn_SetRXAAGCDecay_t         = void (*)(int channel, int decay);
+using fn_SetRXAAGCHang_t          = void (*)(int channel, int hang);
+using fn_SetRXAAGCHangThreshold_t = void (*)(int channel, int hangthreshold);
+// Auto-notch (ANF) + LMS line enhancer (ANR) — adaptive LMS predictors.
+// Vals = (taps, delay, gain/adapt-rate, leakage).  ANF nulls carriers;
+// ANR lifts periodic content (CW/tones) above broadband noise.  Both
+// run inside the RXA chain (a run flag, no IQ-path splicing).  Standard
+// defaults: taps 64, delay 16; ANF gain 1e-3 leak 1e-7, ANR gain 16e-4
+// leak 1e-6.
+using fn_SetRXAANFRun_t  = void (*)(int channel, int run);
+using fn_SetRXAANFVals_t = void (*)(int channel, int taps, int delay,
+                                    double gain, double leakage);
+using fn_SetRXAANRRun_t  = void (*)(int channel, int run);
+using fn_SetRXAANRVals_t = void (*)(int channel, int taps, int delay,
+                                    double gain, double leakage);
+// Manual notch — the NBP0 notched-bandpass database.  fcenter/fwidth in
+// Hz (baseband offset from the tuned centre).  The NBP filter WDSP opens
+// at channel start already uses a deep config (rectangular window,
+// auto-increase, 2048-tap FIR), so these notches are sharp by construction.
+// `active`/`run` are 4-byte ints on the wire (C# BOOL marshalling).
+using fn_RXANBPAddNotch_t     = int  (*)(int channel, int notch,
+                                         double fcenter, double fwidth,
+                                         int active);
+using fn_RXANBPEditNotch_t    = int  (*)(int channel, int notch,
+                                         double fcenter, double fwidth,
+                                         int active);
+using fn_RXANBPDeleteNotch_t  = int  (*)(int channel, int notch);
+using fn_RXANBPGetNumNotches_t = void (*)(int channel, int *nnotches);
+using fn_RXANBPSetNotchesRun_t = void (*)(int channel, int run);
+// All-mode squelch — routed by demod mode: SSQL (SSB/CW/DIG/SPEC),
+// FMSQ (FM), AMSQ (AM/SAM/DSB).  One operator threshold maps onto each
+// module's units; the inactive modules are disabled to avoid crosstalk.
+using fn_SetRXASSQLRun_t       = void (*)(int channel, int run);
+using fn_SetRXASSQLThreshold_t = void (*)(int channel, double threshold);
+using fn_SetRXASSQLTauMute_t   = void (*)(int channel, double tau);
+using fn_SetRXASSQLTauUnMute_t = void (*)(int channel, double tau);
+using fn_SetRXAFMSQRun_t       = void (*)(int channel, int run);
+using fn_SetRXAFMSQThreshold_t = void (*)(int channel, double threshold);
+using fn_SetRXAAMSQRun_t       = void (*)(int channel, int run);
+using fn_SetRXAAMSQThreshold_t = void (*)(int channel, double threshold);
+using fn_SetRXAAMSQMaxTail_t   = void (*)(int channel, double tail);
+// Noise blanker (EXT NOB-II) — an impulse blanker that runs on the raw
+// IQ BEFORE the RXA chain.  Unlike the in-chain runs, the host creates it
+// (own id space), then calls xnobEXT(id, in, out) on each IQ block before
+// fexchange0.  Lower threshold = more aggressive blanking (light≈10,
+// heavy≈3).  Defaults (slew/hang/adv 0.0001, backtau 0.020) are the
+// bench-validated impulse-only tuning ported from the Python tree.
+using fn_create_nobEXT_t      = void (*)(int id, int run, int mode,
+                                         int buffsize, double samplerate,
+                                         double slewtime, double hangtime,
+                                         double advtime, double backtau,
+                                         double threshold);
+using fn_destroy_nobEXT_t     = void (*)(int id);
+using fn_xnobEXT_t            = void (*)(int id, double *in, double *out);
+using fn_SetEXTNOBRun_t       = void (*)(int id, int run);
+using fn_SetEXTNOBThreshold_t = void (*)(int id, double thresh);
+// APF — CW audio peaking filter (a single in-chain biquad).  Centre on
+// the CW pitch, narrow bandwidth, peak gain (dB→linear at the call site).
+// Mode-gated to CWU/CWL by the engine.
+using fn_SetRXABiQuadRun_t       = void (*)(int channel, int run);
+using fn_SetRXABiQuadFreq_t      = void (*)(int channel, double freq);
+using fn_SetRXABiQuadBandwidth_t = void (*)(int channel, double bw);
+using fn_SetRXABiQuadGain_t      = void (*)(int channel, double gain);
 
 // Step 5: WDSP spectral analyzer (panadapter source).  Same pipeline
 // Thetis uses — XCreateAnalyzer + SetAnalyzer to configure, Spectrum0
@@ -131,6 +212,42 @@ struct WdspApi {
     fn_SetRXAAGCSlope_t      SetRXAAGCSlope      = nullptr;
     fn_SetRXAPanelGain1_t    SetRXAPanelGain1    = nullptr;
     fn_GetRXAMeter_t         GetRXAMeter         = nullptr;
+    fn_SetRXAEMNRRun_t        SetRXAEMNRRun        = nullptr;
+    fn_SetRXAEMNRgainMethod_t SetRXAEMNRgainMethod = nullptr;
+    fn_SetRXAEMNRnpeMethod_t  SetRXAEMNRnpeMethod  = nullptr;
+    fn_SetRXAEMNRaeRun_t      SetRXAEMNRaeRun      = nullptr;
+    fn_SetRXAEMNRPosition_t   SetRXAEMNRPosition   = nullptr;
+    fn_SetRXAEMNRpost2Run_t   SetRXAEMNRpost2Run   = nullptr;
+    fn_SetRXAAGCDecay_t         SetRXAAGCDecay         = nullptr;
+    fn_SetRXAAGCHang_t          SetRXAAGCHang          = nullptr;
+    fn_SetRXAAGCHangThreshold_t SetRXAAGCHangThreshold = nullptr;
+    fn_SetRXAANFRun_t   SetRXAANFRun   = nullptr;
+    fn_SetRXAANFVals_t  SetRXAANFVals  = nullptr;
+    fn_SetRXAANRRun_t   SetRXAANRRun   = nullptr;
+    fn_SetRXAANRVals_t  SetRXAANRVals  = nullptr;
+    fn_RXANBPAddNotch_t      RXANBPAddNotch      = nullptr;
+    fn_RXANBPEditNotch_t     RXANBPEditNotch     = nullptr;
+    fn_RXANBPDeleteNotch_t   RXANBPDeleteNotch   = nullptr;
+    fn_RXANBPGetNumNotches_t RXANBPGetNumNotches = nullptr;
+    fn_RXANBPSetNotchesRun_t RXANBPSetNotchesRun = nullptr;
+    fn_SetRXASSQLRun_t       SetRXASSQLRun       = nullptr;
+    fn_SetRXASSQLThreshold_t SetRXASSQLThreshold = nullptr;
+    fn_SetRXASSQLTauMute_t   SetRXASSQLTauMute   = nullptr;
+    fn_SetRXASSQLTauUnMute_t SetRXASSQLTauUnMute = nullptr;
+    fn_SetRXAFMSQRun_t       SetRXAFMSQRun       = nullptr;
+    fn_SetRXAFMSQThreshold_t SetRXAFMSQThreshold = nullptr;
+    fn_SetRXAAMSQRun_t       SetRXAAMSQRun       = nullptr;
+    fn_SetRXAAMSQThreshold_t SetRXAAMSQThreshold = nullptr;
+    fn_SetRXAAMSQMaxTail_t   SetRXAAMSQMaxTail   = nullptr;
+    fn_create_nobEXT_t       create_nobEXT       = nullptr;
+    fn_destroy_nobEXT_t      destroy_nobEXT      = nullptr;
+    fn_xnobEXT_t             xnobEXT             = nullptr;
+    fn_SetEXTNOBRun_t        SetEXTNOBRun        = nullptr;
+    fn_SetEXTNOBThreshold_t  SetEXTNOBThreshold  = nullptr;
+    fn_SetRXABiQuadRun_t       SetRXABiQuadRun       = nullptr;
+    fn_SetRXABiQuadFreq_t      SetRXABiQuadFreq      = nullptr;
+    fn_SetRXABiQuadBandwidth_t SetRXABiQuadBandwidth = nullptr;
+    fn_SetRXABiQuadGain_t      SetRXABiQuadGain      = nullptr;
     // Step 5: spectral analyzer (panadapter).
     fn_XCreateAnalyzer_t        XCreateAnalyzer        = nullptr;
     fn_DestroyAnalyzer_t        DestroyAnalyzer        = nullptr;

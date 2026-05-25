@@ -8,6 +8,7 @@
 #include "prefs.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -97,6 +98,7 @@ void WxService::reloadConfig() {
     c.windUnit      = s.value(QStringLiteral("wx/wind_unit"), QStringLiteral("mph")).toString();
     c.desktopEnabled = s.value(QStringLiteral("wx/desktop_enabled"), true).toBool();
     c.audioEnabled   = s.value(QStringLiteral("wx/audio_enabled"), true).toBool();
+    c.nwsWindToast   = s.value(QStringLiteral("wx/nws_wind_toast"), false).toBool();
     if (prefs_) c.haveLoc = prefs_->operatorLocation(&c.lat, &c.lon);
 
     const bool wasEnabled = cfg_.enabled;
@@ -326,6 +328,7 @@ void WxService::finalize(PollCtx *ctx) {
     snap.windGustMph = ctx->windG;
     snap.windDirDeg = ctx->windDir;
     snap.windHeadline = ctx->windHeadline;
+    snap.windNwsWarning = ctx->nwsExtreme;
     const double s = ctx->windS, g = ctx->windG;
     if (ctx->nwsExtreme ||
         s >= cfg_.windSustainedMph + 15 || g >= cfg_.windGustMph + 15)
@@ -353,6 +356,38 @@ void WxService::finalize(PollCtx *ctx) {
 void WxService::maybeToast(const WxSnapshot &snap) {
     if (testActive_) return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // ── DIAGNOSTIC (always logged) — proves, from the operator's own
+    // hardware, exactly what the C++ weather service decided this poll:
+    // the wind readings, the thresholds applied, the tier, and whether a
+    // toast WILL fire.  If a desktop notice pops while these lines show
+    // no FIRE=1, that notice did not come from Lyra-cpp.
+    {
+        const char *wt = snap.wind == Wind::Extreme  ? "EXTREME"
+                       : snap.wind == Wind::High      ? "high"
+                       : snap.wind == Wind::Elevated  ? "elevated" : "none";
+        const bool localExtremeDiag =
+            snap.windSustainedMph >= cfg_.windSustainedMph + 15 ||
+            snap.windGustMph      >= cfg_.windGustMph + 15;
+        const bool windFire =
+            snap.wind == Wind::Extreme &&
+            (localExtremeDiag || (snap.windNwsWarning && cfg_.nwsWindToast));
+        qWarning().noquote()
+            << QStringLiteral("[wx-diag] wind S=%1 G=%2 mph  thr=%3/%4  +15=%5/%6  "
+                              "tier=%7 nwsWarn=%8 nwsToggle=%9  WIND_FIRE=%10  | "
+                              "lightning=%11 severe=%12")
+                   .arg(snap.windSustainedMph, 0, 'f', 1)
+                   .arg(snap.windGustMph, 0, 'f', 1)
+                   .arg(cfg_.windSustainedMph, 0, 'f', 0)
+                   .arg(cfg_.windGustMph, 0, 'f', 0)
+                   .arg(cfg_.windSustainedMph + 15, 0, 'f', 0)
+                   .arg(cfg_.windGustMph + 15, 0, 'f', 0)
+                   .arg(QString::fromLatin1(wt))
+                   .arg(snap.windNwsWarning ? 1 : 0)
+                   .arg(cfg_.nwsWindToast ? 1 : 0)
+                   .arg(windFire ? 1 : 0)
+                   .arg(snap.lightning == Lightning::Close ? "CLOSE" : "-")
+                   .arg(snap.severe == Severe::Active ? "ACTIVE" : "-");
+    }
     auto cross = [this](const QString &t, const QString &b) {
         if (cfg_.desktopEnabled) emit toast(t, b);
         if (cfg_.audioEnabled)   emit chime();
@@ -370,8 +405,18 @@ void WxService::maybeToast(const WxSnapshot &snap) {
     } else {
         lastLightToastMs_ = 0;   // cleared → re-arm
     }
-    // Wind EXTREME.
-    if (snap.wind == Wind::Extreme) {
+    // Wind EXTREME.  Local-threshold Extreme (sustained/gust crossed the
+    // operator's set values + 15) always toasts.  An Extreme tier forced
+    // solely by an NWS High/Extreme Wind Warning headline — independent of
+    // the local readings — toasts only when the operator opts in
+    // (wx/nws_wind_toast); the header badge still reflects it regardless.
+    const bool localExtreme =
+        snap.windSustainedMph >= cfg_.windSustainedMph + 15 ||
+        snap.windGustMph      >= cfg_.windGustMph + 15;
+    const bool wantWindToast =
+        snap.wind == Wind::Extreme &&
+        (localExtreme || (snap.windNwsWarning && cfg_.nwsWindToast));
+    if (wantWindToast) {
         if (now - lastWindToastMs_ >= kHysteresisMs) {
             lastWindToastMs_ = now;
             cross(tr("💨 Extreme wind"),

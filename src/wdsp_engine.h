@@ -29,10 +29,13 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QTimer>
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -43,6 +46,11 @@ namespace lyra::dsp {
 // Defined in wdsp_engine.cpp — a QIODevice the QAudioSink pulls audio
 // from, backed by a mutex-protected stereo int16 ring.
 class AudioRing;
+
+// Captured noise profile (slice 2) + reducer (slice 3).  Held by
+// unique_ptr; only the .cpp needs the complete types.
+class CapturedProfile;
+class NoiseReducer;
 
 // Per-channel sample rates + buffer size.  Defaults match the working
 // Thetis/Lyra HL2 setup: 1024-frame 192 kHz IQ in, 4096-sample
@@ -113,6 +121,91 @@ class WdspEngine : public QObject {
     // tuning layer uses it (VFO = DDS + markerOffset) and the panadapter
     // draws the carrier marker offset by it.
     Q_PROPERTY(int markerOffsetHz READ markerOffsetHz NOTIFY markerOffsetChanged)
+    // ── RX DSP operator controls (ported from old Lyra's DSP+AUDIO
+    // panel).  Noise reduction = WDSP EMNR.  nrMode 1..4 picks the
+    // gain function (Wiener+SPP / Wiener / MMSE-LSA / trained); AEPF is
+    // the anti-musical-noise post-filter; NPE 0=OSMS 1=MCRA picks the
+    // noise-power estimator.  All persisted via QSettings; pushed to
+    // WDSP on every change and re-applied on channel (re)open. ───────
+    Q_PROPERTY(bool nrEnabled READ nrEnabled NOTIFY nrChanged)
+    Q_PROPERTY(int  nrMode     READ nrMode    NOTIFY nrChanged)
+    Q_PROPERTY(bool aepfEnabled READ aepfEnabled NOTIFY nrChanged)
+    Q_PROPERTY(int  npeMethod  READ npeMethod  NOTIFY nrChanged)
+    // AGC mode as an operator-facing string: off / fast / med / slow.
+    // (Long / Auto / Custom land with the rest of the AGC surface.)
+    Q_PROPERTY(QString agcMode READ agcMode NOTIFY agcModeChanged)
+    // Live AGC gain action (WDSP RXA_AGC_GAIN), dB — re-read at the 5 Hz
+    // levels poll.  agcThreshDb is the (currently fixed) AGC threshold the
+    // readout shows alongside it, matching old Lyra's "thr / gain" cells.
+    Q_PROPERTY(double agcGainDb   READ agcGainDb   NOTIFY levelsChanged)
+    Q_PROPERTY(double agcThreshDb READ agcThreshDb CONSTANT)
+    // ANF — auto-notch (LMS predictor that nulls carriers/heterodynes).
+    Q_PROPERTY(bool anfEnabled READ anfEnabled NOTIFY anfChanged)
+    // LMS — line enhancer (ANR predictor that lifts CW/tones).  strength
+    // 0..1 scales taps (32..128) + adapt rate; 0.5 ≈ WDSP-class default.
+    Q_PROPERTY(bool   lmsEnabled  READ lmsEnabled  NOTIFY lmsChanged)
+    Q_PROPERTY(double lmsStrength READ lmsStrength NOTIFY lmsChanged)
+    // Manual notches (NF) — master run + the notch list.  Each notch is
+    // a QVariantMap { offsetHz, widthHz, active } where offsetHz is the
+    // baseband offset from the tuned centre (= what the panadapter
+    // shows).  The panadapter draws the red bands + does right-click /
+    // drag / wheel placement against this list.
+    Q_PROPERTY(bool notchEnabled READ notchEnabled NOTIFY notchesChanged)
+    Q_PROPERTY(QVariantList notches READ notches NOTIFY notchesChanged)
+    // All-mode squelch (SQ).  One operator threshold 0..1; the engine
+    // routes it to SSQL / FMSQ / AMSQ per the current demod mode.
+    Q_PROPERTY(bool squelchEnabled READ squelchEnabled NOTIFY squelchChanged)
+    Q_PROPERTY(double squelchThreshold READ squelchThreshold NOTIFY squelchChanged)
+    // Noise blanker (NB) — impulse blanker on the raw IQ.  strength 0..1
+    // maps to the NOB detection threshold (higher strength = lower
+    // threshold = more aggressive blanking).
+    Q_PROPERTY(bool nbEnabled READ nbEnabled NOTIFY nbChanged)
+    Q_PROPERTY(double nbStrength READ nbStrength NOTIFY nbChanged)
+    // APF — CW audio peaking filter, centred on the CW pitch.  Engages
+    // only in CWU/CWL; the button is live in any mode but does nothing
+    // outside CW (gated by the engine).
+    Q_PROPERTY(bool apfEnabled READ apfEnabled NOTIFY apfChanged)
+    // APF peak gain (dB) the operator picks for how hard the CW peak lifts.
+    Q_PROPERTY(double apfGainDb READ apfGainDb NOTIFY apfChanged)
+    // BIN — binaural pseudo-stereo (headphone soundstage widening).  A
+    // Lyra-native Hilbert post-processor on the mono output (not a WDSP
+    // call).  depth 0..1: 0 = mono, 1 = full Hilbert pair.
+    Q_PROPERTY(bool binEnabled READ binEnabled NOTIFY binChanged)
+    Q_PROPERTY(double binDepth READ binDepth NOTIFY binChanged)
+    // Captured noise profile (IQ-domain spectral subtraction — Lyra's
+    // signature NR).  Slice 2 = capture only: noiseCapturing is true
+    // while a 📷 Cap window is averaging the band's noise power;
+    // noiseCaptureProgress is 0..1; noiseProfileValid flips true once a
+    // capture completes.  Apply (the toggle that actually subtracts) and
+    // the named-profile store land in slices 3/4.
+    Q_PROPERTY(bool noiseCapturing READ noiseCapturing NOTIFY noiseCaptureChanged)
+    Q_PROPERTY(double noiseCaptureProgress READ noiseCaptureProgress
+               NOTIFY noiseCaptureChanged)
+    Q_PROPERTY(bool noiseProfileValid READ noiseProfileValid
+               NOTIFY noiseCaptureChanged)
+    // Slice 3: the apply toggle.  When on AND a valid profile is loaded,
+    // feedIq cleans the IQ (Wiener-from-profile) before WDSP.  Default
+    // OFF — the operator opts in; adds ~one STFT window of RX latency.
+    Q_PROPERTY(bool noiseApplyEnabled READ noiseApplyEnabled
+               NOTIFY noiseApplyChanged)
+    // Slice 4: capture FFT size (2048/4096/8192) + capture duration
+    // (3/5/10 s), and the named-profile store (manual-curated; each
+    // profile is rate + FFT-size tagged).  noiseProfiles = saved names;
+    // noiseActiveProfile = the loaded one ("" = none / unsaved live).
+    Q_PROPERTY(int noiseFftSize READ noiseFftSize NOTIFY noiseSettingsChanged)
+    Q_PROPERTY(double noiseCaptureSeconds READ noiseCaptureSeconds
+               NOTIFY noiseSettingsChanged)
+    Q_PROPERTY(QStringList noiseProfiles READ noiseProfiles
+               NOTIFY noiseProfilesChanged)
+    Q_PROPERTY(QString noiseActiveProfile READ noiseActiveProfile
+               NOTIFY noiseProfilesChanged)
+    // Slice 4B: apply tunables (live).  strength = over-subtraction α
+    // (1 = standard, higher = more aggressive); floorDb = max attenuation
+    // (deeper = more noise cut, more musical-noise risk); smoothing =
+    // per-bin mask smoothing 0..0.95 (higher = steadier / less twinkle).
+    Q_PROPERTY(double noiseStrength READ noiseStrength NOTIFY noiseTuningChanged)
+    Q_PROPERTY(double noiseFloorDb READ noiseFloorDb NOTIFY noiseTuningChanged)
+    Q_PROPERTY(double noiseSmoothing READ noiseSmoothing NOTIFY noiseTuningChanged)
 
 public:
     explicit WdspEngine(WdspNative *wdsp, QObject *parent = nullptr);
@@ -129,6 +222,12 @@ public:
     // Returns -200 when the RX channel isn't running.  Safe to call
     // from the UI thread (just reads WDSP's latest stored meter value).
     double sMeterDbm() const;
+    // Live AGC gain action in dB (WDSP RXA_AGC_GAIN); 0 when not running.
+    double agcGainDb() const;
+    // The configured AGC threshold the readout shows (dBFS, currently the
+    // fixed first-light value; becomes operator-tunable with the AGC
+    // threshold control later).
+    double agcThreshDb() const;
 
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
@@ -155,6 +254,14 @@ public:
     // the panadapter is a C++ QQuickPaintedItem, not QML JS.
     int  spectrumPixelCount() const;
     int  copySpectrum(float *dst, int maxN);
+    // Display-only notch cut: pull the columns under each
+    // active manual notch down to floorDb in a display dB array of `n`
+    // points spanning the CURRENT displayed span.  Called by the
+    // panadapter (floor = its noise floor) + waterfall (floor = scale
+    // bottom) AFTER their noise-floor / auto-scale math, so the notch
+    // visibly carves the trace + waterfall without skewing those
+    // estimates.  No-op when NF is off or there are no notches.
+    void carveNotches(float *db, int n, double floorDb) const;
 
     // Step 3e operator audio controls (call from the UI / main thread).
     // setVolume: linear gain 0.0..1.0 applied before int16 conversion.
@@ -163,6 +270,121 @@ public:
     // setAudioOutputDevice: switch output device live (restarts sink).
     Q_INVOKABLE void setVolume(double v);
     Q_INVOKABLE void setMuted(bool m);
+
+    // RX DSP operator controls.  Getters are cheap reads of the
+    // persisted state; setters store, persist (QSettings), push to WDSP
+    // when the channel is open, and emit the NOTIFY signal.
+    bool nrEnabled()   const { return nrEnabled_; }
+    int  nrMode()      const { return nrMode_; }
+    bool aepfEnabled() const { return aepfEnabled_; }
+    int  npeMethod()   const { return npeMethod_; }
+    QString agcMode()  const { return agcMode_; }
+    Q_INVOKABLE void setNrEnabled(bool on);
+    Q_INVOKABLE void setNrMode(int mode);        // 1..4
+    Q_INVOKABLE void setAepfEnabled(bool on);
+    Q_INVOKABLE void setNpeMethod(int method);   // 0=OSMS 1=MCRA
+    Q_INVOKABLE void setAgcMode(const QString &mode);  // off/fast/med/slow
+    bool anfEnabled()    const { return anfEnabled_; }
+    bool lmsEnabled()    const { return lmsEnabled_; }
+    double lmsStrength() const { return lmsStrength_; }
+    Q_INVOKABLE void setAnfEnabled(bool on);
+    Q_INVOKABLE void setLmsEnabled(bool on);
+    Q_INVOKABLE void setLmsStrength(double s);   // 0..1
+    // ── Manual notches ──
+    bool notchEnabled() const { return notchEnabled_; }
+    QVariantList notches() const;                 // {offsetHz,widthHz,active}…
+    Q_INVOKABLE void setNotchEnabled(bool on);
+    // Add a notch at `offsetHz` from centre, default 200 Hz wide.
+    // Returns the new notch index.  Auto-enables NF.
+    Q_INVOKABLE int  addNotch(double offsetHz, double widthHz = 200.0);
+    Q_INVOKABLE void removeNotch(int index);
+    Q_INVOKABLE void moveNotch(int index, double offsetHz);
+    Q_INVOKABLE void setNotchWidth(int index, double widthHz);
+    Q_INVOKABLE int  notchCount() const { return static_cast<int>(notches_.size()); }
+    // Nearest notch to `offsetHz` within `tolHz`, else -1 (panadapter
+    // hit-testing for drag / wheel / right-click-remove).
+    Q_INVOKABLE int  notchNear(double offsetHz, double tolHz) const;
+    // ── All-mode squelch ──
+    bool   squelchEnabled()   const { return squelchEnabled_; }
+    double squelchThreshold() const { return squelchThreshold_; }
+    Q_INVOKABLE void setSquelchEnabled(bool on);
+    Q_INVOKABLE void setSquelchThreshold(double t);   // 0..1
+    bool   nbEnabled()  const { return nbEnabled_; }
+    double nbStrength() const { return nbStrength_; }
+    Q_INVOKABLE void setNbEnabled(bool on);
+    Q_INVOKABLE void setNbStrength(double s);          // 0..1
+    bool apfEnabled() const { return apfEnabled_; }
+    double apfGainDb() const { return apfGainDb_; }
+    Q_INVOKABLE void setApfEnabled(bool on);
+    Q_INVOKABLE void setApfGainDb(double db);   // peak gain, dB
+    bool binEnabled() const { return binEnabled_; }
+    double binDepth() const { return binDepth_; }
+    Q_INVOKABLE void setBinEnabled(bool on);
+    Q_INVOKABLE void setBinDepth(double d);     // 0..1
+    // ── Captured noise profile (slice 2: capture) ──
+    bool   noiseCapturing() const {
+        return noiseCapturing_.load(std::memory_order_relaxed);
+    }
+    double noiseCaptureProgress() const {
+        return noiseProgress_.load(std::memory_order_relaxed);
+    }
+    bool   noiseProfileValid() const {
+        return noiseProfileValid_.load(std::memory_order_relaxed);
+    }
+    // Arm a noise capture over `seconds` (3/5/10) at the current IQ rate.
+    // Observe-only: averages the band's per-bin noise power; does NOT
+    // alter audio.  Safe to call while running (serialised via channelMtx_).
+    Q_INVOKABLE void startNoiseCapture(double seconds);
+    Q_INVOKABLE void cancelNoiseCapture();
+    // Slice 3: turn captured-profile noise reduction on/off.  Loads the
+    // current captured profile into the reducer on enable; a fresh
+    // capture completed while enabled is auto-loaded.  No-op-on-audio
+    // until a valid profile exists.
+    bool noiseApplyEnabled() const {
+        return applyEnabled_.load(std::memory_order_relaxed);
+    }
+    Q_INVOKABLE void setNoiseApply(bool on);
+    // ── Captured-profile settings + named-profile store (slice 4) ──
+    int    noiseFftSize()        const { return npFftSize_; }
+    double noiseCaptureSeconds() const { return npCaptureSeconds_; }
+    QStringList noiseProfiles()  const;
+    QString noiseActiveProfile() const { return npActiveName_; }
+    // FFT size 2048/4096/8192 — changing it cancels any capture, drops the
+    // reducer + apply (a profile is size-specific), and persists.
+    Q_INVOKABLE void setNoiseFftSize(int n);
+    Q_INVOKABLE void setNoiseCaptureSeconds(double s);  // 3/5/10
+    // Capture using the configured duration (convenience for the UI).
+    Q_INVOKABLE void startNoiseCaptureDefault() { startNoiseCapture(npCaptureSeconds_); }
+    // Save the current (just-captured) profile under `name`; false if no
+    // valid capture exists.  Overwrites a same-named profile.
+    Q_INVOKABLE bool saveNoiseProfile(const QString &name);
+    // Load a saved profile into the reducer.  Adopts the profile's FFT
+    // size; refuses (returns false) if its capture RATE differs from the
+    // current IQ rate (caller shows a recapture hint).
+    Q_INVOKABLE bool loadNoiseProfile(const QString &name);
+    Q_INVOKABLE void deleteNoiseProfile(const QString &name);
+    // Rename a saved profile (and its file).  False if not found or the
+    // new name is empty / already in use.
+    Q_INVOKABLE bool renameNoiseProfile(const QString &oldName,
+                                        const QString &newName);
+    // UI helpers that use NATIVE top-level dialogs (QInputDialog /
+    // QMessageBox) — QML Popups/Dialogs are clipped to the panel's
+    // QQuickWidget rect, so the name prompt + warnings must be native.
+    Q_INVOKABLE bool promptSaveProfile();                 // ask name → save
+    Q_INVOKABLE void loadProfileOrWarn(const QString &name);  // load, warn on rate mismatch
+    // Human-readable tag for a saved profile ("192k · 4096 · 2026-05-25").
+    Q_INVOKABLE QString noiseProfileInfo(const QString &name) const;
+    // Folder where profiles are stored (one .lnp file each), so the UI
+    // can tell the operator where to find / back them up.
+    Q_INVOKABLE QString noiseProfilesDir() const;
+    // Apply tunables (slice 4B) — persisted; pushed to the reducer live
+    // and re-applied whenever the reducer is (re)created.
+    double noiseStrength()  const { return npAlpha_; }
+    double noiseFloorDb()   const { return npFloorDb_; }
+    double noiseSmoothing() const { return npSmoothing_; }
+    Q_INVOKABLE void setNoiseStrength(double a);    // 1.0 .. 3.0
+    Q_INVOKABLE void setNoiseFloorDb(double db);    // -24 .. -3
+    Q_INVOKABLE void setNoiseSmoothing(double s);   // 0 .. 0.95
     // Set the panadapter zoom (1.0 = full span).  Stores the factor; the
     // crop happens in copySpectrum.  No analyzer reconfiguration.
     Q_INVOKABLE void setZoom(double z);
@@ -240,6 +462,20 @@ signals:
     void passbandChanged();
     void cwPitchChanged();
     void markerOffsetChanged();
+    void nrChanged();        // NR enable / mode / AEPF / NPE
+    void agcModeChanged();
+    void anfChanged();
+    void lmsChanged();       // LMS enable / strength
+    void notchesChanged();   // NF run / list add / remove / edit
+    void squelchChanged();   // SQ enable / threshold
+    void nbChanged();        // NB enable / strength
+    void apfChanged();       // APF enable
+    void binChanged();       // BIN enable / depth
+    void noiseCaptureChanged();   // captured-profile capture state/progress
+    void noiseApplyChanged();     // captured-profile apply toggle
+    void noiseSettingsChanged();  // FFT size / capture duration
+    void noiseProfilesChanged();  // saved-profile list / active profile
+    void noiseTuningChanged();    // strength / floor / smoothing
     // TCI streaming: post-DSP mono audio (float32 @ rateHz) and raw IQ
     // (interleaved I,Q float32 @ rateHz).  Emitted from the RX worker
     // thread → delivered to the TCI server via a queued connection.
@@ -254,6 +490,36 @@ private:
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
+    // Push the current NR (EMNR) state to WDSP — run + gain method +
+    // NPE method + AEPF + position.  No-op when the channel is closed
+    // (re-applied on the next openRx1).  Channel-parameterized so RX2
+    // can reuse it unchanged.
+    void pushNrState();
+    // Push the current AGC mode (SetRXAAGCMode).  No-op when closed.
+    void pushAgcMode();
+    // Push ANF (auto-notch) + LMS (line enhancer) run/vals.  No-op when
+    // closed; channel-parameterized for RX2 reuse.
+    void pushAnfState();
+    void pushLmsState();
+    // Rebuild the WDSP NBP notch database from notches_ + set the run
+    // flag.  No-op when closed; re-applied on openRx1 (the DB is recreated
+    // empty on every channel open).  Channel-parameterized for RX2.
+    void pushNotches();
+    void persistNotches();   // serialize notches_ to QSettings
+    // Route the squelch to SSQL / FMSQ / AMSQ per the current mode_ and
+    // push run + threshold; disables the inactive modules.  No-op closed.
+    void pushSquelchState();
+    // Push NB threshold (from strength) + run.  No-op until the EXT
+    // blanker is created in openRx1.
+    void pushNbState();
+    // Push the APF (CW peaking biquad) shape + run; engages only in CW.
+    void pushApfState();
+    // BIN: Lyra-native Hilbert pseudo-stereo.  buildBinaural() makes the
+    // FIR (once); binauralStep() turns one mono sample into an L/R pair
+    // with persistent FIR + delay state; resetBinaural() clears it.
+    void buildBinaural();
+    void binauralStep(double mono, double *l, double *r);
+    void resetBinaural();
     // Passband edges (Hz offsets from centre) for mode_ + bw_ + pitch.
     void computePassband(double *lo, double *hi) const;
     void recomputePassband();   // store + emit passbandChanged
@@ -309,6 +575,78 @@ private:
     double  cwPitchHz_  = 600.0;
     double  passbandLowHz_  = 200.0;    // edges for the panadapter overlay
     double  passbandHighHz_ = 2400.0;
+    // RX DSP operator state (main-thread only; restored from QSettings
+    // in the ctor, pushed to WDSP on open + on each setter).  NR off by
+    // default; Mode 3 (MMSE-LSA, WDSP default) + AEPF on + NPE OSMS
+    // match old Lyra's first-light defaults.  AGC med.
+    bool    nrEnabled_   = false;
+    int     nrMode_      = 3;            // 1..4 (UI) -> gain_method 0..3
+    bool    aepfEnabled_ = true;
+    int     npeMethod_   = 0;            // 0=OSMS 1=MCRA
+    QString agcMode_     = QStringLiteral("med");
+    bool    anfEnabled_  = false;
+    bool    lmsEnabled_  = false;
+    double  lmsStrength_ = 0.5;          // 0..1 (0.5 ≈ WDSP-class default)
+    // Manual notch list (offsets in Hz from the tuned centre).  Lyra-side
+    // is the source of truth; pushNotches() rebuilds the WDSP DB from it.
+    struct Notch { double offsetHz; double widthHz; bool active; };
+    std::vector<Notch> notches_;
+    bool    notchEnabled_  = false;      // NF master run
+    int     wdspNotchCount_ = 0;         // notches currently in the WDSP DB
+    bool    squelchEnabled_   = false;
+    double  squelchThreshold_ = 0.20;    // 0..1 operator knob
+    bool    nbEnabled_   = false;
+    double  nbStrength_  = 0.5;          // 0..1 (higher = more blanking)
+    bool    nbCreated_   = false;        // EXT NOB created for this channel
+    std::vector<double> nbBuf_;          // xnobEXT output (2*inSize doubles)
+    bool    apfEnabled_  = false;        // CW peaking filter (CW-gated)
+    double  apfGainDb_   = 12.0;         // operator-set peak gain (dB)
+    // Captured noise profile (slice 2: capture).  Created lazily at the
+    // operator's captured-profile FFT size (slice 4 makes npFftSize_
+    // settable; default 4096).  noiseProfile_ is created/armed on the
+    // main thread and fed on the RX worker — both under channelMtx_, so
+    // a capture can't be armed mid-fexchange0.  The scalar
+    // capturing/progress/valid mirrors are atomics the UI polls.
+    std::unique_ptr<CapturedProfile> noiseProfile_;
+    int                 npFftSize_ = 4096;          // 2048/4096/8192
+    std::atomic<bool>   noiseCapturing_{false};
+    std::atomic<double> noiseProgress_{0.0};
+    std::atomic<bool>   noiseProfileValid_{false};
+    bool                npLastCapturing_ = false;   // main-thread edge latch
+    // Slice 3: apply.  reducer_ created on enable (and recreated on FFT-
+    // size change); applyEnabled_ gates the feedIq route; cleanBuf_ holds
+    // one cleaned block.  All touched under channelMtx_ except the atomic.
+    std::unique_ptr<NoiseReducer> reducer_;
+    std::atomic<bool>   applyEnabled_{false};
+    std::vector<double> cleanBuf_;                  // 2*inSize cleaned IQ
+    double              npCaptureSeconds_ = 5.0;    // 3/5/10
+    double              npAlpha_     = 1.0;          // over-subtraction
+    double              npFloorDb_   = -12.0;        // max attenuation
+    double              npSmoothing_ = 0.6;          // mask smoothing
+    QString             npActiveName_;              // loaded profile ("" = none)
+    void applyReducerParams();   // push α/floor/smoothing to reducer_ (lock held)
+    // Named-profile store (manual-curated).  One ".lnp" file per profile
+    // in a findable folder (see noiseProfilesDir) — browsable / backup-
+    // able / shareable.  Each is rate + FFT-size tagged.  Main-thread only.
+    struct StoredProfile {
+        QString             name;
+        int                 rate = 0;
+        int                 fft  = 0;
+        QString             date;
+        QString             file;    // absolute path of its .lnp
+        std::vector<double> power;   // per-bin noise power (length fft)
+    };
+    std::vector<StoredProfile> profiles_;
+    QString profilesDir() const;            // ensures the folder exists
+    void    loadProfiles();                 // ctor: scan *.lnp
+    bool    writeProfileFile(StoredProfile &p);   // write one (sets p.file)
+    void    removeProfileFile(const StoredProfile &p);  // delete its file
+    // BIN — 63-tap Hilbert FIR pseudo-stereo (mono in → L/R out).
+    bool    binEnabled_  = false;
+    double  binDepth_    = 0.7;          // 0 = mono, 1 = full Hilbert pair
+    std::vector<double> binH_;           // Hilbert FIR taps (63)
+    std::vector<double> binHist_;        // ring history (63) — FIR + delay tap
+    int     binPos_      = 0;            // newest-sample index in binHist_
     // Last good full-resolution spectrum (kAnPixels dB points).  WDSP's
     // GetPixels resets its ready-flag on read, so with TWO consumers
     // (panadapter + waterfall) the second sees no data; caching here lets
