@@ -492,7 +492,48 @@ Surfacing NR Mode + AEPF + NPE as separate knobs is one of Lyra's
 differentiators — most SDR apps hide them. All three persist across
 restarts.
 
-The **Cap** (captured noise profile) arrives in a later build.
+### Captured noise profile (NR-C) — Lyra's signature noise reduction
+
+This is the one that's genuinely different. Instead of a generic denoiser,
+NR-C learns **your** band's actual noise spectrum and subtracts it — in the
+IQ domain, *before* WDSP's chain — so it's mode-independent and doesn't fight
+the AGC. Used well it drops the noise floor several dB and the signal pretty
+much sits where it was.
+
+**The workflow (left to right on Row 3):**
+
+1. Tune to a **quiet, signal-free** spot on the band you're working — NR-C
+   subtracts whatever it captures, so don't capture on top of a signal.
+2. Pick a **capture length** (3 / 5 / 10 s) next to the **📷 Cap** button.
+3. Press **📷 Cap**. The button shows a percentage while it averages the
+   noise; press it again to cancel.
+4. Press **Save**, give the profile a name (e.g. `40m-night`, `20m-ESSB`) in
+   the box that pops up. It's now in the picker.
+5. Flip **NR-C** on. The captured noise is subtracted from RX. The panadapter
+   shows the cleaned spectrum too, so you can watch the floor drop.
+6. Fine-tune with the **⚙** button (appears next to NR-C while it's on):
+   - **Strength** (1–5×) — how hard to subtract. Higher = more cut.
+   - **Floor** (−3 to −30 dB) — the deepest any bin is allowed to drop.
+     More negative = more aggressive.
+   - **Smoothing** (0–95%) — steadies the gain so it doesn't "twinkle."
+     Raise it if deeper Strength/Floor starts to sound watery.
+
+**FFT size** (2048 / 4096 / 8192) sets the resolution — 8192 resolves wide
+ESSB noise finest (a touch more latency), 2048 is lowest latency. Changing it
+clears the current profile (a profile is tied to the size it was captured at).
+
+**Profiles are files you own.** Each saved profile is a small `.lnp` file in
+`%LOCALAPPDATA%\N8SDR\Lyra-cpp\profiles\` — browsable, backup-able, and
+shareable between rigs (drop a friend's `.lnp` in there and it shows up in
+your picker). Profiles are tagged with their capture rate + FFT size and
+won't load against a mismatched rate (you'll get a recapture hint).
+
+**Manage them in Settings → Noise:** the full list with rate/size/date, plus
+**Rename**, multi-select **Delete**, and **Open folder**.
+
+Notes: NR-C adds about one FFT window of RX latency (≈21 ms at 4096) *only
+while it's on*; off, the path is unchanged. It's independent of the WDSP
+**NR** denoiser — you can run either, both, or neither.
 
 ---
 
@@ -658,8 +699,11 @@ alert is active, and **flash** on the most serious tier:
 
 - **⚡ Lightning** — shows the closest strike distance + compass bearing.
   Yellow ≈ far, orange ≈ mid, **red = close** (flashing).
-- **💨 Wind** — shows gust (or sustained) speed. Yellow/orange by your
-  thresholds, **red = extreme** (flashing).
+- **💨 Wind** — shows gust (or sustained) speed. The badge appears only
+  once wind **reaches the thresholds you set** (Settings → Weather):
+  **orange** when sustained or gust crosses your value, **red = extreme**
+  (your value + 15, flashing). In calm air below your thresholds there's
+  no wind badge at all.
 - **⚠ Severe** — an NWS thunderstorm/severe warning is active (red,
   flashing). Hover for the headline.
 
@@ -671,9 +715,15 @@ keys). Lyra needs your **location** to know what's "nearby" — set your
 grid square in [Settings → Hardware → Operator / Station](#operator--station).
 
 **Notifications** — optionally a desktop pop-up and an audible chime when
-an alert first crosses a tier (with a cool-down so it doesn't nag). Toggle
-both in Settings → Weather, and use **Send test alert** there to see the
-badges light up.
+an alert first crosses a tier (with a cool-down so it doesn't nag). Lyra's
+own weather pop-ups are titled **"Lyra — …"** so you can tell them apart
+from other notifiers (your Ambient app, a Windows weather widget, etc.).
+The wind pop-up only fires when your **local** readings cross your
+thresholds; an area **NWS High/Extreme Wind Warning** pops a toast only if
+you opt in (**"Pop NWS High/Extreme Wind Warnings"**, off by default — the
+badge still reflects it either way). Toggle the desktop/chime options in
+Settings → Weather, and use **Send test alert** there to see the badges
+light up.
 
 ---
 
