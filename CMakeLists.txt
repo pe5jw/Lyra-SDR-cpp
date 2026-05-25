@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.1.4
+    VERSION 0.1.5
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -34,7 +34,7 @@ set(CMAKE_AUTOMOC ON)
 # layout, matching the proven Python-Lyra UX), and the Vulkan
 # panadapter/waterfall scene-graph content is embedded INSIDE docks via
 # QQuickWidget.  All native C++ — no Python, no GIL anywhere.
-find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widgets QuickWidgets ShaderTools)
+find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widgets QuickWidgets ShaderTools WebSockets)
 
 # Vulkan SDK -- optional at compile time (Qt RHI dynamically loads
 # the Vulkan runtime via the loader at app launch), but having the
@@ -92,6 +92,12 @@ qt_add_executable(lyra
     src/memorystore.cpp
     src/eibistore.h
     src/eibistore.cpp
+    src/tci_server.h
+    src/tci_server.cpp
+    src/spotstore.h
+    src/spotstore.cpp
+    src/dxcc.h
+    src/dxcc.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -146,6 +152,15 @@ qt_add_resources(lyra "lyra_help"
         docs/help/USER_GUIDE.md
 )
 
+# DXCC prefix→ISO table (pre-baked from cty.dat) for labelling TCI spots
+# with their country, e.g. "US WE7CAT".  Loaded at ":/data/dxcc_prefix.csv".
+qt_add_resources(lyra "lyra_data"
+    PREFIX "/data"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/data"
+    FILES
+        data/dxcc_prefix.csv
+)
+
 # Panadapter shaders: qsb-compiles GLSL → SPIR-V/MSL/HLSL/GLSL and
 # embeds the .qsb in the binary at ":/shaders/<name>.qsb".  QML uses
 # them as layer.effect ShaderEffects (glow/glass).  Cross-platform by
@@ -166,6 +181,7 @@ target_link_libraries(lyra PRIVATE
     Qt6::Multimedia
     Qt6::Widgets
     Qt6::QuickWidgets
+    Qt6::WebSockets
 )
 
 # Single source of truth for the app version + release repo: the

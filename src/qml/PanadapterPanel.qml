@@ -508,7 +508,9 @@ Item {
                 z: 5
                 visible: Prefs.cursorReadout && specMouse.containsMouse
                          && !specMouse.tuning && specMouse.dbMode === ""
-                text: (specMouse.cursorHz / 1.0e6).toFixed(4) + qsTr(" MHz")
+                // Full-Hz, dot-grouped (14.234.723) so the readout shows the
+                // exact frequency under the cursor, not a 100 Hz-rounded one.
+                text: specMouse.fmtHzGrouped(specMouse.cursorHz)
                 color: "#cdd9e5"
                 font.pixelSize: 12
                 font.family: "Consolas"
@@ -533,7 +535,6 @@ Item {
                 hoverEnabled: true
                 readonly property int zonePx: 50
                 readonly property int dragThreshPx: 6
-                readonly property int wheelStepHz: 1000   // per wheel notch
 
                 // dB-drag (right edge) state
                 property string dbMode: ""
@@ -548,6 +549,14 @@ Item {
                 property real lastEmitMs: 0
                 // live cursor freq for the hover readout
                 readonly property real cursorHz: freqAtX(mouseX)
+                // Full-Hz, dot-grouped like the VFO readout: 14.234.723.
+                function fmtHzGrouped(hz) {
+                    var s = Math.round(hz).toString()
+                    var out = ""
+                    while (s.length > 3) { out = "." + s.slice(-3) + out
+                                           s = s.slice(0, -3) }
+                    return s + out
+                }
 
                 function dbModeAt(mx, my) {
                     if (mx < spectrumArea.width - zonePx) return ""
@@ -560,6 +569,22 @@ Item {
                 function freqAtX(mx) {
                     return root.centerHz
                            + (mx / Math.max(1, width) - 0.5) * WdspEngine.spanHz
+                }
+                // Tune to an operator-facing CARRIER freq, snapped to a grid:
+                //   • "100 Hz" toggle → round to the 100 Hz grid (override).
+                //   • "Exact"        → snap to the selected Panafall step
+                //                      grid (step 1 Hz = truly exact; 10/50/
+                //                      1k… land on that grid).
+                // Then offset by the CW pitch so the DDS lands the signal in
+                // the filter.
+                function tuneCarrier(carrierHz) {
+                    var c = carrierHz
+                    if (Prefs.panRound100)
+                        c = Math.round(c / 100) * 100
+                    else if (Prefs.panScrollStepHz > 1)
+                        c = Math.round(c / Prefs.panScrollStepHz)
+                              * Prefs.panScrollStepHz
+                    Stream.setRx1FreqHz(Math.round(c - WdspEngine.markerOffsetHz))
                 }
 
                 cursorShape: dbModeAt(mouseX, mouseY) !== "" ? Qt.SizeVerCursor
@@ -591,10 +616,9 @@ Item {
                 onReleased: (mouse) => {
                     if (dbMode === "" && tuning && !dragged) {
                         // plain click → tune the CARRIER to the clicked RF
-                        // point; in CW the DDS is offset by the pitch so
-                        // the clicked signal lands in the filter.
-                        Stream.setRx1FreqHz(Math.round(
-                            freqAtX(startX) - WdspEngine.markerOffsetHz))
+                        // point (round-to-100 + CW pitch offset handled in
+                        // tuneCarrier).
+                        tuneCarrier(freqAtX(startX))
                     }
                     dbMode = ""
                     tuning = false
@@ -630,11 +654,19 @@ Item {
                     var nowMs = Date.now()
                     if (nowMs - lastEmitMs < 33) return
                     lastEmitMs = nowMs
-                    Stream.setRx1FreqHz(Math.round(newCenter))
+                    tuneCarrier(newCenter + WdspEngine.markerOffsetHz)
                 }
                 onWheel: (wheel) => {
-                    var dir = wheel.angleDelta.y > 0 ? 1 : -1
-                    Stream.setRx1FreqHz(Stream.rx1FreqHz + dir * wheelStepHz)
+                    if (wheel.modifiers & Qt.ControlModifier) {
+                        // Ctrl + wheel = zoom (escape hatch, old-Lyra gesture)
+                        WdspEngine.setZoom(WdspEngine.zoom
+                            * (wheel.angleDelta.y > 0 ? 1.25 : 0.8))
+                    } else {
+                        // Wheel = tune by the Panafall step (Display panel).
+                        var dir = wheel.angleDelta.y > 0 ? 1 : -1
+                        var carrier = Stream.rx1FreqHz + WdspEngine.markerOffsetHz
+                        tuneCarrier(carrier + dir * Prefs.panScrollStepHz)
+                    }
                     wheel.accepted = true
                 }
             }
@@ -740,6 +772,16 @@ Item {
                     target: Eibi
                     function onChanged()         { bandPlan.eibiRev++ }
                     function onSettingsChanged()  { bandPlan.eibiRev++ }
+                }
+
+                // DX-cluster spots pushed over TCI (SDRLogger+ / cluster).
+                property int spotRev: 0
+                readonly property var spotsList:
+                    (bandPlan.spotRev,
+                     Spots.spotsInSpan(root.centerHz, bandPlan.spanHz))
+                Connections {
+                    target: Spots
+                    function onChanged() { bandPlan.spotRev++ }
                 }
 
                 // Sub-band segment bars (top 10 px), coloured by mode.
@@ -949,6 +991,57 @@ Item {
                                 + (ebItem.modelData.target !== ""
                                    ? qsTr("\nTarget: ") + ebItem.modelData.target : "")
                                 + qsTr("\nClick to tune (AM)")
+                        }
+                    }
+                }
+
+                // DX-cluster spots — colored callsign markers (color set by
+                // the spotting client); click to tune + echo spot_activated.
+                Repeater {
+                    model: bandPlan.spotsList
+                    delegate: Item {
+                        id: spItem
+                        required property var modelData
+                        required property int index
+                        readonly property real sx: bandPlan.xOf(modelData.freqHz)
+                        // 3-row stagger; the C++ list is freq-sorted, so
+                        // callsigns near the same frequency land on
+                        // different rows instead of stacking on top.
+                        readonly property real labelY: 40 + (index % 3) * 13
+                        Rectangle {
+                            x: spItem.sx - (spItem.modelData.mine ? 1 : 0.5); y: 38
+                            width: spItem.modelData.mine ? 2 : 1; height: 41
+                            color: spItem.modelData.color
+                            opacity: spItem.modelData.mine ? 1.0 : 0.8
+                        }
+                        Text {
+                            x: spItem.sx + 3; y: spItem.labelY
+                            // "★" marks the operator's own spotted callsign.
+                            text: (spItem.modelData.mine ? "★ " : "")
+                                  + spItem.modelData.label
+                            color: spItem.modelData.color
+                            font.pixelSize: spItem.modelData.mine ? 13 : 11
+                            font.bold: true
+                            style: Text.Outline; styleColor: "#cc000000"
+                        }
+                        MouseArea {
+                            x: spItem.sx - 6; y: spItem.labelY
+                            width: 72; height: 14
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Spots.activate(spItem.modelData.call)
+                                Status.show(qsTr("Spot: ") + spItem.modelData.call
+                                    + " — " + (spItem.modelData.freqHz / 1.0e6).toFixed(3)
+                                    + " MHz " + spItem.modelData.mode, 2500)
+                            }
+                            ToolTip.visible: containsMouse
+                            ToolTip.text: spItem.modelData.call + "  "
+                                + (spItem.modelData.freqHz / 1.0e6).toFixed(3)
+                                + qsTr(" MHz ") + spItem.modelData.mode
+                                + (spItem.modelData.text !== ""
+                                   ? "\n" + spItem.modelData.text : "")
+                                + qsTr("\nClick to tune (and log)")
                         }
                     }
                 }

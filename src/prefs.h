@@ -151,6 +151,14 @@ class Prefs : public QObject {
     // Show the 11m / CB band row on the Band panel (Settings → Hardware).
     Q_PROPERTY(bool cbBandEnabled READ cbBandEnabled
                WRITE setCbBandEnabled NOTIFY cbBandEnabledChanged)
+    // Panadapter mouse-wheel "Panafall" scroll step (Hz) — distinct from
+    // the fine VFO step on the Tuning panel; this skims across a band.
+    Q_PROPERTY(int panScrollStepHz READ panScrollStepHz
+               WRITE setPanScrollStepHz NOTIFY panScrollStepHzChanged)
+    // When true, panadapter freq-set gestures (click/drag/wheel) round the
+    // resulting (operator-facing) frequency to the nearest 100 Hz.
+    Q_PROPERTY(bool panRound100 READ panRound100
+               WRITE setPanRound100 NOTIFY panRound100Changed)
     // Verbose diagnostic logging (Settings → Hardware → Diagnostics).
     // OFF (default) keeps only warnings/errors in the log; ON also
     // captures Debug/Info for when we need the full picture.
@@ -271,6 +279,10 @@ public:
     void setBandPlanEdges(bool v);
     bool cbBandEnabled() const { return cbBandEnabled_; }
     void setCbBandEnabled(bool v);
+    int  panScrollStepHz() const { return panScrollStepHz_; }
+    void setPanScrollStepHz(int hz);
+    bool panRound100() const { return panRound100_; }
+    void setPanRound100(bool v);
     // Per-mode-kind band-plan segment colour (override of the defaults).
     // kind = "CW"/"DIG"/"SSB"/"FM"/"MIX"/"BC".  Always returns a colour.
     QString bandPlanColor(const QString &kind) const;
@@ -332,6 +344,8 @@ signals:
     void bandPlanEdgesChanged();
     void bandPlanColorsChanged();
     void cbBandEnabledChanged();
+    void panScrollStepHzChanged();
+    void panRound100Changed();
     void debugLoggingChanged();
 
 private:
@@ -385,6 +399,8 @@ private:
     bool    bandPlanEdges_     = true;
     QHash<QString, QString> bandPlanColors_;   // kind → override hex (sparse)
     bool    cbBandEnabled_ = false;
+    int     panScrollStepHz_ = 1000;
+    bool    panRound100_ = false;
     bool    debugLogging_ = false;
 };
 

@@ -111,8 +111,12 @@ void TimeStations::saveIdx(int idx) const {
 }
 
 QString TimeStations::tune(const Station &s, int freqKhz) {
-    if (prefs_ && !s.mode.isEmpty()) prefs_->setMode(s.mode);   // mode first
+    // Freq FIRST, then mode: moving off the old band before the mode
+    // changes stops per-band memory from saving this station's mode (e.g.
+    // AM) against the band we just left, and lets our mode win over any
+    // band-default restore the freq change triggers.
     if (stream_) stream_->setRx1FreqHz(quint32(qint64(freqKhz) * 1000));
+    if (prefs_ && !s.mode.isEmpty()) prefs_->setMode(s.mode);
     const QString mhz = QString::number(freqKhz / 1000.0, 'f', 3);
     QString msg = QStringLiteral("TIME: %1 %2 MHz %3 — %4")
                       .arg(s.id, mhz, s.mode, s.name);

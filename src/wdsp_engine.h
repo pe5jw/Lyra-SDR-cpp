@@ -177,6 +177,9 @@ public:
     int  cwPitchHz() const { return static_cast<int>(cwPitchHz_ + 0.5); }
     Q_INVOKABLE void setCwPitchHz(int hz);
     int  markerOffsetHz() const;     // VFO − DDS (CW carrier convention)
+    // Same VFO−DDS offset for an ARBITRARY mode — used when tuning to a CW
+    // spot/VFO whose freq is the carrier (DDS = carrier − this).
+    Q_INVOKABLE int cwMarkerOffsetForMode(const QString &mode) const;
     // Bandwidth (Hz) that results from dragging a passband edge to
     // `edgeOffsetHz` (offset from the tuned centre) in the current mode.
     // The panadapter edge-drag calls this, then writes Prefs.rxBandwidth.
@@ -199,6 +202,17 @@ public:
     // No audio is played yet (Step 3e); this only measures.
     void feedIq(const double *iq, int nframes);
 
+    // TCI streaming taps (off unless a TCI client subscribes).  When on,
+    // feedIq emits a copy of each post-DSP audio block (mono float32 @
+    // outRate) / raw IQ block (interleaved I,Q float32 @ inRate) as a
+    // queued signal so the (main-thread) TCI server can frame + send it.
+    void setTciAudioStreaming(bool on) {
+        tciAudioOn_.store(on, std::memory_order_relaxed);
+    }
+    void setTciIqStreaming(bool on) {
+        tciIqOn_.store(on, std::memory_order_relaxed);
+    }
+
     // Open RX1 (channel 0), apply the locked first-light config and
     // start the channel.  Idempotent; returns true on success.
     Q_INVOKABLE bool openRx1();
@@ -220,6 +234,11 @@ signals:
     void passbandChanged();
     void cwPitchChanged();
     void markerOffsetChanged();
+    // TCI streaming: post-DSP mono audio (float32 @ rateHz) and raw IQ
+    // (interleaved I,Q float32 @ rateHz).  Emitted from the RX worker
+    // thread → delivered to the TCI server via a queued connection.
+    void tciAudioBlock(const QByteArray &monoFloat, int rateHz);
+    void tciIqBlock(const QByteArray &iqFloat, int rateHz);
     void logLine(QString line);
 
 private:
@@ -253,6 +272,8 @@ private:
     std::vector<double> outBuf_;
     int                 fexErr_ = 0;
     std::atomic<double> audioDbFs_{-200.0};
+    std::atomic<bool>   tciAudioOn_{false};   // TCI audio stream tap on
+    std::atomic<bool>   tciIqOn_{false};      // TCI IQ stream tap on
     // 5 Hz UI poll — emits levelsChanged so the QML audioDbFs binding
     // re-reads the atomic.  Lives on the main thread (WdspEngine is a
     // main-thread object); started in openRx1, stopped in closeRx1.

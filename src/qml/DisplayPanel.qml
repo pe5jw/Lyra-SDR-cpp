@@ -105,6 +105,39 @@ Rectangle {
             Layout.preferredWidth: 40
         }
 
+        // ── Row 1 (left group): Panafall scroll step + Exact/100 Hz ──
+        // Panafall step = how far each mouse-wheel tick tunes over the
+        // panadapter/waterfall (coarse band skim — distinct from the fine
+        // VFO step on the Tuning panel).  Exact/100 Hz quantizes the
+        // result of click/drag/wheel tuning to the 100 Hz grid when on.
+        Label {
+            Layout.row: 1; Layout.column: 0
+            text: qsTr("Panafall"); color: "#cccccc"; font.bold: true
+        }
+        ComboBox {
+            id: stepCombo
+            Layout.row: 1; Layout.column: 1
+            Layout.preferredWidth: 84
+            readonly property var steps: [1, 10, 50, 1000, 5000, 10000, 25000, 100000]
+            model: ["1 Hz", "10 Hz", "50 Hz", "1 kHz", "5 kHz",
+                    "10 kHz", "25 kHz", "100 kHz"]
+            currentIndex: Math.max(0, steps.indexOf(Prefs.panScrollStepHz))
+            onActivated: Prefs.panScrollStepHz = steps[currentIndex]
+            // No hover tooltip — the popup covered the choice list / the
+            // control and swallowed clicks.  "Panafall" label + values are
+            // self-explanatory; details are in the User Guide.
+        }
+        Button {
+            Layout.row: 1; Layout.column: 2
+            Layout.preferredWidth: 72
+            checkable: true
+            checked: Prefs.panRound100
+            // Label is self-explanatory (Exact ⇄ 100 Hz); no hover tooltip
+            // here — it popped over the button and swallowed the click.
+            text: Prefs.panRound100 ? qsTr("100 Hz") : qsTr("Exact")
+            onToggled: Prefs.panRound100 = checked
+        }
+
         // ── Row 1 (right group): Spectrum frame rate ──
         Label {
             Layout.row: 1; Layout.column: 4

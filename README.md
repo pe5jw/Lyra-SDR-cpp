@@ -22,7 +22,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi. No in-process bottleneck on the wire path.**
 
-## Features (v0.1.4)
+## Features (v0.1.5)
 
 A working receive-side SDR for the Hermes Lite 2 / 2+, native C++ end to
 end.  (Transmit is on the roadmap; the current build is RX-focused.)
@@ -50,6 +50,14 @@ end.  (Transmit is on the roadmap; the current build is RX-focused.)
 * **Band-plan overlay** — per-region (US / IARU R1 / R3) sub-band
   segments, band-edge warnings, digital + NCDXF beacon markers with
   click-to-tune and live beacon-station tooltips; out-of-band advisory.
+* **TCI server** — TCI v1.9/2.0 (Expert Electronics) over WebSocket:
+  drive frequency / mode / filter / volume from SDRLogger+, Log4OM,
+  N1MM, etc.; a header indicator shows connected-client count; optional
+  audio + IQ binary streaming and Thetis-style emulation/option toggles.
+* **DX-cluster spots** — TCI cluster spots painted on the panadapter
+  (country-tagged, CW-pitch-aware placement), with show/max/lifetime
+  controls, own-callsign highlight + color, a toast when you're spotted
+  (on/off + re-notify cooldown), and a Clear button.
 * **Solar / propagation panel** — HamQSL SFI/A/K + 10-band day/night
   heat-map, plus NCDXF beacon auto-follow.
 * **Weather alerts** — lightning / wind / severe-storm badges from

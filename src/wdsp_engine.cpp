@@ -6,6 +6,7 @@
 #include <QAudioDevice>
 #include <QAudioFormat>
 #include <QAudioSink>
+#include <QByteArray>
 #include <QDebug>
 #include <QIODevice>
 #include <QMediaDevices>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 #include <cstring>
 #include <mutex>
 
@@ -560,11 +562,16 @@ int WdspEngine::bandwidthForEdge(double edgeOffsetHz) const
 
 int WdspEngine::markerOffsetHz() const
 {
+    return cwMarkerOffsetForMode(mode_);
+}
+
+int WdspEngine::cwMarkerOffsetForMode(const QString &mode) const
+{
     // VFO − DDS: the carrier sits +pitch above the DDS in CWU, −pitch
     // below in CWL; identity for every other mode.
     const int p = static_cast<int>(cwPitchHz_ + 0.5);
-    if (mode_ == QLatin1String("CWU")) return  p;
-    if (mode_ == QLatin1String("CWL")) return -p;
+    if (mode == QLatin1String("CWU")) return  p;
+    if (mode == QLatin1String("CWL")) return -p;
     return 0;
 }
 
@@ -903,6 +910,16 @@ void WdspEngine::feedIq(const double *iq, int nframes)
             api.Spectrum0(1, kAnDisp, 0, 0, accum_.data());
         }
 
+        // TCI IQ stream tap: copy this block's interleaved I,Q as float32
+        // (queued signal → TCI server frames + sends).  Native inRate.
+        if (tciIqOn_.load(std::memory_order_relaxed)) {
+            const int n = 2 * cfg_.inSize;          // interleaved scalars
+            QByteArray b(n * int(sizeof(float)), Qt::Uninitialized);
+            float *d = reinterpret_cast<float *>(b.data());
+            for (int i = 0; i < n; ++i) d[i] = static_cast<float>(accum_[size_t(i)]);
+            emit tciIqBlock(b, cfg_.inRate);
+        }
+
         // Peak |sample| across L+R as the audio-level proxy (Step 3d
         // is a measurement step — no playback).  20*log10(peak) dBFS.
         double peak = 0.0;
@@ -915,6 +932,17 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         }
         const double db = (peak > 0.0) ? 20.0 * std::log10(peak) : -200.0;
         audioDbFs_.store(db, std::memory_order_relaxed);
+
+        // TCI audio stream tap: post-DSP demod audio as mono float32 (the
+        // demod is mono → L channel), pre operator-volume so the client
+        // gets the raw RX audio.  Native outRate (48 kHz).
+        if (tciAudioOn_.load(std::memory_order_relaxed)) {
+            QByteArray b(outSize_ * int(sizeof(float)), Qt::Uninitialized);
+            float *d = reinterpret_cast<float *>(b.data());
+            for (int f = 0; f < outSize_; ++f)
+                d[f] = static_cast<float>(outBuf_[size_t(2 * f)]);
+            emit tciAudioBlock(b, cfg_.outRate);
+        }
 
         // Step 3e/5: apply the operator volume/mute gain, convert to
         // int16 stereo, and route to the active output — the HL2 codec

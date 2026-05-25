@@ -44,6 +44,8 @@ not programmers — if you can click a menu, you can use this.
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
+- [Settings → Network (TCI)](#settings--network-tci)
+  - [DX-cluster spots](#dx-cluster-spots)
 - [Settings → Visuals](#settings--visuals)
   - [Trace color](#trace-color)
   - [Spectrum fill](#spectrum-fill)
@@ -166,6 +168,14 @@ The strip across the top, between the menu bar and the panels:
   it. On Start, Lyra connects to your saved radio (or scans and opens the
   first one found).
 - **Connection status** — "Disconnected" / "Connected to …".
+- **● TCI** — the TCI-server indicator, just after the connection status.
+  Green **● TCI: N** when one or more programs (logger, cluster, etc.) are
+  connected, showing the client count; amber **● TCI** when the server is
+  enabled but idle. Hidden when TCI is off. See
+  [Settings → Network (TCI)](#settings--network-tci).
+- **★ Spotted!** — appears just before the clocks when *your own callsign*
+  is spotted on the DX cluster (if the toast/badge option is on). See
+  [DX-cluster spots](#dx-cluster-spots).
 - **⬆ vX.Y.Z** (only when present) — an update is available; click it to
   open the release page. See [Updates](#updates).
 - **Clocks** — a **local** clock (amber) and a **UTC / Zulu** clock (cyan,
@@ -223,9 +233,14 @@ glowing look that takes advantage of your graphics card.
 
 **Tuning on the panadapter:**
 
-- **Click** anywhere to tune RX1 there.
+- **Click** anywhere to tune RX1 there. Where it lands depends on the
+  **Exact / 100 Hz** setting and the **Panafall step** on the
+  [Display panel](#display-panel): in **Exact** the click snaps to the
+  Panafall-step grid (1 Hz = truly exact), in **100 Hz** it rounds to the
+  nearest 100 Hz.
 - **Click + drag** left/right to pan across the band.
-- **Mouse wheel** steps the frequency (by the Tuning panel's Step size).
+- **Mouse wheel** steps the frequency by the **Panafall step** (set on the
+  Display panel). **Ctrl + wheel** zooms instead.
 - A small **frequency readout** follows your cursor (toggle in
   Settings → Visuals).
 
@@ -253,7 +268,9 @@ receive frequency. **Zoom** in/out from the [Display panel](#display-panel).
 
 **Overlays you can turn on:** [peak markers](#peak-markers) (held signal
 peaks) and a [noise-floor line](#noise-floor-line) — both configured in
-Settings → Visuals, with quick controls on the Display panel.
+Settings → Visuals, with quick controls on the Display panel; the
+[EiBi shortwave schedule](#shortwave-broadcasters-eibi); and
+[DX-cluster spots](#dx-cluster-spots) fed in over TCI.
 
 ---
 
@@ -396,6 +413,20 @@ is laid out in old Lyra's three-row arrangement:
   (**1× / 2× / 4× / 8× / 16×**) plus a fine slider and a live "N.Nx"
   readout. Zooming in narrows the displayed span so you can pull a single
   signal apart.
+- **Panafall** — the step the mouse wheel tunes by when you scroll over
+  the panadapter/waterfall (**1 Hz … 100 kHz**). This is your coarse
+  band-skim step, separate from the fine VFO step on the Tuning panel.
+- **Exact / 100 Hz** — how a panadapter **click/drag/wheel** tune lands:
+  - **Exact** — go to where you clicked, snapped to the **Panafall step**
+    above. With Panafall = 1 Hz that's truly exact; set it to 10/50 Hz
+    (or higher) and clicks snap to that grid. The RX1 readout shows the
+    full resolved frequency.
+  - **100 Hz** — quantize every click/drag/wheel tune to the nearest
+    100 Hz, regardless of the Panafall step.
+
+  (At low zoom the panadapter is pixel-limited — each pixel can be tens
+  of Hz wide — so to actually land on a 1 Hz boundary, zoom in or use the
+  Tuning panel's fine step.)
 - **Spec** — spectrum frame rate (how many times per second the panadapter
   redraws).
 - **WF** — waterfall scroll rate (history rows per second).
@@ -691,6 +722,65 @@ Where Lyra sends received audio:
 
 Pick your output device here; everyday **Mute** and **Vol** stay on the
 [Audio panel](#audio-panel).
+
+---
+
+## Settings → Network (TCI)
+
+**TCI** (Transceiver Control Interface, the Expert Electronics protocol)
+lets logging, cluster, and digital-mode programs drive Lyra over your
+local network — set frequency, mode, and filter; read your current state;
+and pull DX-cluster spots onto the panadapter. SDRLogger+, Log4OM, N1MM,
+WSJT-X and others speak it.
+
+Lyra runs a TCI **server**; the other program connects to it as a client.
+
+- **Bind address** — which network interface to listen on. Leave blank /
+  `0.0.0.0` to accept connections from any interface (e.g. another PC on
+  your LAN); use `127.0.0.1` to allow only programs on this same PC.
+- **Port** — the TCI listening port (default **50001**, the Expert
+  default). Match this in your logger's TCI settings.
+- **Rate limit** — minimum gap between repeated broadcasts of the same
+  value, to avoid flooding a client during fast tuning.
+- **Send full state to clients on connect** — push the current
+  frequency/mode/filter the moment a client connects, so it starts in
+  sync.
+- **Add "CW" to the modulations list (CWL/CWU alias)** — some clients
+  only understand a bare `CW`; enable this so they can select it.
+- **Emulate ExpertSDR3 / Emulate SunSDR2 PRO** — report an Expert
+  protocol/device name. Enable these only if a client refuses to talk to
+  Lyra unless it sees a SunSDR/ExpertSDR rig.
+- **TCI server running** — the master on/off. When on, the header shows
+  the **● TCI** indicator (green with a client count, amber when idle).
+
+**Audio / IQ streaming** is automatic: if a connected client asks for an
+audio or IQ stream, Lyra sends it the receiver audio (or raw I/Q) as TCI
+binary frames — no extra toggle needed.
+
+> RX2 over TCI is deferred until Lyra has a second receiver. Today the
+> server advertises a single channel.
+
+### DX-cluster spots
+
+When a TCI client (a logger wired to a DX cluster, RBN, or Skimmer) sends
+spots, Lyra paints them right on the panadapter at each spotted frequency
+— callsign-tagged, with the spotter's **country** abbreviation. CW spots
+are placed allowing for your **CW pitch** so they sit on the actual signal,
+not zero-beat. **Click a spot** to jump there. Controls live in the same
+**Settings → Network** tab:
+
+- **Show spots on the panadapter** — master on/off for the overlay.
+- **Max spots** — cap how many are drawn at once.
+- **Spot lifetime** — how long (in **minutes**) a spot stays before it
+  ages out.
+- **Highlight my callsign when spotted** + **Highlight colour** — draw
+  *your* spots in a color you pick (default pink/magenta) so they stand out.
+- **Pop up a notification when I'm spotted** — show a toast (and the
+  header **★ Spotted!** badge) when your own callsign is spotted.
+- **Re-notify after** — how long to wait before notifying again about
+  your callsign, so you're not spammed (set to *every time* to disable the
+  cooldown).
+- **Clear spots now** — wipe the current spot list.
 
 ---
 

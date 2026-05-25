@@ -11,6 +11,9 @@
 #include "time_stations.h"
 #include "memorystore.h"
 #include "eibistore.h"
+#include "spotstore.h"
+#include "tci_server.h"
+#include "wdsp_engine.h"
 #include "help.h"
 #include "helpdialog.h"
 #include "logdialog.h"
@@ -171,6 +174,51 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // EiBi shortwave-broadcaster overlay (Settings → Bands → SW Database).
     eibi_ = new EibiStore(prefs_, bands_, this);
 
+    // DX-cluster spots (pushed over TCI; drawn on the panadapter).
+    spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
+                           qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
+    // Toast when the operator's own callsign gets spotted (opt-in, with a
+    // cooldown set in Settings → Network).  Tray balloon + status line.
+    connect(spots_, &SpotStore::ownCallSpotted, this,
+            [this](const QString &call, const QString &mode, qint64 hz,
+                   const QString &text) {
+        const QString mhz = QString::number(hz / 1.0e6, 'f', 3);
+        const QString body = tr("%1 spotted on %2 MHz %3%4")
+                                 .arg(call, mhz, mode,
+                                      text.isEmpty() ? QString()
+                                                     : QStringLiteral(" — ") + text);
+        if (!tray_) { tray_ = new QSystemTrayIcon(windowIcon(), this); tray_->show(); }
+        tray_->showMessage(tr("You've been spotted!"), body,
+                           QSystemTrayIcon::Information, 8000);
+        if (statusBus_) statusBus_->show(tr("★ ") + body, 8000);
+        // Light the header badge (before the clocks) for a couple of minutes.
+        if (spottedBadge_) {
+            spottedBadge_->setText(tr("★ Spotted!"));
+            spottedBadge_->setStyleSheet(
+                QStringLiteral("QLabel{color:%1;font-weight:bold;}")
+                    .arg(spots_ ? spots_->highlightColor()
+                                : QStringLiteral("#ff4081")));
+            spottedBadge_->setToolTip(body);
+            if (spottedClearTimer_) spottedClearTimer_->start();
+        }
+    });
+
+    // TCI server — lets loggers/cluster apps drive + read Lyra over a
+    // WebSocket (Settings → Network).  START/STOP from a client route
+    // through onStartStop, guarded so they only act when state differs.
+    tci_ = new TciServer(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
+                         qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
+                         spots_, this);
+    connect(tci_, &TciServer::startRequested, this, [this]() {
+        auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+        if (st && !st->isRunning()) onStartStop();
+    });
+    connect(tci_, &TciServer::stopRequested, this, [this]() {
+        auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+        if (st && st->isRunning()) onStartStop();
+    });
+    if (tci_->enabled()) tci_->start();
+
     // Solar / HF-propagation service — fetches HamQSL, derives per-band
     // ratings for the operator's day/night.  Drives the PROP dock.  It
     // re-arms itself on a Prefs location change internally.
@@ -264,6 +312,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Memory"), memory_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Eibi"), eibi_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Spots"), spots_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -539,7 +589,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, this);
+            wx_, memory_, eibi_, tci_, spots_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
@@ -589,12 +639,43 @@ void MainWindow::buildToolbar() {
     connStatus_->setContentsMargins(8, 0, 8, 0);
     tb->addWidget(connStatus_);
 
+    // TCI client indicator — sits right after the radio connection status.
+    // Hidden when the TCI server is off; amber dot = listening (no clients);
+    // green dot + count = clients connected (loggers / cluster apps).
+    tciStatus_ = new QLabel(tb);
+    tciStatus_->setContentsMargins(4, 0, 8, 0);
+    tb->addWidget(tciStatus_);
+    if (tci_) {
+        connect(tci_, &TciServer::runningChanged,
+                this, &MainWindow::updateTciStatus);
+        connect(tci_, &TciServer::clientCountChanged,
+                this, [this](int) { updateTciStatus(); });
+    }
+    updateTciStatus();
+
     // ---- Local + UTC clocks (old-Lyra header layout) ----
     // A flexible spacer pushes the clocks toward the right of the strip,
     // matching old Lyra's "menu/notifications … [Local] [UTC]" placement.
     auto *clockSpacer = new QWidget(tb);
     clockSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     tb->addWidget(clockSpacer);
+
+    // "You've been spotted" header badge — just BEFORE the clocks, with a
+    // fixed width + right alignment so it never nudges the clocks (even if
+    // a spot lands on the same tick the clocks update).  Cleared after a
+    // short while by spottedClearTimer_.
+    spottedBadge_ = new QLabel(tb);
+    spottedBadge_->setContentsMargins(8, 0, 10, 0);
+    spottedBadge_->setFixedWidth(120);
+    spottedBadge_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    tb->addWidget(spottedBadge_);
+    spottedClearTimer_ = new QTimer(this);
+    spottedClearTimer_->setSingleShot(true);
+    spottedClearTimer_->setInterval(120000);   // badge lingers ~2 min
+    connect(spottedClearTimer_, &QTimer::timeout, spottedBadge_, [this]() {
+        spottedBadge_->clear();
+        spottedBadge_->setToolTip(QString());
+    });
 
     clockLocal_ = new QLabel(QStringLiteral("--:--:--"), tb);
     clockLocal_->setContentsMargins(8, 0, 4, 0);
@@ -843,6 +924,26 @@ void MainWindow::updateConnState() {
         connStatus_->setText(running && st
                                  ? tr("Connected to %1").arg(st->targetIp())
                                  : tr("Disconnected"));
+    }
+}
+
+void MainWindow::updateTciStatus() {
+    if (!tciStatus_) return;
+    if (!tci_ || !tci_->running()) {
+        tciStatus_->clear();
+        tciStatus_->setVisible(false);
+        return;
+    }
+    const int n = tci_->clientCount();
+    tciStatus_->setVisible(true);
+    if (n > 0) {
+        tciStatus_->setText(tr("● TCI: %1").arg(n));
+        tciStatus_->setStyleSheet(QStringLiteral("color:#4caf50;font-weight:bold;"));
+        tciStatus_->setToolTip(tr("%n TCI client(s) connected", "", n));
+    } else {
+        tciStatus_->setText(tr("● TCI"));
+        tciStatus_->setStyleSheet(QStringLiteral("color:#f0c040;"));
+        tciStatus_->setToolTip(tr("TCI server listening — no clients connected"));
     }
 }
 

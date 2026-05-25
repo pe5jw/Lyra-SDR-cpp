@@ -44,6 +44,8 @@
 #include <QFileDialog>
 #include "memorystore.h"
 #include "eibistore.h"
+#include "tci_server.h"
+#include "spotstore.h"
 #include <QDesktopServices>
 #include <memory>
 #include <QVBoxLayout>
@@ -58,10 +60,11 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::ipc::HL2Discovery *discovery,
                                UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                                lyra::wx::WxService *wx, MemoryStore *memory,
-                               EibiStore *eibi, QWidget *parent)
+                               EibiStore *eibi, TciServer *tci,
+                               SpotStore *spots, QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
-      memory_(memory), eibi_(eibi) {
+      memory_(memory), eibi_(eibi), tci_(tci), spots_(spots) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
@@ -75,6 +78,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     }
     if (memory_ || eibi_) {
         tabs_->addTab(buildBandsTab(), tr("Bands"));
+    }
+    if (tci_) {
+        tabs_->addTab(buildNetworkTab(), tr("Network"));
     }
     if (wx_) {
         tabs_->addTab(buildWeatherTab(), tr("Weather"));
@@ -347,6 +353,195 @@ QWidget *SettingsDialog::buildBandsTab() {
     }
 
     outer->addWidget(sub);
+    return page;
+}
+
+QWidget *SettingsDialog::buildNetworkTab() {
+    auto *page = new QWidget(this);
+    auto *v = new QVBoxLayout(page);
+
+    auto *grp = new QGroupBox(tr("TCI server"), page);
+    auto *form = new QFormLayout(grp);
+
+    auto *host = new QLineEdit(tci_->bindHost(), grp);
+    host->setPlaceholderText(QStringLiteral("127.0.0.1"));
+    form->addRow(tr("Bind address:"), host);
+
+    auto *port = new QSpinBox(grp);
+    port->setRange(1, 65535);
+    port->setValue(tci_->port());
+    form->addRow(tr("Port:"), port);
+
+    auto *rate = new QSpinBox(grp);
+    rate->setRange(0, 1000);
+    rate->setSuffix(tr(" ms"));
+    rate->setValue(tci_->rateLimitMs());
+    rate->setToolTip(tr("Minimum interval between repeated broadcasts of the "
+                        "same parameter (0 = unlimited)."));
+    form->addRow(tr("Rate limit:"), rate);
+    connect(rate, QOverload<int>::of(&QSpinBox::valueChanged), tci_,
+            [this](int ms) { tci_->setRateLimitMs(ms); });
+
+    auto *initial = new QCheckBox(tr("Send full state to clients on connect"), grp);
+    initial->setChecked(tci_->sendInitialState());
+    connect(initial, &QCheckBox::toggled, tci_,
+            [this](bool on) { tci_->setSendInitialState(on); });
+    form->addRow(QString(), initial);
+
+    auto *cwlu = new QCheckBox(tr("Add “CW” to the modulations list (CWL/CWU alias)"), grp);
+    cwlu->setChecked(tci_->cwluBecomesCw());
+    connect(cwlu, &QCheckBox::toggled, tci_,
+            [this](bool on) { tci_->setCwluBecomesCw(on); });
+    form->addRow(QString(), cwlu);
+
+    auto *emuProto = new QCheckBox(tr("Emulate ExpertSDR3 (report protocol "
+                                      "name “ExpertSDR3”)"), grp);
+    emuProto->setChecked(tci_->emulateExpertSdr3());
+    emuProto->setToolTip(tr("Some clients only recognise ExpertSDR3 / SunSDR "
+                            "rigs. Enable these to masquerade as one."));
+    connect(emuProto, &QCheckBox::toggled, tci_,
+            [this](bool on) { tci_->setEmulateExpertSdr3(on); });
+    form->addRow(QString(), emuProto);
+
+    auto *emuDev = new QCheckBox(tr("Emulate SunSDR2 PRO (report device name "
+                                    "“SunSDR2PRO”)"), grp);
+    emuDev->setChecked(tci_->emulateSunSdr2());
+    connect(emuDev, &QCheckBox::toggled, tci_,
+            [this](bool on) { tci_->setEmulateSunSdr2(on); });
+    form->addRow(QString(), emuDev);
+
+    auto *enable = new QCheckBox(tr("TCI server running"), grp);
+    enable->setChecked(tci_->running());
+    form->addRow(QString(), enable);
+
+    auto *status = new QLabel(grp);
+    status->setWordWrap(true);
+    status->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+    auto refreshStatus = [this, status]() {
+        if (tci_->running())
+            status->setText(tr("Listening — %1 client(s) connected.")
+                                .arg(tci_->clientCount()));
+        else
+            status->setText(tr("Stopped."));
+    };
+    refreshStatus();
+    connect(tci_, &TciServer::runningChanged, status, refreshStatus);
+    connect(tci_, &TciServer::clientCountChanged, status, refreshStatus);
+
+    // Apply host/port live before (re)starting; editing them while running
+    // rebinds automatically inside TciServer.
+    connect(host, &QLineEdit::editingFinished, tci_,
+            [this, host]() { tci_->setBindHost(host->text().trimmed()); });
+    connect(port, QOverload<int>::of(&QSpinBox::valueChanged), tci_,
+            [this](int p) { tci_->setPort(p); });
+    connect(enable, &QCheckBox::toggled, tci_,
+            [this, host, port](bool on) {
+        if (on) {
+            tci_->setBindHost(host->text().trimmed());
+            tci_->setPort(port->value());
+        }
+        tci_->setEnabled(on);
+    });
+    connect(tci_, &TciServer::runningChanged, enable,
+            [this, enable]() {
+        QSignalBlocker b(enable);
+        enable->setChecked(tci_->running());
+    });
+
+    v->addWidget(grp);
+    v->addWidget(status);
+
+    // DX-cluster spot display options.
+    if (spots_) {
+        auto *sg = new QGroupBox(tr("DX-cluster spots"), page);
+        auto *sf = new QFormLayout(sg);
+
+        auto *showSpots = new QCheckBox(tr("Show spots on the panadapter"), sg);
+        showSpots->setChecked(spots_->showSpots());
+        connect(showSpots, &QCheckBox::toggled, spots_,
+                [this](bool on) { spots_->setShowSpots(on); });
+        sf->addRow(QString(), showSpots);
+
+        auto *maxSp = new QSpinBox(sg);
+        maxSp->setRange(1, 5000);
+        maxSp->setValue(spots_->maxSpots());
+        connect(maxSp, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int n) { spots_->setMaxSpots(n); });
+        sf->addRow(tr("Max spots:"), maxSp);
+
+        auto *life = new QSpinBox(sg);
+        life->setRange(0, 1440);                 // up to 24 h, in minutes
+        life->setSuffix(tr(" min"));
+        life->setSpecialValueText(tr("never expire"));
+        life->setValue(spots_->lifetimeSec() / 60);
+        connect(life, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int m) { spots_->setLifetimeSec(m * 60); });
+        sf->addRow(tr("Spot lifetime:"), life);
+
+        auto *hlOwn = new QCheckBox(tr("Highlight my callsign when spotted"), sg);
+        hlOwn->setChecked(spots_->highlightOwn());
+        connect(hlOwn, &QCheckBox::toggled, spots_,
+                [this](bool on) { spots_->setHighlightOwn(on); });
+        sf->addRow(QString(), hlOwn);
+
+        // Colour swatch button that opens a picker for the highlight colour.
+        auto *hlColor = new QPushButton(sg);
+        hlColor->setFixedWidth(64);
+        auto paintSwatch = [hlColor](const QString &hex) {
+            hlColor->setStyleSheet(
+                QStringLiteral("background:%1;border:1px solid #5a6573;").arg(hex));
+        };
+        paintSwatch(spots_->highlightColor());
+        connect(hlColor, &QPushButton::clicked, sg, [this, paintSwatch]() {
+            const QColor c = QColorDialog::getColor(
+                QColor(spots_->highlightColor()), this,
+                tr("My-callsign highlight colour"));
+            if (c.isValid()) {
+                const QString hex = c.name();
+                spots_->setHighlightColor(hex);
+                paintSwatch(hex);
+            }
+        });
+        sf->addRow(tr("Highlight colour:"), hlColor);
+
+        auto *notify = new QCheckBox(tr("Pop up a notification when I'm spotted"), sg);
+        notify->setChecked(spots_->notifyOwn());
+        connect(notify, &QCheckBox::toggled, spots_,
+                [this](bool on) { spots_->setNotifyOwn(on); });
+        sf->addRow(QString(), notify);
+
+        auto *cooldown = new QSpinBox(sg);
+        cooldown->setRange(0, 240);
+        cooldown->setSuffix(tr(" min"));
+        cooldown->setSpecialValueText(tr("every time"));
+        cooldown->setValue(spots_->notifyCooldownMin());
+        cooldown->setToolTip(tr("Don't notify again about your callsign until "
+                                "this long has passed (avoids cluster spam)."));
+        connect(cooldown, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int m) { spots_->setNotifyCooldownMin(m); });
+        sf->addRow(tr("Re-notify after:"), cooldown);
+
+        auto *clearSpots = new QPushButton(tr("Clear spots now"), sg);
+        connect(clearSpots, &QPushButton::clicked, spots_,
+                [this]() { spots_->clearAll(); });
+        sf->addRow(QString(), clearSpots);
+
+        v->addWidget(sg);
+    }
+
+    auto *hint = new QLabel(
+        tr("Lets logging and cluster software (SDRLogger+, Log4OM, WSJT-X, …) "
+           "control and read Lyra over a WebSocket — frequency, mode, "
+           "start/stop, and DX-cluster spots. The de-facto default port is "
+           "<b>50001</b>; bind to 127.0.0.1 for same-PC apps, or 0.0.0.0 to "
+           "allow other machines on your network. Lyra is receive-only, so "
+           "transmit commands are acknowledged inactive.<br><br>"
+           "Implements the public TCI v1.9 / v2.0 specification "
+           "(© EESDR Expert Electronics)."), page);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+    v->addWidget(hint);
+    v->addStretch(1);
     return page;
 }
 

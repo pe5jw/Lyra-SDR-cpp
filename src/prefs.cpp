@@ -64,6 +64,8 @@ constexpr auto kBpBeacons  = "band_plan/beacons";
 constexpr auto kBpEdges    = "band_plan/edges";
 constexpr auto kBpColorPfx = "band_plan/color_";   // + <kind>
 constexpr auto kCbBand     = "bands/cb_enabled";
+constexpr auto kPanStep    = "panadapter/scroll_step_hz";
+constexpr auto kPanRound   = "panadapter/round_100hz";
 constexpr auto kDebugLog   = "debug/logging";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
@@ -155,6 +157,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
             bandPlanColors_.insert(it.key(), v.toString());
     }
     cbBandEnabled_ = s.value(kCbBand, false).toBool();
+    panScrollStepHz_ = s.value(kPanStep, 1000).toInt();
+    panRound100_ = s.value(kPanRound, false).toBool();
     debugLogging_ = s.value(kDebugLog, false).toBool();
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
@@ -633,6 +637,22 @@ void Prefs::setCbBandEnabled(bool v) {
         cbBandEnabled_ = v;
         QSettings().setValue(kCbBand, v);
         emit cbBandEnabledChanged();
+    }
+}
+
+void Prefs::setPanScrollStepHz(int hz) {
+    if (hz > 0 && hz != panScrollStepHz_) {
+        panScrollStepHz_ = hz;
+        QSettings().setValue(kPanStep, hz);
+        emit panScrollStepHzChanged();
+    }
+}
+
+void Prefs::setPanRound100(bool v) {
+    if (v != panRound100_) {
+        panRound100_ = v;
+        QSettings().setValue(kPanRound, v);
+        emit panRound100Changed();
     }
 }
 

@@ -111,7 +111,17 @@ void BandMemory::applyBand(const QString &band) {
         return;
     }
     applying_ = true;                     // don't re-save these as user edits
-    prefs_->setMode(s.value(p + QStringLiteral("mode")).toString());
+    QString mode = s.value(p + QStringLiteral("mode")).toString();
+    // SSB sideband always follows the band's convention (from the band
+    // table — so 160/80/40 = LSB, 60/20…6 = USB) even if a different
+    // sideband was last stored.  The operator can still flip it manually
+    // while on the band; it just re-defaults per band on the next entry.
+    if (mode == QLatin1String("USB") || mode == QLatin1String("LSB")) {
+        const QString bandSsb = defaultModeFor(band);
+        if (bandSsb == QLatin1String("USB") || bandSsb == QLatin1String("LSB"))
+            mode = bandSsb;
+    }
+    prefs_->setMode(mode);
     prefs_->setDbMin(s.value(p + QStringLiteral("dbMin")).toDouble());
     prefs_->setDbMax(s.value(p + QStringLiteral("dbMax")).toDouble());
     prefs_->setWaterfallDbMin(s.value(p + QStringLiteral("wfMin")).toDouble());

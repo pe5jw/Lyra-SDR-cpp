@@ -44,6 +44,8 @@ class GenSlots;
 class TimeStations;
 class MemoryStore;
 class EibiStore;
+class SpotStore;
+class TciServer;
 class UsbBcd;
 class UpdateChecker;
 class WxIndicator;
@@ -99,6 +101,7 @@ private:
     // the first found) when stopped; close the stream when running.
     void onStartStop();
     void updateConnState();   // reflect stream running state into the UI
+    void updateTciStatus();   // header TCI connected/client-count indicator
     void tickClocks();        // 1 Hz: refresh the header local + UTC clocks
     void showClockMenu(const QPoint &global);   // right-click clocks → drift check
     // GitHub update notification.  manual=true (Help → Check for Updates)
@@ -143,6 +146,9 @@ private:
     QAction                    *lockAction_ = nullptr;
     QAction                    *startStopAction_ = nullptr;   // header Start/Stop
     QLabel                     *connStatus_ = nullptr;        // header conn status
+    QLabel                     *tciStatus_  = nullptr;        // header TCI client indicator
+    QLabel                     *spottedBadge_ = nullptr;      // "you've been spotted" header badge
+    QTimer                     *spottedClearTimer_ = nullptr; // auto-clears the badge
     QLabel                     *clockLocal_ = nullptr;        // header local clock
     QLabel                     *clockUtc_   = nullptr;        // header UTC/Zulu clock
     QTimer                     *clockTimer_ = nullptr;        // 1 Hz clock tick
@@ -170,6 +176,8 @@ private:
     TimeStations               *time_ = nullptr;      // HF time-station TIME cycle
     MemoryStore                *memory_ = nullptr;    // frequency memory bank
     EibiStore                  *eibi_  = nullptr;     // EiBi shortwave overlay
+    SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
+    TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };
