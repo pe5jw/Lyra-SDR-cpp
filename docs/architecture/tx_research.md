@@ -41,7 +41,11 @@ generic loop — TX register details below are the HL2 path.
 
 ### 1.2 C&C registers carrying TX state (`WriteMainLoop_HL2`)
 HL2 rotates `out_control_idx` 0..18 (`:946-1184`, wraps at 18). Addressed by
-`C0 |= addr`:
+`C0 |= addr` — the values below are the **shifted C0 OR-masks that go on the wire**;
+the actual register address is `C0>>1` (don't double-shift). Also note **case 12
+(`0x16`)** forces `adc[1]` (C1) step-att to `0x1F` while XmitBit (`:1107-1112`;
+adc[2]/C2 stays `rx_step_attn`) — moot on HL2's single ADC, but a multi-ADC ANAN
+port must honour it.
 
 | TX state | C0 addr | bytes | notes |
 |---|---|---|---|
@@ -55,13 +59,16 @@ HL2 rotates `out_control_idx` 0..18 (`:946-1184`, wraps at 18). Addressed by
 
 HL2 also preempts the rotation with **I2C transactions** when its I2C queue is
 non-empty (`C0 |= (0x3c<<1) | (ctrl_request<<7)`, `:903-943`) — absent from the
-generic loop. A TX-bit change forces an immediate DDC0-freq C&C re-send
-(`:605-610`).
+generic loop. (A TX-bit change forces an immediate DDC0-freq C&C re-send at
+`:605-610`, **but that path is gated on `nddc==2`** — it does NOT fire on HL2
+(nddc=4); HL2 relies on the persistent `tx[0].frequency` regs.)
 
 > **nddc=4 on HL2.** DDC count encoded `C4 |= (nddc-1)<<3` (`:968`) and in the
-> start/force frame (`:118`). Several DDC freq slots are hardwired to
-> `tx[0].frequency` (cases 6/7, `:1036`/`:1046`) — TX freq is mirrored to the
-> feedback DDCs (matters for PureSignal, §5).
+> start/force frame (`:118`). The DDC2/DDC3 freq slots are hardwired to
+> `tx[0].frequency` (cases 5/6, `:1023`/`:1036`; case 7/`:1046` = DDC4/RX5) — the **non-PS / Hermes-II
+> mirror**, NOT the HL2 PureSignal feedback path. **HL2 PS feedback is DDC0(+DDC1)
+> via the `cntrl1=4` ADC-mux** (see §5.1/§5.2), a different mechanism — do not
+> conflate them.
 
 ### 1.3 EP6 radio→host TX telemetry (`MetisReadThreadMainLoop_HL2`, `:422-586`)
 - Control bytes `ControlBytesIn[0..4] = bptr[3..7]` (`:475-476`). HL2 first checks
@@ -71,16 +78,25 @@ generic loop. A TX-bit change forces an immediate DDC0-freq C&C re-send
 - **Status rotation keyed on `C0 & 0xF8`**, each value pairs two bytes BE:
   - `0x00`: ADC0 overload = C1 bit0 (`:501-503`)
   - `0x08`: `exciter_power`=(C1,C2) (AIN5/drive); `fwd_power`=(C3,C4) (AIN1) (`:505-509`)
-  - `0x10`: `rev_power`=(C1,C2) (AIN2); `user_adc0`=(C3,C4) (AIN3) (`:510-514`)
-  - `0x18`: `user_adc1`=(C1,C2) (AIN4); `supply_volts`=(C3,C4) (AIN6) (`:515-518`)
+  - `0x10`: `rev_power`=(C1,C2) (AIN2); `user_adc0`=(C3,C4) (**AIN3 = PA Volts/VDD**) (`:510-514`)
+  - `0x18`: `user_adc1`=(C1,C2) (**AIN4 = PA Amps/current**); `supply_volts`=(C3,C4) (AIN6) (`:515-518`)
   - `0x20`: ADC0/1/2 overload bits (`:519-523`)
-- **HL2 conversions (console.cs):** PA **current** from `getUserADC0()` (AIN3, slot
-  0x10 C3:C4) — `computeHermesLitePAAmps`, `:25552-25565`; HL2 amps =
-  `((3.26*(raw/4096))/50)/0.04 / (1000/1270)` (`:25127-25130`). Supply volts =
-  `(raw/4095)*5*(23/1.1)` (`:25086-25089`). Temp from `getExciterPower()` (AIN5,
-  slot 0x08 C1:C2) = `(3.26*(raw/4096)-0.5)/0.01` °C (`:25079`). Fwd/Rev power use
-  peak-decayed globals with HL2 case `bridge_volt=1.5, refvoltage=3.3, offset=6`
-  (`:25195-25199`, `:25269-25273`); W = volts²/bridge_volt.
+- **HL2 conversions (console.cs):** Per the gateware byte labels, **PA current =
+  `user_adc1` (slot `0x18` C1:C2, AIN4); PA voltage/VDD = `user_adc0` (slot `0x10`
+  C3:C4, AIN3).** ⚠ Thetis's `computeHermesLitePAAmps` historically reads
+  `getUserADC0()` with an amps formula (`:25552-25565`, amps =
+  `((3.26*(raw/4096))/50)/0.04 / (1000/1270)`, `:25127-25130`) — but that AINx→slot
+  map is **gateware-rev-specific and has been seen WRONG on real HL2+ units** (PA
+  current actually arrives in `user_adc1`/0x18 C1:C2). **Decode PA current from
+  `user_adc1` (0x18 C1:C2)**, PA volts from `user_adc0` (0x10 C3:C4), and **bench-
+  verify by capture against a known reference** (a calibrated unit reads ≈1.8 A at
+  full tune into a dummy; ≈0.2 A idle bias). Supply volts = `(raw/4095)*5*(23/1.1)`
+  (`:25086-25089`). Temp from AIN5 (slot 0x08 C1:C2) = `(3.26*(raw/4096)-0.5)/0.01`
+  °C (`:25079`). Fwd/Rev power use peak-decayed globals, HL2 case `bridge_volt=1.5,
+  refvoltage=3.3, offset=6`; W = volts²/bridge_volt.
+  > ⚠ PA current is the load-bearing instrument for the PureSignal auto-attenuator
+  > AND the host-death kill-test. Get its slot right (0x18 C1:C2) and bench-calibrate
+  > before trusting it.
   > ⚠ These AINx→slot mappings can be **gateware-rev-specific** on HL2+. Treat
   > as a starting point; calibrate against a known reference on the operator's unit.
 
@@ -206,8 +222,24 @@ Samples flow `inbuff`(in_rate) → `midbuff`(dsp_rate, in-place) → `outbuff`(o
 | 31 | output resampler | `rsmpout` | iff dsp≠out |
 | 32 | output meter (PWR) | `outmeter` | at out_rate |
 
-**SSB bring-up needs only the always-on stages: panel(mic gain) → bp0 → ALC →
-out.** Leveler is a quality add. Everything else is later sub-phases.
+**SSB bring-up runs only the always-on stages: panel(mic gain) → bp0 → ALC →
+out** (leveler is a quality add). **BUT the always-on stages only produce
+output — they do NOT select the sideband.** bp0's passband is configured solely
+by `SetTXAMode(ch,mode)` **and** `SetTXABandpassFreqs(ch, signed_low, signed_high)`
+(both call `TXASetupBPFilters`). `create_txa` defaults to **LSB at f_low/f_high =
+−5000/−100** (`TXA.c:33-35`); a TX channel that opens + feeds audio *without*
+calling those two setters transmits **LSB regardless of operator mode** (USB comes
+out reversed/dead). ⇒ **`SetTXAMode` + `SetTXABandpassFreqs` are MANDATORY at init
+and on every mode change** — they are the bp0 configurators, not optional. (Do
+**not** call `SetTXABandpassRun` for sideband — that toggles bp1, the COMP-only
+stage; forcing it cascades a stale filter = dead-air/reversed-sideband trap.)
+
+**Mic input convention (mandatory):** the WDSP panel defaults `inselect=2, copy=0`
+→ `xpanel` computes `I = in[2i+0]·1, Q = in[2i+1]·0`. So **`fexchange0`'s `in`
+buffer is interleaved complex with the mic samples in the REAL/I component and Q =
+0** — feeding mic into Q (or a real mono stream) yields silence. (This is the
+opposite-sense to the RX `np.conjugate` gotcha — do not reflexively carry the RX
+sideband lesson into TX; the TX sign rule in §3.4 is literal/direct.)
 
 ### 3.2 SetTXA* API (signatures matter — int ms vs double dB)
 - **Mode**: `SetTXAMode(ch, mode)` `TXA.c:752` (enum `TXA.h:31`: LSB=0 USB=1 DSB=2
@@ -341,8 +373,17 @@ PS needs two synced I/Q streams during TX: **TX reference** (what we send) and
 ### 5.2 Protocol bits
 - `SetPureSignal(bit)` → `puresignal_run` (`netInterface.c:836-844`), sent
   high-priority. **`puresignal_run` OR'd into C2 bit 6** (`networkproto1.c:768`/`:832`).
-- **Duplex bit mandatory** (`C4 |= 0x04`), `nddc` field correct. When PS+TX the
-  feedback DDC is tuned to the **TX frequency** (`:656-657`/`:671-672`).
+- The **duplex bit (`C4 |= 0x04`) is set on EVERY HL2 main-loop frame-0 regardless
+  of PS** (it's required for post-priming RX freq updates) — do NOT gate it on PS;
+  PS adds *only* the C2-bit-6 `puresignal_run`. `nddc` field correct (=4 on HL2).
+- **HL2 feedback-DDC mechanism (correction):** on HL2 PS+TX the feedback is **DDC0
+  (+ DDC1 sync-paired)** with **`cntrl1=4` switching DDC0's ADC INPUT from the
+  antenna to the PA coupler** (§5.1) — the DDC0 *frequency register* is set by the
+  normal RX1/TX-freq path, NOT by a "spare DDC tuned to TX freq". (The lines that
+  hardwire DDC2/DDC3 to `tx[0].frequency`, `:656-657`/`:671-672`, are the `nddc==2`
+  Hermes-II / non-PS mirror path — NOT the HL2 feedback path.) The consumer must
+  resolve the feedback host-channels from the **ADC-mux + enabled-DDC set**, not
+  from a TX-freq-tuned spare DDC — see §5.5 (the locked abstraction).
 
 ### 5.3 WDSP PS math modules
 - **`lmath.c::xbuilder`** (`:411`) — constrained cubic-spline least-squares fitter
@@ -365,9 +406,10 @@ PS needs two synced I/Q streams during TX: **TX reference** (what we send) and
 - C# command FSM `timer1code` (`PSForm.cs:555`): OFF / auto-cal / single-cal /
   stay-on / restore, driving `SetPSControl(reset,mancal,automode,turnon)`. ~10 ms loop.
 - Auto-attenuator `timer2code` (`PSForm.cs:728`): `Monitor→SetNewValues→RestoreOperation`.
-  `FeedbackLevel = 256*hw_scale/rx_scale`. Recalibrate `>181 || (≤128 && att>−28[HL2])`;
-  step `20·log10(level/152.293)` clamped **±10 (HL2)** vs ±100 (ANAN); HL2 att may go
-  negative to −28.
+  `FeedbackLevel` (the `binfo[]` feedback-magnitude index, *provisional* `≈256·hw_scale/
+  rx_scale` — verify exact source at code time). Recalibrate `>181 || (≤128 &&
+  att>−28[HL2])`; step `20·log10(level/152.293)` clamped **±10 (HL2)** vs ±100 (ANAN);
+  HL2 att may go negative to −28.
 
 ### 5.5 BUILD CHECKLIST (what Lyra-cpp must add for PS — v0.3)
 - [ ] Port WDSP `lmath.c` (xbuilder) → `calcc.c` (pscc + calc + 4 worker threads) →
@@ -378,8 +420,17 @@ PS needs two synced I/Q streams during TX: **TX reference** (what we send) and
 - [ ] ~10 ms host control loop = command FSM (every tick) + auto-att FSM (every 10th).
 - [ ] **TX I/Q reference tap** (the `sip1`/iqc point) + the `xiqc` corrector placed in
       the TX chain before the IQ→radio hand-off (stage 29 above).
-- [ ] **DDC routing**: enable DDC0+DDC1 sync-locked, `cntrl1=4`, feedback DDC at
-      **rx1_rate**, tuned to TX freq; `puresignal_run`→C2 bit6; duplex bit; nddc.
+- [ ] **DDC routing**: enable DDC0+DDC1 sync-locked, **`cntrl1=4` (ADC-mux points
+      DDC0's input at the PA coupler — NOT a spare DDC tuned to TX freq)**, feedback at
+      **rx1_rate**; `puresignal_run`→C2 bit6 (duplex bit is already always-on; nddc=4).
+- [ ] 🔒 **LOCK NOW IN TX-0 (the one decision that keeps PS/ANAN out of a corner):**
+      express the feedback consumer as a **data-driven map**
+      `(model, mox, ps_armed) → { enabled-DDC set, cntrl1/ADC-mux value, feedback rate,
+      host-channel→pscc-input mapping }`, keyed on the **ADC-mux + enabled-DDC set**.
+      `pscc(tx_ref, rx_fb)` reads its host channels FROM that table. Then HL2 (DDC0+1,
+      cntrl1=4, rx1_rate) and ANAN-P2 (RX5, cntrl1=0x08, ps_rate, nddc=5) are two ROWS,
+      not a rewrite. Building TX-0's EP6 parser / DDC-freq writer around a "DDC2/DDC3
+      carry TX-freq feedback" assumption is the trap — do NOT.
 - [ ] **Coefficient persistence**: save/restore `cm/cc/cs` (`ints×4` doubles, `%.17e`).
 - [ ] **Auto-attenuator** sharing the §2.1 step-attenuator actuator (one writer),
       HL2 thresholds/bounds.
@@ -395,6 +446,7 @@ PS needs two synced I/Q streams during TX: **TX reference** (what we send) and
 | ADC mux | `cntrl1=4`, 1 ADC, **needs mod** | `(…&0xf3)\|0x08`, 2nd ADC, no mod |
 | DDC count / feedback | nddc=4, DDC0+DDC1 | nddc=5, RX5 |
 | Auto-att bounds | neg to −28, ±10 clamp | floor 0, ±100/31.1 |
+| `cfir` compensating FIR (TXA stage 30) | off / unused | **on (P2-only)** — add `cfir_run` to the model→capability table |
 | Frame builder | legacy P1 rotation | fixed-offset P2 |
 
 ---
