@@ -87,6 +87,12 @@ class WdspEngine : public QObject {
     Q_PROPERTY(double volume      READ volume      NOTIFY volumeChanged)
     Q_PROPERTY(double volumeDb    READ volumeDb    NOTIFY volumeChanged)
     Q_PROPERTY(bool   muted       READ muted       NOTIFY mutedChanged)
+    // AF makeup gain (WDSP RXA panel gain), 0..+40 dB — a pre-volume
+    // output trim so you can set a comfortable WDSP level and ride Volume
+    // on top.  Default 0 dB (unity).  Stereo BALANCE (−1 left … +1 right)
+    // pans the mono demod across L/R in the output stage (Lyra-side).
+    Q_PROPERTY(double afGainDb    READ afGainDb    NOTIFY afGainChanged)
+    Q_PROPERTY(double balance     READ balance     NOTIFY balanceChanged)
     Q_PROPERTY(int    audioDeviceIndex READ audioDeviceIndex NOTIFY audioDeviceChanged)
     // Panadapter frequency span (Hz) = the IQ sample rate DIVIDED BY the
     // zoom factor — the displayed bandwidth, centred on the RX1 DDC freq.
@@ -232,6 +238,8 @@ public:
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
+    double afGainDb() const { return afGainDb_; }
+    double balance()  const { return balance_.load(std::memory_order_relaxed); }
     // Output-list index: 0 = HL2 audio jack, 1..N = PC devices.
     int    audioDeviceIndex() const {
         return hl2Out_ ? 0 : deviceIndex_ + 1;
@@ -270,6 +278,8 @@ public:
     // setAudioOutputDevice: switch output device live (restarts sink).
     Q_INVOKABLE void setVolume(double v);
     Q_INVOKABLE void setMuted(bool m);
+    Q_INVOKABLE void setAfGainDb(double db);   // 0..+40 dB makeup (WDSP panel gain)
+    Q_INVOKABLE void setBalance(double b);     // -1 (L) .. +1 (R)
 
     // RX DSP operator controls.  Getters are cheap reads of the
     // persisted state; setters store, persist (QSettings), push to WDSP
@@ -454,6 +464,8 @@ signals:
     void levelsChanged();
     void volumeChanged();
     void mutedChanged();
+    void afGainChanged();
+    void balanceChanged();
     void audioDeviceChanged();
     void zoomChanged();
     void spanChanged();   // displayed span changed (rate OR zoom)
@@ -565,6 +577,11 @@ private:
     // restored from QSettings in the ctor (default UNMUTED).
     std::atomic<double> volume_{0.65};
     std::atomic<bool>   muted_{false};
+    // AF makeup gain (dB, main-thread; pushed to WDSP SetRXAPanelGain1 as
+    // a linear gain).  Balance −1..+1 is applied Lyra-side in feedIq, so
+    // it's an atomic the RX worker reads.
+    double              afGainDb_ = 0.0;
+    std::atomic<double> balance_{0.0};
     // Panadapter zoom (1.0 = full span).  Written from the UI/main
     // thread; read by spanHz() (UI) + copySpectrum() (crop).
     std::atomic<double> zoom_{1.0};

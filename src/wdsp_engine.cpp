@@ -293,6 +293,11 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     volume_.store(std::clamp(
         s.value(QStringLiteral("audio/volume"), 0.65).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
+    afGainDb_ = std::clamp(
+        s.value(QStringLiteral("audio/afGainDb"), 0.0).toDouble(), 0.0, 40.0);
+    balance_.store(std::clamp(
+        s.value(QStringLiteral("audio/balance"), 0.0).toDouble(), -1.0, 1.0),
+        std::memory_order_relaxed);
     const QString savedDev =
         s.value(QStringLiteral("audio/deviceName")).toString();
     if (!savedDev.isEmpty()) {
@@ -433,9 +438,10 @@ bool WdspEngine::openRx1()
         api.SetRXAAGCThresh(channel_, kAgcThreshDbFs, kAgcThreshFftSize,
                             static_cast<double>(cfg_.inRate));
     }
-    // Panel (post-DSP makeup) gain at unity — Thetis default.
+    // Panel (post-DSP makeup) gain = the operator's AF gain (dB → linear;
+    // 0 dB = unity = Thetis default).
     if (api.SetRXAPanelGain1) {
-        api.SetRXAPanelGain1(channel_, 1.0);
+        api.SetRXAPanelGain1(channel_, std::pow(10.0, afGainDb_ / 20.0));
     }
 
     // RX noise reduction (EMNR) + auto-notch + LMS — persisted state.
@@ -937,6 +943,28 @@ void WdspEngine::setMuted(bool m)
     emitLog(m ? QStringLiteral("[wdsp] audio: muted")
               : QStringLiteral("[wdsp] audio: unmuted (volume %1 dB)")
                     .arg(static_cast<int>(posToDb(volume_.load()))));
+}
+
+void WdspEngine::setAfGainDb(double db)
+{
+    db = std::clamp(db, 0.0, 40.0);
+    if (std::abs(db - afGainDb_) < 1e-6) return;
+    afGainDb_ = db;
+    QSettings().setValue(QStringLiteral("audio/afGainDb"), db);
+    {   // push to WDSP live (serialise against feedIq's fexchange0)
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (opened_ && wdsp_ && wdsp_->api().SetRXAPanelGain1)
+            wdsp_->api().SetRXAPanelGain1(channel_, std::pow(10.0, db / 20.0));
+    }
+    emit afGainChanged();
+}
+
+void WdspEngine::setBalance(double b)
+{
+    b = std::clamp(b, -1.0, 1.0);
+    balance_.store(b, std::memory_order_relaxed);   // applied in feedIq
+    QSettings().setValue(QStringLiteral("audio/balance"), b);
+    emit balanceChanged();
 }
 
 // ── RX DSP operator controls ──────────────────────────────────────
@@ -1996,6 +2024,11 @@ void WdspEngine::feedIq(const double *iq, int nframes)
             if (hl2Out_) {
                 gain *= kHl2OutAtten;   // tame the hotter AK4951 output
             }
+            // Stereo balance (−1 left … +1 right): attenuate the opposite
+            // channel.  1.0 each at centre.  Applied as the very last stage.
+            const double bal = balance_.load(std::memory_order_relaxed);
+            const double lBal = (bal > 0.0) ? (1.0 - bal) : 1.0;
+            const double rBal = (bal < 0.0) ? (1.0 + bal) : 1.0;
             for (int f = 0; f < outSize_; ++f) {
                 double l = outBuf_[static_cast<size_t>(2 * f + 0)] * gain;
                 double r = outBuf_[static_cast<size_t>(2 * f + 1)] * gain;
@@ -2003,6 +2036,8 @@ void WdspEngine::feedIq(const double *iq, int nframes)
                 // signal via the Hilbert post-processor (last stage).
                 if (binEnabled_)
                     binauralStep(l, &l, &r);
+                l *= lBal;
+                r *= rBal;
                 l = std::clamp(l, -1.0, 1.0);
                 r = std::clamp(r, -1.0, 1.0);
                 pcm16_[static_cast<size_t>(2 * f + 0)] =

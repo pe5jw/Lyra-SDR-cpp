@@ -125,10 +125,20 @@ Rectangle {
 
             Item { width: 12 }
 
-            Label { text: qsTr("AF"); color: root.cMuted; opacity: 0.45 }
-            Slider { enabled: false; opacity: 0.45; Layout.preferredWidth: 84
-                     ToolTip.text: qsTr("AF makeup gain — arrives in a later build.")
-                     ToolTip.visible: hovered }
+            Label { text: qsTr("AF"); color: root.cMuted }
+            Slider {
+                id: afSlider
+                Layout.preferredWidth: 84
+                from: 0; to: 40; stepSize: 1; snapMode: Slider.SnapAlways
+                value: WdspEngine.afGainDb
+                onMoved: WdspEngine.setAfGainDb(value)
+                ToolTip.text: qsTr("AF makeup gain (0…+40 dB) — pre-Volume output "
+                    + "trim. Set a comfortable level here, then ride Vol on top.")
+                ToolTip.visible: hovered
+            }
+            Label { text: "+" + Math.round(WdspEngine.afGainDb) + qsTr(" dB")
+                    color: root.cText; font.family: "Consolas"
+                    Layout.preferredWidth: 44 }
 
             Item { width: 10 }
 
@@ -167,10 +177,18 @@ Rectangle {
 
             Item { width: 10 }
 
-            Label { text: qsTr("Bal"); color: root.cMuted; opacity: 0.45 }
-            Slider { enabled: false; opacity: 0.45; Layout.preferredWidth: 84
-                     ToolTip.text: qsTr("Stereo balance — arrives in a later build.")
-                     ToolTip.visible: hovered }
+            Label { text: qsTr("Bal"); color: root.cMuted }
+            Slider {
+                id: balSlider
+                Layout.preferredWidth: 84
+                from: -1.0; to: 1.0
+                value: WdspEngine.balance
+                // Snap to dead-centre near 0 so it's easy to recentre.
+                onMoved: WdspEngine.setBalance(Math.abs(value) < 0.06 ? 0.0 : value)
+                ToolTip.text: qsTr("Stereo balance — pan the audio left/right "
+                    + "(centre = both channels equal; snaps to centre near the middle).")
+                ToolTip.visible: hovered
+            }
 
             Item { Layout.fillWidth: true }
 

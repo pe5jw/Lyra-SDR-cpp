@@ -241,13 +241,32 @@ QSGNode *Waterfall::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
         node = window()->createImageNode();
         node->setOwnsTexture(true);
         node->setFiltering(QSGTexture::Linear);
+        // Mipmaps so the tall history image (kHistory rows) squashed into a
+        // short pane — e.g. after dragging the splitter down — minifies
+        // smoothly instead of aliasing into shifting horizontal lines.
+        node->setMipmapFiltering(QSGTexture::Linear);
+        dirty_ = true;   // force the first upload
     }
-    // Re-upload the (just-scrolled) history as the node's texture.
-    // ownsTexture(true) => the node deletes the previous texture for us.
-    QSGTexture *tex = window()->createTextureFromImage(img_);
-    node->setTexture(tex);
+    // Re-upload the history texture ONLY when its content actually changed
+    // (a new row was pushed).  A pure resize — dragging the splitter —
+    // leaves dirty_ false, so we just restretch the existing texture via
+    // setRect instead of re-uploading the whole n×kHistory image on every
+    // geometry event.  That's what made the drag jerk.
+    if (dirty_ || !node->texture()) {
+        QSGTexture *tex = window()->createTextureFromImage(
+            img_, QQuickWindow::TextureHasMipmaps);
+        // The history image is wide (bins) but gets crushed VERTICALLY when
+        // the pane is short — an asymmetric squash that isotropic mipmaps
+        // resolve poorly (residual horizontal banding).  Anisotropic
+        // filtering samples along the crushed axis, so a small waterfall
+        // stays clean.  Cost is negligible for one textured quad.
+        tex->setFiltering(QSGTexture::Linear);
+        tex->setMipmapFiltering(QSGTexture::Linear);
+        tex->setAnisotropyLevel(QSGTexture::Anisotropy16x);
+        node->setTexture(tex);   // ownsTexture(true) deletes the previous one
+        dirty_ = false;
+    }
     node->setRect(boundingRect());
-    dirty_ = false;
     return node;
 }
 

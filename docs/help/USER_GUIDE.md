@@ -206,7 +206,9 @@ control panels in a row beneath).
 - **Move a panel:** drag it by its title bar. Drop it against an edge to
   re-dock, or out on its own to float.
 - **Resize the spectrum vs. waterfall:** drag the divider between the
-  panadapter and the waterfall. Its position is remembered with your layout.
+  panadapter and the waterfall — the drag is smooth and the waterfall stays
+  clean even when squashed into a thin strip. Its position is remembered
+  with your layout.
 - **Show / hide panels:** the **View** menu lists every panel; tick or
   untick to show or hide it.
 - **Lock the layout:** **View → Lock panels** (or **Ctrl+L**) freezes
@@ -404,10 +406,17 @@ laid out in old Lyra's three-row arrangement:
 - **LNA** — RF input gain on the HL2's AD9866 PGA (−12…+31 dB; slider or
   mouse-wheel). Higher = more sensitivity; back off on strong bands to
   avoid ADC overload. The S-meter compensates for it automatically, so
-  changing LNA doesn't shift the signal reading. **Auto · AF · Bal · Out**
-  are still greyed in their final positions — each lights up as its
-  control is wired in. Choosing **where** the audio goes (HL2 headphone
-  jack vs. a PC sound device) lives in **[Settings → Audio](#settings--audio)**.
+  changing LNA doesn't shift the signal reading.
+- **AF** — audio makeup gain (0…+40 dB), applied **before** Vol. Use it to
+  set a comfortable working level for your headphones/speakers once, then
+  ride **Vol** on top of it for moment-to-moment changes. The value shows
+  in dB beside the slider.
+- **Bal** — stereo balance: pans the audio left/right. Centre = both
+  channels equal; the slider snaps to dead-centre near the middle so it's
+  easy to recentre.
+- **Auto · Out** are still greyed in their final positions — each lights up
+  as its control is wired in. Choosing **where** the audio goes (HL2
+  headphone jack vs. a PC sound device) lives in **[Settings → Audio](#settings--audio)**.
 
 **Row 2 — DSP toggles + AGC**
 - A row of effect buttons **NB · BIN · NR · ANF · LMS · SQ · APF · NF**.
