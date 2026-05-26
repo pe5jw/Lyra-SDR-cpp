@@ -453,14 +453,19 @@ void HL2Stream::onStatsTick() {
         qEnvironmentVariableIsSet("LYRA_TELEM_DEBUG") &&
         qgetenv("LYRA_TELEM_DEBUG") != "0";
     if (kTelemDebug && running_.load(std::memory_order_relaxed)) {
-        emit logLine(QStringLiteral(
-            "[TELEM] raw temp=%1 fwd=%2 rev=%3 paV=%4 paI=%5 supply=%6 | "
+        // qWarning (not the logLine signal) so it lands in LogBuffer →
+        // View → Log + the log file regardless of verbose, exactly like
+        // the [wx-diag] diagnostics.  (A windowed build has no console
+        // stdout, so a terminal will never show it.)
+        const QString s = QStringLiteral(
+            "[telem] raw temp=%1 fwd=%2 rev=%3 paV=%4 paI=%5 supply=%6 | "
             "T=%7C V=%8 PA=%9A VDD=%10V")
             .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
             .arg(telRevRaw_.load()).arg(telPaVoltRaw_.load())
             .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
             .arg(hl2TempC(), 0, 'f', 1).arg(hl2SupplyV(), 0, 'f', 1)
-            .arg(paCurrentA(), 0, 'f', 2).arg(paVoltsV(), 0, 'f', 1));
+            .arg(paCurrentA(), 0, 'f', 2).arg(paVoltsV(), 0, 'f', 1);
+        qWarning("%s", qUtf8Printable(s));
     }
 }
 
