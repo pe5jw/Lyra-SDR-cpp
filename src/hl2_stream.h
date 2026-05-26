@@ -131,6 +131,21 @@ class HL2Stream : public QObject {
     Q_PROPERTY(bool filterBoardEnabled READ filterBoardEnabled
                WRITE setFilterBoardEnabled NOTIFY filterBoardChanged)
     Q_PROPERTY(int  ocBits             READ ocBits NOTIFY ocBitsChanged)
+    // TX-0a — HL2 telemetry decoded from the EP6 status rotation
+    // (C0&0xF8 address field).  RF-SAFE: pure read of the radio→host
+    // stream, zero effect on what we transmit.  Temp + supply are
+    // RX-time-meaningful; PA current/volts + fwd/rev power matter
+    // during TX.  ⚠ The AINx→slot map + the watt/amp conversions are
+    // gateware-rev-specific on HL2+ — these follow the documented HL2
+    // rotation and MUST be bench-verified on the operator's unit
+    // (set env LYRA_TELEM_DEBUG=1 to log the raw (addr,C1..C4)
+    // rotation).  NaN getter = no telemetry for that slot yet.
+    Q_PROPERTY(double hl2TempC   READ hl2TempC   NOTIFY statsChanged)
+    Q_PROPERTY(double hl2SupplyV READ hl2SupplyV NOTIFY statsChanged)
+    Q_PROPERTY(double paCurrentA READ paCurrentA NOTIFY statsChanged)
+    Q_PROPERTY(double paVoltsV   READ paVoltsV   NOTIFY statsChanged)
+    Q_PROPERTY(double fwdPowerW  READ fwdPowerW  NOTIFY statsChanged)
+    Q_PROPERTY(double revPowerW  READ revPowerW  NOTIFY statsChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -173,6 +188,16 @@ public:
     static constexpr int kLnaMaxDb =  48;
     bool    filterBoardEnabled() const { return filterBoardEnabled_; }
     int     ocBits()             const { return ocPattern_; }
+    // TX-0a telemetry getters — convert the raw 12-bit EP6 ADC slots
+    // (written by the RX worker) on the main thread.  Sentinel raw < 0
+    // → NaN ("no telemetry yet").  Formulas per the documented HL2
+    // rotation; bench-verify (see the Q_PROPERTY note).
+    double  hl2TempC()   const;
+    double  hl2SupplyV() const;
+    double  paCurrentA() const;
+    double  paVoltsV()   const;
+    double  fwdPowerW()  const;
+    double  revPowerW()  const;
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -318,6 +343,16 @@ private:
     // gain driven to the floor).  adcOverload_ / overloadLevel_ /
     // autoLna*_ are main-thread state owned by onAutoLnaTick().
     std::atomic<bool>    adcOverloadNow_{false};
+    // TX-0a — raw 12-bit EP6 telemetry slots, written by the RX worker
+    // (direct overwrite, most-recent wins), read by the main-thread
+    // getters.  −1 = no data yet.  std::atomic<int> is lock-free on
+    // x86_64 so the getters take no lock on the hot path.
+    std::atomic<int>     telTempRaw_{-1};      // 0x08 C1:C2 (AIN5)
+    std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 (AIN1)
+    std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 (AIN2)
+    std::atomic<int>     telPaVoltRaw_{-1};    // 0x10 C3:C4 (AIN3, user_adc0)
+    std::atomic<int>     telPaCurRaw_{-1};     // 0x18 C1:C2 (AIN4, user_adc1)
+    std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (AIN6)
     bool                 adcOverload_    = false;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;

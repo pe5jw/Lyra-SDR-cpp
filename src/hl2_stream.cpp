@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace lyra::ipc {
 
@@ -443,11 +444,74 @@ void HL2Stream::onStatsTick() {
     dgPerSec_   = static_cast<double>(rxWin) * scale;
     txDgPerSec_ = static_cast<double>(txWin) * scale;
     emit statsChanged();
+
+    // TX-0a raw-telemetry probe — env-gated, 5 Hz, main thread.  Logs
+    // the decoded raw ADC slots + converted values so the operator can
+    // confirm/correct the gateware-rev-specific AINx→slot map against a
+    // known reference on the bench (verify-don't-guess).
+    static const bool kTelemDebug =
+        qEnvironmentVariableIsSet("LYRA_TELEM_DEBUG") &&
+        qgetenv("LYRA_TELEM_DEBUG") != "0";
+    if (kTelemDebug && running_.load(std::memory_order_relaxed)) {
+        emit logLine(QStringLiteral(
+            "[TELEM] raw temp=%1 fwd=%2 rev=%3 paV=%4 paI=%5 supply=%6 | "
+            "T=%7C V=%8 PA=%9A VDD=%10V")
+            .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
+            .arg(telRevRaw_.load()).arg(telPaVoltRaw_.load())
+            .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
+            .arg(hl2TempC(), 0, 'f', 1).arg(hl2SupplyV(), 0, 'f', 1)
+            .arg(paCurrentA(), 0, 'f', 2).arg(paVoltsV(), 0, 'f', 1));
+    }
 }
 
 void HL2Stream::onFatalError(QString reason) {
     emit logLine(QStringLiteral("FATAL: %1").arg(reason));
     close();
+}
+
+// ---- TX-0a: HL2 telemetry getters (main thread) ------------------
+// Convert the raw 12-bit EP6 ADC slots written by the RX worker.
+// Formulas per the documented HL2 status rotation; the AINx→slot map
+// and these scale constants are gateware-rev-specific on HL2+ and MUST
+// be bench-verified (LYRA_TELEM_DEBUG=1 logs the raw rotation).  A
+// known-good HL2+ reads ≈12-13 V supply/VDD, board-ambient temp, and
+// (during full tune into a dummy) ≈1.8 A PA current.
+namespace {
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+}
+double HL2Stream::hl2TempC() const {
+    const int raw = telTempRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return (3.26 * (raw / 4096.0) - 0.5) / 0.01;
+}
+double HL2Stream::hl2SupplyV() const {
+    const int raw = telSupplyRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);
+}
+double HL2Stream::paCurrentA() const {
+    const int raw = telPaCurRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return ((3.26 * (raw / 4096.0)) / 50.0) / 0.04 / (1000.0 / 1270.0);
+}
+double HL2Stream::paVoltsV() const {
+    const int raw = telPaVoltRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);  // provisional VDD scale
+}
+double HL2Stream::fwdPowerW() const {
+    const int raw = telFwdRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    // Provisional + UNCALIBRATED — real watts need the per-band 3-point
+    // forward-power cal (a later TX-3 step).  Bridge/ref per HL2 case.
+    const double v = (raw - 6.0) / 4095.0 * 3.3;
+    return (v > 0.0) ? (v * v) / 1.5 : 0.0;
+}
+double HL2Stream::revPowerW() const {
+    const int raw = telRevRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    const double v = (raw - 6.0) / 4095.0 * 3.3;
+    return (v > 0.0) ? (v * v) / 1.5 : 0.0;
 }
 
 // ----------------------------------------------------------------
@@ -591,12 +655,39 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         // recent address-0 frame wins) — NOT a window-OR — so the
         // 400 ms tick samples it instantaneously, exactly like the
         // reference HL2 read loop (networkproto1.c:502).
+        // The address field (C0 bits [7:3] = c0 & 0xF8) rotates through
+        // 0x00 / 0x08 / 0x10 / 0x18.  Address 0 carries ADC0 overload
+        // (C1 bit 0); the others carry 12-bit ADC telemetry as two
+        // big-endian byte pairs (C1:C2, C3:C4).  TX-0a decodes those into
+        // raw atomics (direct overwrite, most-recent wins) — RF-safe,
+        // pure read.  I2C-readback frames (C0 bit 7) are skipped.
         for (int f = 0; f < 2; ++f) {
             const std::uint8_t *st = u + (f == 0 ? 11 : 523);  // C0..C4
             const std::uint8_t c0 = st[0];
-            if (!(c0 & 0x80) && (c0 & 0xF8) == 0) {
+            if (c0 & 0x80) {
+                continue;  // I2C readback, not a status frame
+            }
+            const int p12 = (static_cast<int>(st[1]) << 8) | st[2];  // C1:C2
+            const int p34 = (static_cast<int>(st[3]) << 8) | st[4];  // C3:C4
+            switch (c0 & 0xF8) {
+            case 0x00:  // ADC0 overload (C1 bit 0)
                 adcOverloadNow_.store((st[1] & 0x01) != 0,
                                       std::memory_order_relaxed);
+                break;
+            case 0x08:  // AIN5 temp (C1:C2) + fwd power AIN1 (C3:C4)
+                telTempRaw_.store(p12, std::memory_order_relaxed);
+                telFwdRaw_.store(p34, std::memory_order_relaxed);
+                break;
+            case 0x10:  // rev power AIN2 (C1:C2) + PA volts/VDD AIN3 (C3:C4)
+                telRevRaw_.store(p12, std::memory_order_relaxed);
+                telPaVoltRaw_.store(p34, std::memory_order_relaxed);
+                break;
+            case 0x18:  // PA current AIN4 (C1:C2) + supply AIN6 (C3:C4)
+                telPaCurRaw_.store(p12, std::memory_order_relaxed);
+                telSupplyRaw_.store(p34, std::memory_order_relaxed);
+                break;
+            default:
+                break;
             }
         }
 
