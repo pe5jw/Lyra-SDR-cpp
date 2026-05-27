@@ -457,17 +457,21 @@ void HL2Stream::onStatsTick() {
         // View → Log + the log file regardless of verbose, exactly like
         // the [wx-diag] diagnostics.  (A windowed build has no console
         // stdout, so a terminal will never show it.)
-        // Full-rotation raw dump: every address's BOTH 16-bit BE pairs,
-        // so the real ak4951v4 slot map can be read off the operator's
-        // hardware.  Format per addr: (C1:C2, C3:C4).  T= is the
-        // confirmed-good temp; the rest stay raw until the map is pinned.
+        // Raw-rotation dump so the ak4951v4 slot map can be read off the
+        // operator's hardware.  a0/a8/a10 show both raw 16-bit BE pairs
+        // (C1:C2, C3:C4) of those addresses; the trailing fields are the
+        // *stored* slot atomics: paCur is still 0x18 C1:C2 (dead on this
+        // gateware, pending TX-phase validation) and supplyRaw is the
+        // re-pointed 0x00 C1:C2 >>4.  T/V are the confirmed-good decodes.
         const QString s = QStringLiteral(
-            "[telem] a0=(%1,%2) a8=(%3,%4) a10=(%5,%6) a18=(%7,%8) | T=%9C")
+            "[telem] a0=(%1,%2) a8=(%3,%4) a10=(%5,%6) "
+            "paCur=%7 supplyRaw=%8 | T=%9C V=%10")
             .arg(telA0c12Raw_.load()).arg(telA0c34Raw_.load())
             .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
             .arg(telRevRaw_.load()).arg(telPaVoltRaw_.load())
             .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
-            .arg(hl2TempC(), 0, 'f', 1);
+            .arg(hl2TempC(), 0, 'f', 1)
+            .arg(hl2SupplyV(), 0, 'f', 2);
         qWarning("%s", qUtf8Printable(s));
     }
 }
@@ -678,11 +682,16 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
             const int p12 = (static_cast<int>(st[1]) << 8) | st[2];  // C1:C2
             const int p34 = (static_cast<int>(st[3]) << 8) | st[4];  // C3:C4
             switch (c0 & 0xF8) {
-            case 0x00:  // ADC0 overload (C1 bit 0) + raw data pair (probe)
+            case 0x00:  // ADC0 overload (C1 bit 0) + supply volts (C1:C2 >>4)
                 adcOverloadNow_.store((st[1] & 0x01) != 0,
                                       std::memory_order_relaxed);
                 telA0c12Raw_.store(p12, std::memory_order_relaxed);
                 telA0c34Raw_.store(p34, std::memory_order_relaxed);
+                // Supply (Hermes Volts) lives in this frame's C1:C2 as a
+                // 12-bit value left-shifted into 16 bits on the HL2+
+                // ak4951v4 gateware — recover the raw count with >>4.
+                // Bench-verified: 7680>>4=480 -> (480/4095)*5*(23/1.1)=12.25 V.
+                telSupplyRaw_.store(p12 >> 4, std::memory_order_relaxed);
                 break;
             case 0x08:  // AIN5 temp (C1:C2) + fwd power AIN1 (C3:C4)
                 telTempRaw_.store(p12, std::memory_order_relaxed);
@@ -692,9 +701,11 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                 telRevRaw_.store(p12, std::memory_order_relaxed);
                 telPaVoltRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x18:  // PA current AIN4 (C1:C2) + supply AIN6 (C3:C4)
+            case 0x18:  // dead on HL2+ ak4951v4 (bench: a18=(0,0)).
+                // Supply moved to 0x00 C1:C2 >>4 above; PA current is
+                // pending TX-phase validation (sibling Python build
+                // TX-confirmed it at 0x10 C3:C4, 0x18 entirely dead).
                 telPaCurRaw_.store(p12, std::memory_order_relaxed);
-                telSupplyRaw_.store(p34, std::memory_order_relaxed);
                 break;
             default:
                 break;
