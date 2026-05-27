@@ -459,19 +459,19 @@ void HL2Stream::onStatsTick() {
         // stdout, so a terminal will never show it.)
         // Raw-rotation dump so the ak4951v4 slot map can be read off the
         // operator's hardware.  a0/a8/a10 show both raw 16-bit BE pairs
-        // (C1:C2, C3:C4) of those addresses; the trailing fields are the
-        // *stored* slot atomics: paCur is still 0x18 C1:C2 (dead on this
-        // gateware, pending TX-phase validation) and supplyRaw is the
-        // re-pointed 0x00 C1:C2 >>4.  T/V are the confirmed-good decodes.
+        // (C1:C2, C3:C4) of those addresses; a10 C3:C4 is now PA bias
+        // current (re-pointed from the dead 0x18), supplyRaw is 0x00
+        // C1:C2 >>4.  T/V are the confirmed-good decodes.
         const QString s = QStringLiteral(
             "[telem] a0=(%1,%2) a8=(%3,%4) a10=(%5,%6) "
-            "paCur=%7 supplyRaw=%8 | T=%9C V=%10")
+            "supplyRaw=%7 | T=%8C V=%9 PA=%10A")
             .arg(telA0c12Raw_.load()).arg(telA0c34Raw_.load())
             .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
-            .arg(telRevRaw_.load()).arg(telPaVoltRaw_.load())
-            .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
+            .arg(telRevRaw_.load()).arg(telPaCurRaw_.load())
+            .arg(telSupplyRaw_.load())
             .arg(hl2TempC(), 0, 'f', 1)
-            .arg(hl2SupplyV(), 0, 'f', 2);
+            .arg(hl2SupplyV(), 0, 'f', 2)
+            .arg(paCurrentA(), 0, 'f', 2);
         qWarning("%s", qUtf8Printable(s));
     }
 }
@@ -504,12 +504,9 @@ double HL2Stream::hl2SupplyV() const {
 double HL2Stream::paCurrentA() const {
     const int raw = telPaCurRaw_.load(std::memory_order_relaxed);
     if (raw < 0) return kNaN;
+    // 0x10 C3:C4 (PA bias current). Sense-amp formula per the HL2
+    // current-shunt path; magnitude pending TX-phase validation.
     return ((3.26 * (raw / 4096.0)) / 50.0) / 0.04 / (1000.0 / 1270.0);
-}
-double HL2Stream::paVoltsV() const {
-    const int raw = telPaVoltRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
-    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);  // provisional VDD scale
 }
 double HL2Stream::fwdPowerW() const {
     const int raw = telFwdRaw_.load(std::memory_order_relaxed);
@@ -697,15 +694,20 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                 telTempRaw_.store(p12, std::memory_order_relaxed);
                 telFwdRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x10:  // rev power AIN2 (C1:C2) + PA volts/VDD AIN3 (C3:C4)
+            case 0x10:  // rev power (C1:C2) + PA bias current (C3:C4)
                 telRevRaw_.store(p12, std::memory_order_relaxed);
-                telPaVoltRaw_.store(p34, std::memory_order_relaxed);
+                // PA bias current lives in this slot's C3:C4 (12-bit) on
+                // the HL2+ ak4951v4 gateware (control.v iresp 4-slot
+                // rotation, addr2 C3:C4) — NOT a PA-volts/VDD slot. There
+                // is no PA-volts telemetry on this gateware. Current
+                // magnitude calibration is pending TX-phase validation
+                // (idle bias ~0.2 A, full tune ~1.8 A on a known unit).
+                telPaCurRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x18:  // dead on HL2+ ak4951v4 (bench: a18=(0,0)).
-                // Supply moved to 0x00 C1:C2 >>4 above; PA current is
-                // pending TX-phase validation (sibling Python build
-                // TX-confirmed it at 0x10 C3:C4, 0x18 entirely dead).
-                telPaCurRaw_.store(p12, std::memory_order_relaxed);
+            case 0x18:  // dead/junk on HL2+ ak4951v4 (bench: a18=(0,0);
+                        // gateware addr3 = C1:C2 zero, C3:C4 debug). No
+                        // telemetry — supply is 0x00 C1:C2 >>4, PA current
+                        // is 0x10 C3:C4 above.
                 break;
             default:
                 break;

@@ -143,7 +143,6 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double hl2TempC   READ hl2TempC   NOTIFY statsChanged)
     Q_PROPERTY(double hl2SupplyV READ hl2SupplyV NOTIFY statsChanged)
     Q_PROPERTY(double paCurrentA READ paCurrentA NOTIFY statsChanged)
-    Q_PROPERTY(double paVoltsV   READ paVoltsV   NOTIFY statsChanged)
     Q_PROPERTY(double fwdPowerW  READ fwdPowerW  NOTIFY statsChanged)
     Q_PROPERTY(double revPowerW  READ revPowerW  NOTIFY statsChanged)
 
@@ -195,7 +194,6 @@ public:
     double  hl2TempC()   const;
     double  hl2SupplyV() const;
     double  paCurrentA() const;
-    double  paVoltsV()   const;
     double  fwdPowerW()  const;
     double  revPowerW()  const;
 
@@ -350,8 +348,7 @@ private:
     std::atomic<int>     telTempRaw_{-1};      // 0x08 C1:C2 (AIN5)
     std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 (AIN1)
     std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 (AIN2)
-    std::atomic<int>     telPaVoltRaw_{-1};    // 0x10 C3:C4 (AIN3, user_adc0)
-    std::atomic<int>     telPaCurRaw_{-1};     // 0x18 C1:C2 (AIN4, user_adc1)
+    std::atomic<int>     telPaCurRaw_{-1};     // 0x10 C3:C4 (PA bias current)
     std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (AIN6)
     // Full-rotation probe: addr-0's data pair (C1:C2 / C3:C4).  Addr 0
     // C1 bit 0 is the ADC-overload flag; the rest of the pair is unused

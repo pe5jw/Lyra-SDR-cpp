@@ -100,6 +100,32 @@ generic loop. (A TX-bit change forces an immediate DDC0-freq C&C re-send at
   > ⚠ These AINx→slot mappings can be **gateware-rev-specific** on HL2+. Treat
   > as a starting point; calibrate against a known reference on the operator's unit.
 
+#### 1.3a lyra-cpp BENCH-VERIFIED slot map (N8SDR HL2+ ak4951v4)
+
+The generic byte labels in §1.3 above are from the reference
+`networkproto1.c` and do **NOT** all match this operator's HL2+
+ak4951v4 gateware. Bench captures on N8SDR's unit (TX-0a,
+committed `3bb3949`) establish the **authoritative** lyra-cpp map:
+
+| C0 & 0xF8 | bytes | field | conversion | status |
+|---|---|---|---|---|
+| `0x00` | C1:C2 `>>4` | **supply volts** | `(raw/4095)*5*(23/1.1)` | ✅ bench-verified — `7680>>4=480` → **12.25 V** |
+| `0x00` | C1 bit 0 | ADC0 overload | bit | ✅ |
+| `0x08` | C1:C2 | **temp** | `(3.26*(raw/4096)-0.5)/0.01` °C | ✅ bench-verified — `974` → **27.5 °C** |
+| `0x08` | C3:C4 | fwd power | peak-decayed | pending TX validation |
+| `0x10` | C1:C2 | rev power | peak-decayed | pending TX validation |
+| `0x10` | C3:C4 | **PA current** | `((3.26*(raw/4096))/50)/0.04/(1000/1270)` | pending TX validation (sibling Python project TX-confirmed here) |
+| `0x18` | C1:C2, C3:C4 | **DEAD** | — | ✅ bench-confirmed `(0,0)` idle |
+
+**Supersedes §1.3 for the ak4951v4:** the "`0x18`: `user_adc1`=
+(C1,C2) (PA Amps); `supply_volts`=(C3,C4)" line is WRONG on this
+gateware — `0x18` is entirely dead, supply moved to `0x00` C1:C2
+`>>4`, and PA current lives at `0x10` C3:C4 (NOT `0x18` C1:C2).
+The §1.3 `>50 dB` PureSignal auto-attenuator / kill-test warning
+still stands; only the slot addresses change. PA-current magnitude
+calibration deferred to the TX phase (idle bias ≈0.2 A, full tune
+≈1.8 A on a calibrated unit).
+
 ### 1.4 Protocol-2 flag (do not implement now)
 P2 lives in `network.c` with a **fixed byte-offset** command layout (not a
 C0-addressed rotation): PA-enable `packetbuf[58]` with **inverted polarity**
