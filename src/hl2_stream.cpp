@@ -776,6 +776,46 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
     }
 }
 
+// ---------------------------------------------------------------
+// TX-0b: RF-transmit state setters (foundation; WIRE-INERT).
+// Each clamps + stores the HL2+ byte encoding for its TX C&C frame
+// (Thetis WriteMainLoop_HL2 + ak4951v4 gateware decode; see
+// hl2_stream.h for the per-register map + cites).  NONE are read by the EP2 emission loop
+// yet, so at MOX=0 / PA-off the datagram stays byte-identical to RX.
+// A later TX phase wires these into the C&C round-robin under MOX gating.
+
+void HL2Stream::setMox(bool on) {
+    const bool prev = mox_.exchange(on, std::memory_order_relaxed);
+    if (prev != on) {
+        emit logLine(QStringLiteral("TX: MOX -> %1 (TX-0b: stored, not yet wired)")
+                     .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
+    }
+}
+
+void HL2Stream::setTxFreqHz(quint32 hz) {
+    const quint32 prev = txFreqHz_.exchange(hz, std::memory_order_relaxed);
+    if (prev != hz) {
+        emit logLine(QStringLiteral("TX freq -> %1 Hz (%2 MHz)")
+                     .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
+    }
+}
+
+void HL2Stream::setTxDriveLevel(int level) {
+    txDriveLevel_.store(std::clamp(level, 0, 255), std::memory_order_relaxed);
+}
+
+void HL2Stream::setTxStepAttnDb(int db) {
+    txStepAttnDb_.store(std::clamp(db, 0, 31), std::memory_order_relaxed);
+}
+
+void HL2Stream::setPaEnabled(bool on) {
+    const bool prev = paOn_.exchange(on, std::memory_order_relaxed);
+    if (prev != on) {
+        emit logLine(QStringLiteral("TX: PA enable -> %1 (TX-0b: stored, not yet wired)")
+                     .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
+    }
+}
+
 void HL2Stream::setSampleRate(int hz) {
     std::uint8_t bits;
     switch (hz) {

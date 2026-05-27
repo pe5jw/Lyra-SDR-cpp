@@ -266,6 +266,42 @@ public slots:
     // main thread).
     void setFilterBoardEnabled(bool on);
 
+    // ---- TX-state C&C registers (TX-0b foundation) -----------------
+    // Operator / PTT-FSM RF-transmit state.  Each setter clamps + stores
+    // an atomic holding the HL2+ byte encoding for its TX C&C frame,
+    // verified against Thetis WriteMainLoop_HL2 (networkproto1.c) +
+    // the ak4951v4 gateware decode (control.v) — NOT prior Lyra TX code.
+    // These are the SINGLE source of truth for the byte layout; a later
+    // TX phase wires them into the EP2 C&C round-robin under MOX gating.
+    //
+    // INERT until then: the datagram emission loop reads NONE of them,
+    // so at MOX=0 / PA-off the wire is byte-identical to RX.  All
+    // thread-safe (lock-free atomics on x86_64).
+    //
+    //   setMox(on)            RF transmit active -> C0 bit 0
+    //                         (networkproto1.c:896 C0=XmitBit)
+    //   setTxFreqHz(hz)       TX NCO -> C0 0x02/0x08/0x0a (BE, all three
+    //                         carry tx[0].frequency: networkproto1.c
+    //                         cases 1/5/6)
+    //   setTxDriveLevel(0..255)  drive DAC; C0 0x12 C1 (networkproto1.c:
+    //                            1078; gateware uses top 4 bits -> 16 steps)
+    //   setTxStepAttnDb(0..31)   C0 0x1C C3 = (31 - db) & 0x1F  (HL2's
+    //                            inverted range: networkproto1.c:1019 +
+    //                            console.cs:10658 SetTxAttenData(31-x))
+    //   setPaEnabled(on)      onboard PA -> C0 0x12 C2 bit 3 (0x08),
+    //                         active-high (networkproto1.c:1079 ApolloTuner
+    //                         =0x8 netInterface.c:581; control.v:213
+    //                         pa_enable<=cmd_data[19]).  NB: C2 bit 7
+    //                         (0x80, VNA) must stay clear or the PA won't
+    //                         key (control.v:359); C2 bit 2 (0x04) is a
+    //                         SEPARATE full-duplex/T-R control, NOT a
+    //                         PA-off flag.
+    void setMox(bool on);
+    void setTxFreqHz(quint32 hz);
+    void setTxDriveLevel(int level);
+    void setTxStepAttnDb(int db);
+    void setPaEnabled(bool on);
+
 signals:
     void runningChanged();
     void statsChanged();
@@ -349,7 +385,7 @@ private:
     std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 (AIN1)
     std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 (AIN2)
     std::atomic<int>     telPaCurRaw_{-1};     // 0x10 C3:C4 (PA bias current)
-    std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (AIN6)
+    std::atomic<int>     telSupplyRaw_{-1};    // 0x00 C1:C2 >>4 (supply V)
     // Full-rotation probe: addr-0's data pair (C1:C2 / C3:C4).  Addr 0
     // C1 bit 0 is the ADC-overload flag; the rest of the pair is unused
     // by the generic map but is the prime suspect for supply volts on
@@ -374,6 +410,16 @@ private:
     // Frame-0 C1 IQ speed bits [1:0]: 1=96k, 2=192k(default), 3=384k.
     // Read by the EP2 writer each send.
     std::atomic<std::uint8_t> sampleRateBits_{0x02};
+    // ---- TX-0b: RF-transmit state (foundation; NOT yet emitted) ----
+    // Encodings per Thetis WriteMainLoop_HL2 + ak4951v4 gateware decode
+    // (see the setter doc block for cites).  INERT — read by no emission path yet;
+    // at MOX=0/PA-off the datagram is byte-identical to RX.  A later TX
+    // phase wires these into the C&C round-robin under MOX gating.
+    std::atomic<bool>    mox_{false};          // C0 bit 0 (RF transmit)
+    std::atomic<quint32> txFreqHz_{7074000};   // TX NCO -> 0x02/0x08/0x0a
+    std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
+    std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
+    std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
     bool                 filterBoardEnabled_ = false;
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
