@@ -353,6 +353,14 @@ private:
     std::atomic<int>     telPaVoltRaw_{-1};    // 0x10 C3:C4 (AIN3, user_adc0)
     std::atomic<int>     telPaCurRaw_{-1};     // 0x18 C1:C2 (AIN4, user_adc1)
     std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (AIN6)
+    // Full-rotation probe: addr-0's data pair (C1:C2 / C3:C4).  Addr 0
+    // C1 bit 0 is the ADC-overload flag; the rest of the pair is unused
+    // by the generic map but is the prime suspect for supply volts on
+    // the ak4951v4 gateware (where 0x18 reads 0).  Captured raw for the
+    // LYRA_TELEM_DEBUG dump so the real slot map can be derived from the
+    // operator's hardware rather than assumed.
+    std::atomic<int>     telA0c12Raw_{-1};     // 0x00 C1:C2
+    std::atomic<int>     telA0c34Raw_{-1};     // 0x00 C3:C4
     bool                 adcOverload_    = false;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;

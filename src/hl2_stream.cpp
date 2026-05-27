@@ -457,14 +457,17 @@ void HL2Stream::onStatsTick() {
         // View → Log + the log file regardless of verbose, exactly like
         // the [wx-diag] diagnostics.  (A windowed build has no console
         // stdout, so a terminal will never show it.)
+        // Full-rotation raw dump: every address's BOTH 16-bit BE pairs,
+        // so the real ak4951v4 slot map can be read off the operator's
+        // hardware.  Format per addr: (C1:C2, C3:C4).  T= is the
+        // confirmed-good temp; the rest stay raw until the map is pinned.
         const QString s = QStringLiteral(
-            "[telem] raw temp=%1 fwd=%2 rev=%3 paV=%4 paI=%5 supply=%6 | "
-            "T=%7C V=%8 PA=%9A VDD=%10V")
+            "[telem] a0=(%1,%2) a8=(%3,%4) a10=(%5,%6) a18=(%7,%8) | T=%9C")
+            .arg(telA0c12Raw_.load()).arg(telA0c34Raw_.load())
             .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
             .arg(telRevRaw_.load()).arg(telPaVoltRaw_.load())
             .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
-            .arg(hl2TempC(), 0, 'f', 1).arg(hl2SupplyV(), 0, 'f', 1)
-            .arg(paCurrentA(), 0, 'f', 2).arg(paVoltsV(), 0, 'f', 1);
+            .arg(hl2TempC(), 0, 'f', 1);
         qWarning("%s", qUtf8Printable(s));
     }
 }
@@ -675,9 +678,11 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
             const int p12 = (static_cast<int>(st[1]) << 8) | st[2];  // C1:C2
             const int p34 = (static_cast<int>(st[3]) << 8) | st[4];  // C3:C4
             switch (c0 & 0xF8) {
-            case 0x00:  // ADC0 overload (C1 bit 0)
+            case 0x00:  // ADC0 overload (C1 bit 0) + raw data pair (probe)
                 adcOverloadNow_.store((st[1] & 0x01) != 0,
                                       std::memory_order_relaxed);
+                telA0c12Raw_.store(p12, std::memory_order_relaxed);
+                telA0c34Raw_.store(p34, std::memory_order_relaxed);
                 break;
             case 0x08:  // AIN5 temp (C1:C2) + fwd power AIN1 (C3:C4)
                 telTempRaw_.store(p12, std::memory_order_relaxed);
