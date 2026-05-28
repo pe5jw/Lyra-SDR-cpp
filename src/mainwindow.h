@@ -68,6 +68,13 @@ protected:
     // Double-clicking a custom dock title bar toggles float/dock (the
     // standard QDockWidget gesture, lost when we set a custom title bar).
     bool eventFilter(QObject *obj, QEvent *event) override;
+    // TX-0c-fsm — space-bar PTT momentary.  Press routes to
+    // stream.requestMox(true), release routes to requestMox(false).
+    // Suppressed when a text-entry widget has focus so typing into
+    // the freq-entry overlay (or any QLineEdit/QSpinBox) doesn't key
+    // the radio.  Auto-repeat is ignored (one edge per press).
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
 private:
     // Build a QQuickWidget that hosts <qmlFile> from the Lyra QML

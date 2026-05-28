@@ -145,6 +145,13 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double paCurrentA READ paCurrentA NOTIFY statsChanged)
     Q_PROPERTY(double fwdPowerW  READ fwdPowerW  NOTIFY statsChanged)
     Q_PROPERTY(double revPowerW  READ revPowerW  NOTIFY statsChanged)
+    // TX-0c-fsm — wire-level MOX state (true once the keydown TR-delay
+    // sequence completes and the C0 bit-0 has settled on the wire;
+    // cleared at the END of the keyup sequence).  This is the
+    // operator-visible "on the air" truth — drive the red TX indicator
+    // off this, NOT off the toggle button's checked state, so the LED
+    // tracks the actual radio state through the TR-delay window.
+    Q_PROPERTY(bool moxActive READ moxActive NOTIFY moxActiveChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -196,6 +203,9 @@ public:
     double  paCurrentA() const;
     double  fwdPowerW()  const;
     double  revPowerW()  const;
+    // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
+    // settle, pre-keyup-clear).  Read by the UI red-on-air indicator.
+    bool    moxActive()  const { return moxActive_; }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -302,6 +312,39 @@ public slots:
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
 
+    // ---- TX-0c-fsm: MOX/PTT sequencer (single funnel) ----------------
+    // Operator/CAT/PTT/TUN intent gets funneled here.  Internally drives
+    // a TR-sequenced state machine that times the wire MOX-bit flip
+    // around the ATT-on-TX RX-protect raise/restore.  All delays via
+    // QTimer::singleShot on this QObject's thread (no sleeps); the wire
+    // worker thread reads mox_ / txStepAttnDb_ atomics as before.
+    //
+    //  Keydown (RX → MOX_TX):
+    //      save txStepAttnDb_ → force ATT-on-TX (31)
+    //      → wait kMoxDelayMs (15 ms)
+    //      → mox_ = true       (C0 bit 0 on wire next datagram)
+    //      → wait kRfDelayMs   (50 ms; rf settle, hot-switch-safe)
+    //      → emit moxActiveChanged(true)
+    //
+    //  Keyup   (MOX_TX → RX):
+    //      wait kSpaceMoxDelayMs (13 ms; re-key window — if requestMox
+    //          fires true during this, collapse: stay TX, no wire flip)
+    //      → mox_ = false
+    //      → wait kPttOutDelayMs (5 ms)
+    //      → restore txStepAttnDb_
+    //      → emit moxActiveChanged(false)
+    //
+    // Bench discipline: at TX-0c-fsm the MOX bit lands on the wire but
+    // paOn_ stays false, so the HL2's T/R relay clicks audibly but the
+    // PA bias never enables — STILL ZERO RF.  TX-0c-pa-debug adds the
+    // operator-gated PA enable.
+    //
+    // Re-entrancy: requestMox() is the SINGLE funnel; calling it during
+    // a transition just updates the intent and the sequencer reads it
+    // at each step (Thetis-style re-key collapse, cancel mid-keydown,
+    // etc., all work).
+    void requestMox(bool on);
+
 signals:
     void runningChanged();
     void statsChanged();
@@ -317,6 +360,10 @@ signals:
     void filterBoardChanged(bool on);
     void ocBitsChanged(int pattern);
     void logLine(QString line);
+    // TX-0c-fsm — fires when the wire MOX state changes after a TR-delay
+    // transition completes (true at end of keydown rf_delay; false at end
+    // of keyup ptt_out_delay).  Does NOT fire on mid-transition states.
+    void moxActiveChanged(bool on);
 
 private slots:
     void onStatsTick();
@@ -327,6 +374,17 @@ private:
     void rxWorkerLoop(std::stop_token stop, SocketHandle sock);
     void txWorkerLoop(std::stop_token stop, SocketHandle sock,
                       QString ip);
+    // TX-0c-fsm — sequencer steps (all run on this QObject's thread via
+    // QTimer::singleShot, NOT on the wire workers).  Each step re-reads
+    // requestedMox_ so an operator change mid-transition (cancel during
+    // keydown, re-key during keyup space window) takes effect cleanly.
+    void fsmAdvance();        // entry — picks keydown vs keyup vs idle
+    void fsmKeydownPostMox(); // after kMoxDelayMs — set wire MOX bit
+    void fsmKeydownSettled(); // after kRfDelayMs  — emit moxActiveChanged(true)
+    void fsmKeyupPostSpace(); // after kSpaceMoxDelayMs — clear wire MOX bit
+                              //   (or collapse-stay-TX if re-keyed)
+    void fsmKeyupSettled();   // after kPttOutDelayMs  — restore step-att,
+                              //   emit moxActiveChanged(false)
     // TX-0c emit: compose one C&C frame (C0..C4) for cycle slot `idx`
     // (0..18), reading the live MOX/freq/drive/step-att/PA state.  Pure
     // function — single-thread owned by txWorker_ (no locks needed; reads
@@ -455,6 +513,25 @@ private:
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
+    // ---- TX-0c-fsm: MOX/PTT sequencer state (single-thread, this thread) -
+    // Operator/CAT intent — last requested MOX state.  Sequencer reads
+    // it at every timer step so an operator change mid-transition takes
+    // effect on the next scheduled boundary (cancel keydown → exit clean;
+    // re-key during keyup space window → collapse-stay-TX).
+    bool                 requestedMox_ = false;
+    // True while any TR-delay timer chain is in flight; gates re-entry
+    // into the FSM so a single intent edge schedules exactly one chain.
+    bool                 fsmRunning_   = false;
+    // Saved operator step-att before ATT-on-TX raise on keydown, so the
+    // keyup restore lands the operator's pre-key set point (today always
+    // 0 on RX, but forward-compat for a future operator-tunable RX
+    // step-att).  Touched only by the FSM on this thread.
+    int                  savedTxStepAttn_ = 0;
+    // Wire-level MOX truth — true once the post-keydown rf_delay has
+    // settled, cleared at the end of the keyup ptt_out_delay.  Drives
+    // the UI red-on-air indicator (NOT the toggle button's checked
+    // state).  Touched only on this thread.
+    bool                 moxActive_    = false;
     bool                 filterBoardEnabled_ = false;
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
@@ -496,6 +573,28 @@ private:
     // operator isn't left deaf for minutes — pull-DOWNs still honor the
     // operator's hold-time setting; only the pull-UP is sped up.
     static constexpr int     kAutoLnaRecoverMs = 1000;
+    // ---- TX-0c-fsm: TR-sequencing delays (ms) -----------------------
+    // Values pulled from the operator's Thetis DB export
+    // (Default_5_16_2026; HL2+/AK4951 bench-validated set):
+    //   udMoxDelay         = 15  → kMoxDelayMs        (RX-protect → MOX)
+    //   udRFDelay          = 50  → kRfDelayMs         (MOX → RF settle;
+    //                                                  hot-switch-safe
+    //                                                  for ext linear)
+    //   udSpaceMoxDelay    = 13  → kSpaceMoxDelayMs   (keyup re-key win)
+    //   udGenPTTOutDelay   = 5   → kPttOutDelayMs     (MOX-clear → done)
+    // (udPTTHang = 10 ms / udHermesStepAttenuatorDelay = 100 ms /
+    //  udPSMoxDelay = 0.2 s land later — CW hang, RX att settle, PS.)
+    // Per CLAUDE.md §6.7 these eventually live in a per-radio
+    // capabilities struct; HL2+ values here are the v0.2 starting set.
+    static constexpr int     kMoxDelayMs      = 15;
+    static constexpr int     kRfDelayMs       = 50;
+    static constexpr int     kSpaceMoxDelayMs = 13;
+    static constexpr int     kPttOutDelayMs   = 5;
+    // ATT-on-TX value (matches operator's Thetis udATTOnTX=31): forces
+    // the AD9866 step-att to its 31-dB code on TX, which the encoder
+    // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the
+    // FAST_LNA arbiter = max RX-ADC protection during TX coupling.
+    static constexpr int     kAttOnTxDb       = 31;
 };
 
 } // namespace lyra::ipc

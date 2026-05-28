@@ -785,9 +785,13 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
 // A later TX phase wires these into the C&C round-robin under MOX gating.
 
 void HL2Stream::setMox(bool on) {
+    // Low-level: forces the wire MOX atomic directly, bypassing the
+    // TR-sequenced FSM.  Prefer requestMox() for operator/CAT paths.
+    // This stays in place for the FSM's own internal use + future
+    // dev/diag tools.
     const bool prev = mox_.exchange(on, std::memory_order_relaxed);
     if (prev != on) {
-        emit logLine(QStringLiteral("TX: MOX -> %1 (TX-0b: stored, not yet wired)")
+        emit logLine(QStringLiteral("TX: MOX bit (raw setter) -> %1")
                      .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
     }
 }
@@ -809,11 +813,149 @@ void HL2Stream::setTxStepAttnDb(int db) {
 }
 
 void HL2Stream::setPaEnabled(bool on) {
+    // Lands C2 bit 3 (0x08) of slot 10 (frame 0x12) — gateware
+    // PA-enable, active-high.  Default false; TX-0c-pa-debug will add
+    // the operator-gated Settings checkbox + the dummy-load bench
+    // safety wrap.  Wire-inert today regardless of value because no
+    // MOX edge has been driven from the UI yet.
     const bool prev = paOn_.exchange(on, std::memory_order_relaxed);
     if (prev != on) {
-        emit logLine(QStringLiteral("TX: PA enable -> %1 (TX-0b: stored, not yet wired)")
+        emit logLine(QStringLiteral("TX: PA enable -> %1")
                      .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
     }
+}
+
+// ---------------------------------------------------------------
+// TX-0c-fsm: MOX/PTT sequencer — single funnel `requestMox(bool)`,
+// internal TR-sequenced state machine.  All steps run on this
+// QObject's thread via QTimer::singleShot (no sleeps, no blocking).
+// Wire workers see the resulting mox_ / txStepAttnDb_ atomic flips
+// the same way they did before.
+//
+// State is captured by three plain bool/int fields owned by this
+// thread (requestedMox_ / fsmRunning_ / savedTxStepAttn_), plus
+// moxActive_ for the UI-visible "on the air" truth.  Re-entrancy
+// is handled by re-reading requestedMox_ at every timer boundary —
+// an operator cancel mid-keydown unwinds cleanly, a re-key during
+// the keyup space window collapses to stay TX (Thetis pattern).
+
+void HL2Stream::requestMox(bool on) {
+    requestedMox_ = on;
+    if (!fsmRunning_) {
+        fsmAdvance();
+    }
+    // If fsmRunning_ is true the chain in flight will see the new
+    // intent at its next timer boundary — no race with the wire
+    // worker because all FSM bookkeeping is single-thread.
+}
+
+void HL2Stream::fsmAdvance() {
+    // Decide what (if anything) to do based on intent vs wire state.
+    const bool wireOn = mox_.load(std::memory_order_relaxed);
+    if (requestedMox_ && !wireOn) {
+        // Keydown: raise ATT-on-TX, then schedule MOX bit set after
+        // mox_delay (gives the RX path time to attenuate before the
+        // gateware T/R relay engages).
+        fsmRunning_ = true;
+        savedTxStepAttn_ = txStepAttnDb_.load(std::memory_order_relaxed);
+        setTxStepAttnDb(kAttOnTxDb);
+        emit logLine(QStringLiteral(
+            "TX: keydown — ATT-on-TX %1 dB, mox_delay %2 ms")
+            .arg(kAttOnTxDb).arg(kMoxDelayMs));
+        QTimer::singleShot(kMoxDelayMs, this,
+                           [this]() { fsmKeydownPostMox(); });
+    } else if (!requestedMox_ && wireOn) {
+        // Keyup: schedule the space_mox re-key window.  Don't touch
+        // mox_ yet — kSpaceMoxDelayMs gives the operator a chance to
+        // re-key (CW dot tail, mic re-key) before the wire flip.
+        fsmRunning_ = true;
+        emit logLine(QStringLiteral(
+            "TX: keyup — space_mox_delay %1 ms (re-key window)")
+            .arg(kSpaceMoxDelayMs));
+        QTimer::singleShot(kSpaceMoxDelayMs, this,
+                           [this]() { fsmKeyupPostSpace(); });
+    } else {
+        // Nothing to do: intent already matches wire state.
+        fsmRunning_ = false;
+    }
+}
+
+void HL2Stream::fsmKeydownPostMox() {
+    if (!requestedMox_) {
+        // Operator cancelled mid-keydown (before the wire MOX bit
+        // even went on) — restore the saved step-att and exit clean.
+        setTxStepAttnDb(savedTxStepAttn_);
+        emit logLine(QStringLiteral(
+            "TX: keydown cancelled mid-mox_delay; ATT-on-TX restored"));
+        fsmRunning_ = false;
+        return;
+    }
+    // Flip the wire MOX bit — visible on the next EP2 datagram
+    // (~2.6 ms worst case at 380 Hz cadence).  C0 bit 0 on both USB
+    // frames of the next datagram (composeCC snapshots mox_ once
+    // per send) — coherent.
+    mox_.store(true, std::memory_order_release);
+    QTimer::singleShot(kRfDelayMs, this,
+                       [this]() { fsmKeydownSettled(); });
+}
+
+void HL2Stream::fsmKeydownSettled() {
+    if (!requestedMox_) {
+        // Cancelled mid-rf_delay — wire MOX already went on, must
+        // unwind through a real keyup (space → clear → ptt_out →
+        // restore att).  Schedule the keyup chain directly.
+        emit logLine(QStringLiteral(
+            "TX: keydown cancelled mid-rf_delay; initiating keyup"));
+        QTimer::singleShot(kSpaceMoxDelayMs, this,
+                           [this]() { fsmKeyupPostSpace(); });
+        return;
+    }
+    moxActive_ = true;
+    emit moxActiveChanged(true);
+    emit logLine(QStringLiteral("TX: MOX_TX (wire MOX bit settled)"));
+    fsmRunning_ = false;
+    // If the operator already requested off again during rf_delay
+    // (rare), pick it up now.
+    if (!requestedMox_) {
+        fsmAdvance();
+    }
+}
+
+void HL2Stream::fsmKeyupPostSpace() {
+    if (requestedMox_) {
+        // Re-key during the space window — collapse: stay TX, do not
+        // flip the wire bit.  mox_ is still true on the wire,
+        // moxActive_ remains true, no events emitted.
+        emit logLine(QStringLiteral(
+            "TX: re-keyed during space_mox window — staying TX"));
+        fsmRunning_ = false;
+        return;
+    }
+    mox_.store(false, std::memory_order_release);
+    QTimer::singleShot(kPttOutDelayMs, this,
+                       [this]() { fsmKeyupSettled(); });
+}
+
+void HL2Stream::fsmKeyupSettled() {
+    if (requestedMox_) {
+        // Operator re-keyed in the ~5 ms ptt_out window — the wire
+        // bit cleared briefly, now needs to go back on.  Unwind to
+        // the keydown path through fsmAdvance.
+        emit logLine(QStringLiteral(
+            "TX: re-keyed during ptt_out_delay — re-keying"));
+        fsmRunning_ = false;
+        fsmAdvance();
+        return;
+    }
+    // Restore the operator's pre-keydown step-att (today always 0;
+    // forward-compat for a future operator-tunable RX step-att).
+    setTxStepAttnDb(savedTxStepAttn_);
+    moxActive_ = false;
+    emit moxActiveChanged(false);
+    emit logLine(QStringLiteral(
+        "TX: RX (wire MOX cleared, ATT-on-TX restored to %1 dB)")
+        .arg(savedTxStepAttn_));
+    fsmRunning_ = false;
 }
 
 void HL2Stream::setSampleRate(int hz) {

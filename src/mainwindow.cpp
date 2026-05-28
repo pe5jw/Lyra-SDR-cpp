@@ -38,7 +38,12 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
+#include <QPlainTextEdit>
+#include <QSpinBox>
+#include <QTextEdit>
 #include <QMessageBox>
 #include <QQmlContext>
 #include <QQuickWidget>
@@ -1283,6 +1288,67 @@ void MainWindow::applyDefaultLayout() {
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();
     QMainWindow::closeEvent(event);
+}
+
+// ----------------------------------------------------------------
+// TX-0c-fsm — space-bar momentary PTT.
+//
+// Press space → Stream.requestMox(true); release → requestMox(false).
+// Auto-repeat is ignored (one edge per actual press; held key keeps
+// MOX on until release).  When a text-entry widget has focus the
+// event passes through unhandled so typing space into a freq overlay
+// or any QLineEdit/QSpinBox/QText* still types a space character.
+//
+// Limitation: QML TextField focus inside the embedded QQuickWidgets
+// is NOT detected (Qt reports the QQuickWidget itself as the focus
+// widget, not the inner QML item).  Mitigation today: the only QML
+// text-entry surface that takes focus is the freq-entry overlay in
+// TuningPanel which is hidden by default and only shown on explicit
+// click — operator-controlled, not accidental.  Refine via a QML
+// focus probe if a tester ever keys MOX while typing.
+//
+// The MOX button on TuningPanel (toggle on click) and this space-bar
+// momentary path BOTH funnel through Stream.requestMox, so intent
+// stays consistent: the FSM (single source of truth) resolves whether
+// to keydown / keyup / collapse / cancel.
+
+static bool isEditableFocus(QWidget *fw) {
+    if (!fw) return false;
+    if (qobject_cast<QLineEdit *>(fw))       return true;
+    if (qobject_cast<QSpinBox *>(fw))        return true;
+    if (qobject_cast<QPlainTextEdit *>(fw))  return true;
+    if (qobject_cast<QTextEdit *>(fw))       return true;
+    // QQuickWidget hosts QML; for TX-0c-fsm we route space through.
+    // The only QML focused text-entry today is the freq overlay (see
+    // commentary above); refine later if a tester reports keying MOX
+    // mid-typing.
+    return false;
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        if (!isEditableFocus(QApplication::focusWidget())) {
+            if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+                st->requestMox(true);
+                event->accept();
+                return;
+            }
+        }
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::keyReleaseEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        if (!isEditableFocus(QApplication::focusWidget())) {
+            if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+                st->requestMox(false);
+                event->accept();
+                return;
+            }
+        }
+    }
+    QMainWindow::keyReleaseEvent(event);
 }
 
 } // namespace lyra::ui
