@@ -366,11 +366,32 @@ QWidget *SettingsDialog::buildBandsTab() {
 }
 
 QWidget *SettingsDialog::buildNetworkTab() {
+    // Two-column layout (task #23, continuation of the Hardware/Visuals
+    // multi-column work): TCI server on the left, DX-cluster spots on
+    // the right.  The TCI status label hangs directly under the TCI
+    // group (left column).  The descriptive hint label spans the full
+    // width below both columns.  Same gutter (28 px) + same intra-form
+    // row spacing (10 px) as the other refactored tabs.
     auto *page = new QWidget(this);
     auto *v = new QVBoxLayout(page);
 
-    auto *grp = new QGroupBox(tr("TCI server"), page);
+    auto *cols   = new QWidget(page);
+    auto *colsHb = new QHBoxLayout(cols);
+    colsHb->setContentsMargins(0, 0, 0, 0);
+    colsHb->setSpacing(28);
+    auto *leftCol  = new QWidget(cols);
+    auto *leftVb   = new QVBoxLayout(leftCol);
+    leftVb->setContentsMargins(0, 0, 0, 0);
+    auto *rightCol = new QWidget(cols);
+    auto *rightVb  = new QVBoxLayout(rightCol);
+    rightVb->setContentsMargins(0, 0, 0, 0);
+    colsHb->addWidget(leftCol,  1);
+    colsHb->addWidget(rightCol, 1);
+    v->addWidget(cols);
+
+    auto *grp = new QGroupBox(tr("TCI server"), leftCol);
     auto *form = new QFormLayout(grp);
+    form->setVerticalSpacing(10);
 
     auto *host = new QLineEdit(tci_->bindHost(), grp);
     host->setPlaceholderText(QStringLiteral("127.0.0.1"));
@@ -457,13 +478,15 @@ QWidget *SettingsDialog::buildNetworkTab() {
         enable->setChecked(tci_->running());
     });
 
-    v->addWidget(grp);
-    v->addWidget(status);
+    leftVb->addWidget(grp);
+    leftVb->addWidget(status);
+    leftVb->addStretch(1);
 
     // DX-cluster spot display options.
     if (spots_) {
-        auto *sg = new QGroupBox(tr("DX-cluster spots"), page);
+        auto *sg = new QGroupBox(tr("DX-cluster spots"), rightCol);
         auto *sf = new QFormLayout(sg);
+        sf->setVerticalSpacing(10);
 
         auto *showSpots = new QCheckBox(tr("Show spots on the panadapter"), sg);
         showSpots->setChecked(spots_->showSpots());
@@ -535,7 +558,8 @@ QWidget *SettingsDialog::buildNetworkTab() {
                 [this]() { spots_->clearAll(); });
         sf->addRow(QString(), clearSpots);
 
-        v->addWidget(sg);
+        rightVb->addWidget(sg);
+        rightVb->addStretch(1);
     }
 
     auto *hint = new QLabel(
@@ -571,16 +595,18 @@ QWidget *SettingsDialog::buildHardwareTab() {
     auto *page  = new QWidget(this);
     auto *outer = new QHBoxLayout(page);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(14);
+    outer->setSpacing(28);
 
     auto *leftCol  = new QWidget(page);
     auto *leftForm = new QFormLayout(leftCol);
     leftForm->setContentsMargins(0, 0, 0, 0);
+    leftForm->setVerticalSpacing(10);
     outer->addWidget(leftCol, 1);
 
     auto *rightCol  = new QWidget(page);
     auto *rightForm = new QFormLayout(rightCol);
     rightForm->setContentsMargins(0, 0, 0, 0);
+    rightForm->setVerticalSpacing(10);
     outer->addWidget(rightCol, 1);
 
     // The body below uses `form->addRow(...)` extensively.  Start it
@@ -1346,8 +1372,49 @@ void SettingsDialog::selectTopic(const QString &topic) {
 }
 
 QWidget *SettingsDialog::buildVisualsTab() {
-    auto *page = new QWidget(this);
-    auto *form = new QFormLayout(page);
+    // Three-column layout (task #22, the SECOND big-tab refactor after
+    // Hardware).  Visuals had 26 controls / groups stacked vertically
+    // — the longest tab in Settings.  Same minimal-surgery technique
+    // as Hardware: three sibling QFormLayouts inside a horizontal
+    // split, the local `form` pointer repointed twice so the existing
+    // ~600 lines of `form->addRow(...)` call sites stay byte-identical.
+    // No widget construction changes, no signal/slot re-wires.
+    //
+    // Layout (top-down, left → middle → right):
+    //   LEFT   : Trace colour group, Waterfall palette group
+    //   MIDDLE : Waterfall speed + dB (auto/floor/ceiling), Spectrum
+    //            fill group, Peak markers group, Noise floor group,
+    //            Trace smoothing, Peak glow, Glass sheen, Watermark
+    //   RIGHT  : Meteors + Meteor frequency + Gold fireballs, Gridline
+    //            brightness, Cursor readout, Frame rate, Spectrum dB
+    //            (auto/floor/ceiling), Graphics backend group
+    auto *page  = new QWidget(this);
+    auto *outer = new QHBoxLayout(page);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(14);
+
+    auto *leftCol  = new QWidget(page);
+    auto *leftForm = new QFormLayout(leftCol);
+    leftForm->setContentsMargins(0, 0, 0, 0);
+    leftForm->setVerticalSpacing(10);
+    outer->addWidget(leftCol, 1);
+
+    auto *midCol  = new QWidget(page);
+    auto *midForm = new QFormLayout(midCol);
+    midForm->setContentsMargins(0, 0, 0, 0);
+    midForm->setVerticalSpacing(10);
+    outer->addWidget(midCol, 1);
+
+    auto *rightCol  = new QWidget(page);
+    auto *rightForm = new QFormLayout(rightCol);
+    rightForm->setContentsMargins(0, 0, 0, 0);
+    rightForm->setVerticalSpacing(10);
+    outer->addWidget(rightCol, 1);
+
+    // Body below addresses `form` extensively.  Start at left, switch
+    // to middle just before "Waterfall speed", switch to right just
+    // before "Meteor streaks".
+    QFormLayout *form = leftForm;
 
     // --- Trace colour: Solid (picked colour) OR By-strength (palette) ---
     // Solid mirrors old Lyra (preset chips + custom chooser).  By-strength
@@ -1629,6 +1696,16 @@ QWidget *SettingsDialog::buildVisualsTab() {
 
         form->addRow(tr("Waterfall palette"), wbox);
     }
+
+    // ---- Switch to the middle column (see scaffolding comment at the
+    // top of this function). -----------------------------------------
+    {
+        auto *spacer = new QWidget(leftCol);
+        spacer->setSizePolicy(QSizePolicy::Preferred,
+                              QSizePolicy::Expanding);
+        form->addRow(spacer);
+    }
+    form = midForm;
 
     // --- Waterfall speed (history rows per second) ---
     auto *wspeed = new QSpinBox(page);
@@ -1919,6 +1996,15 @@ QWidget *SettingsDialog::buildVisualsTab() {
     });
     form->addRow(tr("Watermark"), wm);
 
+    // ---- Switch to the right column. -------------------------------
+    {
+        auto *spacer = new QWidget(midCol);
+        spacer->setSizePolicy(QSizePolicy::Preferred,
+                              QSizePolicy::Expanding);
+        form->addRow(spacer);
+    }
+    form = rightForm;
+
     // --- Meteor streaks (rare ambient shooting stars) ---
     auto *met = new QCheckBox(tr("Show occasional meteor streaks"), page);
     met->setChecked(prefs_->meteors());
@@ -2173,6 +2259,12 @@ QWidget *SettingsDialog::buildNoiseTab() {
 }
 
 QWidget *SettingsDialog::buildWeatherTab() {
+    // Two-column layout (task #23, continuation of the Hardware/Visuals/
+    // Network refactor): the disclaimer + master-enable checkboxes stay
+    // full-width at the top (they gate every other widget below), then a
+    // horizontal split puts Sources + Notifications on the left and
+    // Thresholds + API credentials on the right.  Same 28 px gutter +
+    // 10 px form row spacing as the other refactored tabs.
     auto *page = new QWidget(this);
     auto *outer = new QVBoxLayout(page);
     auto apply = [this]() { if (wx_) wx_->reloadConfig(); };
@@ -2189,6 +2281,22 @@ QWidget *SettingsDialog::buildWeatherTab() {
     enable->setChecked(QSettings().value(QStringLiteral("wx/enabled"), false).toBool());
     enable->setEnabled(disc->isChecked());
     outer->addWidget(enable);
+
+    // Two-column container below the gating checkboxes.
+    auto *cols   = new QWidget(page);
+    auto *colsHb = new QHBoxLayout(cols);
+    colsHb->setContentsMargins(0, 0, 0, 0);
+    colsHb->setSpacing(28);
+    auto *leftCol  = new QWidget(cols);
+    auto *leftVb   = new QVBoxLayout(leftCol);
+    leftVb->setContentsMargins(0, 0, 0, 0);
+    auto *rightCol = new QWidget(cols);
+    auto *rightVb  = new QVBoxLayout(rightCol);
+    rightVb->setContentsMargins(0, 0, 0, 0);
+    colsHb->addWidget(leftCol,  1);
+    colsHb->addWidget(rightCol, 1);
+    outer->addWidget(cols);
+    QBoxLayout *col = leftVb;   // pointer the four blocks below append to
 
     connect(disc, &QCheckBox::toggled, page, [enable, apply](bool on) {
         QSettings().setValue(QStringLiteral("wx/disclaimer_accepted"), on);
@@ -2226,13 +2334,15 @@ QWidget *SettingsDialog::buildWeatherTab() {
               QStringLiteral("wx/src_ambient"), false);
         mkSrc(tr("Ecowitt — your station (needs keys below)"),
               QStringLiteral("wx/src_ecowitt"), false);
-        outer->addWidget(grp);
+        col->addWidget(grp);
     }
 
     // --- Thresholds + station/units ---
+    col = rightVb;   // switch to RIGHT column
     {
         auto *grp = new QGroupBox(tr("Thresholds"), page);
         auto *f = new QFormLayout(grp);
+        f->setVerticalSpacing(10);
 
         // Distance unit drives the lightning-range display; range is
         // always STORED in km (wx/lightning_range_km), shown in mi/km.
@@ -2305,10 +2415,11 @@ QWidget *SettingsDialog::buildWeatherTab() {
             apply();
         });
         f->addRow(tr("Distance unit"), unit);
-        outer->addWidget(grp);
+        col->addWidget(grp);
     }
 
     // --- Notifications + test ---
+    col = leftVb;   // back to LEFT column
     {
         auto *grp = new QGroupBox(tr("Notifications"), page);
         auto *v = new QVBoxLayout(grp);
@@ -2349,13 +2460,16 @@ QWidget *SettingsDialog::buildWeatherTab() {
         connect(test, &QPushButton::clicked, page,
                 [this]() { if (wx_) wx_->fireTestSnapshot(); });
         v->addWidget(test);
-        outer->addWidget(grp);
+        col->addWidget(grp);
+        leftVb->addStretch(1);   // push left column groups to the top
     }
 
     // --- API credentials (Ambient / Ecowitt) ---
+    col = rightVb;   // back to RIGHT column
     {
         auto *grp = new QGroupBox(tr("Station API credentials"), page);
         auto *f = new QFormLayout(grp);
+        f->setVerticalSpacing(10);
         auto mkKey = [f, grp, apply](const QString &label, const QString &key) {
             auto *e = new QLineEdit(QSettings().value(key).toString(), grp);
             e->setEchoMode(QLineEdit::Password);
@@ -2379,7 +2493,8 @@ QWidget *SettingsDialog::buildWeatherTab() {
             apply();
         });
         f->addRow(tr("Ecowitt gateway MAC"), mac);
-        outer->addWidget(grp);
+        col->addWidget(grp);
+        rightVb->addStretch(1);   // push right column groups to the top
     }
 
     outer->addStretch(1);
