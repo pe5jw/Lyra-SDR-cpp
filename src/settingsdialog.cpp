@@ -555,8 +555,39 @@ QWidget *SettingsDialog::buildNetworkTab() {
 }
 
 QWidget *SettingsDialog::buildHardwareTab() {
-    auto *page = new QWidget(this);
-    auto *form = new QFormLayout(page);
+    // Two-column layout (task #22, operator-flagged 3× — the Hardware
+    // tab had grown to ~10 groups + 7 inline form rows + the Transmit
+    // group, overflowing the dialog height).  Wider is easier to scan
+    // than scrolling.  Implementation is intentionally minimal: two
+    // sibling QFormLayouts inside a horizontal split; the local `form`
+    // pointer is repointed midway so the existing `form->addRow(...)`
+    // call sites stay byte-identical.  No widget construction changes,
+    // no signal/slot re-wires, no QSettings churn.
+    //
+    // Layout (top-down, left then right):
+    //   LEFT  : Operator/Station, Band plan, Band panel, Diagnostics
+    //   RIGHT : Radio (HL2 discovery), external-HW + BCD inline rows,
+    //           Transmit (TX safety + PA enable)
+    auto *page  = new QWidget(this);
+    auto *outer = new QHBoxLayout(page);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(14);
+
+    auto *leftCol  = new QWidget(page);
+    auto *leftForm = new QFormLayout(leftCol);
+    leftForm->setContentsMargins(0, 0, 0, 0);
+    outer->addWidget(leftCol, 1);
+
+    auto *rightCol  = new QWidget(page);
+    auto *rightForm = new QFormLayout(rightCol);
+    rightForm->setContentsMargins(0, 0, 0, 0);
+    outer->addWidget(rightCol, 1);
+
+    // The body below uses `form->addRow(...)` extensively.  Start it
+    // pointing at the left column; switch to the right column just
+    // before the Radio group lower down.  Avoids touching ~500 lines
+    // of widget code.
+    QFormLayout *form = leftForm;
 
     // --- Operator / Station ---
     // Callsign + Maidenhead grid (+ manual lat/lon fallback).  The
@@ -816,6 +847,19 @@ QWidget *SettingsDialog::buildHardwareTab() {
 
         form->addRow(grp);
     }
+
+    // ---- Switch to the right column (see scaffolding comment at the
+    // top of this function).  Everything below — Radio (HL2 discovery
+    // + connect), the external-HW / BCD inline form rows, and the
+    // Transmit group — lands in the right column.  The right column
+    // is intentionally taller (Radio's discovery list + 7 BCD/filter
+    // rows + Transmit add up); the left column gets a vertical spacer
+    // at the end so its groups stay top-anchored. -----------------
+    auto *leftBottomSpacer = new QWidget(leftCol);
+    leftBottomSpacer->setSizePolicy(QSizePolicy::Preferred,
+                                    QSizePolicy::Expanding);
+    form->addRow(leftBottomSpacer);
+    form = rightForm;
 
     // --- Radio (HL2 discovery + connect) ---
     // LAN scan + found-radios list + Open/Close.  Moved here from the
