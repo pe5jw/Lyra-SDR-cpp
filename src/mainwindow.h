@@ -138,6 +138,12 @@ private:
     // Per-panel "?" badge targets (driven by the Help bridge).
     void showHelp(const QString &topic);        // open the User Guide at topic
     void openSettingsTopic(const QString &topic);// Settings, on topic's tab
+    // TX-0c-pa-debug — refresh the HL2 telemetry strip on the right
+    // side of the status bar (T / V / PA current).  Driven by
+    // HL2Stream::statsChanged (~5 Hz).  PA current goes red+bold when
+    // ≥50 mA (the operator-visible "RF on the air" indicator for the
+    // first-RF bench and beyond).
+    void refreshHl2TelemetryStrip();
 
     QObject *discovery_  = nullptr;
     QObject *stream_     = nullptr;
@@ -149,6 +155,13 @@ private:
     NcdxfFollow         *ncdxfFollow_ = nullptr;   // NCDXF beacon auto-follow
     WxIndicator         *wxIndicator_ = nullptr;   // header alert badges
     QSystemTrayIcon     *tray_ = nullptr;          // lazy, for wx toasts
+    // TX-0c-pa-debug — HL2 telemetry strip on the right of the status
+    // bar.  Permanent widget (never displaced by transient
+    // showMessage); renders "HL2: T 24.7°C  V 12.3 V  PA 0.00 A" from
+    // the existing TX-0a Q_PROPERTYs.  PA current ≥50 mA → bold red
+    // (operator-visible RF indicator + B-pa bench observable + the
+    // §15.20 kill-test PA-bias-drop signal).
+    QLabel              *hl2TelemLabel_ = nullptr;
 
     QHash<QString, QDockWidget *> docks_;
     QAction                    *lockAction_ = nullptr;

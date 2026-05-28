@@ -130,6 +130,31 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                 statusBar()->showMessage(t, ms);
             });
 
+    // TX-0c-pa-debug — HL2 telemetry strip on the right of the status
+    // bar.  Permanent widget so transient `showMessage` (on the left)
+    // never displaces it.  T/V are RX-anytime useful; PA current is
+    // the LOAD-BEARING bench observable for B-pa first-RF bench + the
+    // §15.20/§15.24-C kill-test (PA bias must drop within N sec of
+    // taskkill).  At-rest text uses "—" so the strip always reads as
+    // intentional UI even pre-Start (telemetry getters return NaN).
+    hl2TelemLabel_ = new QLabel(this);
+    hl2TelemLabel_->setText(tr("HL2: T —  V —  PA —"));
+    hl2TelemLabel_->setStyleSheet(QStringLiteral(
+        "QLabel{color:#8fa6ba;font-family:Consolas,Menlo,monospace;"
+        "padding:0 8px;}"));
+    hl2TelemLabel_->setToolTip(tr(
+        "HL2 telemetry: temperature, supply voltage, PA bias current.  "
+        "PA turns red ≥50 mA — when red, the gateware is producing RF.  "
+        "Kill-test (§15.20): taskkill /F /IM lyra.exe mid-key; PA must "
+        "drop to zero within ~13 sec (gateware EP2 watchdog)."));
+    statusBar()->addPermanentWidget(hl2TelemLabel_);
+    if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        connect(st, &lyra::ipc::HL2Stream::statsChanged, this,
+                &MainWindow::refreshHl2TelemetryStrip);
+        // Initial paint (will show — until first stats tick).
+        refreshHl2TelemetryStrip();
+    }
+
     // PC clock-drift check (NCDXF beacon timing is UTC-locked).  On-demand
     // via the header clock right-click menu; result drives the ⚠ on the
     // UTC clock + an advisory dialog.
@@ -1288,6 +1313,51 @@ void MainWindow::applyDefaultLayout() {
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();
     QMainWindow::closeEvent(event);
+}
+
+// ----------------------------------------------------------------
+// TX-0c-pa-debug — HL2 telemetry strip refresh.
+//
+// Reads the TX-0a Q_PROPERTYs (hl2TempC / hl2SupplyV / paCurrentA),
+// formats "HL2: T 24.7°C  V 12.3 V  PA 0.00 A".  NaN getters (no
+// telemetry frames yet, e.g. pre-Start) render as "—" so the strip
+// is always coherent.  PA current goes BOLD RED at ≥50 mA — the
+// operator's at-a-glance "RF on the air" indicator.  Threshold is
+// safely above the worst-case noise on a NaN/zero idle reading and
+// well below any keyed-bias level (HL2+ idle PA bias ≈ 200 mA on
+// the operator's unit; full tune draws ~1.8 A).
+//
+// Updates fire from HL2Stream::statsChanged (~5 Hz via statsTimer_),
+// the same signal that already drives the existing stats UI — no
+// new timer, no new wake-ups, no impact on the EP2/wire cadence.
+void MainWindow::refreshHl2TelemetryStrip() {
+    if (!hl2TelemLabel_) return;
+    auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+    if (!st) return;
+
+    auto fmt = [](double v, int prec, const QString &unit) -> QString {
+        if (std::isnan(v)) return QStringLiteral("—");
+        return QStringLiteral("%1 %2").arg(v, 0, 'f', prec).arg(unit);
+    };
+
+    const double t   = st->hl2TempC();
+    const double v   = st->hl2SupplyV();
+    const double pa  = st->paCurrentA();
+
+    hl2TelemLabel_->setText(QStringLiteral("HL2: T %1  V %2  PA %3")
+        .arg(fmt(t,  1, QStringLiteral("°C")))
+        .arg(fmt(v,  2, QStringLiteral("V")))
+        .arg(fmt(pa, 2, QStringLiteral("A"))));
+
+    // RF-on indicator: PA current red+bold ≥50 mA.  Stays muted blue
+    // when PA is idle (gateware off, MOX off, or PA-enable unchecked)
+    // so the operator sees a clean transition on each keydown/keyup.
+    const bool paLive = !std::isnan(pa) && pa >= 0.05;
+    hl2TelemLabel_->setStyleSheet(paLive
+        ? QStringLiteral("QLabel{color:#ff4040;font-family:Consolas,"
+                         "Menlo,monospace;padding:0 8px;font-weight:bold;}")
+        : QStringLiteral("QLabel{color:#8fa6ba;font-family:Consolas,"
+                         "Menlo,monospace;padding:0 8px;}"));
 }
 
 // ----------------------------------------------------------------
