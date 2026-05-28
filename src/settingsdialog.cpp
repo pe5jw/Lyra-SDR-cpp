@@ -1083,6 +1083,68 @@ QWidget *SettingsDialog::buildHardwareTab() {
         }
     }
 
+    // --- TX safety + PA (TX-0c-pa-debug) ---
+    // First slice (this commit): host-side safety timeout — auto-clears
+    // MOX if the radio is keyed continuously past N minutes.  Lives on
+    // its own (no RF involved) so the operator can bench it before the
+    // PA-enable wiring lands (next slice).  Per the §15.20 spec: 1..20
+    // min range, 10 min default, bypass for long-form (AM ragchew, slow
+    // CW beacon).  All persisted via QSettings inside HL2Stream's setters.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("Transmit"), page);
+        auto *g = new QGridLayout(grp);
+        g->setColumnStretch(1, 1);
+
+        g->addWidget(new QLabel(tr("TX safety timeout (min)"), grp), 0, 0);
+        auto *toSpin = new QSpinBox(grp);
+        toSpin->setRange(lyra::ipc::HL2Stream::kTxTimeoutMinSec / 60,
+                         lyra::ipc::HL2Stream::kTxTimeoutMaxSec / 60);
+        toSpin->setValue(stream_->txTimeoutSec() / 60);
+        toSpin->setFixedWidth(80);
+        toSpin->setToolTip(tr(
+            "Auto-clears MOX if the radio stays keyed continuously past "
+            "this many minutes.  Protects against a stuck PTT, an "
+            "operator falling asleep, or a software bug latching MOX. "
+            "1..20 min."));
+        connect(toSpin, QOverload<int>::of(&QSpinBox::valueChanged), grp,
+                [this](int min) {
+            if (stream_) stream_->setTxTimeoutSec(min * 60);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::txTimeoutSecChanged, toSpin,
+                [toSpin](int sec) {
+            if (toSpin->value() != sec / 60) toSpin->setValue(sec / 60);
+        });
+        g->addWidget(toSpin, 0, 1, Qt::AlignLeft);
+
+        auto *bypass = new QCheckBox(tr("Bypass safety timeout"), grp);
+        bypass->setChecked(stream_->txTimeoutBypass());
+        bypass->setToolTip(tr(
+            "Disables the auto-release entirely.  Use for long-form modes "
+            "(AM ragchew, slow CW beacon).  When OFF the safety timer "
+            "re-arms with a fresh full duration on every keydown."));
+        connect(bypass, &QCheckBox::toggled, grp, [this](bool on) {
+            if (stream_) stream_->setTxTimeoutBypass(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::txTimeoutBypassChanged,
+                bypass, [bypass](bool on) {
+            if (bypass->isChecked() != on) bypass->setChecked(on);
+        });
+        g->addWidget(bypass, 1, 0, 1, 2);
+
+        // Help label — sets expectations for the bench checklist.
+        auto *help = new QLabel(grp);
+        help->setText(tr(
+            "<b>Safety:</b> the timeout clears MOX through the normal "
+            "FSM keyup chain (ATT-on-TX restores, T/R relay drops, log "
+            "line emitted).  Bypass + a stuck PTT = radio keyed until "
+            "you intervene — only set Bypass when you know you need it."));
+        help->setWordWrap(true);
+        help->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
+        g->addWidget(help, 2, 0, 1, 2);
+
+        form->addRow(grp);
+    }
+
     return page;
 }
 

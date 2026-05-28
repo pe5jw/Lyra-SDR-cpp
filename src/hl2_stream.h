@@ -152,6 +152,17 @@ class HL2Stream : public QObject {
     // off this, NOT off the toggle button's checked state, so the LED
     // tracks the actual radio state through the TR-delay window.
     Q_PROPERTY(bool moxActive READ moxActive NOTIFY moxActiveChanged)
+    // TX-0c-pa-debug — host-side TX safety timeout.  Auto-clears MOX
+    // (via requestMox(false)) if the radio stays keyed continuously
+    // past txTimeoutSec seconds.  Persisted (tx/timeoutSeconds in
+    // QSettings).  Operator can bypass via txTimeoutBypass — typically
+    // for long-form AM ragchews / slow CW beacons where the ~10-min
+    // default is too short.  Default is 600 s (10 min); range 60..1200
+    // (1..20 min) enforced by the setter.
+    Q_PROPERTY(int  txTimeoutSec    READ txTimeoutSec
+               WRITE setTxTimeoutSec NOTIFY txTimeoutSecChanged)
+    Q_PROPERTY(bool txTimeoutBypass READ txTimeoutBypass
+               WRITE setTxTimeoutBypass NOTIFY txTimeoutBypassChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -192,6 +203,11 @@ public:
     // now the operator's choice, with Auto-LNA managing the edge).
     static constexpr int kLnaMinDb = -12;
     static constexpr int kLnaMaxDb =  48;
+    // TX safety timeout operator-facing range (seconds) — exposed so the
+    // Settings UI builds its SpinBox against the canonical bounds.
+    static constexpr int kTxTimeoutDefaultSec = 600;   // 10 min default
+    static constexpr int kTxTimeoutMinSec     = 60;    //  1 min floor
+    static constexpr int kTxTimeoutMaxSec     = 1200;  // 20 min ceiling
     bool    filterBoardEnabled() const { return filterBoardEnabled_; }
     int     ocBits()             const { return ocPattern_; }
     // TX-0a telemetry getters — convert the raw 12-bit EP6 ADC slots
@@ -206,6 +222,11 @@ public:
     // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
     // settle, pre-keyup-clear).  Read by the UI red-on-air indicator.
     bool    moxActive()  const { return moxActive_; }
+    // TX-0c-pa-debug — operator-tunable safety timeout (seconds) +
+    // bypass.  Setters clamp + persist + emit changes; the FSM-side
+    // keydown/keyup hooks arm/cancel the QTimer.
+    int     txTimeoutSec()    const { return txTimeoutSec_; }
+    bool    txTimeoutBypass() const { return txTimeoutBypass_; }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -345,6 +366,20 @@ public slots:
     // etc., all work).
     void requestMox(bool on);
 
+    // ---- TX-0c-pa-debug: host-side safety timeout ----------------
+    // setTxTimeoutSec clamps to kTxTimeoutMinSec..kTxTimeoutMaxSec
+    // (60..1200 s; 1..20 min UI), persists to QSettings, and emits
+    // txTimeoutSecChanged.  If the radio is currently keyed the
+    // timer is re-armed with the new full duration (operator intent
+    // = "I want N more seconds from now").
+    //
+    // setTxTimeoutBypass false → true cancels any active safety
+    // timer (operator turned safety OFF mid-key); true → false re-
+    // arms with full duration when keyed (operator turned safety
+    // back ON, applies immediately).
+    void setTxTimeoutSec(int sec);
+    void setTxTimeoutBypass(bool on);
+
 signals:
     void runningChanged();
     void statsChanged();
@@ -364,6 +399,15 @@ signals:
     // transition completes (true at end of keydown rf_delay; false at end
     // of keyup ptt_out_delay).  Does NOT fire on mid-transition states.
     void moxActiveChanged(bool on);
+    // TX-0c-pa-debug — fires on operator-set changes to the safety
+    // timeout + bypass.  Settings UI binds via Q_PROPERTY; persistence
+    // lives in the setter.
+    void txTimeoutSecChanged(int sec);
+    void txTimeoutBypassChanged(bool on);
+    // Fires once when the safety timeout actually expires and the FSM
+    // auto-clears MOX.  Useful for a status-bar toast / log highlight;
+    // the actual MOX-off is driven through requestMox(false) regardless.
+    void txTimeoutFired();
 
 private slots:
     void onStatsTick();
@@ -385,6 +429,15 @@ private:
                               //   (or collapse-stay-TX if re-keyed)
     void fsmKeyupSettled();   // after kPttOutDelayMs  — restore step-att,
                               //   emit moxActiveChanged(false)
+    // TX-0c-pa-debug — arm the safety timer (called at moxActive=true
+    // edge if bypass is off) / cancel it (at moxActive=false edge).
+    // No-ops if bypass is on.
+    void armTxSafetyTimer();
+    void cancelTxSafetyTimer();
+    // QTimer expiry slot — driven by tx_safety_timer_; routes through
+    // requestMox(false) so the standard keyup TR-delay chain runs
+    // cleanly (no shortcut on the wire bit).
+    void onTxSafetyTimeout();
     // TX-0c emit: compose one C&C frame (C0..C4) for cycle slot `idx`
     // (0..18), reading the live MOX/freq/drive/step-att/PA state.  Pure
     // function — single-thread owned by txWorker_ (no locks needed; reads
@@ -532,6 +585,15 @@ private:
     // the UI red-on-air indicator (NOT the toggle button's checked
     // state).  Touched only on this thread.
     bool                 moxActive_    = false;
+    // TX-0c-pa-debug — host-side safety timeout state.  Both ints/
+    // bools are single-thread (this QObject's thread) — set by the
+    // operator via the Settings UI, read by the FSM keydown hook to
+    // decide whether to arm tx_safety_timer_ on each keydown edge.
+    int                  txTimeoutSec_     = 600;   // 10 min default
+    bool                 txTimeoutBypass_  = false;
+    // Single-shot timer driving the auto-MOX-off on safety expiry.
+    // Owned by this QObject (parent = this), runs on this thread.
+    QTimer              *txSafetyTimer_    = nullptr;
     bool                 filterBoardEnabled_ = false;
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
@@ -595,6 +657,8 @@ private:
     // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the
     // FAST_LNA arbiter = max RX-ADC protection during TX coupling.
     static constexpr int     kAttOnTxDb       = 31;
+    // TX safety timeout range — see public section above (canonical
+    // bounds exposed for the Settings UI).
 };
 
 } // namespace lyra::ipc

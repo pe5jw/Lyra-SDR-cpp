@@ -183,6 +183,28 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     autoLnaUndo_    = QSettings().value(QStringLiteral("rx/autoLnaUndo"), true).toBool();
     autoLnaHoldSec_ = std::clamp(
         QSettings().value(QStringLiteral("rx/autoLnaHoldSec"), 4).toInt(), 1, 60);
+
+    // TX-0c-pa-debug — host-side safety timeout state.  Persisted so an
+    // operator-set 5-min timeout survives restarts.  Bypass starts false
+    // every launch unless explicitly persisted as true (no surprise
+    // "safety is off" on a fresh launch).
+    txTimeoutSec_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/timeoutSeconds"),
+                          kTxTimeoutDefaultSec).toInt(),
+        kTxTimeoutMinSec, kTxTimeoutMaxSec);
+    txTimeoutBypass_ = QSettings().value(
+        QStringLiteral("tx/timeoutBypass"), false).toBool();
+    txSafetyTimer_ = new QTimer(this);
+    txSafetyTimer_->setSingleShot(true);
+    connect(txSafetyTimer_, &QTimer::timeout,
+            this, &HL2Stream::onTxSafetyTimeout);
+    // Self-wire keydown/keyup edges to arm/cancel the safety timer.
+    // Same-thread queued not needed — moxActiveChanged fires from this
+    // QObject's thread (the FSM steps run via QTimer::singleShot here).
+    connect(this, &HL2Stream::moxActiveChanged, this, [this](bool on) {
+        if (on)  armTxSafetyTimer();
+        else     cancelTxSafetyTimer();
+    });
 }
 
 void HL2Stream::setLnaGainDb(int db)
@@ -956,6 +978,76 @@ void HL2Stream::fsmKeyupSettled() {
         "TX: RX (wire MOX cleared, ATT-on-TX restored to %1 dB)")
         .arg(savedTxStepAttn_));
     fsmRunning_ = false;
+}
+
+// ---------------------------------------------------------------
+// TX-0c-pa-debug: host-side TX safety timeout.
+//
+// QTimer-based auto-MOX-off so a stuck transmitter (held key, asleep
+// at the desk, runaway PTT) doesn't hold the air for hours.  Arms on
+// the wire MOX-on edge (moxActiveChanged(true)), cancels on the
+// MOX-off edge.  On fire we route through requestMox(false) — same
+// path as a normal key-up, so the FSM runs the keyup TR-delay chain
+// cleanly + ATT-on-TX is restored.  Bypass switches the safety off
+// entirely (long-form AM ragchews, CW beacons, bench debugging).
+
+void HL2Stream::setTxTimeoutSec(int sec) {
+    sec = std::clamp(sec, kTxTimeoutMinSec, kTxTimeoutMaxSec);
+    if (sec == txTimeoutSec_) return;
+    txTimeoutSec_ = sec;
+    QSettings().setValue(QStringLiteral("tx/timeoutSeconds"), sec);
+    emit txTimeoutSecChanged(sec);
+    emit logLine(QStringLiteral("TX safety timeout = %1 s (%2 min)")
+                 .arg(sec).arg(sec / 60.0, 0, 'f', 1));
+    // If currently keyed, re-arm with the new full duration.  Operator
+    // intent ("I want N more seconds from now") — symmetric with the
+    // bypass-toggle behaviour below.
+    if (moxActive_ && !txTimeoutBypass_) {
+        armTxSafetyTimer();
+    }
+}
+
+void HL2Stream::setTxTimeoutBypass(bool on) {
+    if (on == txTimeoutBypass_) return;
+    txTimeoutBypass_ = on;
+    QSettings().setValue(QStringLiteral("tx/timeoutBypass"), on);
+    emit txTimeoutBypassChanged(on);
+    emit logLine(QStringLiteral("TX safety timeout bypass -> %1")
+                 .arg(on ? QStringLiteral("ON (no auto-release)")
+                         : QStringLiteral("off (auto-release armed)")));
+    if (moxActive_) {
+        if (on)  cancelTxSafetyTimer();    // safety just turned OFF
+        else     armTxSafetyTimer();       // safety just turned ON;
+                                           // fresh full duration
+    }
+}
+
+void HL2Stream::armTxSafetyTimer() {
+    if (txTimeoutBypass_ || !txSafetyTimer_) return;
+    // QTimer::start(int) with a fresh duration replaces any pending
+    // expiry — operator intent on bypass-off-then-on or duration change
+    // is "give me a fresh full window from this moment."
+    txSafetyTimer_->start(txTimeoutSec_ * 1000);
+    emit logLine(QStringLiteral("TX safety: armed for %1 s").arg(txTimeoutSec_));
+}
+
+void HL2Stream::cancelTxSafetyTimer() {
+    if (!txSafetyTimer_) return;
+    if (txSafetyTimer_->isActive()) {
+        txSafetyTimer_->stop();
+        emit logLine(QStringLiteral("TX safety: cancelled (keyup or bypass)"));
+    }
+}
+
+void HL2Stream::onTxSafetyTimeout() {
+    // Drive the auto-release through the normal funnel so the TR-delay
+    // keyup chain runs cleanly + ATT-on-TX restores + UI red-on-air
+    // clears via the standard moxActiveChanged(false) edge.
+    emit logLine(QStringLiteral(
+        "TX safety: timeout reached after %1 s — auto-releasing")
+        .arg(txTimeoutSec_));
+    emit txTimeoutFired();
+    requestMox(false);
 }
 
 void HL2Stream::setSampleRate(int hz) {
