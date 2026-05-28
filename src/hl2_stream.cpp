@@ -487,7 +487,16 @@ void HL2Stream::close() {
     tuneEnabled_.store(false, std::memory_order_relaxed);
     requestedMox_  = false;
     fsmRunning_    = false;
-    if (moxActive_) { moxActive_ = false; emit moxActiveChanged(false); }
+    if (moxActive_) {
+        moxActive_ = false;
+        emit moxActiveChanged(false);
+        // OC pattern back to RX: forced close mid-TX would otherwise
+        // leave the filter board in TX configuration after stop.  The
+        // final EP2 frame carries the RX pattern alongside MOX=0 + PA
+        // disarmed — symmetric with the FSM keyup restore in
+        // fsmKeyupSettled.
+        updateOcPattern(/*transmitting=*/false);
+    }
     if (txSafetyTimer_ && txSafetyTimer_->isActive()) txSafetyTimer_->stop();
     emit paEnabledChanged(false);  // Settings UI follows
     emit tuneEnabledChanged(false);// TX panel UI follows
@@ -1021,6 +1030,15 @@ void HL2Stream::fsmAdvance() {
         fsmRunning_ = true;
         savedTxStepAttn_ = txStepAttnDb_.load(std::memory_order_relaxed);
         setTxStepAttnDb(kAttOnTxDb);
+        // Switch the OC pattern to the TX-side per-band bits FIRST so
+        // the external filter board's relays have the mox_delay window
+        // (~15 ms) to settle into TX configuration before the MOX bit
+        // hits the wire and any RF starts.  On N2ADR this is a no-op at
+        // the LPF level (RX/TX use the same per-band LPF) but it does
+        // drop the RX-only 3 MHz HPF; on other filter boards where TX
+        // LPF and RX BPF are on different relays, this gives them time
+        // to settle before RF appears.  Hot-switch safety.
+        updateOcPattern(/*transmitting=*/true);
         emit logLine(QStringLiteral(
             "TX: keydown — ATT-on-TX %1 dB, mox_delay %2 ms")
             .arg(kAttOnTxDb).arg(kMoxDelayMs));
@@ -1045,8 +1063,10 @@ void HL2Stream::fsmAdvance() {
 void HL2Stream::fsmKeydownPostMox() {
     if (!requestedMox_) {
         // Operator cancelled mid-keydown (before the wire MOX bit
-        // even went on) — restore the saved step-att and exit clean.
+        // even went on) — restore the saved step-att + OC RX pattern
+        // and exit clean.  Symmetric with the fsmAdvance keydown raise.
         setTxStepAttnDb(savedTxStepAttn_);
+        updateOcPattern(/*transmitting=*/false);
         emit logLine(QStringLiteral(
             "TX: keydown cancelled mid-mox_delay; ATT-on-TX restored"));
         fsmRunning_ = false;
@@ -1112,6 +1132,12 @@ void HL2Stream::fsmKeyupSettled() {
     // Restore the operator's pre-keydown step-att (today always 0;
     // forward-compat for a future operator-tunable RX step-att).
     setTxStepAttnDb(savedTxStepAttn_);
+    // Switch the OC pattern back to the RX-side per-band bits.  This
+    // happens AFTER the wire MOX bit has cleared (in fsmKeyupPostSpace)
+    // AND ptt_out_delay has elapsed — so the filter board only returns
+    // to RX configuration when no RF is being emitted.  Mirror of the
+    // fsmAdvance keydown raise; symmetric hot-switch safety.
+    updateOcPattern(/*transmitting=*/false);
     moxActive_ = false;
     emit moxActiveChanged(false);
     emit logLine(QStringLiteral(
@@ -1351,13 +1377,21 @@ void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
     }
 }
 
-void HL2Stream::updateOcPattern() {
-    // RX pattern for the current band when the board is enabled, else 0.
+void HL2Stream::updateOcPattern(bool transmitting) {
+    // OC pattern for the current band when the board is enabled, else 0.
+    // The FSM passes transmitting=true on keydown (in fsmAdvance, after
+    // raising ATT-on-TX) so the TX-side OC bits hit the wire BEFORE the
+    // MOX bit + rf_delay window.  This gives the filter board's relays
+    // time to settle into TX configuration (per-band LPF in place) before
+    // any RF energy starts being emitted — operator's hot-switch safety.
+    // On keyup the FSM passes transmitting=false in fsmKeyupSettled AFTER
+    // the wire MOX bit has cleared and ptt_out_delay elapsed, so the
+    // board switches back to RX configuration only after RF is gone.
     int pattern = 0;
     if (filterBoardEnabled_) {
         const int bi = lyra::bandIndexForFreq(
             static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed)));
-        pattern = lyra::n2adrOcPattern(bi, /*transmitting=*/false) & 0x7F;
+        pattern = lyra::n2adrOcPattern(bi, transmitting) & 0x7F;
     }
     if (pattern == ocPattern_) {
         return;

@@ -540,8 +540,15 @@ private:
     // unconditional 19-slot emission — no slot skipping).
     void composeCC(int idx, bool mox, std::uint8_t out[5]) const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
-    // filter-board-enabled state.  Main thread only.
-    void updateOcPattern();
+    // filter-board-enabled state.  Main thread only.  `transmitting`
+    // picks the TX-side or RX-side per-band OC table (n2adrOcPattern
+    // in bands.cpp): on N2ADR boards the LPF bits are identical and
+    // only the 3 MHz HPF differs (RX-only), but the call still wires
+    // correctly for other filter boards.  Defaults to false so non-FSM
+    // callers (ctor, freq change, board enable) emit the RX pattern;
+    // the FSM keydown/keyup hooks pass true/false to switch at the
+    // right TR-sequenced moments.
+    void updateOcPattern(bool transmitting = false);
     // Apply an LNA gain to the live wire value WITHOUT persisting it —
     // used by Auto-LNA so its transient adjustments never overwrite the
     // operator's manual set point in QSettings.  Emits lnaGainChanged
