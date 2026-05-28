@@ -1142,6 +1142,11 @@ QWidget *SettingsDialog::buildHardwareTab() {
         help->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
         g->addWidget(help, 2, 0, 1, 2);
 
+        // PA-enable Settings UI lands in TX-0c-pa-debug-B-pa.  The
+        // HL2Stream side (Q_PROPERTY, persistence, defensive clears)
+        // is wired now so the operator has cb58bcb-style come-up-not-
+        // keyed safety before the UI checkbox ever exists.
+
         form->addRow(grp);
     }
 

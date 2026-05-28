@@ -194,6 +194,16 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         kTxTimeoutMinSec, kTxTimeoutMaxSec);
     txTimeoutBypass_ = QSettings().value(
         QStringLiteral("tx/timeoutBypass"), false).toBool();
+    // TX-0c-pa-debug — operator's PA-enable choice persists across
+    // launches (operator decision 2026-05-28).  The cb58bcb-style
+    // come-up-not-keyed safety is enforced separately: stream open()
+    // and close() force-clear paOn_ + mox_ + FSM state regardless of
+    // the persisted value, so a stop/start cycle requires re-checking
+    // the box in Settings; only a clean exit-and-relaunch preserves
+    // the operator's "PA on" intent.
+    paOn_.store(
+        QSettings().value(QStringLiteral("tx/paEnabled"), false).toBool(),
+        std::memory_order_relaxed);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -370,6 +380,22 @@ void HL2Stream::open(const QString &ip) {
     rx1DbFs_.store(-200.0, std::memory_order_relaxed);
     dgPerSec_   = 0.0;
     txDgPerSec_ = 0.0;
+    // TX-0c-pa-debug — cb58bcb-style come-up-not-keyed safety: every
+    // stream open starts with MOX = off, PA = off, FSM idle, regardless
+    // of the operator's persisted PA-enable choice.  Operator must re-
+    // check the Settings PA checkbox after a stop/restart cycle to put
+    // RF back in play.  Defensive against:
+    //   * a previous session that crashed mid-key (paOn_ left true on
+    //     disk; we don't want to come up biased on the next launch)
+    //   * a stop/restart cycle where the FSM left state stale
+    //   * any future code path that misses a defensive clear
+    mox_.store(false, std::memory_order_release);
+    paOn_.store(false, std::memory_order_relaxed);
+    requestedMox_  = false;
+    fsmRunning_    = false;
+    if (moxActive_) { moxActive_ = false; emit moxActiveChanged(false); }
+    if (txSafetyTimer_ && txSafetyTimer_->isActive()) txSafetyTimer_->stop();
+    emit paEnabledChanged(false);  // Settings UI follows the safety clear
     running_.store(true, std::memory_order_release);
     emit runningChanged();
     emit statsChanged();
@@ -410,6 +436,22 @@ void HL2Stream::close() {
         return;
     }
     emit logLine(QStringLiteral("closing EP6 stream ..."));
+
+    // TX-0c-pa-debug — force-release-all BEFORE the workers die so
+    // the final EP2 frames carry MOX=0 + PA=off + step-att restored.
+    // Belt-and-suspenders alongside the HL2 gateware watchdog (which
+    // would drop PA bias on ~13 s without EP2 anyway), but this drops
+    // RF deterministically on EVERY clean stop — no "kept biased while
+    // waiting for the watchdog" window.  Note: mox_ atomic is set
+    // directly here (bypassing the FSM's TR-delay chain) because the
+    // workers are about to die — there's no time for a graceful keyup.
+    mox_.store(false, std::memory_order_release);
+    paOn_.store(false, std::memory_order_relaxed);
+    requestedMox_  = false;
+    fsmRunning_    = false;
+    if (moxActive_) { moxActive_ = false; emit moxActiveChanged(false); }
+    if (txSafetyTimer_ && txSafetyTimer_->isActive()) txSafetyTimer_->stop();
+    emit paEnabledChanged(false);  // Settings UI follows
 
     // Request stop on both workers BEFORE joining either so they
     // wind down in parallel (RX: bounded by recv timeout 100 ms,
@@ -836,15 +878,22 @@ void HL2Stream::setTxStepAttnDb(int db) {
 
 void HL2Stream::setPaEnabled(bool on) {
     // Lands C2 bit 3 (0x08) of slot 10 (frame 0x12) — gateware
-    // PA-enable, active-high.  Default false; TX-0c-pa-debug will add
-    // the operator-gated Settings checkbox + the dummy-load bench
-    // safety wrap.  Wire-inert today regardless of value because no
-    // MOX edge has been driven from the UI yet.
+    // PA-enable, active-high.  Operator-gated via the Settings checkbox
+    // (default OFF on every fresh stream open / close cycle for safety,
+    // but persisted across clean Lyra exit-and-relaunch).
+    //
+    // When this is TRUE *and* MOX is on the wire *and* the gateware
+    // sees the round-robin C2-bit-3 update, the PA bias engages — the
+    // operator should see PA-current rise on the banner.  TX I/Q stays
+    // zero until a future TX DSP commit, so PA bias rises but no
+    // modulated carrier reaches the antenna (~0 W into dummy load).
     const bool prev = paOn_.exchange(on, std::memory_order_relaxed);
-    if (prev != on) {
-        emit logLine(QStringLiteral("TX: PA enable -> %1")
-                     .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
-    }
+    if (prev == on) return;
+    QSettings().setValue(QStringLiteral("tx/paEnabled"), on);
+    emit paEnabledChanged(on);
+    emit logLine(QStringLiteral("TX: PA enable -> %1")
+                 .arg(on ? QStringLiteral("ON  (RF possible on next key)")
+                         : QStringLiteral("off (PA bias disarmed)")));
 }
 
 // ---------------------------------------------------------------

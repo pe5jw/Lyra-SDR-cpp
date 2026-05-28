@@ -163,6 +163,16 @@ class HL2Stream : public QObject {
                WRITE setTxTimeoutSec NOTIFY txTimeoutSecChanged)
     Q_PROPERTY(bool txTimeoutBypass READ txTimeoutBypass
                WRITE setTxTimeoutBypass NOTIFY txTimeoutBypassChanged)
+    // TX-0c-pa-debug — operator-gated PA-enable.  When true, frame-10
+    // C2 bit 3 (0x08) goes on the wire — gateware PA-enable, active-
+    // high.  Combined with the wire MOX bit + non-zero TX I/Q drive,
+    // this would put RF on the antenna.  At v0.2.0 there's still no
+    // SSB modulator, so TX I/Q stays zero and the operator sees PA
+    // bias current rise on keydown (~0.2 A idle bias on N8SDR's HL2+)
+    // with ~0 W on the dummy load — the safe first-RF bench gate.
+    // Persisted: tx/paEnabled.  Defensive cleared on stream open/close.
+    Q_PROPERTY(bool paEnabled READ paEnabled WRITE setPaEnabled
+               NOTIFY paEnabledChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -227,6 +237,9 @@ public:
     // keydown/keyup hooks arm/cancel the QTimer.
     int     txTimeoutSec()    const { return txTimeoutSec_; }
     bool    txTimeoutBypass() const { return txTimeoutBypass_; }
+    // TX-0c-pa-debug — operator-gated PA-enable mirror (Q_PROPERTY
+    // getter).  Reads the wire atomic.
+    bool    paEnabled() const { return paOn_.load(std::memory_order_relaxed); }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -404,6 +417,9 @@ signals:
     // lives in the setter.
     void txTimeoutSecChanged(int sec);
     void txTimeoutBypassChanged(bool on);
+    // TX-0c-pa-debug — operator-gated PA-enable changed (via Settings
+    // checkbox, persistence reload, or stream open/close safety clear).
+    void paEnabledChanged(bool on);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
