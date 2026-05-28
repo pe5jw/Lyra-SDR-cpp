@@ -1142,10 +1142,50 @@ QWidget *SettingsDialog::buildHardwareTab() {
         help->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
         g->addWidget(help, 2, 0, 1, 2);
 
-        // PA-enable Settings UI lands in TX-0c-pa-debug-B-pa.  The
-        // HL2Stream side (Q_PROPERTY, persistence, defensive clears)
-        // is wired now so the operator has cb58bcb-style come-up-not-
-        // keyed safety before the UI checkbox ever exists.
+        // --- PA enable (the first-RF gate) ---
+        // Default-OFF on every stream open/close cycle (HL2Stream's
+        // B-safety defensive clears enforce that); persisted across
+        // clean Lyra exit-and-relaunch (tx/paEnabled).  The checkbox
+        // reflects the live Stream.paEnabled value via paEnabledChanged
+        // signal — so the post-open() safety clear immediately
+        // unchecks the box in the UI without operator action.
+        auto *paBox = new QCheckBox(tr("Enable PA (puts RF on the antenna)"), grp);
+        paBox->setChecked(stream_->paEnabled());
+        paBox->setToolTip(tr(
+            "Sets the gateware PA-enable bit (C2 bit 3 of slot 10).  "
+            "When checked AND MOX is keyed, the HL2 PA bias engages — "
+            "PA current rises from ~0 to your idle-bias value (~0.2 A "
+            "on a typical HL2+).  Until a TX modulator lands, TX I/Q "
+            "stays zero so a dummy-load watt-meter reads ~0 W; PA "
+            "current is the truth signal.  Bench safety: use a dummy "
+            "load + watt-meter for first key.  Defensively cleared on "
+            "every stream stop/start (operator must re-check after a "
+            "Stop/Open cycle)."));
+        connect(paBox, &QCheckBox::toggled, grp, [this](bool on) {
+            if (stream_) stream_->setPaEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::paEnabledChanged, paBox,
+                [paBox](bool on) {
+            if (paBox->isChecked() != on) paBox->setChecked(on);
+        });
+        g->addWidget(paBox, 3, 0, 1, 2);
+
+        // Red warning label below the PA checkbox — sets the bench
+        // expectation explicitly so an operator who just enables it
+        // without reading the tooltip still sees the safety guidance.
+        auto *paWarn = new QLabel(grp);
+        paWarn->setText(tr(
+            "<b style='color:#d11515;'>⚠ RF SAFETY:</b>  This puts the "
+            "radio's PA on the air on the next key.  USE A DUMMY LOAD "
+            "AND WATT-METER for the first session — verify PA-current "
+            "swings 0 ↔ idle-bias on MOX edges and the watt-meter stays "
+            "near zero (no modulator yet = no carrier).  Phase-3-EXIT "
+            "kill-test before any antenna: while keyed, taskkill /F "
+            "lyra.exe and verify PA-current drops within a few seconds "
+            "(HL2 gateware watchdog)."));
+        paWarn->setWordWrap(true);
+        paWarn->setStyleSheet(QStringLiteral("QLabel{color:#cccccc;}"));
+        g->addWidget(paWarn, 4, 0, 1, 2);
 
         form->addRow(grp);
     }
