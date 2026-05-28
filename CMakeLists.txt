@@ -141,6 +141,7 @@ qt_add_qml_module(lyra
         src/qml/PanadapterPanel.qml
         src/qml/TuningPanel.qml
         src/qml/AudioPanel.qml
+        src/qml/TxPanel.qml
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml
         src/qml/ModeFilterPanel.qml

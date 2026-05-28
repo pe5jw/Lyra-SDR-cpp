@@ -162,9 +162,17 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // Radio memory: restore the last tuned RX1 frequency.  QSettings
     // resolves to %APPDATA%\N8SDR\Lyra-cpp\ (org/app set in main()
     // before this object is constructed).
-    rx1FreqHz_.store(
-        QSettings().value(QStringLiteral("rx/freqHz"), 7074000u).toUInt(),
-        std::memory_order_relaxed);
+    const quint32 persistedRxHz =
+        QSettings().value(QStringLiteral("rx/freqHz"), 7074000u).toUInt();
+    rx1FreqHz_.store(persistedRxHz, std::memory_order_relaxed);
+    // TX-0c-tune — simplex TX follows RX1 from launch (not just on
+    // operator dial moves).  Without this, the persistence restore
+    // bypasses setRx1FreqHz() so txFreqHz_ sits at its 7,074,000
+    // default until the operator nudges the dial — and TUN lands the
+    // carrier "several kHz below" the marker (operator-caught, 2026-05-28).
+    // Single source of truth: every other write to rx1FreqHz_ goes
+    // through setRx1FreqHz(), which mirrors there too.
+    txFreqHz_.store(persistedRxHz, std::memory_order_relaxed);
     // External filter board: restore enable state + seed the OC pattern
     // for the restored band (so the board is correct from the first send).
     filterBoardEnabled_ =
@@ -204,6 +212,18 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     paOn_.store(
         QSettings().value(QStringLiteral("tx/paEnabled"), false).toBool(),
         std::memory_order_relaxed);
+    // TX-0c-pa-drive — operator-tunable drive DAC level (raw 0..255,
+    // UI exposes 0..100 %).  Persisted across launches; NOT cleared on
+    // stream open/close — the "volume" knob carries the operator's
+    // intentional set point.  PA enable is the separate safety gate
+    // (defensively cleared on every open/close); drive at any value
+    // without PA + MOX produces zero RF, so persisting it is safe.
+    // Default 0 on first-ever launch (operator must explicitly raise it
+    // to emit a carrier).
+    txDriveLevel_.store(
+        std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
+                                     0).toInt(), 0, 255),
+        std::memory_order_relaxed);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -214,6 +234,16 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     connect(this, &HL2Stream::moxActiveChanged, this, [this](bool on) {
         if (on)  armTxSafetyTimer();
         else     cancelTxSafetyTimer();
+    });
+    // TX-0c-tune — auto-disarm the tune-tone on every wire-MOX-off edge.
+    // Whatever caused the keyup (operator click, safety timer, FSM
+    // re-key collapse), the next time MOX rises the operator must
+    // explicitly re-click TUN to emit a carrier.  Prevents a stray
+    // MOX-only click from putting unintended RF on the antenna.
+    connect(this, &HL2Stream::moxActiveChanged, this, [this](bool on) {
+        if (!on && tuneEnabled_.load(std::memory_order_relaxed)) {
+            setTuneEnabled(false);
+        }
     });
 }
 
@@ -391,11 +421,16 @@ void HL2Stream::open(const QString &ip) {
     //   * any future code path that misses a defensive clear
     mox_.store(false, std::memory_order_release);
     paOn_.store(false, std::memory_order_relaxed);
+    // TX-0c-tune — fresh stream always starts disarmed (tune is per-
+    // session, not persisted).  DC-injection carrier means no NCO
+    // state to reset beyond this flag.
+    tuneEnabled_.store(false, std::memory_order_relaxed);
     requestedMox_  = false;
     fsmRunning_    = false;
     if (moxActive_) { moxActive_ = false; emit moxActiveChanged(false); }
     if (txSafetyTimer_ && txSafetyTimer_->isActive()) txSafetyTimer_->stop();
     emit paEnabledChanged(false);  // Settings UI follows the safety clear
+    emit tuneEnabledChanged(false);// TX panel UI follows
     running_.store(true, std::memory_order_release);
     emit runningChanged();
     emit statsChanged();
@@ -447,11 +482,15 @@ void HL2Stream::close() {
     // workers are about to die — there's no time for a graceful keyup.
     mox_.store(false, std::memory_order_release);
     paOn_.store(false, std::memory_order_relaxed);
+    // TX-0c-tune — force-disarm in lockstep with the MOX/PA safety
+    // clears so the final EP2 frames carry silent TX I/Q.
+    tuneEnabled_.store(false, std::memory_order_relaxed);
     requestedMox_  = false;
     fsmRunning_    = false;
     if (moxActive_) { moxActive_ = false; emit moxActiveChanged(false); }
     if (txSafetyTimer_ && txSafetyTimer_->isActive()) txSafetyTimer_->stop();
     emit paEnabledChanged(false);  // Settings UI follows
+    emit tuneEnabledChanged(false);// TX panel UI follows
 
     // Request stop on both workers BEFORE joining either so they
     // wind down in parallel (RX: bounded by recv timeout 100 ms,
@@ -837,6 +876,15 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
                      .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
         // Band may have changed -> re-apply the filter-board OC pattern.
         updateOcPattern();
+        // TX-0c-tune — simplex TX follows RX1.  Until SPLIT mode lands,
+        // TX freq mirrors RX1 freq, so the operator's TUN carrier lands
+        // ~1 kHz above the dial freq instead of the 7,074,000 default
+        // that txFreqHz_ would otherwise sit at forever.  When SPLIT
+        // arrives this auto-mirror gets gated on !split (VFO B drives
+        // TX freq in split mode).  Single source of truth: setRx1FreqHz
+        // is the only operator-facing tuner, so this captures every
+        // dial gesture, band button, memory recall, TCI spot click, etc.
+        txFreqHz_.store(hz, std::memory_order_relaxed);
     }
 }
 
@@ -869,7 +917,27 @@ void HL2Stream::setTxFreqHz(quint32 hz) {
 }
 
 void HL2Stream::setTxDriveLevel(int level) {
-    txDriveLevel_.store(std::clamp(level, 0, 255), std::memory_order_relaxed);
+    // Lands C1 of slot 10 (frame 0x12) — the drive DAC level.  Gateware
+    // uses the top 4 bits → 16 coarse steps; wire 0..255 maps the
+    // operator's 0..100 % linearly via the UI before reaching here.
+    //
+    // At drive=0 the wire is byte-identical to TX-0c-pa-debug B-pa
+    // regardless of PA enable / MOX state: zero amplitude on the DAC
+    // means no carrier even when the PA is biased.  Above 0, with PA
+    // enabled and MOX keyed, the operator gets actual RF — this is the
+    // slice that takes the first-RF bench from bias-only to real
+    // emissions.  Use a dummy load + watt-meter for the first session.
+    const int clamped = std::clamp(level, 0, 255);
+    const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
+    if (prev == clamped) return;
+    QSettings().setValue(QStringLiteral("tx/driveLevel"), clamped);
+    emit txDriveLevelChanged(clamped);
+    // Operator-facing percent for the log line (gateware actually
+    // resolves to 16 coarse steps, but the percent is the operator's
+    // mental model — quoting raw 0..255 in the log would be noise).
+    const int pct = static_cast<int>(std::lround(clamped * 100.0 / 255.0));
+    emit logLine(QStringLiteral("TX: drive -> %1 %  (raw %2/255)")
+                 .arg(pct).arg(clamped));
 }
 
 void HL2Stream::setTxStepAttnDb(int db) {
@@ -894,6 +962,29 @@ void HL2Stream::setPaEnabled(bool on) {
     emit logLine(QStringLiteral("TX: PA enable -> %1")
                  .arg(on ? QStringLiteral("ON  (RF possible on next key)")
                          : QStringLiteral("off (PA bias disarmed)")));
+}
+
+void HL2Stream::setTuneEnabled(bool on) {
+    // Arms / disarms the host-streamed tune-carrier generator.  When
+    // ON and the wire-MOX bit is high, the EP2 writer fills each LRIQ
+    // tuple's TX-I bytes with a constant ~0.95-full-scale value and
+    // TX-Q with zero — DC injection that produces a pure carrier at
+    // LO exactly (zero-beat, at the dial freq, universal HF-rig TUN
+    // convention).  This is the carrier the HL2+ ak4951v4 gateware
+    // requires for any RF (per the gateware RTL, there is no internal
+    // tune carrier; the host must stream non-zero TX I/Q for the DAC
+    // to emit anything regardless of drive level).
+    //
+    // Drive % scales the on-air power; this just provides the I/Q
+    // amplitude for it to scale.  NOT persisted (TUN is an explicit
+    // operator gesture, not a configured state) and auto-cleared on
+    // every wire-MOX-off edge by the ctor's self-wired safety.
+    const bool prev = tuneEnabled_.exchange(on, std::memory_order_relaxed);
+    if (prev == on) return;
+    emit tuneEnabledChanged(on);
+    emit logLine(QStringLiteral("TX: tune-carrier -> %1")
+                 .arg(on ? QStringLiteral("ARMED  (zero-beat @ 0.95 fs — emits while MOX active)")
+                         : QStringLiteral("disarmed (TX I/Q back to silent)")));
 }
 
 // ---------------------------------------------------------------
@@ -1402,15 +1493,47 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         pktBytes[527] = cc[4];
         ccIdx_ = (ccIdx_ + 1) % 19;
 
-        // Audio L/R into the 126 LRIQ tuples (BE 16-bit); TX I/Q stay 0.
+        // Audio L/R + TX-I/Q into the 126 LRIQ tuples (BE 16-bit).
+        // TX-I/Q is normally zero (no modulator yet, no operator-armed
+        // tone) but TX-0c-tune fills it with a complex 1 kHz sinusoid
+        // when the operator has armed TUN and the wire-MOX bit is
+        // high.  The HL2+ ak4951v4 gateware DAC consumes the TX-I/Q
+        // samples only while MOX is set (dsopenhpsdr1.v:351-371), so
+        // we gate on the SAME moxBit snapshot the C&C slots used above
+        // (one coherent decision per datagram).  Phase advances per
+        // sample at 48 kHz; sampled once per LRIQ index, written to
+        // BOTH USB frames so the on-air carrier is continuous.
+        const bool emitTone =
+            moxBit && tuneEnabled_.load(std::memory_order_relaxed);
+        // Tune carrier = zero-beat at LO (DC injection): a constant
+        // value in the I channel produces a pure carrier exactly at
+        // TX freq on the air, no audio offset.  Matches the universal
+        // HF-rig TUN convention — Thetis, every commercial HF rig,
+        // SSB/CW/DIGU all expect "tune carrier at the dial".  Because
+        // there's no audio component there's no sideband to choose,
+        // so mode (USB / LSB / CWL / etc.) doesn't matter — the carrier
+        // lands at the dial freq in every mode.  Constant DC I/Q has
+        // no harmonics either, so it's the cleanest possible test
+        // tone for linearity and PA-current bench.  Q=0 keeps the
+        // signal real (no quadrature component).  Future: a separate
+        // 2-tone test signal for IMD/linearity work (the reference's
+        // "Two Tone" button, a different feature than TUN).
+        constexpr qint16 kTuneCarrierI =
+            static_cast<qint16>(0.95 * 32767.0 + 0.5);  // ~31128, ~0.4 dB hr
         for (int i = 0; i < 126; ++i) {
             const qint16 L = audio ? audio[i * 2 + 0] : 0;
             const qint16 R = audio ? audio[i * 2 + 1] : 0;
+            const qint16 txI = emitTone ? kTuneCarrierI : qint16{0};
+            const qint16 txQ = 0;
             const int base = (i < 63) ? (16 + i * 8) : (528 + (i - 63) * 8);
             pktBytes[base + 0] = static_cast<std::uint8_t>((L >> 8) & 0xFF);
             pktBytes[base + 1] = static_cast<std::uint8_t>( L       & 0xFF);
             pktBytes[base + 2] = static_cast<std::uint8_t>((R >> 8) & 0xFF);
             pktBytes[base + 3] = static_cast<std::uint8_t>( R       & 0xFF);
+            pktBytes[base + 4] = static_cast<std::uint8_t>((txI >> 8) & 0xFF);
+            pktBytes[base + 5] = static_cast<std::uint8_t>( txI       & 0xFF);
+            pktBytes[base + 6] = static_cast<std::uint8_t>((txQ >> 8) & 0xFF);
+            pktBytes[base + 7] = static_cast<std::uint8_t>( txQ       & 0xFF);
         }
 
         const int n = ::sendto(s, pkt.constData(), pkt.size(), 0,

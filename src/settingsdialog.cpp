@@ -1153,13 +1153,16 @@ QWidget *SettingsDialog::buildHardwareTab() {
         }
     }
 
-    // --- TX safety + PA (TX-0c-pa-debug) ---
-    // First slice (this commit): host-side safety timeout — auto-clears
-    // MOX if the radio is keyed continuously past N minutes.  Lives on
-    // its own (no RF involved) so the operator can bench it before the
-    // PA-enable wiring lands (next slice).  Per the §15.20 spec: 1..20
-    // min range, 10 min default, bypass for long-form (AM ragchew, slow
-    // CW beacon).  All persisted via QSettings inside HL2Stream's setters.
+    // --- TX safety timeout + PA enable (TX-0c-pa-debug) ---
+    // The operating-time TX controls (Drive %, MOX) live on the front-
+    // facing TX dock (TxPanel.qml) — operator touches them between QSOs
+    // and on every key.  This Settings group keeps the deliberate-arm
+    // safety controls: the timeout config (set once, leave it) and PA
+    // Enable (the "RF possible" gate, deliberately gated behind a trip
+    // to Settings so a stray click on the front panel can't put RF on
+    // the air).  Per the §15.20 spec: 1..20 min range, 10 min default,
+    // bypass for long-form modes.  All persisted via QSettings inside
+    // HL2Stream's setters.
     if (stream_) {
         auto *grp = new QGroupBox(tr("Transmit"), page);
         auto *g = new QGridLayout(grp);
@@ -1212,6 +1215,13 @@ QWidget *SettingsDialog::buildHardwareTab() {
         help->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
         g->addWidget(help, 2, 0, 1, 2);
 
+        // TX Drive % + MOX moved to the front-facing TX dock
+        // (TxPanel.qml) — operator-tunable / per-key controls belong
+        // on a real panel, not buried in a Settings dialog.  PA Enable
+        // stays here as the deliberate-arm safety gate (a Settings trip
+        // is the friction that keeps a stray front-panel click from
+        // putting RF on the air).
+
         // --- PA enable (the first-RF gate) ---
         // Default-OFF on every stream open/close cycle (HL2Stream's
         // B-safety defensive clears enforce that); persisted across
@@ -1225,9 +1235,8 @@ QWidget *SettingsDialog::buildHardwareTab() {
             "Sets the gateware PA-enable bit (C2 bit 3 of slot 10).  "
             "When checked AND MOX is keyed, the HL2 PA bias engages — "
             "PA current rises from ~0 to your idle-bias value (~0.2 A "
-            "on a typical HL2+).  Until a TX modulator lands, TX I/Q "
-            "stays zero so a dummy-load watt-meter reads ~0 W; PA "
-            "current is the truth signal.  Bench safety: use a dummy "
+            "on a typical HL2+).  Combined with TX Drive > 0 % this "
+            "puts real RF on the antenna.  Bench safety: use a dummy "
             "load + watt-meter for first key.  Defensively cleared on "
             "every stream stop/start (operator must re-check after a "
             "Stop/Open cycle)."));
@@ -1247,9 +1256,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
         paWarn->setText(tr(
             "<b style='color:#d11515;'>⚠ RF SAFETY:</b>  This puts the "
             "radio's PA on the air on the next key.  USE A DUMMY LOAD "
-            "AND WATT-METER for the first session — verify PA-current "
-            "swings 0 ↔ idle-bias on MOX edges and the watt-meter stays "
-            "near zero (no modulator yet = no carrier).  Phase-3-EXIT "
+            "AND WATT-METER for the first session.  Phase-3-EXIT "
             "kill-test before any antenna: while keyed, taskkill /F "
             "lyra.exe and verify PA-current drops within a few seconds "
             "(HL2 gateware watchdog)."));

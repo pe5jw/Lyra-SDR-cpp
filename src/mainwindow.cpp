@@ -504,6 +504,14 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("audio"), tr("Audio"),
                  QStringLiteral("AudioPanel.qml"),
                  QStringLiteral("audio"), Qt::BottomDockWidgetArea);
+    // TX — front-facing TX controls (Drive %, PA Enable, MOX).  Moved
+    // out of Settings (Drive + PA) and out of TuningPanel (MOX) so the
+    // operator's TX surface is a single coherent dock that's docked /
+    // floated / tabbed like every other panel.  Settings → Hardware →
+    // Transmit keeps only the safety-timeout config (a set-once knob).
+    addQuickDock(QStringLiteral("tx"), tr("TX"),
+                 QStringLiteral("TxPanel.qml"),
+                 QStringLiteral("tx"), Qt::BottomDockWidgetArea);
     // Display — front-facing spectrum/waterfall controls (palette,
     // waterfall speed, smoothing, glow, grid) binding the shared Prefs.
     addQuickDock(QStringLiteral("display"), tr("Display"),

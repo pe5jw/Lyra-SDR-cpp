@@ -128,41 +128,8 @@ Rectangle {
         }
 
         Item { Layout.fillWidth: true }
-
-        // TX-0c-fsm: MOX toggle button (lit red while wire-MOX active).
-        // Funnels through Stream.requestMox (the FSM single-funnel — same
-        // path as the space-bar momentary in MainWindow).  The lit state
-        // tracks Stream.moxActive (wire truth, post TR-delay settle), NOT
-        // the click checked-state, so the button reflects the radio's
-        // actual on-air state through the ~65 ms keydown window.  TX-
-        // 0c-fsm is RF-INERT (PA stays default-OFF); the HL2 T/R relay
-        // will click audibly on each keydown — wire MOX is on, but no
-        // PA bias = no RF.  Sits opposite the LED so it can't be hit
-        // accidentally while wheel-tuning.
-        Button {
-            id: moxBtn
-            checkable: true
-            implicitWidth: 64
-            implicitHeight: 36
-            text: qsTr("MOX")
-            font.bold: true
-            // Track wire truth, not the click state — keeps the LED honest
-            // through the TR-delay window and through space-bar momentary.
-            checked: Stream.moxActive
-            onClicked: Stream.requestMox(checked)
-            background: Rectangle {
-                color: Stream.moxActive ? "#d11515" : "#1f2a35"
-                border.color: Stream.moxActive ? "#ff8080" : "#3a5060"
-                border.width: 2
-                radius: 4
-            }
-            contentItem: Text {
-                text: moxBtn.text
-                color: Stream.moxActive ? "#ffffff" : "#cccccc"
-                font: moxBtn.font
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
+        // MOX moved to the dedicated TX dock (TxPanel.qml) alongside
+        // TX Drive and PA Enable — the operator's TX control surface
+        // is one coherent panel now, not split across Tuning + Settings.
     }
 }

@@ -173,6 +173,39 @@ class HL2Stream : public QObject {
     // Persisted: tx/paEnabled.  Defensive cleared on stream open/close.
     Q_PROPERTY(bool paEnabled READ paEnabled WRITE setPaEnabled
                NOTIFY paEnabledChanged)
+    // TX-0c-pa-drive — operator-tunable drive DAC level.  Maps to
+    // frame-10 C1; the gateware uses the top 4 bits → 16 coarse steps,
+    // so wire values 0/16/32/.../255 are the meaningful endpoints (the
+    // bottom 4 bits are ignored).  Operator-facing UI uses 0..100 %;
+    // raw 0..255 is the on-wire value (UI converts via
+    // c1 = round(255 * pct/100), matching the Thetis-faithful flat
+    // map — per-band calibration is a later polish item, not first-RF).
+    // At drive=0 the wire is byte-identical to TX-0c-pa-debug B-pa
+    // regardless of PA enable / MOX: zero amplitude on the DAC = no
+    // carrier.  Persisted: tx/driveLevel.  NOT defensively cleared on
+    // stream open/close — PA enable is the safety gate (cleared every
+    // open/close); drive is the volume knob (carries the operator's
+    // intentional set point across stop/restart, harmless without PA).
+    Q_PROPERTY(int  txDriveLevel READ txDriveLevel WRITE setTxDriveLevel
+               NOTIFY txDriveLevelChanged)
+    // TX-0c-tune — operator-armed tune-carrier generator.  When TRUE
+    // *and* the wire MOX bit is high, the EP2 writer fills each LRIQ
+    // tuple's TX-I bytes (offsets 4..5) with a constant ~0.95-full-
+    // scale value and TX-Q bytes (offsets 6..7) with zero.  DC
+    // injection in I produces a pure carrier at LO exactly (no audio
+    // offset, no sideband), which lands the on-air carrier at the
+    // operator's dial freq — the universal HF-rig TUN convention
+    // (Thetis, every commercial rig).  This is the host-streamed
+    // carrier the HL2+ ak4951v4 gateware requires for any RF (the
+    // gateware has NO internal tune carrier, so bias + MOX + drive
+    // without a non-zero TX I/Q stream = zero RF).  Drive % scales
+    // the on-air power; this just provides the carrier for it to
+    // scale.  Auto-clears on every moxActiveChanged(false) edge so a
+    // stray MOX click after a tune session can't accidentally re-emit
+    // the carrier.  NOT persisted (always starts off — TUN is an
+    // explicit operator gesture, not a configured state).
+    Q_PROPERTY(bool tuneEnabled READ tuneEnabled WRITE setTuneEnabled
+               NOTIFY tuneEnabledChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -240,6 +273,13 @@ public:
     // TX-0c-pa-debug — operator-gated PA-enable mirror (Q_PROPERTY
     // getter).  Reads the wire atomic.
     bool    paEnabled() const { return paOn_.load(std::memory_order_relaxed); }
+    // TX-0c-pa-drive — drive DAC level (Q_PROPERTY getter).  Raw 0..255
+    // wire value; UI converts to/from 0..100 %.  Reads the wire atomic.
+    int     txDriveLevel() const { return txDriveLevel_.load(std::memory_order_relaxed); }
+    // TX-0c-tune — tune-tone armed (Q_PROPERTY getter).  Reads the
+    // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
+    // whenever MOX is active"; auto-clears on the next MOX-off edge.
+    bool    tuneEnabled() const { return tuneEnabled_.load(std::memory_order_relaxed); }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -345,6 +385,13 @@ public slots:
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
+    // TX-0c-tune — arm/disarm the tune-tone generator.  The EP2 writer
+    // fills TX-I/TX-Q with a 1 kHz complex tone @ 0.95 full scale only
+    // when (mox_ on the wire) AND (this flag set).  Auto-cleared on
+    // every moxActiveChanged(false) edge by the ctor's self-wired
+    // safety so a stray MOX click after a tune session can't re-emit
+    // the carrier.  Not persisted — operator must explicitly arm.
+    void setTuneEnabled(bool on);
 
     // ---- TX-0c-fsm: MOX/PTT sequencer (single funnel) ----------------
     // Operator/CAT/PTT/TUN intent gets funneled here.  Internally drives
@@ -420,6 +467,12 @@ signals:
     // TX-0c-pa-debug — operator-gated PA-enable changed (via Settings
     // checkbox, persistence reload, or stream open/close safety clear).
     void paEnabledChanged(bool on);
+    // TX-0c-pa-drive — operator-tunable drive DAC level changed (via
+    // Settings SpinBox or persistence reload).  Raw 0..255 wire value.
+    void txDriveLevelChanged(int level);
+    // TX-0c-tune — tune-tone armed state changed (via TX panel button,
+    // operator unarm, or the moxActiveChanged(false) safety auto-clear).
+    void tuneEnabledChanged(bool on);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -582,6 +635,11 @@ private:
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
+    // TX-0c-tune — operator-armed tune-tone generator.  Atomic so the
+    // EP2 writer thread reads it lock-free on every datagram.  The NCO
+    // phase below is owned single-thread by that writer (no atomic
+    // needed since only that thread mutates it).
+    std::atomic<bool>    tuneEnabled_{false};
     // ---- TX-0c-fsm: MOX/PTT sequencer state (single-thread, this thread) -
     // Operator/CAT intent — last requested MOX state.  Sequencer reads
     // it at every timer step so an operator change mid-transition takes
