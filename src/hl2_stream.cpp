@@ -841,6 +841,142 @@ void HL2Stream::setFilterBoardEnabled(bool on) {
                  .arg(on ? QStringLiteral("ENABLED") : QStringLiteral("off")));
 }
 
+// ----------------------------------------------------------------
+// TX-0c-emit: compose one HL2 C&C frame for cycle slot `idx` (0..18).
+// Pure function (no allocs, no locks); writes 5 bytes to `out[0..4]`
+// = C0..C4.  C0's bit 0 carries MOX (caller snapshots it once per
+// datagram so both USB frames are coherent).  See header doc block
+// for the verified slot map + cites (Thetis WriteMainLoop_HL2 +
+// ak4951v4 gateware control.v).
+//
+// WIRE-IDENTICAL TO PRE-TX-0c AT MOX=0 / PA-OFF:
+//   * MOX bit clears (mox=false) -> C0 bit 0 = 0 as before.
+//   * Slot 10 (0x12) C2 PA-enable bit (0x08) stays clear with paOn_=false.
+//   * Slot 11 (0x14) RX-branch matches the old emitter exactly:
+//     C4 = 0x40 | ((lnaGainDb_+12) & 0x3F).
+//   * New slots (1/3/4/5/6/7..18) emit valid addresses with bytes the
+//     gateware caches inert (no MOX edge -> no PA enable -> no RF).
+void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
+    const std::uint8_t mb = mox ? std::uint8_t{0x01} : std::uint8_t{0x00};
+    auto setAddr = [&out, mb](std::uint8_t addr_shifted) {
+        out[0] = static_cast<std::uint8_t>(addr_shifted | mb);
+        out[1] = out[2] = out[3] = out[4] = 0;
+    };
+
+    switch (idx) {
+    case 0: {
+        // 0x00 general — rate (C1), OC pins (C2), nddc|duplex (C4).
+        setAddr(0x00);
+        out[1] = sampleRateBits_.load(std::memory_order_relaxed);
+        out[2] = ocC2_.load(std::memory_order_relaxed);
+        out[3] = 0x00;
+        out[4] = 0x1C;  // nddc=4 (0x18) | duplex bit (0x04)
+        break;
+    }
+    case 1: {
+        // 0x02 TX freq (BE u32) — cases 1/5/6 all load tx[0].frequency
+        // per networkproto1.c; slots 5/6 below mirror it on DDC2/DDC3.
+        setAddr(0x02);
+        const quint32 f = txFreqHz_.load(std::memory_order_relaxed);
+        out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+        out[2] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+        out[3] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+        out[4] = static_cast<std::uint8_t>( f        & 0xFF);
+        break;
+    }
+    case 2: {
+        // 0x04 RX1 freq (DDC0) — BE u32.
+        setAddr(0x04);
+        const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
+        out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+        out[2] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+        out[3] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+        out[4] = static_cast<std::uint8_t>( f        & 0xFF);
+        break;
+    }
+    case 3: {
+        // 0x06 RX2 freq (DDC1) — RX1 freq until RX2 lands.
+        setAddr(0x06);
+        const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
+        out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+        out[2] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+        out[3] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+        out[4] = static_cast<std::uint8_t>( f        & 0xFF);
+        break;
+    }
+    case 4: {
+        // 0x1C TX step-att — C3 = (31 - db) & 0x1F (HL2 inverted range;
+        // networkproto1.c:1019 + console.cs:10658 SetTxAttenData(31-x)).
+        setAddr(0x1C);
+        const int db = txStepAttnDb_.load(std::memory_order_relaxed);
+        out[3] = static_cast<std::uint8_t>((31 - db) & 0x1F);
+        break;
+    }
+    case 5: {
+        // 0x08 DDC2 freq = TX freq mirror.
+        setAddr(0x08);
+        const quint32 f = txFreqHz_.load(std::memory_order_relaxed);
+        out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+        out[2] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+        out[3] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+        out[4] = static_cast<std::uint8_t>( f        & 0xFF);
+        break;
+    }
+    case 6: {
+        // 0x0a DDC3 freq = TX freq mirror.
+        setAddr(0x0a);
+        const quint32 f = txFreqHz_.load(std::memory_order_relaxed);
+        out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
+        out[2] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
+        out[3] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
+        out[4] = static_cast<std::uint8_t>( f        & 0xFF);
+        break;
+    }
+    case 7:  setAddr(0x0c); break;  // DDC4 unused on HL2
+    case 8:  setAddr(0x0e); break;  // DDC5 unused
+    case 9:  setAddr(0x10); break;  // DDC6 unused
+    case 10: {
+        // 0x12 drive (C1) + PA-enable (C2 bit 3 = 0x08, active-high).
+        // C2 bit 7 (0x80, VNA) must stay clear or PA won't key
+        // (control.v:359 pwr_envpa = int_tx_on & ~vna & pa_enable).
+        setAddr(0x12);
+        out[1] = static_cast<std::uint8_t>(
+            txDriveLevel_.load(std::memory_order_relaxed) & 0xFF);
+        const bool pa = paOn_.load(std::memory_order_relaxed);
+        out[2] = static_cast<std::uint8_t>(pa ? 0x08 : 0x00);
+        out[3] = 0x00;
+        out[4] = 0x00;
+        break;
+    }
+    case 11: {
+        // 0x14 LNA + MOX-gated TX step-att — C4 encoding follows the
+        // existing emitter's RX branch exactly (override bit 0x40 +
+        // 6-bit value) so RX cadence is byte-identical to pre-TX-0c.
+        // TX branch lands the inverted (31-db) step-att during keydown.
+        setAddr(0x14);
+        if (mox) {
+            const int db = txStepAttnDb_.load(std::memory_order_relaxed);
+            out[4] = static_cast<std::uint8_t>(0x40 | ((31 - db) & 0x3F));
+        } else {
+            const int g = std::clamp(
+                lnaGainDb_.load(std::memory_order_relaxed),
+                kLnaMinDb, kLnaMaxDb);
+            const int v = g + 12;  // HPSDR P1 0x14 +12 bias
+            out[4] = static_cast<std::uint8_t>(0x40 | (v & 0x3F));
+        }
+        break;
+    }
+    case 12: setAddr(0x16); break;  // ADC step-att (Hermes-II) / CW state
+    case 13: setAddr(0x18); break;  // placeholder
+    case 14: setAddr(0x1a); break;  // PWM / EER
+    case 15: setAddr(0x1e); break;  // CW key / EER pulse width
+    case 16: setAddr(0x20); break;  // placeholder
+    case 17: setAddr(0x22); break;  // placeholder
+    case 18: setAddr(0x24); break;  // placeholder
+    default: setAddr(0x00); break;  // defensive; idx is 0..18 by contract
+    }
+}
+
 void HL2Stream::updateOcPattern() {
     // RX pattern for the current band when the board is enabled, else 0.
     int pattern = 0;
@@ -954,36 +1090,34 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         pktBytes[6] = static_cast<std::uint8_t>((seq >>  8) & 0xFF);
         pktBytes[7] = static_cast<std::uint8_t>( seq        & 0xFF);
 
-        // USB-frame-2 C&C slot ([523]=C0, [524..527]=C1..C4) carries the
-        // RX1 VFO freq every datagram EXCEPT every 19th, where it instead
-        // carries the 0x14 LNA register (≈20 Hz) — the HL2 gateware wants
-        // the C4 override bit (0x40) refreshed at that cadence.  Freq +
-        // LNA are both latched, so freq at ~360 Hz stays plenty responsive.
-        const quint32 phase = ccPhase_.fetch_add(1, std::memory_order_relaxed);
-        if ((phase % 19u) == 0u) {
-            const int g = std::clamp(
-                lnaGainDb_.load(std::memory_order_relaxed), kLnaMinDb, kLnaMaxDb);
-            const int v = g + 12;                 // HPSDR P1 0x14 +12 bias
-            pktBytes[523] = 0x14;                 // C0 = addr 0x0a (LNA frame)
-            pktBytes[524] = 0x00;                 // C1
-            pktBytes[525] = 0x00;                 // C2
-            pktBytes[526] = 0x00;                 // C3
-            pktBytes[527] = static_cast<std::uint8_t>(0x40 | (v & 0x3F)); // C4
-        } else {
-            const quint32 f = rx1FreqHz_.load(std::memory_order_relaxed);
-            pktBytes[523] = 0x04;                 // C0 = addr 2 (RX1 freq)
-            pktBytes[524] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
-            pktBytes[525] = static_cast<std::uint8_t>((f >> 16) & 0xFF);
-            pktBytes[526] = static_cast<std::uint8_t>((f >>  8) & 0xFF);
-            pktBytes[527] = static_cast<std::uint8_t>( f        & 0xFF);
-        }
+        // TX-0c-emit: HL2 19-slot round-robin C&C cycle, one slot per
+        // USB frame (two slots per datagram).  Matches Thetis
+        // WriteMainLoop_HL2 cadence (1 slot per USB frame, ~760/s on EP2);
+        // each slot revisits at ~40 Hz, plenty responsive for VFO/LNA/PA
+        // state.  ccIdx_ is single-thread owned by the EP2 writer thread
+        // (no atomic).  MOX is snapshotted once per datagram so both USB
+        // frames carry coherent C0 bit-0.  WIRE-IDENTICAL TO PRE-TX-0c
+        // AT MOX=0 / PA-off (see composeCC header doc).
+        const bool moxBit = mox_.load(std::memory_order_relaxed);
+        std::uint8_t cc[5];
 
-        // Frame-0 C2 [13]: external filter-board OC pins.
-        pktBytes[13] = static_cast<std::uint8_t>(
-            ocC2_.load(std::memory_order_relaxed));
+        // USB frame 1 C&C slot (offsets 11..15 = C0..C4).
+        composeCC(ccIdx_, moxBit, cc);
+        pktBytes[11] = cc[0];
+        pktBytes[12] = cc[1];
+        pktBytes[13] = cc[2];
+        pktBytes[14] = cc[3];
+        pktBytes[15] = cc[4];
+        ccIdx_ = (ccIdx_ + 1) % 19;
 
-        // Frame-0 C1 [12]: IQ speed bits (96/192/384 k).
-        pktBytes[12] = sampleRateBits_.load(std::memory_order_relaxed);
+        // USB frame 2 C&C slot (offsets 523..527 = C0..C4).
+        composeCC(ccIdx_, moxBit, cc);
+        pktBytes[523] = cc[0];
+        pktBytes[524] = cc[1];
+        pktBytes[525] = cc[2];
+        pktBytes[526] = cc[3];
+        pktBytes[527] = cc[4];
+        ccIdx_ = (ccIdx_ + 1) % 19;
 
         // Audio L/R into the 126 LRIQ tuples (BE 16-bit); TX I/Q stay 0.
         for (int i = 0; i < 126; ++i) {

@@ -327,6 +327,38 @@ private:
     void rxWorkerLoop(std::stop_token stop, SocketHandle sock);
     void txWorkerLoop(std::stop_token stop, SocketHandle sock,
                       QString ip);
+    // TX-0c emit: compose one C&C frame (C0..C4) for cycle slot `idx`
+    // (0..18), reading the live MOX/freq/drive/step-att/PA state.  Pure
+    // function — single-thread owned by txWorker_ (no locks needed; reads
+    // are lock-free atomics).  `mox` is snapshotted once per datagram by
+    // the caller so both USB frames of one datagram carry coherent MOX.
+    //
+    // Slot map (19-slot HL2 round-robin, matches Thetis WriteMainLoop_HL2):
+    //   0  0x00 general   C1=rate C2=OC C3=0 C4=0x1C (duplex|nddc=4)
+    //   1  0x02 TX freq   BE u32 (cases 1/5/6 all carry tx[0].frequency)
+    //   2  0x04 RX1 freq  BE u32 (DDC0)
+    //   3  0x06 RX2 freq  BE u32 (DDC1; RX1 freq until RX2 lands)
+    //   4  0x1C TX step-att  C3 = (31 - txStepAttnDb_) & 0x1F
+    //   5  0x08 DDC2 freq = TX freq (PS feedback when keyed)
+    //   6  0x0a DDC3 freq = TX freq
+    //   7  0x0c DDC4 (unused on HL2; emit benign zero data)
+    //   8  0x0e DDC5 (unused)
+    //   9  0x10 DDC6 (unused)
+    //   10 0x12 drive/PA  C1=drive C2=0x40|(paOn?0x08:0) (active-high)
+    //   11 0x14 LNA + MOX-gated step-att
+    //                    C4 = mox ? ((31-txStepAttnDb_)&0x3F)|0x40
+    //                              : ((lnaGainDb_+12)&0x3F)|0x40
+    //   12 0x16 placeholder (CW state on HL2 / ADC-step-att on Hermes-II)
+    //   13 0x18 placeholder
+    //   14 0x1a placeholder (PWM/EER)
+    //   15 0x1e placeholder (CW key/EER pulse width)
+    //   16 0x20 placeholder
+    //   17 0x22 placeholder
+    //   18 0x24 placeholder
+    // All "placeholder" slots emit C1..C4=0 with the correct addr in C0
+    // so the gateware sees a valid frame in every slot (matches Thetis's
+    // unconditional 19-slot emission — no slot skipping).
+    void composeCC(int idx, bool mox, std::uint8_t out[5]) const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.
     void updateOcPattern();
@@ -363,10 +395,13 @@ private:
     // with Auto-LNA (default on) backing it off on overload.  Overridden
     // from QSettings in the ctor once the operator sets it.
     std::atomic<int>     lnaGainDb_{31};
-    // EP2 C&C round-robin phase — cycles the 0x14 LNA register into the
-    // second C&C slot every Nth datagram (≈20 Hz) so the gateware keeps
-    // the override bit fresh; freq holds the slot the rest of the time.
-    std::atomic<quint32> ccPhase_{0};
+    // EP2 C&C round-robin slot index — one slot per USB frame, 0..18,
+    // covering the full HL2 HPSDR-P1 C&C surface (general, TX/RX VFOs,
+    // TX step-att, DDC2/3 TX-freq mirror, drive+PA, LNA+MOX-gated
+    // step-att, CW/EER/BPF2/tx-latency/reset).  ~40 Hz per slot at
+    // ~760 USB frames/sec.  Owned by the EP2 writer thread (txWorker_)
+    // = single-thread, no atomic needed.
+    int                  ccIdx_{0};
     // ADC-overload telemetry + Auto-LNA (Thetis-style, gain-sense).
     // adcOverloadNow_ holds the ADC0 overload bit from the MOST RECENT
     // EP6 address-0 status frame (direct overwrite — NOT a window-OR
