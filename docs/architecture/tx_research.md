@@ -508,4 +508,49 @@ in as a second protocol encoder + capability table, not a rewrite.
 ---
 
 *Sources: clean-room reads of Thetis 2.10.3.13 + WDSP (GPL, NR0V). Citations are
-for our own provenance; no reference-app identifiers appear in shipped code.*
+for our own provenance. Operator decision 2026-05-27: reference citations (Thetis
+file:line, gateware control.v) MAY appear in lyra-cpp **code comments** for
+precision — matching the existing convention; the no-reference-name rule applies
+to **commit messages** (kept first-principles).*
+
+---
+
+## ▶ SESSION LOG / RESUME (2026-05-27)
+
+**Done this session (committed to local `main`, NOT pushed):**
+- `3bb3949` TX-0a — supply telemetry → `0x00` C1:C2 `>>4` (12.25 V, bench-confirmed).
+- `40bd439` TX-0a — PA current → `0x10` C3:C4 (`user_adc0`); dropped the dead
+  PA-volts slot + `0x18` (idle `(0,0)`). Decode-only, RF-safe.
+- `706babb` **TX-0b — TX-state C&C register foundation** (`hl2_stream.h/.cpp`):
+  added atomics + clamping setters `setMox / setTxFreqHz / setTxDriveLevel /
+  setTxStepAttnDb / setPaEnabled`. **WIRE-INERT** — the EP2 emission loop reads
+  none of them, so at MOX=0/PA-off the datagram is byte-identical to RX. Compiles
+  clean; nothing transmits.
+
+**Verified TX C&C byte map (Thetis `WriteMainLoop_HL2` + ak4951v4 `control.v`):**
+- MOX → C0 bit 0 (`networkproto1.c:896`).
+- TX-NCO → C0 `0x02`/`0x08`/`0x0a`, big-endian, all three carry `tx[0].frequency`
+  (cases 1/5/6).
+- drive → C0 `0x12` C1 (`:1078`; gateware uses the **top 4 bits = 16 steps**).
+- step-att → C0 `0x1C` C3 = **`(31 − db) & 0x1F`** (`:1019` + `console.cs:10658`
+  `SetTxAttenData(31 - x)` HL2-only).
+- PA enable → C0 `0x12` C2 **bit 3 (`0x08`)**, active-high (`netInterface.c:581`
+  `ApolloTuner=0x8`; `control.v:213 pa_enable<=cmd_data[19]`). **C2 bit 7 (`0x80`,
+  VNA) must stay clear** (`control.v:359`) or the PA won't key; C2 bit 2 (`0x04`)
+  is a SEPARATE full-duplex/T-R control, NOT a PA-off flag.
+
+**Provenance discipline (operator-enforced):** old Python Lyra TX is NOT a trusted
+reference (its TX never worked). Verify TX only against **Thetis** (working TX/PS)
++ the **HL2+ ak4951v4 gateware RTL** (`Y:\Claude local\_hl2src\`).
+
+**RESUME = TX-0c (task #17):** wire the TX-0b registers into the EP2 C&C
+round-robin **under MOX gating** — the first commit that can put RF on the air.
+This is RF-consequential: plan FIRST (emission scheme that extends the current
+2-frame/datagram cycle without disturbing RX cadence + MOX gating + the §2.1
+ATT-on-TX RX-protect), then a **dummy-load bench gate** (watch PA current/temp,
+PA default-OFF) before any real key. Don't code the wire before that plan.
+
+Current lyra-cpp C&C emitter (`hl2_stream.cpp` ~917): 2 frames/datagram — frame-0
+general config + frame-2 alternating RX1-freq (`0x04`, 18/19) / LNA (`0x14`, 1/19).
+Build: `_b.bat` (or vcvars64 + `cmake --build build`); close running DEV `lyra.exe`
+before relink (LNK1104). Operator runs their own DEV build + benches.
