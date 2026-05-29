@@ -218,6 +218,19 @@ int main(int argc, char *argv[])
         [stream](const qint16 *lr, int n) { stream->pushAudio(lr, n); },
         [stream](bool on) { stream->setInjectAudio(on); });
 
+    // Task #26 — auto-mute RX1 audio while the wire MOX bit is live so
+    // the operator doesn't self-deafen off their own TX coupling.
+    // moxActiveChanged fires on the TR-settled edges only (post-mox_delay
+    // + rf_delay on keydown; post-ptt_out_delay on keyup), so the mute
+    // tracks the actual on-air window, not the operator's click.  The
+    // WdspEngine side honours an operator-toggleable autoMuteOnTx
+    // setting (default ON; persisted), so this signal can be ignored
+    // by the gain calc when ESSB self-monitoring or similar is wanted.
+    // AutoConnection: signal emitted from the Qt main thread (via the
+    // FSM QTimers in HL2Stream), slot also lives on the main thread.
+    QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
+                     wdspEngine, &lyra::dsp::WdspEngine::setTxMuted);
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still

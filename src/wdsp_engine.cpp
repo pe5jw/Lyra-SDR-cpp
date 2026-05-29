@@ -290,6 +290,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     QSettings s;
     muted_.store(s.value(QStringLiteral("audio/muted"), false).toBool(),
                  std::memory_order_relaxed);
+    // Auto-mute-on-TX (task #26) defaults TRUE — safer first-launch
+    // posture.  Operator can turn it off in Settings -> Hardware ->
+    // Transmit for ESSB monitoring or any other listen-to-myself
+    // workflow.  txMuted_ stays false at boot (no live MOX yet).
+    autoMuteOnTx_.store(
+        s.value(QStringLiteral("audio/autoMuteOnTx"), true).toBool(),
+        std::memory_order_relaxed);
     volume_.store(std::clamp(
         s.value(QStringLiteral("audio/volume"), 0.65).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
@@ -933,6 +940,29 @@ void WdspEngine::setVolume(double v)
     volume_.store(v, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("audio/volume"), v);
     emit volumeChanged();
+}
+
+void WdspEngine::setTxMuted(bool m)
+{
+    // Live MOX-driven mute — wired in main.cpp from
+    // HL2Stream::moxActiveChanged.  No persistence, no settings write
+    // (transient TX state, not an operator preference).  The gain calc
+    // gates this through autoMuteOnTx_ so the operator's master switch
+    // takes effect immediately if they toggle it mid-TX.
+    const bool prev = txMuted_.exchange(m, std::memory_order_relaxed);
+    if (prev != m) emit txMutedChanged();
+}
+
+void WdspEngine::setAutoMuteOnTx(bool on)
+{
+    const bool prev = autoMuteOnTx_.exchange(on, std::memory_order_relaxed);
+    if (prev == on) return;
+    QSettings().setValue(QStringLiteral("audio/autoMuteOnTx"), on);
+    emit autoMuteOnTxChanged();
+    // If the operator flips this OFF while currently transmitting, the
+    // change takes effect on the NEXT audio block — the gain calc reads
+    // both atomics fresh, so the gate releases without an audible pop
+    // (the volume taper handles the transition).  Symmetric on flip ON.
 }
 
 void WdspEngine::setMuted(bool m)
@@ -2017,8 +2047,20 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         // (EP2 injection) or the PC sound card.  gain = 0 when muted
         // (SAFETY default at startup) — applies to BOTH paths.
         {
+            // Two mute paths OR together: the operator's manual mute_
+            // (Audio panel) AND the auto-mute-on-TX gate (live wire MOX
+            // bit, gated by autoMuteOnTx_ pref).  Either silences audio
+            // without disturbing the other's persistent state — so a
+            // keyup releases the TX gate and audio resumes at the
+            // operator's pre-TX volume immediately.  Both reads are
+            // memory_order_relaxed because the gain calc tolerates a
+            // one-block stale read (worst case = one ~21 ms output
+            // block of pre-edge audio, ear-imperceptible).
+            const bool m_manual = muted_.load(std::memory_order_relaxed);
+            const bool m_tx     = txMuted_.load(std::memory_order_relaxed) &&
+                                  autoMuteOnTx_.load(std::memory_order_relaxed);
             double gain =
-                muted_.load(std::memory_order_relaxed)
+                (m_manual || m_tx)
                     ? 0.0
                     : posToGain(volume_.load(std::memory_order_relaxed));
             if (hl2Out_) {

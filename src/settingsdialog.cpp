@@ -1264,6 +1264,36 @@ QWidget *SettingsDialog::buildHardwareTab() {
         paWarn->setStyleSheet(QStringLiteral("QLabel{color:#cccccc;}"));
         g->addWidget(paWarn, 4, 0, 1, 2);
 
+        // --- Auto-mute RX while transmitting (task #26) ---
+        // Default ON.  When the wire MOX bit settles true (post TR-delay),
+        // the WdspEngine drops RX audio to silence so the operator
+        // doesn't self-deafen off TX coupling — automatically restores
+        // when MOX clears.  Operator can turn this off for ESSB self-
+        // monitoring or any "listen to my own TX" workflow.
+        if (engine_) {
+            auto *amBox = new QCheckBox(
+                tr("Auto-mute RX audio while transmitting"), grp);
+            amBox->setChecked(engine_->autoMuteOnTx());
+            amBox->setToolTip(tr(
+                "When ON, RX1 audio is silenced for the duration of every "
+                "wire-MOX-active window (post TR-delay → post ptt_out_delay), "
+                "so you don't hear your own TX coupling back through the "
+                "receiver.  Restores to your set Volume the instant MOX "
+                "clears.  Turn OFF if you want to monitor your own TX audio "
+                "(ESSB rig-pinging, sidetone evaluation, etc.).  This is a "
+                "listening convenience, not a safety gate — TX-att-on-TX "
+                "and the safety timeout above are the real RF safeties."));
+            connect(amBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (engine_) engine_->setAutoMuteOnTx(on);
+            });
+            connect(engine_, &lyra::dsp::WdspEngine::autoMuteOnTxChanged,
+                    amBox, [this, amBox]() {
+                const bool on = engine_->autoMuteOnTx();
+                if (amBox->isChecked() != on) amBox->setChecked(on);
+            });
+            g->addWidget(amBox, 5, 0, 1, 2);
+        }
+
         form->addRow(grp);
     }
 

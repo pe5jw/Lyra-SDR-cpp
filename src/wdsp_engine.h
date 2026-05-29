@@ -87,6 +87,16 @@ class WdspEngine : public QObject {
     Q_PROPERTY(double volume      READ volume      NOTIFY volumeChanged)
     Q_PROPERTY(double volumeDb    READ volumeDb    NOTIFY volumeChanged)
     Q_PROPERTY(bool   muted       READ muted       NOTIFY mutedChanged)
+    // Auto-mute-on-TX (task #26): when the wire MOX bit settles true,
+    // RX1 audio is force-muted so the operator doesn't self-deafen
+    // off their own TX coupling.  Separate from the operator's manual
+    // mute (muted_): both are OR'd into the gain calc so either path
+    // silences audio without disturbing the other's state.  txMuted is
+    // the live MOX-driven flag; autoMuteOnTx is the operator's master
+    // switch (persisted, default ON — sane safety posture).  When
+    // autoMuteOnTx is OFF, txMuted has no effect on the gain.
+    Q_PROPERTY(bool   txMuted     READ txMuted     NOTIFY txMutedChanged)
+    Q_PROPERTY(bool   autoMuteOnTx READ autoMuteOnTx NOTIFY autoMuteOnTxChanged)
     // AF makeup gain (WDSP RXA panel gain), 0..+40 dB — a pre-volume
     // output trim so you can set a comfortable WDSP level and ride Volume
     // on top.  Default 0 dB (unity).  Stereo BALANCE (−1 left … +1 right)
@@ -238,6 +248,8 @@ public:
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
+    bool   txMuted() const { return txMuted_.load(std::memory_order_relaxed); }
+    bool   autoMuteOnTx() const { return autoMuteOnTx_.load(std::memory_order_relaxed); }
     double afGainDb() const { return afGainDb_; }
     double balance()  const { return balance_.load(std::memory_order_relaxed); }
     // Output-list index: 0 = HL2 audio jack, 1..N = PC devices.
@@ -278,6 +290,14 @@ public:
     // setAudioOutputDevice: switch output device live (restarts sink).
     Q_INVOKABLE void setVolume(double v);
     Q_INVOKABLE void setMuted(bool m);
+    // Auto-mute-on-TX driver: setTxMuted is wired to HL2Stream's
+    // moxActiveChanged(bool) signal in main.cpp — fires true at the end
+    // of the keydown TR-delay (wire MOX bit settled) and false at the
+    // end of the keyup ptt_out_delay (RF gone).  No persistence — pure
+    // transient state.  setAutoMuteOnTx is the operator's master switch
+    // (persisted; default ON).
+    Q_INVOKABLE void setTxMuted(bool m);
+    Q_INVOKABLE void setAutoMuteOnTx(bool on);
     Q_INVOKABLE void setAfGainDb(double db);   // 0..+40 dB makeup (WDSP panel gain)
     Q_INVOKABLE void setBalance(double b);     // -1 (L) .. +1 (R)
 
@@ -464,6 +484,8 @@ signals:
     void levelsChanged();
     void volumeChanged();
     void mutedChanged();
+    void txMutedChanged();
+    void autoMuteOnTxChanged();
     void afGainChanged();
     void balanceChanged();
     void audioDeviceChanged();
@@ -577,6 +599,14 @@ private:
     // restored from QSettings in the ctor (default UNMUTED).
     std::atomic<double> volume_{0.65};
     std::atomic<bool>   muted_{false};
+    // Auto-mute-on-TX (task #26).  txMuted_ tracks the live wire MOX bit
+    // (false at boot; toggled by HL2Stream::moxActiveChanged).  Not
+    // persisted — pure transient.  autoMuteOnTx_ is the operator's
+    // master switch (persisted under audio/autoMuteOnTx, default ON =
+    // safe posture: a brand-new install can't self-deafen on first key).
+    // Gain calc OR's (muted_) with (autoMuteOnTx_ AND txMuted_).
+    std::atomic<bool>   txMuted_{false};
+    std::atomic<bool>   autoMuteOnTx_{true};
     // AF makeup gain (dB, main-thread; pushed to WDSP SetRXAPanelGain1 as
     // a linear gain).  Balance −1..+1 is applied Lyra-side in feedIq, so
     // it's an atomic the RX worker reads.
