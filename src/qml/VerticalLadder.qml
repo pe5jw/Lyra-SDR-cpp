@@ -16,6 +16,12 @@ Item {
     id: ladder
     anchors.fill: parent
     anchors.margins: 6
+    // Top reservation for the Arc|Bar|Ladder style-toggle row, which
+    // sits in MeterPanel at z:10 over the Loader.  Without this the
+    // first ladder row (PWR / S) collides with the toggle text.  ~28 px
+    // = toggle row height (18) + its top margin (6) + a 4 px breathing
+    // gap so the bar+chip don't kiss the toggle's bottom edge.
+    readonly property real topReserve: 28
 
     // Shared palette helper (mirrors the per-row zone semantics the
     // Arc/Bar use — but each row carries its own `danger` threshold,
@@ -29,14 +35,15 @@ Item {
     }
 
     // Row spacing dynamically scaled by row count so a TX 5-row stack
-    // and an RX 3-row stack each fill the panel.
+    // and an RX 3-row stack each fill the panel BELOW the toggle row.
     readonly property int rowCount: Meter.ladderRows ? Meter.ladderRows.length : 0
     readonly property real rowH: rowCount > 0
-        ? Math.max(20, (height - 8) / rowCount)
+        ? Math.max(20, (height - topReserve - 8) / rowCount)
         : 24
 
     Column {
         anchors.fill: parent
+        anchors.topMargin: ladder.topReserve
         spacing: 2
 
         Repeater {
