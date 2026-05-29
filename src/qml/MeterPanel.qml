@@ -64,4 +64,38 @@ Rectangle {
 
     Component { id: arcFace; HorizonArc {} }
     Component { id: barFace; PlasmaBar {} }
+
+    // ── Click-to-cycle source picker (task #35 / FEATURES.md §6) ──
+    // Click on the meter face cycles the source through the wired
+    // options.  Setting Meter.source routes through MeterModel::
+    // setSource which writes to the appropriate preference slot
+    // (rxSource or txSource based on the live MOX state) — so the
+    // click persists into the operator's pref for that state, not
+    // a transient mode.
+    //
+    // The cycle list is constant for now: only the wired sources
+    // appear (RX S-meter / PWR / SWR).  PA_CURRENT / PA_VOLTS / TEMP /
+    // ALC / MIC / COMP get added when their MeterModel computes
+    // land in follow-on commits.  The Arc|Bar toggle in the top-
+    // right corner sits ABOVE this MouseArea (higher z) so clicks
+    // there don't fall through to the source cycle.
+    MouseArea {
+        anchors.fill: face
+        z: 1                              // below the styleToggle (z:10)
+        cursorShape: Qt.PointingHandCursor
+        acceptedButtons: Qt.LeftButton
+        property var sourceCycle: [0, 1, 2]  // RX_SMETER, PWR, SWR
+        onClicked: function(mouse) {
+            var i = sourceCycle.indexOf(Meter.source)
+            var next = sourceCycle[(i + 1) % sourceCycle.length]
+            Meter.source = next
+        }
+        ToolTip.delay: 1500
+        ToolTip.visible: containsMouse && !pressed
+        ToolTip.text: qsTr("Click to cycle the meter source.  Sets your "
+                           + "RX or TX preference (depending on whether "
+                           + "the radio is keyed) — Settings → Meter "
+                           + "also picks each one explicitly.")
+        hoverEnabled: true
+    }
 }
