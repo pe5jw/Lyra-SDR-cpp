@@ -1036,17 +1036,133 @@ QWidget *SettingsDialog::buildHardwareTab() {
     form->addRow(tr("Filter board"), fb);
 
     // Live OC-pin readout (which J16 pins are currently driven).
+    // Shows both the live wire pattern (RX bits at rest; flips to TX
+    // bits during MOX) AND the table-predicted RX vs TX patterns for
+    // the current band — operator can spot a mismatch (e.g. an OC pin
+    // that should fire but doesn't because their wiring differs from
+    // the n2adr table) before keying into an antenna.
     auto *oc = new QLabel(page);
-    auto setOcText = [oc](int pattern) {
-        oc->setText(tr("Pins: %1").arg(lyra::ocPatternText(pattern)));
+    auto setOcText = [this, oc](int pattern) {
+        QString live = lyra::ocPatternText(pattern);
+        QString rxPred = QStringLiteral("—");
+        QString txPred = QStringLiteral("—");
+        if (stream_) {
+            const int bi = lyra::bandIndexForFreq(int(stream_->rx1FreqHz()));
+            if (bi >= 0) {
+                rxPred = lyra::ocPatternText(
+                    lyra::n2adrOcPattern(bi, /*transmitting=*/false));
+                txPred = lyra::ocPatternText(
+                    lyra::n2adrOcPattern(bi, /*transmitting=*/true));
+            }
+        }
+        oc->setText(tr("Live: %1   |   Band table — RX: %2   TX: %3")
+                        .arg(live, rxPred, txPred));
     };
     setOcText(stream_ ? stream_->ocBits() : 0);
     oc->setStyleSheet(QStringLiteral(
         "QLabel{color:#8fa6ba;font-family:Consolas;}"));
     if (stream_) {
         connect(stream_, &lyra::ipc::HL2Stream::ocBitsChanged, oc, setOcText);
+        // Re-render the band-predicted columns when the operator tunes
+        // across a band edge (the live wire pattern signal already
+        // covers the band-driven changes, but if the OC bits stay the
+        // same across an edge, the predicted columns still want to
+        // update to reflect the new band's table entry).
+        connect(stream_, &lyra::ipc::HL2Stream::rx1FreqChanged, oc,
+                [this, setOcText]() {
+                    setOcText(stream_ ? stream_->ocBits() : 0);
+                });
     }
     form->addRow(tr("OC outputs"), oc);
+
+    // Safety warning + per-band table dialog (task #28).  The OC table
+    // is per-board: an N2ADR board wires pins to specific BPF/LPF
+    // banks, but custom boards may differ.  Operator MUST verify the
+    // table matches their physical wiring before keying into a band.
+    {
+        auto *row = new QWidget(page);
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+
+        auto *fbWarn = new QLabel(row);
+        fbWarn->setText(tr(
+            "<b style='color:#d11515;'>⚠ Pre-antenna gate:</b>  "
+            "before keying RF into a filter board, open the table "
+            "and verify the predicted RX / TX pins match your "
+            "physical board wiring.  Wrong pins = wrong filter for "
+            "the band = out-of-band emissions / blown LPF relay."));
+        fbWarn->setWordWrap(true);
+        fbWarn->setStyleSheet(QStringLiteral("QLabel{color:#cccccc;}"));
+        h->addWidget(fbWarn, 1);
+
+        auto *tableBtn = new QPushButton(tr("OC patterns…"), row);
+        tableBtn->setToolTip(tr(
+            "Show the per-band RX and TX OC pin patterns the n2adr "
+            "table emits for each amateur band.  Compare against your "
+            "physical filter board's expected pin mapping."));
+        connect(tableBtn, &QPushButton::clicked, page, [this]() {
+            // Build the table HTML on demand.  amateurBands() is small
+            // (~11 entries) so a fresh dialog every click is fine.
+            QString html =
+                QStringLiteral("<style>"
+                               "table{border-collapse:collapse;}"
+                               "th,td{padding:4px 12px;border:1px solid "
+                               "#3a5060;text-align:left;}"
+                               "th{background:#1a2a35;color:#cdd9e5;}"
+                               "td{font-family:Consolas;color:#cdd9e5;}"
+                               "tr.cur td{background:#2a4a3a;font-weight:bold;}"
+                               "</style>"
+                               "<table><tr><th>Band</th><th>Freq (MHz)</th>"
+                               "<th>RX pins</th><th>TX pins</th></tr>");
+            const int curBi = stream_
+                ? lyra::bandIndexForFreq(int(stream_->rx1FreqHz()))
+                : -1;
+            const auto &bands = lyra::amateurBands();
+            for (std::size_t i = 0; i < bands.size(); ++i) {
+                const auto &b = bands[i];
+                const int rxP = lyra::n2adrOcPattern(int(i), false);
+                const int txP = lyra::n2adrOcPattern(int(i), true);
+                const QString cls = (int(i) == curBi)
+                                        ? QStringLiteral(" class='cur'")
+                                        : QString();
+                html += QStringLiteral("<tr%1><td>%2</td><td>%3 – %4</td>"
+                                       "<td>%5</td><td>%6</td></tr>")
+                            .arg(cls,
+                                 QString::fromLatin1(b.name),
+                                 QString::number(b.low / 1.0e6, 'f', 3),
+                                 QString::number(b.high / 1.0e6, 'f', 3),
+                                 lyra::ocPatternText(rxP),
+                                 lyra::ocPatternText(txP));
+            }
+            html += QStringLiteral("</table>");
+
+            auto *dlg = new QDialog(this);
+            dlg->setAttribute(Qt::WA_DeleteOnClose);
+            dlg->setWindowTitle(tr("Filter board — OC patterns by band"));
+            auto *v = new QVBoxLayout(dlg);
+            auto *intro = new QLabel(dlg);
+            intro->setText(tr(
+                "Per-band OC pin patterns driven on the HL2 J16 outputs "
+                "(C2 of frame 0).  The current band is highlighted.  "
+                "TX-side bits engage post-ATT, before the wire MOX bit, "
+                "giving the filter board ~12 ms to settle into TX "
+                "configuration before RF appears."));
+            intro->setWordWrap(true);
+            v->addWidget(intro);
+            auto *table = new QLabel(dlg);
+            table->setTextFormat(Qt::RichText);
+            table->setText(html);
+            v->addWidget(table);
+            auto *close = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+            connect(close, &QDialogButtonBox::rejected, dlg, &QDialog::close);
+            v->addWidget(close);
+            dlg->resize(560, 480);
+            dlg->show();
+        });
+        h->addWidget(tableBtn, 0, Qt::AlignTop);
+
+        form->addRow(row);
+    }
 
     // --- Auto-LNA (overload-triggered front-end protection) ---
     // On sustained ADC overload the LNA backs off; when the band clears
