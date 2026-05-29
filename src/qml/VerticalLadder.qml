@@ -108,31 +108,37 @@ Item {
                     visible: modelData.danger < 0.999
                 }
 
-                // Source label, left-justified.
+                // Source label, left-justified.  Wider + larger font
+                // than the v0.2.1 first cut — operator bench feedback
+                // 2026-05-29: "Data Text very small to read."
                 Text {
                     id: label
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 36
+                    width: 48
                     text: modelData.label
                     color: "#7790a0"
                     font.family: "Consolas"
                     font.bold: true
-                    font.pixelSize: Math.max(10, parent.height * 0.42)
+                    font.pixelSize: Math.max(13, parent.height * 0.55)
                     horizontalAlignment: Text.AlignLeft
                 }
 
                 // Value chip, right-justified — tinted by zone so a hot
-                // source's number itself reads as red.
+                // source's number itself reads as red.  Wider + larger
+                // font (operator bench feedback 2026-05-29) so the
+                // 9-char-max strings ("PA 1.76 A", "SWR 1.16:1") have
+                // breathing room without elision.
                 Text {
                     id: chip
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 90
+                    width: 115
                     text: modelData.value
                     color: ladder.zoneColor(modelData.level, modelData.danger)
                     font.family: "Consolas"
-                    font.pixelSize: Math.max(10, parent.height * 0.42)
+                    font.bold: true
+                    font.pixelSize: Math.max(15, parent.height * 0.60)
                     horizontalAlignment: Text.AlignRight
                 }
             }
