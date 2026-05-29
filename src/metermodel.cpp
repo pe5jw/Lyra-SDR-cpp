@@ -48,6 +48,7 @@ constexpr auto kKeyRxSource  = "meter/rxSource"; // operator's RX-state preferen
 constexpr auto kKeyTxSource  = "meter/txSource"; // operator's TX-state preference
 constexpr auto kKeyPwrCal    = "meter/pwrCalScale";   // operator cal multiplier
 constexpr auto kKeyPwrRated  = "meter/pwrRatedMaxW";  // rated max (red zone start)
+constexpr auto kKeyTxSecond  = "meter/txSecondary";   // TX secondary readout source
 
 // PWR scale conventions.  pwrScaleMaxW = 2 * rated max so the danger
 // zone sits at half-scale on the renderer's 0..1 axis.  Smoothing,
@@ -130,6 +131,15 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     pwrRatedMaxW_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPwrRated), 5.0).toDouble(), 0.5, 200.0);
     pwrScaleMaxW_ = pwrRatedMaxW_ * 2.0;
+    // TX secondary digital readout default = -1 (none).  Clamp to the
+    // valid Source enum range (or -1) so a stale value can't surface
+    // as garbage text in the renderer's snrText slot.
+    {
+        const int raw = s.value(QString::fromLatin1(kKeyTxSecond), -1).toInt();
+        txSecondary_ = (raw == -1 || (raw >= RX_SMETER && raw <= COMP))
+                           ? raw
+                           : -1;
+    }
 
     hist_.assign(kHistory, 0.0);
     history_.reserve(kHistory);
@@ -336,6 +346,82 @@ void MeterModel::setPwrRatedMaxW(double w) {
     // danger-zone position with the new rated max even before the
     // next tick lands.
     if (source_ == PWR) emit updated();
+}
+
+void MeterModel::setTxSecondary(int s) {
+    // -1 (none) or a valid Source enum value.  Out-of-range falls
+    // back to -1 (hide) rather than RX_SMETER, because the operator's
+    // intent for an invalid secondary is "show nothing" — picking
+    // RX_SMETER silently would surprise them with an S-meter readout
+    // under their PWR meter.
+    if (s != -1 && (s < RX_SMETER || s > COMP)) s = -1;
+    if (s == txSecondary_) return;
+    txSecondary_ = s;
+    QSettings().setValue(QString::fromLatin1(kKeyTxSecond), s);
+    emit txSecondaryChanged();
+    // Re-emit so the renderer's snrText slot clears or refreshes on
+    // the current frame instead of waiting for the next tick.
+    emit updated();
+}
+
+QString MeterModel::formatSecondaryText(int src) const {
+    // Format a one-line digital readout for the given source — used to
+    // populate snrText_ as the "small text under the main needle" slot
+    // when a TX primary has txSecondary_ set.  Pure read of the
+    // underlying stream_ getters; never modifies model state.  Each
+    // case mirrors the primary compute's text format so the operator
+    // reads identical numbers (e.g. PWR-as-secondary uses the same
+    // pwrCalScale_ trim).  NaN / sentinel values render as "—".
+    if (!stream_) return QString();
+    switch (src) {
+    case PWR: {
+        const double raw = stream_->fwdPowerW();
+        if (std::isnan(raw) || raw < 0.0) return QStringLiteral("PWR —");
+        const double w = raw * pwrCalScale_;
+        return (w < 10.0)
+                   ? QStringLiteral("PWR %1 W").arg(w, 0, 'f', 1)
+                   : QStringLiteral("PWR %1 W").arg(std::lround(w));
+    }
+    case SWR: {
+        const double fwd = stream_->fwdPowerW();
+        const double rev = stream_->revPowerW();
+        if (std::isnan(fwd) || std::isnan(rev) || fwd < kSwrGuardW)
+            return QStringLiteral("SWR —");
+        const double r = std::clamp(rev / std::max(fwd, 1e-9), 0.0, 0.999);
+        const double rho = std::sqrt(r);
+        const double swr = std::clamp((1.0 + rho) / std::max(1.0 - rho, 1e-9),
+                                       kSwrScaleMin, 20.0);
+        return (swr >= kSwrScaleMax)
+                   ? QStringLiteral("SWR ≥%1:1").arg(kSwrScaleMax, 0, 'f', 1)
+                   : QStringLiteral("SWR %1:1").arg(swr, 0, 'f', 2);
+    }
+    case PA_CURRENT: {
+        const double a = stream_->paCurrentA();
+        return std::isnan(a)
+                   ? QStringLiteral("PA —")
+                   : QStringLiteral("PA %1 A").arg(a, 0, 'f', 2);
+    }
+    case PA_VOLTS: {
+        const double v = stream_->hl2SupplyV();
+        return std::isnan(v)
+                   ? QStringLiteral("V —")
+                   : QStringLiteral("V %1 V").arg(v, 0, 'f', 1);
+    }
+    case TEMP: {
+        const double c = stream_->hl2TempC();
+        return std::isnan(c)
+                   ? QStringLiteral("T —")
+                   : QStringLiteral("T %1 °C").arg(c, 0, 'f', 1);
+    }
+    case ALC:
+    case MIC:
+    case COMP:
+        // Need WDSP TXA chain — placeholder until those land.
+        return QString();
+    case RX_SMETER:
+    default:
+        return QString();
+    }
 }
 
 void MeterModel::setPwrCalScale(double s) {
@@ -546,7 +632,15 @@ void MeterModel::computePwr() {
     // No noise-floor marker for TX-side sources.  Set noiseLevel_ to
     // 0 so the renderer's `> 0.001` gate skips the marker draw cleanly.
     noiseLevel_ = 0.0;
-    snrText_.clear();
+    // Secondary digital readout (task #36): if the operator has picked
+    // a secondary source AND it's distinct from the current primary,
+    // render its formatted value into the snrText_ slot that the
+    // renderers already display below the main needle.  No secondary
+    // configured → leave snrText_ blank so the renderer hides the line.
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
 
     // Danger-zone position for the renderer's red-zone coloring.  Equals
     // pwrRatedMaxW_ / pwrScaleMaxW_ = 0.5 with the default 5 W rated /
@@ -651,7 +745,13 @@ void MeterModel::computeSwr() {
         (kSwrDanger - kSwrScaleMin) / (kSwrScaleMax - kSwrScaleMin),
         0.0, 1.0);
     noiseLevel_ = 0.0;
-    snrText_.clear();
+    // Secondary digital readout (task #36) — same handling as PWR's
+    // compute: render the operator's chosen second source into the
+    // snrText_ slot the renderers display below the main needle.
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
     dbmText_.clear();
 
     hist_.push_back(level_);

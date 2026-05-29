@@ -96,6 +96,18 @@ private:
                NOTIFY pwrCalChanged)
     Q_PROPERTY(double pwrCalScale  READ pwrCalScale  WRITE setPwrCalScale
                NOTIFY pwrCalChanged)
+    // TX secondary digital readout (task #36).  When a TX source (PWR
+    // / SWR / ALC / etc.) is the primary, the operator can pick a
+    // SECOND source to render as a small digital readout under the
+    // main needle (reusing the existing snrText slot the renderers
+    // already display — RX uses it for SNR, TX uses it for the chosen
+    // secondary).  -1 = none / hide; otherwise a Source enum value.
+    // Hidden automatically when the chosen secondary equals the
+    // current primary (showing "PWR 4.2 W" under a PWR meter would
+    // be a tautology — Settings prevents the selection but the model
+    // gates defensively).
+    Q_PROPERTY(int txSecondary READ txSecondary WRITE setTxSecondary
+               NOTIFY txSecondaryChanged)
     // Active source — what the renderer is showing RIGHT NOW.  Derived
     // from the operator's RX/TX preferences and the live wire MOX bit:
     //   * moxActive=false → source = rxSource
@@ -152,6 +164,8 @@ public:
     double pwrCalScale()  const { return pwrCalScale_; }
     void setPwrRatedMaxW(double w);
     void setPwrCalScale(double s);
+    int  txSecondary() const { return txSecondary_; }
+    void setTxSecondary(int s);
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -166,6 +180,7 @@ signals:
     void rxSourceChanged();
     void txSourceChanged();
     void pwrCalChanged();
+    void txSecondaryChanged();
 
 private:
     void tick();
@@ -178,6 +193,12 @@ private:
     void computeSMeter();
     void computePwr();
     void computeSwr();
+    // Format a small "PWR 4.2 W" / "SWR 1.3:1" / "PA 1.8 A" / etc.
+    // text snapshot for the given source, suitable for the secondary
+    // digital readout under a TX primary.  Reads raw values from
+    // stream_ without mutating any model state — safe to call from
+    // any compute fn after the primary has finished its tick.
+    QString formatSecondaryText(int src) const;
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table
@@ -190,6 +211,7 @@ private:
     double pwrCalScale_  = 1.0;     // applied to fwdPowerW() output
     double pwrRatedMaxW_ = 5.0;     // danger-zone (red) starts here
     double pwrScaleMaxW_ = 10.0;    // full-scale watts (== 2 * rated max)
+    int    txSecondary_  = -1;      // -1 = hide; else Source enum value
     // Source-agnostic "danger zone start" position (0..1 along the
     // scale).  S-meter computes from dBm math via the existing path;
     // PWR/SWR/etc. write directly.  normAtS9() Q_PROPERTY returns

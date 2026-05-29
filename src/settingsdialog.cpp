@@ -1525,6 +1525,43 @@ QWidget *SettingsDialog::buildMeterTab() {
         });
         form->addRow(tr("PWR rated max:"), ratedMax);
 
+        // TX secondary digital readout (task #36).  When a TX source
+        // (PWR / SWR / ...) is the active primary, this picks a SECOND
+        // source whose value is rendered as a small digital line under
+        // the main needle — same slot the RX meter uses for SNR.
+        // Lets the operator watch e.g. SWR at a glance while the main
+        // needle shows PWR, without taking up another dock slot.
+        // Hidden automatically when the secondary == current primary.
+        auto *txSec = new QComboBox(this);
+        const struct { int v; const char *label; } secOpts[] = {
+            {-1, "None (hide line)"},
+            {1,  "PWR (forward power)"},
+            {2,  "SWR (antenna match)"},
+            {3,  "PA Current (HL2 bias)"},
+            {4,  "PA Volts (HL2 supply)"},
+            {5,  "Temp (HL2 board)"},
+        };
+        for (const auto &o : secOpts)
+            txSec->addItem(tr(o.label), o.v);
+        {
+            const int sel = meter_->txSecondary();
+            for (int i = 0; i < txSec->count(); ++i)
+                if (txSec->itemData(i).toInt() == sel) {
+                    txSec->setCurrentIndex(i);
+                    break;
+                }
+        }
+        txSec->setToolTip(tr(
+            "Extra digital readout shown under the main needle when a "
+            "TX source is the primary.  Useful for watching SWR while "
+            "the needle tracks PWR (or any combination).  Hidden when "
+            "the selection equals the current primary."));
+        connect(txSec, &QComboBox::currentIndexChanged, this,
+                [this, txSec](int) {
+            if (meter_) meter_->setTxSecondary(txSec->currentData().toInt());
+        });
+        form->addRow(tr("TX secondary readout:"), txSec);
+
         auto *calScale = new QDoubleSpinBox(page);
         calScale->setRange(0.05, 20.0);
         calScale->setDecimals(3);
