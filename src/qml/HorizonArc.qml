@@ -270,6 +270,18 @@ Item {
             font.family: "Consolas"
             font.pixelSize: Math.max(10, arc.rad * 0.17)
         }
+        // Second secondary digital readout (task #37) — only TX uses it;
+        // RX leaves it empty so the Column visually collapses to two
+        // small lines (dBm + SNR) like before.  Slightly cooler tint
+        // than snrText's green so the two are visually distinct.
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: Meter.secondary2Text
+            visible: text.length > 0
+            color: "#a0d8e0"
+            font.family: "Consolas"
+            font.pixelSize: Math.max(10, arc.rad * 0.17)
+        }
     }
 
     Connections {

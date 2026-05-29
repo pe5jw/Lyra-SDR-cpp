@@ -1562,6 +1562,32 @@ QWidget *SettingsDialog::buildMeterTab() {
         });
         form->addRow(tr("TX secondary readout:"), txSec);
 
+        // Second TX digital readout (task #37) — brings TX into RX-parity
+        // 3-line layout (primary big number / secondary #1 / secondary #2
+        // mirrors RX's S-unit / dBm / SNR).  Same option set as #1; the
+        // model hides this slot when its selection equals the primary OR
+        // duplicates secondary #1, so the operator sees nothing surprising.
+        auto *txSec2 = new QComboBox(this);
+        for (const auto &o : secOpts)
+            txSec2->addItem(tr(o.label), o.v);
+        {
+            const int sel = meter_->txSecondary2();
+            for (int i = 0; i < txSec2->count(); ++i)
+                if (txSec2->itemData(i).toInt() == sel) {
+                    txSec2->setCurrentIndex(i);
+                    break;
+                }
+        }
+        txSec2->setToolTip(tr(
+            "Third readout line (the second small line under the main "
+            "needle).  Hidden when its selection equals the primary or "
+            "duplicates the first secondary."));
+        connect(txSec2, &QComboBox::currentIndexChanged, this,
+                [this, txSec2](int) {
+            if (meter_) meter_->setTxSecondary2(txSec2->currentData().toInt());
+        });
+        form->addRow(tr("TX secondary readout #2:"), txSec2);
+
         auto *calScale = new QDoubleSpinBox(page);
         calScale->setRange(0.05, 20.0);
         calScale->setDecimals(3);

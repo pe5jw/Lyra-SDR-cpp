@@ -49,6 +49,7 @@ constexpr auto kKeyTxSource  = "meter/txSource"; // operator's TX-state preferen
 constexpr auto kKeyPwrCal    = "meter/pwrCalScale";   // operator cal multiplier
 constexpr auto kKeyPwrRated  = "meter/pwrRatedMaxW";  // rated max (red zone start)
 constexpr auto kKeyTxSecond  = "meter/txSecondary";   // TX secondary readout source
+constexpr auto kKeyTxSecond2 = "meter/txSecondary2";  // TX second secondary readout source
 
 // PWR scale conventions.  pwrScaleMaxW = 2 * rated max so the danger
 // zone sits at half-scale on the renderer's 0..1 axis.  Smoothing,
@@ -140,6 +141,12 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
                            ? raw
                            : -1;
     }
+    {
+        const int raw = s.value(QString::fromLatin1(kKeyTxSecond2), -1).toInt();
+        txSecondary2_ = (raw == -1 || (raw >= RX_SMETER && raw <= COMP))
+                            ? raw
+                            : -1;
+    }
 
     hist_.assign(kHistory, 0.0);
     history_.reserve(kHistory);
@@ -178,6 +185,7 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
                     noiseFloorDbm_ = -140.0;
                     noiseLevel_ = 0.0;
                     snrText_ = QStringLiteral("—");
+                    secondary2Text_.clear();
                     text_ = QStringLiteral("—");
                     dbmText_ = QStringLiteral("—");
                     std::fill(hist_.begin(), hist_.end(), 0.0);
@@ -299,6 +307,7 @@ void MeterModel::setSource(int s) {
     noiseFloorDbm_ = -140.0;
     noiseLevel_ = 0.0;
     snrText_ = QStringLiteral("—");
+    secondary2Text_.clear();
     text_ = QStringLiteral("—");
     dbmText_ = QStringLiteral("—");
     std::fill(hist_.begin(), hist_.end(), 0.0);
@@ -361,6 +370,18 @@ void MeterModel::setTxSecondary(int s) {
     emit txSecondaryChanged();
     // Re-emit so the renderer's snrText slot clears or refreshes on
     // the current frame instead of waiting for the next tick.
+    emit updated();
+}
+
+void MeterModel::setTxSecondary2(int s) {
+    // Sibling of setTxSecondary — second small line under the primary,
+    // brings TX into RX-parity 3-line layout.  Same -1-or-Source-enum
+    // contract.
+    if (s != -1 && (s < RX_SMETER || s > COMP)) s = -1;
+    if (s == txSecondary2_) return;
+    txSecondary2_ = s;
+    QSettings().setValue(QString::fromLatin1(kKeyTxSecond2), s);
+    emit txSecondary2Changed();
     emit updated();
 }
 
@@ -574,6 +595,10 @@ void MeterModel::computeSMeter() {
     snrText_ = (level_ <= 0.01 || snr < 1.0)
                    ? QStringLiteral("—")
                    : QStringLiteral("SNR %1 dB").arg(std::lround(std::min(snr, 99.0)));
+    // The second secondary readout (task #37) is a TX-only feature; RX
+    // already shows dBm + SNR on the two small lines.  Clear it so a
+    // stale TX-source value doesn't render under the S-meter on swap.
+    secondary2Text_.clear();
 
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
@@ -641,6 +666,17 @@ void MeterModel::computePwr() {
         snrText_ = formatSecondaryText(txSecondary_);
     else
         snrText_.clear();
+    // Second secondary readout (task #37): same idea, fills the third
+    // text line so TX matches RX's primary/dBm/SNR three-line layout.
+    // Suppressed when it equals the primary OR equals the first
+    // secondary (no duplicate lines — Settings prevents the selection
+    // but the model gates defensively).
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
 
     // Danger-zone position for the renderer's red-zone coloring.  Equals
     // pwrRatedMaxW_ / pwrScaleMaxW_ = 0.5 with the default 5 W rated /
@@ -752,6 +788,15 @@ void MeterModel::computeSwr() {
         snrText_ = formatSecondaryText(txSecondary_);
     else
         snrText_.clear();
+    // Second secondary readout (task #37) — fills the third text line
+    // so TX matches RX's three-line layout.  Hidden when it equals the
+    // primary or duplicates the first secondary.
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
     dbmText_.clear();
 
     hist_.push_back(level_);

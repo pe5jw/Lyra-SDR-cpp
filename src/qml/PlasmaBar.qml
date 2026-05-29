@@ -216,6 +216,18 @@ Item {
             font.family: "Consolas"
             font.pixelSize: Math.max(9, bar.height * 0.09)
         }
+        // Second secondary digital readout (task #37) — TX-only; RX
+        // leaves it empty.  Cooler tint than snrText for visual
+        // separation.
+        Text {
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 2
+            text: Meter.secondary2Text
+            visible: text.length > 0
+            color: "#a0d8e0"
+            font.family: "Consolas"
+            font.pixelSize: Math.max(9, bar.height * 0.09)
+        }
     }
 
     Connections {

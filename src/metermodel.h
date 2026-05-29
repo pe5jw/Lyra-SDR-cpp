@@ -108,6 +108,16 @@ private:
     // gates defensively).
     Q_PROPERTY(int txSecondary READ txSecondary WRITE setTxSecondary
                NOTIFY txSecondaryChanged)
+    // Second TX digital readout (task #37) — brings TX into RX-parity 3-line
+    // layout (primary big number / secondary #1 / secondary #2 == RX's
+    // primary / dBm / SNR).  Renders via the new secondary2Text property
+    // that HorizonArc / PlasmaBar both display under the existing snrText
+    // line.  -1 = none / hide; otherwise a Source enum value.  Hidden when
+    // it equals the current primary OR equals the first secondary (no
+    // duplicate lines).
+    Q_PROPERTY(int txSecondary2 READ txSecondary2 WRITE setTxSecondary2
+               NOTIFY txSecondary2Changed)
+    Q_PROPERTY(QString secondary2Text READ secondary2Text NOTIFY updated)
     // Active source — what the renderer is showing RIGHT NOW.  Derived
     // from the operator's RX/TX preferences and the live wire MOX bit:
     //   * moxActive=false → source = rxSource
@@ -166,6 +176,9 @@ public:
     void setPwrCalScale(double s);
     int  txSecondary() const { return txSecondary_; }
     void setTxSecondary(int s);
+    int  txSecondary2() const { return txSecondary2_; }
+    void setTxSecondary2(int s);
+    QString secondary2Text() const { return secondary2Text_; }
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -181,6 +194,7 @@ signals:
     void txSourceChanged();
     void pwrCalChanged();
     void txSecondaryChanged();
+    void txSecondary2Changed();
 
 private:
     void tick();
@@ -212,6 +226,8 @@ private:
     double pwrRatedMaxW_ = 5.0;     // danger-zone (red) starts here
     double pwrScaleMaxW_ = 10.0;    // full-scale watts (== 2 * rated max)
     int    txSecondary_  = -1;      // -1 = hide; else Source enum value
+    int    txSecondary2_ = -1;      // -1 = hide; else Source enum value
+    QString secondary2Text_;        // populated by computePwr/computeSwr
     // Source-agnostic "danger zone start" position (0..1 along the
     // scale).  S-meter computes from dBm math via the existing path;
     // PWR/SWR/etc. write directly.  normAtS9() Q_PROPERTY returns
