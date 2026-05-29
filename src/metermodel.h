@@ -143,6 +143,7 @@ private:
     // computes land in subsequent commits.
     void computeSMeter();
     void computePwr();
+    void computeSwr();
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table

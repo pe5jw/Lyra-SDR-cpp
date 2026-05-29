@@ -58,6 +58,22 @@ constexpr double kPwrPeakDecay  = 0.10;
 constexpr double kPwrMaxDecay   = 0.012;       // same gentle drop as S-meter
 constexpr double kPwrGlowDecay  = 0.18;
 
+// SWR scale conventions.  Below this guard-band fwd power the
+// reflection-coefficient computation is dominated by ADC noise and
+// would render garbage SWR (e.g. 8:1 on a perfectly matched dummy
+// load) — the model displays "—" instead, matching the convention
+// every commercial transceiver uses for low-power SWR readouts.
+// Above the scale ceiling the meter pegs and the text shows "≥3:1".
+constexpr double kSwrGuardW     = 0.5;         // fwd < this → no reading
+constexpr double kSwrScaleMin   = 1.0;         // perfect match
+constexpr double kSwrScaleMax   = 3.0;         // peg-and-show-≥ above this
+constexpr double kSwrDanger     = 2.0;         // industry "high" threshold
+constexpr double kSwrSmooth     = 0.40;        // calmer than PWR (operator
+                                                // wants steady reading,
+                                                // not speech-peak chasing)
+constexpr double kSwrPeakDecay  = 0.06;
+constexpr double kSwrGlowDecay  = 0.12;
+
 // Thetis SMeterFromDBM, compact form. Ascending (upperBound, label):
 // return the first row whose dbm <= upperBound.
 struct SRow { double upper; const char *label; };
@@ -261,7 +277,26 @@ QVariantList MeterModel::tickMarks() const {
         addAt(1.0,           fmt(m),               true);   // scale max
         return out;
     }
-    // SWR / PA / Temp / ALC / MIC / COMP: later commits fill these in.
+    if (source_ == SWR) {
+        // SWR scale: 1.0 (perfect match) on the left, 3.0+ on the right
+        // (above 3:1 the meter pegs).  Danger threshold at 2.0 sits at
+        // (2-1)/(3-1) = 0.5 on the renderer's 0..1 axis — half-scale,
+        // matching the PWR convention.  Operator-relevant SWR values
+        // (1.0/1.2/1.5/1.7/2.0/2.5/3.0) all get their own tick.
+        const auto pos = [](double swr) {
+            return std::clamp((swr - kSwrScaleMin) /
+                              (kSwrScaleMax - kSwrScaleMin), 0.0, 1.0);
+        };
+        addAt(pos(1.0), QStringLiteral("1.0"), true);
+        addAt(pos(1.2), QStringLiteral("1.2"), false);
+        addAt(pos(1.5), QStringLiteral("1.5"), false);
+        addAt(pos(1.7), QStringLiteral("1.7"), false);
+        addAt(pos(2.0), QStringLiteral("2.0"), true);   // danger threshold
+        addAt(pos(2.5), QStringLiteral("2.5"), false);
+        addAt(pos(3.0), QStringLiteral("3.0"), true);
+        return out;
+    }
+    // PA_CURRENT / PA_VOLTS / TEMP / ALC / MIC / COMP: later commits.
     return out;
 }
 
@@ -275,8 +310,8 @@ void MeterModel::tick() {
     switch (source_) {
     case RX_SMETER:   computeSMeter(); return;
     case PWR:         computePwr();    return;
-    case SWR:         // task #32
-    case PA_CURRENT:  // future HL2-telemetry sources
+    case SWR:         computeSwr();    return;
+    case PA_CURRENT:  // future HL2-telemetry source
     case PA_VOLTS:
     case TEMP:
     case ALC:         // task — needs WDSP TXA chain (deferred)
@@ -413,6 +448,99 @@ void MeterModel::computePwr() {
                 ? QStringLiteral("%1 W").arg(dispW, 0, 'f', 1)
                 : QStringLiteral("%1 W").arg(std::lround(dispW));
     dbmText_.clear();
+
+    emit updated();
+}
+
+void MeterModel::computeSwr() {
+    // SWR — antenna match readout.  rho = sqrt(rev / fwd); SWR = (1+rho)
+    // / (1-rho).  Real-world quirks the model has to handle:
+    //
+    //   * Below kSwrGuardW forward power the ADC noise floor dominates
+    //     both fwd and rev — rho computes as a near-random number and
+    //     SWR shows e.g. 8:1 on a perfectly matched dummy load.  Every
+    //     commercial rig hides the readout in this regime; we mirror
+    //     that ("—" text + zero level so the renderer shows a blank
+    //     scale instead of a phantom needle).
+    //
+    //   * rev > fwd is physically impossible but the ADCs can flip
+    //     briefly during the keydown TR-relay transient.  We clamp rho
+    //     so SWR doesn't divide by zero or go negative.
+    //
+    //   * SWR above kSwrScaleMax pegs the meter; the text shows "≥N:1"
+    //     so the operator knows it's off-scale rather than reading the
+    //     pegged level as 3:1.
+    const double fwd = stream_ ? stream_->fwdPowerW()
+                                 : std::numeric_limits<double>::quiet_NaN();
+    const double rev = stream_ ? stream_->revPowerW()
+                                 : std::numeric_limits<double>::quiet_NaN();
+    const bool lowPwr = std::isnan(fwd) || std::isnan(rev) ||
+                         fwd < kSwrGuardW;
+
+    double swr = kSwrScaleMin;   // perfect-match default for the smoothing
+    if (!lowPwr) {
+        const double r = std::clamp(rev / std::max(fwd, 1e-9), 0.0, 0.999);
+        const double rho = std::sqrt(r);
+        swr = std::clamp((1.0 + rho) / std::max(1.0 - rho, 1e-9),
+                          kSwrScaleMin, 20.0);  // hard cap before pegging
+    }
+
+    // dispDbm_ is the source-agnostic smoothed-value cache; here it
+    // holds smoothed SWR.  Initialize on first sample so the smoother
+    // doesn't ramp up from -140 (S-meter init value) — that would
+    // render as a long sweep from the left end on the first tick after
+    // a swap from SMETER → SWR.
+    if (dispDbm_ < kSwrScaleMin || dispDbm_ > 100.0) dispDbm_ = swr;
+    dispDbm_ += kSwrSmooth * (swr - dispDbm_);
+
+    if (lowPwr) {
+        // No usable SWR — render zero state, blank text.  The model
+        // still keeps its smoothing primed (so the first valid sample
+        // doesn't lurch the meter), but the operator sees "—" instead
+        // of bogus values.
+        level_ = 0.0;
+        peak_ = std::max(0.0, peak_ - kSwrPeakDecay);
+        if (maxPeakEnabled_)
+            maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay);
+        else
+            maxPeak_ = 0.0;
+        glow_ = std::max(0.0, glow_ - kSwrGlowDecay);
+        text_ = QStringLiteral("—");
+    } else {
+        const double n = std::clamp(
+            (dispDbm_ - kSwrScaleMin) / (kSwrScaleMax - kSwrScaleMin),
+            0.0, 1.0);
+        level_ = n;
+        if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
+        else if (holdCtr_ > 0) { --holdCtr_; }
+        else { peak_ = std::max(0.0, peak_ - kSwrPeakDecay); }
+        if (maxPeakEnabled_) {
+            if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+            else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+            else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+        } else {
+            maxPeak_ = 0.0;
+        }
+        glow_ = (n >= glow_) ? n : std::max(n, glow_ - kSwrGlowDecay);
+        // Pegged-above-scale gets the ≥-prefix so operators don't read
+        // a stuck peg as the actual ratio.
+        text_ = (dispDbm_ >= kSwrScaleMax)
+                    ? QStringLiteral("≥%1:1").arg(kSwrScaleMax, 0, 'f', 1)
+                    : QStringLiteral("%1:1").arg(dispDbm_, 0, 'f', 2);
+    }
+
+    // Danger zone at the standard 2.0:1 threshold (sits at 0.5 on the
+    // 1.0..3.0 axis = half-scale, matching the PWR red-zone convention).
+    normDanger_ = std::clamp(
+        (kSwrDanger - kSwrScaleMin) / (kSwrScaleMax - kSwrScaleMin),
+        0.0, 1.0);
+    noiseLevel_ = 0.0;
+    snrText_.clear();
+    dbmText_.clear();
+
+    hist_.push_back(level_);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
 
     emit updated();
 }
