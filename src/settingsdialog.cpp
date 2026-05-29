@@ -1361,7 +1361,22 @@ QWidget *SettingsDialog::buildHardwareTab() {
         });
         connect(stream_, &lyra::ipc::HL2Stream::paEnabledChanged, paBox,
                 [paBox](bool on) {
-            if (paBox->isChecked() != on) paBox->setChecked(on);
+            // Mirror the LIVE PA-enable bit into the UI checkbox, but
+            // block toggled() from re-firing during the programmatic
+            // setChecked — otherwise the cb58bcb come-up-not-keyed
+            // defensive clears in HL2Stream::open()/close() would
+            // round-trip through the toggled handler (which calls
+            // setPaEnabled(false)), clobbering the operator's persisted
+            // tx/paEnabled intent.  Persistence model: the QSettings
+            // key reflects the operator's last EXPLICIT click (Settings
+            // checkbox + via setPaEnabled), NOT the live wire state.
+            // So a Lyra exit-and-relaunch restores their intent; the
+            // open() defensive clear still visually unchecks the box
+            // so they see "PA is currently off" until they re-arm.
+            if (paBox->isChecked() != on) {
+                QSignalBlocker b(paBox);
+                paBox->setChecked(on);
+            }
         });
         g->addWidget(paBox, 3, 0, 1, 2);
 
