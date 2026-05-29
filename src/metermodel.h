@@ -86,12 +86,25 @@ private:
     // (operator-tunable in Settings → Meter; persisted).
     Q_PROPERTY(int peakHoldMs READ peakHoldMs WRITE setPeakHoldMs
                NOTIFY peakHoldChanged)
-    // Active source.  Default RX_SMETER (existing behavior).  When a
-    // future commit wires the MOX-edge auto-swap + Settings UI, the
-    // model's source will be driven by either operator click-to-cycle
-    // or the moxActiveChanged auto-swap rule (RX preference vs TX
-    // preference) — but the model itself stays a single setter sink.
+    // Active source — what the renderer is showing RIGHT NOW.  Derived
+    // from the operator's RX/TX preferences and the live wire MOX bit:
+    //   * moxActive=false → source = rxSource
+    //   * moxActive=true  → source = txSource
+    // The setter (used by click-to-cycle, task #35) updates whichever
+    // preference applies to the current MOX state — so the operator's
+    // choice persists into the right slot.  Auto-swap on MOX edge is
+    // wired in the ctor via HL2Stream::moxActiveChanged.
     Q_PROPERTY(int source READ source WRITE setSource NOTIFY sourceChanged)
+    // Operator's RX-state and TX-state source preferences — what to
+    // show at rest (rxSource, default RX_SMETER) and what to swap to
+    // when the wire MOX bit settles (txSource, default PWR).  Each is
+    // persisted independently; Settings → Meter exposes both via
+    // dropdowns.  Changing either preference takes effect immediately
+    // if the current MOX state matches that preference's slot.
+    Q_PROPERTY(int rxSource READ rxSource WRITE setRxSource
+               NOTIFY rxSourceChanged)
+    Q_PROPERTY(int txSource READ txSource WRITE setTxSource
+               NOTIFY txSourceChanged)
 
 public:
     explicit MeterModel(lyra::ipc::HL2Stream *stream,
@@ -121,6 +134,10 @@ public:
     void setPeakHoldMs(int ms);
     int  source() const { return int(source_); }
     void setSource(int s);
+    int  rxSource() const { return int(rxSource_); }
+    int  txSource() const { return int(txSource_); }
+    void setRxSource(int s);
+    void setTxSource(int s);
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -132,6 +149,8 @@ signals:
     void peakHoldChanged();
     void maxPeakCfgChanged();
     void sourceChanged();
+    void rxSourceChanged();
+    void txSourceChanged();
 
 private:
     void tick();
@@ -193,7 +212,9 @@ private:
     int     maxHoldMs_      = 3000; // max-hold dwell (operator-tunable)
     int     maxHoldTicks_   = 60;   // = maxHoldMs_ / tick interval
     int     style_ = 0;
-    Source  source_ = RX_SMETER;     // active source; persisted under meter/source
+    Source  source_ = RX_SMETER;     // currently-displayed source (derived)
+    Source  rxSource_ = RX_SMETER;   // RX-state preference (persisted)
+    Source  txSource_ = PWR;         // TX-state preference (persisted)
     QString text_    = QStringLiteral("S0");
     QString dbmText_ = QStringLiteral("—");
 

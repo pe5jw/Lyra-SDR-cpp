@@ -1439,6 +1439,62 @@ QWidget *SettingsDialog::buildMeterTab() {
     auto *page = new QWidget(this);
     auto *form = new QFormLayout(page);
 
+    // ── Meter source preferences (task #33 — MOX-edge auto-swap) ──
+    // The Meter Panel shows ONE source at a time.  Operator picks what
+    // appears at rest (rxSource) and what it auto-swaps to when the wire
+    // MOX bit settles (txSource).  Swap is instant on every keydown /
+    // keyup edge; per-source hold / decay / history state resets so a
+    // stale RX peak doesn't render as a bogus TX peak across the edge.
+    // The same dropdown list is offered for both — operators on custom
+    // setups may genuinely want e.g. PA Current at rest (idle bias
+    // visible) and PWR while keyed.
+    if (meter_) {
+        auto buildSourceCombo = [this](MeterModel *m, bool isTx) {
+            auto *cb = new QComboBox(this);
+            // Source enum values — see metermodel.h.  Sources whose
+            // computes aren't wired yet (ALC/MIC/COMP — need TX DSP)
+            // are intentionally omitted from the picker; they'll
+            // appear when those computes land.
+            const struct { int v; const char *label; } opts[] = {
+                {0, "RX S-meter (signal strength)"},
+                {1, "PWR (forward power, watts)"},
+                {2, "SWR (antenna match)"},
+                // 3..5 = PA_CURRENT/PA_VOLTS/TEMP — added when their
+                // computes land in a follow-on commit
+            };
+            for (const auto &o : opts)
+                cb->addItem(tr(o.label), o.v);
+            const int sel = isTx ? m->txSource() : m->rxSource();
+            for (int i = 0; i < cb->count(); ++i)
+                if (cb->itemData(i).toInt() == sel) {
+                    cb->setCurrentIndex(i);
+                    break;
+                }
+            connect(cb, &QComboBox::currentIndexChanged, this,
+                    [this, cb, isTx](int) {
+                if (!meter_) return;
+                const int v = cb->currentData().toInt();
+                if (isTx) meter_->setTxSource(v);
+                else      meter_->setRxSource(v);
+            });
+            return cb;
+        };
+        auto *rxCb = buildSourceCombo(meter_, /*isTx=*/false);
+        rxCb->setToolTip(tr(
+            "What the Meter Panel shows when the radio is NOT keyed. "
+            "Default RX S-meter (signal strength).  Operators on stations "
+            "that idle-bias the PA may prefer PA Current at rest so they "
+            "can watch the standing draw."));
+        form->addRow(tr("RX source (at rest):"), rxCb);
+        auto *txCb = buildSourceCombo(meter_, /*isTx=*/true);
+        txCb->setToolTip(tr(
+            "What the Meter Panel auto-swaps to when the wire MOX bit "
+            "settles (post TR-delay) — and back to the RX source above "
+            "on keyup.  Default PWR (forward power).  Switching mid-TX "
+            "takes effect on the next ~50 ms tick."));
+        form->addRow(tr("TX source (on MOX):"), txCb);
+    }
+
     // S-meter calibration trim (calDb) — applied live + persisted by the
     // MeterModel.  The meter reads WDSP RXA_S_PK; this offset lands it on
     // an absolute dBm / S-unit scale.  With RXA_S_PK the trim is small.

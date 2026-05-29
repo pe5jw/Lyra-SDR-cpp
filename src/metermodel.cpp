@@ -44,7 +44,8 @@ constexpr auto kKeyCal      = "meter/calDb";
 constexpr auto kKeyPeakHold = "meter/peakHoldMs";
 constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
 constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
-constexpr auto kKeySource    = "meter/source";   // active source (Source enum)
+constexpr auto kKeyRxSource  = "meter/rxSource"; // operator's RX-state preference
+constexpr auto kKeyTxSource  = "meter/txSource"; // operator's TX-state preference
 constexpr auto kKeyPwrCal    = "meter/pwrCalScale";   // operator cal multiplier
 constexpr auto kKeyPwrRated  = "meter/pwrRatedMaxW";  // rated max (red zone start)
 
@@ -104,17 +105,26 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     maxHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyMaxHold), 3000).toInt(), 500, 60000);
     maxHoldTicks_ = std::max(1, maxHoldMs_ / kTickMs);
-    // Active source (defaults RX_SMETER on first-ever launch — matches
-    // the pre-source-plumbing behavior).  Clamped to the valid enum
-    // range so a stale or corrupted setting can't surface as an
-    // unhandled compute branch.
-    {
-        const int raw = s.value(QString::fromLatin1(kKeySource),
-                                 int(RX_SMETER)).toInt();
-        source_ = (raw >= RX_SMETER && raw <= COMP)
-                      ? Source(raw)
-                      : RX_SMETER;
-    }
+    // RX-state and TX-state source preferences.  Defaults RX_SMETER and
+    // PWR respectively on first-ever launch — the obvious sane choices.
+    // Clamped to the valid enum range so a stale or corrupted setting
+    // can't surface as an unhandled compute branch.  Active source is
+    // derived: rxSource at rest, txSource when the wire MOX bit is set.
+    auto clampSrc = [](int raw, Source fallback) {
+        return (raw >= RX_SMETER && raw <= COMP) ? Source(raw) : fallback;
+    };
+    rxSource_ = clampSrc(s.value(QString::fromLatin1(kKeyRxSource),
+                                  int(RX_SMETER)).toInt(),
+                          RX_SMETER);
+    txSource_ = clampSrc(s.value(QString::fromLatin1(kKeyTxSource),
+                                  int(PWR)).toInt(),
+                          PWR);
+    // Initialize the active source from the live MOX state if we already
+    // have a stream (we do — passed via the ctor arg).  moxActive is
+    // false at construction time (the stream isn't open yet), so this
+    // boils down to rxSource_ in practice — but the conditional keeps
+    // the derivation rule explicit.
+    source_ = (stream_ && stream_->moxActive()) ? txSource_ : rxSource_;
     pwrCalScale_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPwrCal), 1.0).toDouble(), 0.05, 20.0);
     pwrRatedMaxW_ = std::clamp(
@@ -128,6 +138,44 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     updateScale();
     connect(&timer_, &QTimer::timeout, this, &MeterModel::tick);
     timer_.start(kTickMs);
+
+    // MOX-edge auto-swap (task #33).  When the wire MOX bit settles
+    // true (post TR-delay), swap to the operator's TX preference.
+    // When it clears (post ptt_out_delay), swap back to the RX
+    // preference.  Goes through setSource() so the per-source state
+    // reset (peak/hold/history zeroing) happens on every swap — a
+    // stale RX peak doesn't render as a bogus PWR peak across the
+    // edge.  No direct QSettings write on the swap itself: the
+    // operator's PREFS persist (rxSource/txSource), the CURRENT
+    // displayed source is derived from them + the MOX state.
+    if (stream_) {
+        connect(stream_, &lyra::ipc::HL2Stream::moxActiveChanged, this,
+                [this](bool on) {
+                    const Source target = on ? txSource_ : rxSource_;
+                    if (target == source_) return;
+                    // Swap WITHOUT touching meter/source persistence —
+                    // that key is no longer used (rxSource/txSource
+                    // are the canonical prefs).  Reuse the body of
+                    // setSource minus the QSettings write.
+                    source_ = target;
+                    level_ = 0.0;
+                    peak_  = 0.0;
+                    maxPeak_ = 0.0;
+                    glow_  = 0.0;
+                    holdCtr_ = 0;
+                    maxHoldCtr_ = 0;
+                    dispDbm_ = -140.0;
+                    noiseFloorDbm_ = -140.0;
+                    noiseLevel_ = 0.0;
+                    snrText_ = QStringLiteral("—");
+                    text_ = QStringLiteral("—");
+                    dbmText_ = QStringLiteral("—");
+                    std::fill(hist_.begin(), hist_.end(), 0.0);
+                    for (int i = 0; i < kHistory; ++i) history_[i] = 0.0;
+                    emit sourceChanged();
+                    emit updated();
+                });
+    }
 }
 
 void MeterModel::updateScale() {
@@ -206,15 +254,31 @@ void MeterModel::setMaxHoldMs(int ms) {
 }
 
 void MeterModel::setSource(int s) {
-    // Clamp to the valid Source enum range; out-of-range values fall
-    // back to RX_SMETER (the safe default).  Reset the per-source
-    // hold/decay state so the new source starts from zero instead of
-    // inheriting the previous source's level / peak / history (e.g.
-    // an S-meter peak would render as a bogus PWR peak on swap).
+    // Click-to-cycle / direct-set entry point (task #35 will hook the
+    // meter-face click here).  Updates the appropriate preference slot
+    // — RX or TX based on the live MOX state — so the operator's
+    // choice persists into the right per-state pref, then derives the
+    // active source.  Falls back to RX_SMETER for out-of-range values.
     if (s < RX_SMETER || s > COMP) s = RX_SMETER;
-    if (Source(s) == source_) return;
-    source_ = Source(s);
-    QSettings().setValue(QString::fromLatin1(kKeySource), int(source_));
+    const Source ns = Source(s);
+    const bool moxOn = stream_ && stream_->moxActive();
+    if (moxOn) {
+        if (txSource_ != ns) {
+            txSource_ = ns;
+            QSettings().setValue(QString::fromLatin1(kKeyTxSource), int(ns));
+            emit txSourceChanged();
+        }
+    } else {
+        if (rxSource_ != ns) {
+            rxSource_ = ns;
+            QSettings().setValue(QString::fromLatin1(kKeyRxSource), int(ns));
+            emit rxSourceChanged();
+        }
+    }
+    if (ns == source_) return;
+    source_ = ns;
+    // Reset per-source state so the new source starts from zero (a
+    // stale S-meter peak would render as a bogus PWR peak on swap).
     level_ = 0.0;
     peak_  = 0.0;
     maxPeak_ = 0.0;
@@ -230,7 +294,32 @@ void MeterModel::setSource(int s) {
     std::fill(hist_.begin(), hist_.end(), 0.0);
     for (int i = 0; i < kHistory; ++i) history_[i] = 0.0;
     emit sourceChanged();
-    emit updated();   // renderers redraw at zero-state for the new source
+    emit updated();
+}
+
+void MeterModel::setRxSource(int s) {
+    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
+    const Source ns = Source(s);
+    if (ns == rxSource_) return;
+    rxSource_ = ns;
+    QSettings().setValue(QString::fromLatin1(kKeyRxSource), int(ns));
+    emit rxSourceChanged();
+    // If currently at rest, the new RX pref takes effect immediately —
+    // route through setSource so the per-source state reset happens.
+    if (stream_ && !stream_->moxActive() && source_ != ns)
+        setSource(int(ns));
+}
+
+void MeterModel::setTxSource(int s) {
+    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
+    const Source ns = Source(s);
+    if (ns == txSource_) return;
+    txSource_ = ns;
+    QSettings().setValue(QString::fromLatin1(kKeyTxSource), int(ns));
+    emit txSourceChanged();
+    // If currently in MOX, the new TX pref takes effect immediately.
+    if (stream_ && stream_->moxActive() && source_ != ns)
+        setSource(int(ns));
 }
 
 QVariantList MeterModel::tickMarks() const {
