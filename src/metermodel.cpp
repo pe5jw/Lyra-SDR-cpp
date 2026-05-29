@@ -322,6 +322,33 @@ void MeterModel::setTxSource(int s) {
         setSource(int(ns));
 }
 
+void MeterModel::setPwrRatedMaxW(double w) {
+    // 0.5 W floor catches the QRP regime; 200 W ceiling covers
+    // operators on legal-limit amps comfortably with the
+    // scale-max = 2 * rated convention (~400 W full scale).
+    w = std::clamp(w, 0.5, 200.0);
+    if (std::abs(w - pwrRatedMaxW_) < 1e-6) return;
+    pwrRatedMaxW_ = w;
+    pwrScaleMaxW_ = w * 2.0;
+    QSettings().setValue(QString::fromLatin1(kKeyPwrRated), pwrRatedMaxW_);
+    emit pwrCalChanged();
+    // Force a re-emit so the renderer redraws the scale ticks +
+    // danger-zone position with the new rated max even before the
+    // next tick lands.
+    if (source_ == PWR) emit updated();
+}
+
+void MeterModel::setPwrCalScale(double s) {
+    // Wide range covers a wide ADC-to-watt mismatch — operators on
+    // exotic forward-power bridges may need to trim quite far from 1.0.
+    s = std::clamp(s, 0.05, 20.0);
+    if (std::abs(s - pwrCalScale_) < 1e-6) return;
+    pwrCalScale_ = s;
+    QSettings().setValue(QString::fromLatin1(kKeyPwrCal), pwrCalScale_);
+    emit pwrCalChanged();
+    if (source_ == PWR) emit updated();
+}
+
 QVariantList MeterModel::tickMarks() const {
     QVariantList out;
     auto addAt = [&](double pos, const QString &label, bool major) {

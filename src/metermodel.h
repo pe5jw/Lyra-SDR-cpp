@@ -86,6 +86,16 @@ private:
     // (operator-tunable in Settings → Meter; persisted).
     Q_PROPERTY(int peakHoldMs READ peakHoldMs WRITE setPeakHoldMs
                NOTIFY peakHoldChanged)
+    // PWR calibration knobs (task #34).  pwrRatedMaxW sets where the
+    // red zone starts on the meter face (== operator's expected max
+    // forward power: ~5 W for a bare HL2+ on-board PA, ~100 W or more
+    // with an external amp).  pwrCalScale multiplies the provisional
+    // fwd_power ADC→W formula in HL2Stream so the displayed watts can
+    // be trimmed against an external watt-meter reading.  Both persisted.
+    Q_PROPERTY(double pwrRatedMaxW READ pwrRatedMaxW WRITE setPwrRatedMaxW
+               NOTIFY pwrCalChanged)
+    Q_PROPERTY(double pwrCalScale  READ pwrCalScale  WRITE setPwrCalScale
+               NOTIFY pwrCalChanged)
     // Active source — what the renderer is showing RIGHT NOW.  Derived
     // from the operator's RX/TX preferences and the live wire MOX bit:
     //   * moxActive=false → source = rxSource
@@ -138,6 +148,10 @@ public:
     int  txSource() const { return int(txSource_); }
     void setRxSource(int s);
     void setTxSource(int s);
+    double pwrRatedMaxW() const { return pwrRatedMaxW_; }
+    double pwrCalScale()  const { return pwrCalScale_; }
+    void setPwrRatedMaxW(double w);
+    void setPwrCalScale(double s);
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -151,6 +165,7 @@ signals:
     void sourceChanged();
     void rxSourceChanged();
     void txSourceChanged();
+    void pwrCalChanged();
 
 private:
     void tick();

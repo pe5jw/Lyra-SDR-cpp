@@ -1493,6 +1493,57 @@ QWidget *SettingsDialog::buildMeterTab() {
             "on keyup.  Default PWR (forward power).  Switching mid-TX "
             "takes effect on the next ~50 ms tick."));
         form->addRow(tr("TX source (on MOX):"), txCb);
+
+        // ── PWR calibration (task #34) ──
+        // Two knobs the operator typically sets ONCE per amp / per
+        // setup:
+        //   * "Rated max W" controls where the red zone starts on the
+        //     meter face — set it to your expected max forward power
+        //     (e.g. ~5 W for a bare HL2+ on-board PA; 100 W with a
+        //     typical amp; up to 200 W for legal-limit).
+        //   * "Cal scale" trims Lyra's provisional watts reading
+        //     against an external watt-meter.  Procedure: TUN into a
+        //     known load, read the external meter (e.g. Palstar shows
+        //     5.0 W) and the Lyra meter (e.g. 3.2 W), divide to get
+        //     the scale (5.0 / 3.2 = 1.5625).  Enter that here.
+        auto *ratedMax = new QDoubleSpinBox(page);
+        ratedMax->setRange(0.5, 200.0);
+        ratedMax->setDecimals(1);
+        ratedMax->setSingleStep(0.5);
+        ratedMax->setSuffix(tr(" W"));
+        ratedMax->setValue(meter_->pwrRatedMaxW());
+        ratedMax->setToolTip(tr(
+            "Forward power at which the PWR meter's red zone starts. "
+            "Set this to your expected max output — bare HL2+ on-board "
+            "PA is around 5 W, typical amps are 100 W, legal-limit is "
+            "up to 200 W.  The meter scale runs 0..2× this value, so "
+            "rated max lands at half-scale (matching the cyan/green/"
+            "amber/red palette the renderers use)."));
+        connect(ratedMax, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) {
+            if (meter_) meter_->setPwrRatedMaxW(v);
+        });
+        form->addRow(tr("PWR rated max:"), ratedMax);
+
+        auto *calScale = new QDoubleSpinBox(page);
+        calScale->setRange(0.05, 20.0);
+        calScale->setDecimals(3);
+        calScale->setSingleStep(0.01);
+        calScale->setValue(meter_->pwrCalScale());
+        calScale->setToolTip(tr(
+            "Multiplier applied to the provisional fwd_power → W "
+            "calculation in hl2_stream.cpp, so the displayed watts "
+            "match your external watt-meter.\n\n"
+            "Calibration procedure: TUN into a known load (dummy load + "
+            "Palstar / similar), read both meters, set this to "
+            "(external W) / (Lyra W).  Default 1.0 = use the "
+            "provisional formula as-is.  Future polish: 3-point per-"
+            "band cal — for now a single global scale covers v0.2.x."));
+        connect(calScale, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) {
+            if (meter_) meter_->setPwrCalScale(v);
+        });
+        form->addRow(tr("PWR cal scale:"), calScale);
     }
 
     // S-meter calibration trim (calDb) — applied live + persisted by the
