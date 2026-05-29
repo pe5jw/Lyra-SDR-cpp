@@ -31,6 +31,31 @@ namespace lyra::ui {
 
 class MeterModel : public QObject {
     Q_OBJECT
+public:
+    // Meter source — what physical quantity the model reads + renders.
+    // RX_SMETER is the original / default (WDSP RXA_S_PK in-passband
+    // dBm).  PWR/SWR feed from HL2Stream EP6 telemetry (fwd_power /
+    // rev_power ADCs).  PA_CURRENT/PA_VOLTS/TEMP are HL2 board
+    // telemetry — useful in BOTH MOX states.  ALC/MIC/COMP are TX-side
+    // DSP signals that arrive when the WDSP TXA chain lands.  The
+    // QML renderers (HorizonArc / PlasmaBar) consume the same Meter
+    // context property regardless of source — only the per-tick value
+    // computation, scale ticks, text formatting, and zone-threshold
+    // semantics change per source.
+    enum Source {
+        RX_SMETER    = 0,    // WDSP RXA_S_PK — the existing RX behavior
+        PWR          = 1,    // forward power (W) — fwd_power ADC + cal
+        SWR          = 2,    // (1+rho)/(1-rho) where rho = sqrt(rev/fwd)
+        PA_CURRENT   = 3,    // HL2 PA bias current (A)
+        PA_VOLTS     = 4,    // HL2 PA supply volts
+        TEMP         = 5,    // HL2 board temperature (°C)
+        ALC          = 6,    // WDSP TXA_ALC_GAIN (deferred — needs TX DSP)
+        MIC          = 7,    // WDSP TXA_MIC_PK   (deferred — needs TX DSP)
+        COMP         = 8,    // WDSP TXA_LVLR_GAIN (deferred — needs TX DSP)
+    };
+    Q_ENUM(Source)
+
+private:
     // One NOTIFY for the fast-changing values — QML repaints on `updated`.
     Q_PROPERTY(double level    READ level    NOTIFY updated)
     Q_PROPERTY(double peak     READ peak     NOTIFY updated)
@@ -61,6 +86,12 @@ class MeterModel : public QObject {
     // (operator-tunable in Settings → Meter; persisted).
     Q_PROPERTY(int peakHoldMs READ peakHoldMs WRITE setPeakHoldMs
                NOTIFY peakHoldChanged)
+    // Active source.  Default RX_SMETER (existing behavior).  When a
+    // future commit wires the MOX-edge auto-swap + Settings UI, the
+    // model's source will be driven by either operator click-to-cycle
+    // or the moxActiveChanged auto-swap rule (RX preference vs TX
+    // preference) — but the model itself stays a single setter sink.
+    Q_PROPERTY(int source READ source WRITE setSource NOTIFY sourceChanged)
 
 public:
     explicit MeterModel(lyra::ipc::HL2Stream *stream,
@@ -88,6 +119,8 @@ public:
     void setCalDb(double d);
     int  peakHoldMs() const { return peakHoldMs_; }
     void setPeakHoldMs(int ms);
+    int  source() const { return int(source_); }
+    void setSource(int s);
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -98,9 +131,17 @@ signals:
     void calChanged();
     void peakHoldChanged();
     void maxPeakCfgChanged();
+    void sourceChanged();
 
 private:
     void tick();
+    // Per-source tick computations.  Each fills the model's Q_PROPERTY
+    // fields (level_/peak_/maxPeak_/glow_/text_/dbmText_/snrText_/
+    // history_/noiseLevel_/floorDbm_/ceilDbm_/s9Dbm_) appropriately for
+    // that source's scale + semantics.  computeSMeter is the existing
+    // RX behavior (extracted unchanged from the old tick() body); other
+    // computes land in subsequent commits.
+    void computeSMeter();
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table
@@ -134,6 +175,7 @@ private:
     int     maxHoldMs_      = 3000; // max-hold dwell (operator-tunable)
     int     maxHoldTicks_   = 60;   // = maxHoldMs_ / tick interval
     int     style_ = 0;
+    Source  source_ = RX_SMETER;     // active source; persisted under meter/source
     QString text_    = QStringLiteral("S0");
     QString dbmText_ = QStringLiteral("—");
 

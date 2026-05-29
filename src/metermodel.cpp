@@ -43,6 +43,7 @@ constexpr auto kKeyCal      = "meter/calDb";
 constexpr auto kKeyPeakHold = "meter/peakHoldMs";
 constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
 constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
+constexpr auto kKeySource    = "meter/source";   // active source (Source enum)
 
 // Thetis SMeterFromDBM, compact form. Ascending (upperBound, label):
 // return the first row whose dbm <= upperBound.
@@ -74,6 +75,17 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     maxHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyMaxHold), 3000).toInt(), 500, 60000);
     maxHoldTicks_ = std::max(1, maxHoldMs_ / kTickMs);
+    // Active source (defaults RX_SMETER on first-ever launch — matches
+    // the pre-source-plumbing behavior).  Clamped to the valid enum
+    // range so a stale or corrupted setting can't surface as an
+    // unhandled compute branch.
+    {
+        const int raw = s.value(QString::fromLatin1(kKeySource),
+                                 int(RX_SMETER)).toInt();
+        source_ = (raw >= RX_SMETER && raw <= COMP)
+                      ? Source(raw)
+                      : RX_SMETER;
+    }
 
     hist_.assign(kHistory, 0.0);
     history_.reserve(kHistory);
@@ -150,6 +162,34 @@ void MeterModel::setMaxHoldMs(int ms) {
     emit maxPeakCfgChanged();
 }
 
+void MeterModel::setSource(int s) {
+    // Clamp to the valid Source enum range; out-of-range values fall
+    // back to RX_SMETER (the safe default).  Reset the per-source
+    // hold/decay state so the new source starts from zero instead of
+    // inheriting the previous source's level / peak / history (e.g.
+    // an S-meter peak would render as a bogus PWR peak on swap).
+    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
+    if (Source(s) == source_) return;
+    source_ = Source(s);
+    QSettings().setValue(QString::fromLatin1(kKeySource), int(source_));
+    level_ = 0.0;
+    peak_  = 0.0;
+    maxPeak_ = 0.0;
+    glow_  = 0.0;
+    holdCtr_ = 0;
+    maxHoldCtr_ = 0;
+    dispDbm_ = -140.0;
+    noiseFloorDbm_ = -140.0;
+    noiseLevel_ = 0.0;
+    snrText_ = QStringLiteral("—");
+    text_ = QStringLiteral("—");
+    dbmText_ = QStringLiteral("—");
+    std::fill(hist_.begin(), hist_.end(), 0.0);
+    for (int i = 0; i < kHistory; ++i) history_[i] = 0.0;
+    emit sourceChanged();
+    emit updated();   // renderers redraw at zero-state for the new source
+}
+
 QVariantList MeterModel::tickMarks() const {
     QVariantList out;
     auto add = [&](double dbm, const QString &label, bool major) {
@@ -168,6 +208,31 @@ QVariantList MeterModel::tickMarks() const {
 }
 
 void MeterModel::tick() {
+    // Dispatch to the source-specific compute.  Each compute fn fills
+    // level_/peak_/text_/etc. and emits updated() at the end.  Sources
+    // not yet implemented fall through to a passive no-op (render stays
+    // at zero state until that source's compute lands in a later
+    // commit) — this keeps the foundation commit visually unchanged
+    // for the default RX_SMETER case while leaving the dispatch ready.
+    switch (source_) {
+    case RX_SMETER:   computeSMeter(); return;
+    case PWR:         // task #31 — adds compute in next commit
+    case SWR:         // task #32
+    case PA_CURRENT:  // future HL2-telemetry sources
+    case PA_VOLTS:
+    case TEMP:
+    case ALC:         // task — needs WDSP TXA chain (deferred)
+    case MIC:
+    case COMP:
+        return;
+    }
+}
+
+void MeterModel::computeSMeter() {
+    // RX S-meter compute (extracted from the original tick() body
+    // unchanged).  Reads WDSP RXA_S_PK, applies operator cal + the
+    // current LNA gain compensation so the reading stays true-to-source
+    // regardless of LNA setting, smooths, and maps to the S-unit scale.
     updateScale();
 
     const double raw = wdsp_ ? wdsp_->sMeterDbm() : -200.0;
