@@ -21,6 +21,7 @@
 #include <timeapi.h>     // timeBeginPeriod / timeEndPeriod (winmm)
 
 #include <QByteArray>
+#include <QDebug>           // qInfo / qCritical for safety-event mirror
 #include <QMetaObject>
 #include <QSettings>
 #include <Qt>
@@ -375,6 +376,23 @@ void HL2Stream::onAutoLnaTick()
     }
 }
 
+// ── Safety-event log mirror ─────────────────────────────────────────
+// emit logLine() (UI log dock) AND qInfo() / qCritical() (stderr +
+// any installed file handler).  Used at the TX-safety surface so an
+// operator-visible "what happened, when?" record survives a crash or
+// a session where the in-app log dock was never opened.  The "[hl2]"
+// tag is kept distinct from the existing "[hl2]" prefix on LNA logs
+// (those stay logLine-only — not TX-safety).
+void HL2Stream::safetyLog(const QString& msg) {
+    emit logLine(msg);
+    qInfo().noquote() << "[hl2-safety]" << msg;
+}
+
+void HL2Stream::fatalLog(const QString& msg) {
+    emit logLine(msg);
+    qCritical().noquote() << "[hl2-fatal]" << msg;
+}
+
 HL2Stream::~HL2Stream() {
     close();
 }
@@ -437,6 +455,13 @@ void HL2Stream::open(const QString &ip) {
     emit logLine(QStringLiteral(
         "opening EP6 stream to %1:%2 (local port %3) ...")
         .arg(ip).arg(kRadioPort).arg(lport));
+    // Record the cb58bcb come-up-not-keyed defensive clears (above) so
+    // a captured stderr log reconstructs "session N came up RX, MOX/PA/
+    // tune all cleared" without needing the in-app log dock.  Noisy on
+    // fresh launches where nothing was set; load-bearing after a crash
+    // that left paOn_ persisted true.
+    safetyLog(QStringLiteral(
+        "come-up-not-keyed: MOX/PA/tune force-cleared on stream open"));
 
     statsTimer_.start();
     statsClock_.start();   // baseline for actual-elapsed dg/s
@@ -471,6 +496,13 @@ void HL2Stream::close() {
         return;
     }
     emit logLine(QStringLiteral("closing EP6 stream ..."));
+    // Record the force-release-all (below) so a captured stderr log
+    // shows "session N ended RX, PA/tune/MOX all dropped before the
+    // workers were joined" — independent of whether the operator
+    // clicked Stop, the safety timer fired, the gateware watchdog
+    // would have, or a hot-unplug happened on the next reconnect.
+    safetyLog(QStringLiteral(
+        "force-release-all: MOX/PA/tune cleared before workers stop"));
 
     // TX-0c-pa-debug — force-release-all BEFORE the workers die so
     // the final EP2 frames carry MOX=0 + PA=off + step-att restored.
@@ -589,7 +621,7 @@ void HL2Stream::onStatsTick() {
 }
 
 void HL2Stream::onFatalError(QString reason) {
-    emit logLine(QStringLiteral("FATAL: %1").arg(reason));
+    fatalLog(QStringLiteral("FATAL: %1").arg(reason));
     close();
 }
 
@@ -912,8 +944,11 @@ void HL2Stream::setMox(bool on) {
     // dev/diag tools.
     const bool prev = mox_.exchange(on, std::memory_order_relaxed);
     if (prev != on) {
-        emit logLine(QStringLiteral("TX: MOX bit (raw setter) -> %1")
-                     .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
+        // Raw setter bypasses the FSM's TR-delay chain — if anything
+        // ever calls this in production, the operator needs to know.
+        // Diag/test tools use it deliberately; nothing else should.
+        safetyLog(QStringLiteral("TX: MOX bit (raw setter) -> %1")
+                  .arg(on ? QStringLiteral("ON") : QStringLiteral("off")));
     }
 }
 
@@ -968,9 +1003,9 @@ void HL2Stream::setPaEnabled(bool on) {
     if (prev == on) return;
     QSettings().setValue(QStringLiteral("tx/paEnabled"), on);
     emit paEnabledChanged(on);
-    emit logLine(QStringLiteral("TX: PA enable -> %1")
-                 .arg(on ? QStringLiteral("ON  (RF possible on next key)")
-                         : QStringLiteral("off (PA bias disarmed)")));
+    safetyLog(QStringLiteral("TX: PA enable -> %1")
+              .arg(on ? QStringLiteral("ON  (RF possible on next key)")
+                      : QStringLiteral("off (PA bias disarmed)")));
 }
 
 void HL2Stream::setTuneEnabled(bool on) {
@@ -991,9 +1026,9 @@ void HL2Stream::setTuneEnabled(bool on) {
     const bool prev = tuneEnabled_.exchange(on, std::memory_order_relaxed);
     if (prev == on) return;
     emit tuneEnabledChanged(on);
-    emit logLine(QStringLiteral("TX: tune-carrier -> %1")
-                 .arg(on ? QStringLiteral("ARMED  (zero-beat @ 0.95 fs — emits while MOX active)")
-                         : QStringLiteral("disarmed (TX I/Q back to silent)")));
+    safetyLog(QStringLiteral("TX: tune-carrier -> %1")
+              .arg(on ? QStringLiteral("ARMED  (zero-beat @ 0.95 fs — emits while MOX active)")
+                      : QStringLiteral("disarmed (TX I/Q back to silent)")));
 }
 
 // ---------------------------------------------------------------
@@ -1067,7 +1102,7 @@ void HL2Stream::fsmKeydownPostMox() {
         // and exit clean.  Symmetric with the fsmAdvance keydown raise.
         setTxStepAttnDb(savedTxStepAttn_);
         updateOcPattern(/*transmitting=*/false);
-        emit logLine(QStringLiteral(
+        safetyLog(QStringLiteral(
             "TX: keydown cancelled mid-mox_delay; ATT-on-TX restored"));
         fsmRunning_ = false;
         return;
@@ -1086,7 +1121,7 @@ void HL2Stream::fsmKeydownSettled() {
         // Cancelled mid-rf_delay — wire MOX already went on, must
         // unwind through a real keyup (space → clear → ptt_out →
         // restore att).  Schedule the keyup chain directly.
-        emit logLine(QStringLiteral(
+        safetyLog(QStringLiteral(
             "TX: keydown cancelled mid-rf_delay; initiating keyup"));
         QTimer::singleShot(kSpaceMoxDelayMs, this,
                            [this]() { fsmKeyupPostSpace(); });
@@ -1094,7 +1129,7 @@ void HL2Stream::fsmKeydownSettled() {
     }
     moxActive_ = true;
     emit moxActiveChanged(true);
-    emit logLine(QStringLiteral("TX: MOX_TX (wire MOX bit settled)"));
+    safetyLog(QStringLiteral("TX: MOX_TX (wire MOX bit settled)"));
     fsmRunning_ = false;
     // If the operator already requested off again during rf_delay
     // (rare), pick it up now.
@@ -1140,7 +1175,7 @@ void HL2Stream::fsmKeyupSettled() {
     updateOcPattern(/*transmitting=*/false);
     moxActive_ = false;
     emit moxActiveChanged(false);
-    emit logLine(QStringLiteral(
+    safetyLog(QStringLiteral(
         "TX: RX (wire MOX cleared, ATT-on-TX restored to %1 dB)")
         .arg(savedTxStepAttn_));
     fsmRunning_ = false;
@@ -1163,8 +1198,8 @@ void HL2Stream::setTxTimeoutSec(int sec) {
     txTimeoutSec_ = sec;
     QSettings().setValue(QStringLiteral("tx/timeoutSeconds"), sec);
     emit txTimeoutSecChanged(sec);
-    emit logLine(QStringLiteral("TX safety timeout = %1 s (%2 min)")
-                 .arg(sec).arg(sec / 60.0, 0, 'f', 1));
+    safetyLog(QStringLiteral("TX safety timeout = %1 s (%2 min)")
+              .arg(sec).arg(sec / 60.0, 0, 'f', 1));
     // If currently keyed, re-arm with the new full duration.  Operator
     // intent ("I want N more seconds from now") — symmetric with the
     // bypass-toggle behaviour below.
@@ -1178,9 +1213,9 @@ void HL2Stream::setTxTimeoutBypass(bool on) {
     txTimeoutBypass_ = on;
     QSettings().setValue(QStringLiteral("tx/timeoutBypass"), on);
     emit txTimeoutBypassChanged(on);
-    emit logLine(QStringLiteral("TX safety timeout bypass -> %1")
-                 .arg(on ? QStringLiteral("ON (no auto-release)")
-                         : QStringLiteral("off (auto-release armed)")));
+    safetyLog(QStringLiteral("TX safety timeout bypass -> %1")
+              .arg(on ? QStringLiteral("ON (no auto-release)")
+                      : QStringLiteral("off (auto-release armed)")));
     if (moxActive_) {
         if (on)  cancelTxSafetyTimer();    // safety just turned OFF
         else     armTxSafetyTimer();       // safety just turned ON;
@@ -1194,14 +1229,14 @@ void HL2Stream::armTxSafetyTimer() {
     // expiry — operator intent on bypass-off-then-on or duration change
     // is "give me a fresh full window from this moment."
     txSafetyTimer_->start(txTimeoutSec_ * 1000);
-    emit logLine(QStringLiteral("TX safety: armed for %1 s").arg(txTimeoutSec_));
+    safetyLog(QStringLiteral("TX safety: armed for %1 s").arg(txTimeoutSec_));
 }
 
 void HL2Stream::cancelTxSafetyTimer() {
     if (!txSafetyTimer_) return;
     if (txSafetyTimer_->isActive()) {
         txSafetyTimer_->stop();
-        emit logLine(QStringLiteral("TX safety: cancelled (keyup or bypass)"));
+        safetyLog(QStringLiteral("TX safety: cancelled (keyup or bypass)"));
     }
 }
 
@@ -1209,7 +1244,7 @@ void HL2Stream::onTxSafetyTimeout() {
     // Drive the auto-release through the normal funnel so the TR-delay
     // keyup chain runs cleanly + ATT-on-TX restores + UI red-on-air
     // clears via the standard moxActiveChanged(false) edge.
-    emit logLine(QStringLiteral(
+    safetyLog(QStringLiteral(
         "TX safety: timeout reached after %1 s — auto-releasing")
         .arg(txTimeoutSec_));
     emit txTimeoutFired();

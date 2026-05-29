@@ -484,6 +484,22 @@ private slots:
     void onFatalError(QString reason);
 
 private:
+    // Mirror a safety-critical TX/wire event to BOTH the in-app log
+    // dock (emit logLine) AND the Qt logging surface (qInfo / qCritical
+    // → stderr + any installed file handler).  Operator-facing record
+    // of "what did the radio do, when?" survives a crash where the in-
+    // app log dock contents are lost; complements §3.9-style discipline
+    // for events the operator needs to be able to reconstruct after the
+    // fact (PA-on/off edges, wire MOX edges, safety-timer fires, etc.).
+    //
+    // safetyLog → qInfo()    (normal-but-important event)
+    // fatalLog  → qCritical() (FATAL: stream died on its own)
+    //
+    // Both still emit logLine() so the in-session UI experience is
+    // unchanged — this only adds a second sink.
+    void safetyLog(const QString& msg);
+    void fatalLog(const QString& msg);
+
     void rxWorkerLoop(std::stop_token stop, SocketHandle sock);
     void txWorkerLoop(std::stop_token stop, SocketHandle sock,
                       QString ip);
