@@ -459,6 +459,15 @@ signals:
     // transition completes (true at end of keydown rf_delay; false at end
     // of keyup ptt_out_delay).  Does NOT fire on mid-transition states.
     void moxActiveChanged(bool on);
+    // Fires ONCE per requestMox(true) call (MOX button click, TUN arm,
+    // space-bar press — any path that signals operator intent to key).
+    // Lets the TX panel paint a short "press-intent" indicator (orange
+    // pulse) so the operator gets instant feedback even when their press
+    // is shorter than the ~65 ms TR-delay window and moxActiveChanged
+    // therefore never fires.  Decoupled from FSM outcome — fires even if
+    // the keydown gets cancelled mid-mox_delay; the pulse decays via the
+    // UI timer regardless.
+    void moxIntentPulse();
     // TX-0c-pa-debug — fires on operator-set changes to the safety
     // timeout + bypass.  Settings UI binds via Q_PROPERTY; persistence
     // lives in the setter.

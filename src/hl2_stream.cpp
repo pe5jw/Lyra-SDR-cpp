@@ -1047,6 +1047,16 @@ void HL2Stream::setTuneEnabled(bool on) {
 
 void HL2Stream::requestMox(bool on) {
     requestedMox_ = on;
+    // Fire the press-intent pulse on EVERY keydown intent — even when
+    // the FSM is already running (re-key during ptt_out_delay), and
+    // even when the press is shorter than the TR delay (FSM cancels
+    // mid-mox_delay).  The UI uses this to show the operator that
+    // their press was acknowledged, separate from whether the wire
+    // MOX bit ever settles.  Keyup releases (on=false) do NOT pulse —
+    // the operator already saw the red light if they were keyed.
+    if (on) {
+        emit moxIntentPulse();
+    }
     if (!fsmRunning_) {
         fsmAdvance();
     }

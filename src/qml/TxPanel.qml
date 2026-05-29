@@ -35,6 +35,19 @@ Rectangle {
     readonly property color cMox:      "#d11515"   // wire-MOX red
     readonly property color cMoxEdge:  "#ff8080"
 
+    // ── Press-intent indicator (task #18) ────────────────────────────
+    // Operator-flagged UX gap: a short MOX press (space-bar tap shorter
+    // than the ~65 ms TR delay) never lit the button red because the
+    // wire-MOX FSM cancelled mid-mox_delay and moxActive never went
+    // true — operator wondered "did it key?".  HL2Stream now fires
+    // moxIntentPulse() on EVERY requestMox(true) call (click, TUN, or
+    // space-bar press, regardless of FSM outcome).  We latch
+    // pressIntent for ~220 ms so even a 5 ms tap shows an orange flash,
+    // giving the operator instant feedback that their press registered.
+    // Wire-MOX-red overrides pressIntent-orange the moment moxActive
+    // goes true — the FSM outcome takes visual priority.
+    property bool pressIntent: false
+
     // ── Wire-truth atomics from HL2Stream ────────────────────────────
     // txDriveLevel is raw 0..255; UI works in 0..100 %.  Math:
     //   pct = round(raw * 100 / 255)
@@ -43,6 +56,24 @@ Rectangle {
     // round-trip stays stable (a 25 % click → raw 64 → reads back 25 %).
     function rawToPct(raw) { return Math.round(raw * 100 / 255) }
     function pctToRaw(pct) { return Math.round(pct * 255 / 100) }
+
+    // Press-intent decay timer (#18 — see pressIntent property above).
+    Timer {
+        id: pressIntentTimer
+        interval: 220
+        repeat: false
+        onTriggered: root.pressIntent = false
+    }
+    Connections {
+        target: Stream
+        function onMoxIntentPulse() {
+            // restart() (not start()) so back-to-back re-keys extend
+            // the visible orange rather than truncating to whatever
+            // remained from the previous pulse.
+            root.pressIntent = true
+            pressIntentTimer.restart()
+        }
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -170,14 +201,26 @@ Rectangle {
             checked: Stream.moxActive
             onClicked: Stream.requestMox(checked)
             background: Rectangle {
-                color: Stream.moxActive ? root.cMox : "#1f2a35"
-                border.color: Stream.moxActive ? root.cMoxEdge : "#3a5060"
+                // Three-way state: moxActive (wire MOX live) → red;
+                // pressIntent (operator pressed within last ~220 ms,
+                // wire MOX not yet settled) → tune-armed-style orange-
+                // tinted dark fill; otherwise gray.  Matches the TUN
+                // armed visual idiom so operators read both buttons
+                // the same way.
+                color: Stream.moxActive ? root.cMox
+                     : root.pressIntent ? "#3a2a14"
+                     : "#1f2a35"
+                border.color: Stream.moxActive ? root.cMoxEdge
+                            : root.pressIntent ? root.cOn
+                            : "#3a5060"
                 border.width: 2
                 radius: 5
             }
             contentItem: Text {
                 text: moxBtn.text
-                color: Stream.moxActive ? "#ffffff" : root.cText
+                color: Stream.moxActive ? "#ffffff"
+                     : root.pressIntent ? root.cOn
+                     : root.cText
                 font: moxBtn.font
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
