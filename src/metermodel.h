@@ -142,9 +142,26 @@ private:
     // RX behavior (extracted unchanged from the old tick() body); other
     // computes land in subsequent commits.
     void computeSMeter();
+    void computePwr();
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table
+    // PWR cal: operator's reference anchor (10m / dummy / full TUN
+    // reading on a known watt-meter) maps the provisional fwd_power ADC
+    // -> watts curve to a true scalar.  Single global cal for v0.2.x
+    // (per-band 3-point cal is a polish item).  Persisted under
+    // meter/pwrCalScale (default 1.0 = use the provisional formula
+    // as-is) + meter/pwrRatedMaxW (default 5.0 W = HL2+ on-board PA).
+    double pwrCalScale_  = 1.0;     // applied to fwdPowerW() output
+    double pwrRatedMaxW_ = 5.0;     // danger-zone (red) starts here
+    double pwrScaleMaxW_ = 10.0;    // full-scale watts (== 2 * rated max)
+    // Source-agnostic "danger zone start" position (0..1 along the
+    // scale).  S-meter computes from dBm math via the existing path;
+    // PWR/SWR/etc. write directly.  normAtS9() Q_PROPERTY returns
+    // this for non-SMETER sources (kept the historical name so the
+    // QML renderers' zone-coloring logic works unchanged for all
+    // sources — only the threshold's meaning differs per source).
+    double normDanger_ = 0.0;
 
     lyra::ipc::HL2Stream  *stream_ = nullptr;
     lyra::dsp::WdspEngine *wdsp_   = nullptr;
