@@ -148,6 +148,7 @@ qt_add_qml_module(lyra
         src/qml/MeterPanel.qml
         src/qml/HorizonArc.qml
         src/qml/PlasmaBar.qml
+        src/qml/VerticalLadder.qml
     RESOURCES
         src/assets/watermarks/lyra-watermark.jpg
         src/assets/logo/lyra-icon-128.png

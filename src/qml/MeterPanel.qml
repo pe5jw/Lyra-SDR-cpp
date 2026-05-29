@@ -1,13 +1,17 @@
-// Lyra — Meter dock panel (RX signal-strength S-meter).
+// Lyra — Meter dock panel (RX/TX meter).
 //
-// Hosts one of two GPU-flavoured renderers — Horizon Arc (default) or
-// Plasma Bar — both fed by the C++ `Meter` context property (MeterModel).
-// A tiny Arc|Bar toggle in the corner flips the style live so the two
-// can be compared without diving into Settings; the choice persists.
+// Hosts one of three GPU-flavoured renderers — Horizon Arc (default),
+// Plasma Bar, or Vertical Ladder (Multi-source) — all fed by the C++
+// `Meter` context property (MeterModel).  A tiny Arc|Bar|Ladder toggle
+// in the corner flips the style live; the choice persists.
 //
-// Today the only source is the RX S-meter.  When TX + HL2 telemetry
-// land, the same renderers gain PWR/SWR/ALC/MIC/PA/Temp sources with
-// click-to-cycle — no inert placeholders now.
+// Arc and Bar are single-source views (one needle / bar, peak pip,
+// glow, secondary digital readouts).  Ladder is the Multi view — N
+// source rows stacked, each with its own label / bar / value (TX =
+// full telemetry stack of PWR/SWR/PA/VDD/T; RX = degraded 3-row view
+// of S-meter / noise floor / SNR).  Click-to-cycle source picker
+// stays wired for Arc/Bar but no-ops on Ladder (the Multi view shows
+// all sources at once — no primary to cycle).
 
 import QtQuick
 import QtQuick.Controls
@@ -20,7 +24,7 @@ Rectangle {
     color: "#101820"
     border.color: "#2a4a5a"
 
-    // ── Style toggle (top-right): Arc | Bar ──
+    // ── Style toggle (top-right): Arc | Bar | Ladder ──
     Row {
         id: styleToggle
         anchors.top: parent.top
@@ -31,9 +35,13 @@ Rectangle {
         z: 10
 
         Repeater {
-            model: [{ t: "Arc", s: 0 }, { t: "Bar", s: 1 }]
+            model: [
+                { t: "Arc",    s: 0 },
+                { t: "Bar",    s: 1 },
+                { t: "Ladder", s: 2 }
+            ]
             delegate: Rectangle {
-                width: 34; height: 18
+                width: 44; height: 18
                 readonly property bool sel: Meter.style === modelData.s
                 color: sel ? "#15435a" : "#0c1218"
                 border.color: sel ? "#00e5ff" : "#2a4a5a"
@@ -59,11 +67,18 @@ Rectangle {
         id: face
         anchors.fill: parent
         anchors.margins: 6
-        sourceComponent: Meter.style === 1 ? barFace : arcFace
+        sourceComponent: {
+            switch (Meter.style) {
+            case 1:  return barFace
+            case 2:  return ladderFace
+            default: return arcFace
+            }
+        }
     }
 
-    Component { id: arcFace; HorizonArc {} }
-    Component { id: barFace; PlasmaBar {} }
+    Component { id: arcFace;    HorizonArc {} }
+    Component { id: barFace;    PlasmaBar {} }
+    Component { id: ladderFace; VerticalLadder {} }
 
     // ── Click-to-cycle source picker (task #35 / FEATURES.md §6) ──
     // Click on the meter face cycles the source through the wired
@@ -82,7 +97,11 @@ Rectangle {
     MouseArea {
         anchors.fill: face
         z: 1                              // below the styleToggle (z:10)
-        cursorShape: Qt.PointingHandCursor
+        // Disabled on the Ladder style — Multi shows all sources at
+        // once, so there's no primary to cycle.  Operator picks per-
+        // state preference from Settings → Meter as usual.
+        enabled: Meter.style !== 2
+        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
         acceptedButtons: Qt.LeftButton
         property var sourceCycle: [0, 1, 2]  // RX_SMETER, PWR, SWR
         onClicked: function(mouse) {

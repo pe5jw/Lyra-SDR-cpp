@@ -118,6 +118,18 @@ private:
     Q_PROPERTY(int txSecondary2 READ txSecondary2 WRITE setTxSecondary2
                NOTIFY txSecondary2Changed)
     Q_PROPERTY(QString secondary2Text READ secondary2Text NOTIFY updated)
+    // Ladder rows (task #38 — Multi-source view).  Populated each tick
+    // with per-source state for the Vertical Ladder renderer.  Each
+    // entry is a QVariantMap with keys:
+    //   label    : "PWR" / "SWR" / "PA" / ...
+    //   value    : "4.2 W" / "1.4:1" / "1.76 A" / ...
+    //   level    : 0..1 normalized fill (palette gradient keyed off
+    //              this source's own danger point)
+    //   danger   : 0..1 position of the red-zone threshold for this row
+    // Computed in MOX-aware fashion: TX = primary TX sources stacked;
+    // RX = degraded 3-row view (S-meter / noise floor / SNR).  Only
+    // populated when the active style is Ladder — saves work otherwise.
+    Q_PROPERTY(QVariantList ladderRows READ ladderRows NOTIFY updated)
     // Active source — what the renderer is showing RIGHT NOW.  Derived
     // from the operator's RX/TX preferences and the live wire MOX bit:
     //   * moxActive=false → source = rxSource
@@ -179,6 +191,7 @@ public:
     int  txSecondary2() const { return txSecondary2_; }
     void setTxSecondary2(int s);
     QString secondary2Text() const { return secondary2Text_; }
+    QVariantList ladderRows() const { return ladderRows_; }
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
@@ -213,6 +226,16 @@ private:
     // stream_ without mutating any model state — safe to call from
     // any compute fn after the primary has finished its tick.
     QString formatSecondaryText(int src) const;
+    // Build the per-row Ladder data based on the current MOX state.
+    // Called from tick() when the active style is Ladder.  Reads raw
+    // values via stream_ getters and the formatSecondaryText helper —
+    // no per-row state retained (peak-hold etc. is a future polish).
+    void   buildLadderRows();
+    // Compute normalized level + danger threshold for a given Source
+    // value.  Used by buildLadderRows().  Returns {level, danger}
+    // pairs in 0..1 range so the QML renderer can paint the bar +
+    // zone coloring uniformly across all rows.
+    void   ladderRowFor(int src, double *level, double *danger) const;
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table
@@ -228,6 +251,7 @@ private:
     int    txSecondary_  = -1;      // -1 = hide; else Source enum value
     int    txSecondary2_ = -1;      // -1 = hide; else Source enum value
     QString secondary2Text_;        // populated by computePwr/computeSwr
+    QVariantList ladderRows_;       // Multi-source rows for Ladder style
     // Source-agnostic "danger zone start" position (0..1 along the
     // scale).  S-meter computes from dBm math via the existing path;
     // PWR/SWR/etc. write directly.  normAtS9() Q_PROPERTY returns

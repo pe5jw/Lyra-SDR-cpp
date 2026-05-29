@@ -98,7 +98,8 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
                        lyra::dsp::WdspEngine *wdsp, QObject *parent)
     : QObject(parent), stream_(stream), wdsp_(wdsp) {
     QSettings s;
-    style_ = s.value(QString::fromLatin1(kKeyStyle), 0).toInt();
+    style_ = std::clamp(s.value(QString::fromLatin1(kKeyStyle), 0).toInt(),
+                        0, 2);
     calDb_ = s.value(QString::fromLatin1(kKeyCal), 0.0).toDouble();
     peakHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPeakHold), 800).toInt(), 100, 5000);
@@ -230,11 +231,20 @@ QString MeterModel::sLabel(double dbm) const {
 }
 
 void MeterModel::setStyle(int s) {
-    s = (s != 0) ? 1 : 0;
+    // 0=HorizonArc (default), 1=PlasmaBar, 2=VerticalLadder (Multi).
+    s = std::clamp(s, 0, 2);
     if (s == style_) return;
     style_ = s;
     QSettings().setValue(QString::fromLatin1(kKeyStyle), style_);
+    if (style_ == 2) {
+        // Populate immediately so the renderer paints real rows on the
+        // first frame instead of waiting for the next tick.
+        buildLadderRows();
+    } else {
+        ladderRows_.clear();
+    }
     emit styleChanged();
+    emit updated();
 }
 
 void MeterModel::setCalDb(double d) {
@@ -523,6 +533,147 @@ QVariantList MeterModel::tickMarks() const {
     return out;
 }
 
+void MeterModel::ladderRowFor(int src, double *level, double *danger) const {
+    // Per-source level + danger threshold for the Ladder rows.  Each
+    // source gets its own normalization so the bar fill reads "as a
+    // fraction of operator-relevant range" — e.g. SWR's 0..1 maps over
+    // the 1.0..3.0 axis (with 2.0 = danger at 0.5), PWR over
+    // 0..pwrScaleMaxW_ (with rated max at half-scale).
+    *level = 0.0;
+    *danger = 1.0;  // off-scale = no red zone
+    if (!stream_) return;
+    switch (src) {
+    case PWR: {
+        const double raw = stream_->fwdPowerW();
+        const double w = (std::isnan(raw) || raw < 0.0) ? 0.0
+                                                        : raw * pwrCalScale_;
+        *level = std::clamp(w / std::max(pwrScaleMaxW_, 1e-9), 0.0, 1.0);
+        *danger = std::clamp(pwrRatedMaxW_ / std::max(pwrScaleMaxW_, 1e-9),
+                              0.0, 1.0);
+        return;
+    }
+    case SWR: {
+        const double fwd = stream_->fwdPowerW();
+        const double rev = stream_->revPowerW();
+        if (std::isnan(fwd) || std::isnan(rev) || fwd < kSwrGuardW) return;
+        const double r = std::clamp(rev / std::max(fwd, 1e-9), 0.0, 0.999);
+        const double rho = std::sqrt(r);
+        const double swr = std::clamp((1.0 + rho) / std::max(1.0 - rho, 1e-9),
+                                       kSwrScaleMin, kSwrScaleMax);
+        *level = std::clamp((swr - kSwrScaleMin) /
+                            std::max(kSwrScaleMax - kSwrScaleMin, 1e-9),
+                            0.0, 1.0);
+        *danger = std::clamp((kSwrDanger - kSwrScaleMin) /
+                              std::max(kSwrScaleMax - kSwrScaleMin, 1e-9),
+                              0.0, 1.0);
+        return;
+    }
+    case PA_CURRENT: {
+        // HL2+ scale: idle ~0.2 A, full-tune anchor ~1.8 A.  Run the
+        // row out to 3 A (covers external-PA telemetry too); danger
+        // at 2.5 A (above operator's normal full-drive draw).
+        const double a = stream_->paCurrentA();
+        if (std::isnan(a)) return;
+        constexpr double kPAFullScale = 3.0;
+        constexpr double kPADanger    = 2.5;
+        *level = std::clamp(a / kPAFullScale, 0.0, 1.0);
+        *danger = kPADanger / kPAFullScale;
+        return;
+    }
+    case PA_VOLTS: {
+        // Center the bar on the 12-13 V nominal HL2 supply; full scale
+        // 16 V leaves headroom for higher-VDD external supplies.
+        const double v = stream_->hl2SupplyV();
+        if (std::isnan(v)) return;
+        constexpr double kVFullScale = 16.0;
+        constexpr double kVDanger    = 14.0;
+        *level = std::clamp(v / kVFullScale, 0.0, 1.0);
+        *danger = kVDanger / kVFullScale;
+        return;
+    }
+    case TEMP: {
+        // HL2 board temp: idle ~25 °C, full-tune ~31 °C; red zone at
+        // 60 °C (well below the gateware thermal-cutoff floor).
+        const double c = stream_->hl2TempC();
+        if (std::isnan(c)) return;
+        constexpr double kTempFullScale = 80.0;
+        constexpr double kTempDanger    = 60.0;
+        *level = std::clamp(c / kTempFullScale, 0.0, 1.0);
+        *danger = kTempDanger / kTempFullScale;
+        return;
+    }
+    case RX_SMETER: {
+        // RX-mode hero row: reuse the active S-meter level/danger so
+        // the Ladder's primary line matches what the Arc/Bar would show.
+        *level = level_;
+        *danger = normAtS9();
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+void MeterModel::buildLadderRows() {
+    ladderRows_.clear();
+    if (!stream_) return;
+    // Operative source list per MOX state.  Hard-coded sensible defaults
+    // for first ship; per-row operator picker is a follow-on task.
+    const bool tx = stream_->moxActive();
+    QList<int> srcs;
+    QStringList labels;
+    if (tx) {
+        // TX: full telemetry stack.  ALC / MIC / COMP get appended as
+        // the TX audio chain lands at v0.2.x.
+        srcs   = {PWR, SWR, PA_CURRENT, PA_VOLTS, TEMP};
+        labels = {QStringLiteral("PWR"), QStringLiteral("SWR"),
+                  QStringLiteral("PA"),  QStringLiteral("VDD"),
+                  QStringLiteral("T")};
+    } else {
+        // RX: three-row degraded view.  The S-meter row is the hero
+        // (matches the operator's RX expectation); noise floor + SNR
+        // surface the other useful RX numbers the Arc/Bar bury inside
+        // a single face.
+        srcs   = {RX_SMETER};
+        labels = {QStringLiteral("S")};
+    }
+
+    for (int i = 0; i < srcs.size(); ++i) {
+        double level = 0.0, danger = 1.0;
+        ladderRowFor(srcs[i], &level, &danger);
+        QVariantMap row;
+        row.insert(QStringLiteral("label"), labels[i]);
+        row.insert(QStringLiteral("value"),
+                   srcs[i] == RX_SMETER ? text_
+                                        : formatSecondaryText(srcs[i]));
+        row.insert(QStringLiteral("level"),  level);
+        row.insert(QStringLiteral("danger"), danger);
+        ladderRows_.append(row);
+    }
+
+    if (!tx) {
+        // RX-only extra rows: noise floor (position on the scale) + SNR
+        // delta.  No formatSecondaryText path because these are RX
+        // S-meter sub-quantities, not Source enum values.
+        QVariantMap nf;
+        nf.insert(QStringLiteral("label"), QStringLiteral("NF"));
+        nf.insert(QStringLiteral("value"),
+                  QStringLiteral("%1 dBm").arg(std::lround(noiseFloorDbm_)));
+        nf.insert(QStringLiteral("level"),  noiseLevel_);
+        nf.insert(QStringLiteral("danger"), 1.0);
+        ladderRows_.append(nf);
+
+        QVariantMap snr;
+        snr.insert(QStringLiteral("label"), QStringLiteral("SNR"));
+        snr.insert(QStringLiteral("value"), snrText_);
+        // SNR level: 0..60 dB axis, danger at 0 dB (signal at floor).
+        const double snrDb = std::max(0.0, dispDbm_ - noiseFloorDbm_);
+        snr.insert(QStringLiteral("level"),  std::clamp(snrDb / 60.0, 0.0, 1.0));
+        snr.insert(QStringLiteral("danger"), 0.0);
+        ladderRows_.append(snr);
+    }
+}
+
 void MeterModel::tick() {
     // Dispatch to the source-specific compute.  Each compute fn fills
     // level_/peak_/text_/etc. and emits updated() at the end.  Sources
@@ -607,6 +758,7 @@ void MeterModel::computeSMeter() {
     text_ = sLabel(dispDbm_);
     dbmText_ = QStringLiteral("%1 dBm").arg(dispDbm_, 0, 'f', 0);
 
+    if (style_ == 2) buildLadderRows();
     emit updated();
 }
 
@@ -695,6 +847,7 @@ void MeterModel::computePwr() {
                 : QStringLiteral("%1 W").arg(std::lround(dispW));
     dbmText_.clear();
 
+    if (style_ == 2) buildLadderRows();
     emit updated();
 }
 
@@ -803,6 +956,7 @@ void MeterModel::computeSwr() {
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
 
+    if (style_ == 2) buildLadderRows();
     emit updated();
 }
 
