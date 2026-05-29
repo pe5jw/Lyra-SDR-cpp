@@ -30,6 +30,19 @@ BandMemory::BandMemory(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                         QString::fromLatin1(kPfx) + currentBand_ +
                         QStringLiteral("/lna"), db);
                 });
+        // Task #27 — per-band TX drive memory.  Save the current band's
+        // drive whenever the operator changes it (UI tx panel) so a
+        // future return to this band restores their per-band setting.
+        // applying_ guards out the change WE make while restoring.  No
+        // lnaSetByOperator-equivalent distinction is needed here because
+        // there's no Auto-drive that roams; every set is the operator.
+        connect(stream_, &lyra::ipc::HL2Stream::txDriveLevelChanged, this,
+                [this](int level) {
+                    if (applying_ || currentBand_.isEmpty()) return;
+                    QSettings().setValue(
+                        QString::fromLatin1(kPfx) + currentBand_ +
+                        QStringLiteral("/txDrive"), level);
+                });
     }
     if (prefs_) {
         // Live-save the current band whenever a remembered setting changes
@@ -127,6 +140,23 @@ void BandMemory::applyBand(const QString &band) {
     if (stream_ && s.contains(p + QStringLiteral("lna"))) {
         applying_ = true;
         stream_->setLnaGainDb(s.value(p + QStringLiteral("lna")).toInt());
+        applying_ = false;
+    }
+    // Task #27 — per-band TX drive memory + fail-safe.
+    //   Stored value present  → restore it (operator's per-band choice).
+    //   Stored value absent   → FORCE drive to 0 (never carry a previous
+    //                           band's setting into a band the operator
+    //                           hasn't yet validated — accidental full-
+    //                           blast keying is the explicit failure case
+    //                           this task addresses).
+    // Either way we go through setTxDriveLevel under the applying_ guard
+    // so the save callback above doesn't re-write what we just restored.
+    if (stream_) {
+        applying_ = true;
+        const int restored = s.contains(p + QStringLiteral("txDrive"))
+            ? s.value(p + QStringLiteral("txDrive")).toInt()
+            : 0;
+        stream_->setTxDriveLevel(restored);
         applying_ = false;
     }
     if (!s.contains(p + QStringLiteral("mode"))) {
