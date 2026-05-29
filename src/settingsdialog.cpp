@@ -1339,12 +1339,14 @@ QWidget *SettingsDialog::buildHardwareTab() {
         // putting RF on the air).
 
         // --- PA enable (the first-RF gate) ---
-        // Default-OFF on every stream open/close cycle (HL2Stream's
-        // B-safety defensive clears enforce that); persisted across
-        // clean Lyra exit-and-relaunch (tx/paEnabled).  The checkbox
-        // reflects the live Stream.paEnabled value via paEnabledChanged
-        // signal — so the post-open() safety clear immediately
-        // unchecks the box in the UI without operator action.
+        // PA enable is a PERSISTENT operator preference (2026-05-29
+        // posture relax — was previously force-cleared on every stream
+        // open/close as defense-in-depth, but the bench-validated
+        // safety timer + gateware watchdog cover the failure modes
+        // that motivated that, and re-checking on every restart was
+        // operator-flagged hassle).  The checkbox reflects the persisted
+        // tx/paEnabled QSettings value; open() emits paEnabledChanged
+        // with the actual restored value so the UI stays in sync.
         auto *paBox = new QCheckBox(tr("Enable PA (puts RF on the antenna)"), grp);
         paBox->setChecked(stream_->paEnabled());
         paBox->setToolTip(tr(
@@ -1353,9 +1355,12 @@ QWidget *SettingsDialog::buildHardwareTab() {
             "PA current rises from ~0 to your idle-bias value (~0.2 A "
             "on a typical HL2+).  Combined with TX Drive > 0 % this "
             "puts real RF on the antenna.  Bench safety: use a dummy "
-            "load + watt-meter for first key.  Defensively cleared on "
-            "every stream stop/start (operator must re-check after a "
-            "Stop/Open cycle)."));
+            "load + watt-meter for first key.  PERSISTENT — your last "
+            "explicit click is remembered across Lyra launches AND "
+            "across stream Stop/Start cycles within a session.  PA "
+            "bias alone (without MOX) produces no carrier; the safety "
+            "timer + gateware watchdog catch the held-MOX failure "
+            "modes if anything goes wrong."));
         connect(paBox, &QCheckBox::toggled, grp, [this](bool on) {
             if (stream_) stream_->setPaEnabled(on);
         });
