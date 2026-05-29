@@ -78,7 +78,11 @@ Rectangle {
             ToolTip.text: qsTr("How hard the HL2 drives its PA.  0 % = no carrier "
                 + "even with PA + MOX.  Start LOW (5–10 %) on a dummy load; raise "
                 + "gradually while watching the watt-meter.  Wheel adjusts (Shift = 5 %).")
-            ToolTip.visible: hovered
+            // Long delay so the tip can't intercept an operator click/drag —
+            // hover-with-intent (≥1.5 s) still gets it, but instant flicks +
+            // wheel adjustments aren't fighting a popup that's already up.
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered && !pressed
         }
         Label {
             // Live readback from the wire atomic — so an external
@@ -142,7 +146,11 @@ Rectangle {
                 + "TX I/Q stream and keys MOX.  Carrier power = TX Drive %.  "
                 + "Auto-disarms when MOX clears for any reason (release, "
                 + "safety timer, etc.).  Set Drive low for first session.")
-            ToolTip.visible: hovered
+            // Tooltip was intercepting clicks on the most-pressed button on
+            // the panel — long delay + hide-on-press so a fast tune-arm
+            // gesture isn't fighting a popup that's already up.
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered && !pressed
         }
 
         // ── MOX — the keying button, big + lit red on wire truth ────
@@ -177,7 +185,13 @@ Rectangle {
             ToolTip.text: qsTr("Key the radio (MOX).  Goes red the instant the "
                 + "wire-MOX bit settles after the TR-delay.  Space-bar momentary "
                 + "(when no text widget has focus) routes through the same FSM.")
-            ToolTip.visible: hovered
+            // Operator-reported 2026-05-29: a tooltip that pops the instant
+            // the cursor lands on MOX intercepts the click — you end up
+            // hunting for the bottom edge of the button to dodge it.  Long
+            // delay + hide-on-press means hover-with-intent still gets the
+            // hint, but key-the-radio gestures are instant.
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered && !pressed
         }
     }
 }
