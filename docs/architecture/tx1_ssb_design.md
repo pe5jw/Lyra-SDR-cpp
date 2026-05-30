@@ -1,6 +1,7 @@
 # TX-1 SSB modulator arc — design document
 
-Status: **DESIGN v1, awaiting operator decisions + 2-agent red-team round**
+Status: **DESIGN v2 LOCKED — 3-lens red-team converged + operator decisions in.
+Ready for implementing-session.**
 Date: 2026-05-29
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
@@ -8,10 +9,21 @@ Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
 remains relevant ONLY for (a) TX panadapter visual rule (red passband
 rectangle on TX-active) and (b) 2RX + SUB/SPLIT UI design ideas.
 
-This document is the input to the 2-agent red-team round.  Both agents
-read this + the dossiers below, then file:line-grounded critiques per
-the locked methodology (CLAUDE.md §15.28 — smallest revertable step,
-operator-visible metric before design, no convergence theatre).
+**v2 amendment trail (this revision, 2026-05-29 EOD):**
+- Three independent red-team lenses (concurrency / safety / scope) ran
+  with file:line evidence against Thetis source.
+- §4.9 uslew open question DEFINITIVELY ANSWERED via wdsp/uslew.c +
+  wdsp/TXA.c read (BLOCKS-SHIP correction folded into §4.9 + §5.6).
+- C&C modulus-19 audit confirmed against networkproto1.c:948-1176.
+- §3.2 mic byte extraction CORRECTED — the original "bytes 24-25"
+  layout is wrong; mic is interleaved with IQ per nddc-aware formula.
+- §5.4 MicSource collapsed to a single class (Thetis-faithful).
+- §6 open questions all answered + locked.
+- Concurrency amendments applied to §5.5/§5.7 (mutex+cv not SPSC;
+  producer-paced; teardown order; block-size pinned).
+- Safety amendments applied (init order, TR delays, EP2 zero-on-no-MOX,
+  panel-gain comment fix, DC/IQ-cal status note).
+- v0.3 PureSignal sip1 tap added (§5.8).
 
 ---
 
@@ -116,17 +128,39 @@ From `src/hl2_stream.{h,cpp}` (verified by direct grep 2026-05-29):
   touches USB/LSB so no current risk).
 
 ### 3.2 HL2 mic → TX path
-- `networkproto1.c:570-573` (`MetisReadThreadMainLoop_HL2`): mic
-  extracted from EP6 slot bytes 24-25 per slot, scaled `mic / 2^31`
-  (mic is 24-bit signed BE sign-extended to int32), Q hardcoded `0.0`.
+
+**REWRITTEN 2026-05-29** — earlier "bytes 24-25" framing was wrong;
+mic samples are interleaved with IQ per an nddc-aware formula.
+Verified against `networkproto1.c:562-577` (`MetisReadThreadMainLoop
+_HL2`).
+
+- **Per-sample offset formula:**
+  `k = 8 + nddc*6 + isamp * (2 + nddc*6)`
+- **Per-frame mic-sample count:** `spr = 504 / (6*nddc + 2)`
+- For HL2's typical nddc=1: stride=8 bytes, mic samples at offsets
+  **14, 22, 30, …, 510** — 63 mic samples per 512-byte USB frame.
+- For nddc=2: stride=14, 36 samples per frame.
+- For nddc=4 (HL2 Lyra default per CLAUDE.md §3.1): stride=26, 19
+  mic samples per frame.
+- **Mic format:** 16-bit big-endian signed PCM
+  (`bptr[k]<<8 | bptr[k+1]`); sign-extended via `<<24 | <<16` then
+  divided by 2³¹ to normalize to [-1, +1).  L-channel only, R forced
+  to 0.0.
+- `networkproto1.c:562-577` extract sequence + scaling.
 - `networkproto1.c:579`: `Inbound(inid(1,0), mic_sample_count,
-  prn->TxReadBufp)` hands a buffer of `(I=mic_scaled, Q=0)` complex
-  pairs to ChannelMaster.
+  prn->TxReadBufp)` hands the (I=mic_scaled, Q=0) complex pairs to
+  ChannelMaster.
 - `cmbuffs.c:89-121`: `Inbound()` copies into ring `r1_baseptr`,
   signals `Sem_BuffReady`.
 - `cmaster.c:112-253`: ChannelMaster TX DSP thread pumps the ring →
-  routes through TX DSP (dexp VOX, EER, gain, filtering) →
-  `prn->outIQbufp` for EP2 packing.
+  routes through TX DSP → `prn->outIQbufp` for EP2 packing.
+
+**Operator bench result (N8SDR HL2+, 2026-05-29):** reading bytes 24-25
+of each "slot" produced SILENCE on his AK4951 even with a mic plugged
+in.  That's because the slot framing is nddc-dependent — bytes 24-25
+for nddc=1 land mid-IQ-sample (not a mic word at all).  Implementing
+session MUST use the formula above + bench-gate the parser before
+wiring TX (per §1).
 
 ### 3.3 MOX bit gating
 - `networkproto1.c:615` + `:896`: `C0 = (unsigned char)XmitBit` —
@@ -159,14 +193,15 @@ From `src/hl2_stream.{h,cpp}` (verified by direct grep 2026-05-29):
   Lyra-cpp already does this.
 
 ### 3.6 C&C round-robin scheduling
-- HL2 has **18 cases** (cases 0-17 plus case 18 for reset on
-  disconnect).  Hermes (non-HL2) wraps at 16.
+- HL2 has **19 cases (0..18 inclusive)** per `WriteMainLoop_HL2`
+  (`networkproto1.c:948-1176`).  Wheel advances via
+  `if (out_control_idx < 18) out_control_idx++; else out_control_idx
+   = 0;` at `networkproto1.c:1180-1183`.
 - Each USB frame consumes one slot; ~760 USB frames/s; each register
   revisits at ~40 Hz.
-- Lyra-cpp `hl2_stream.cpp:1568+` implements `ccIdx_ = (ccIdx_ + 1)
-  % 19` — **CONFIRM this matches the Thetis 18-case wheel**.  (Agent
-  said HL2 extends to cases 17 + 18.  Lyra modulus 19 = 0..18
-  inclusive = 19 cases.  Audit gate for the red-team.)
+- Lyra-cpp `hl2_stream.cpp:1585` `ccIdx_ = (ccIdx_ + 1) % 19` is
+  **byte-exact** vs the Thetis HL2 wheel.  CONFIRMED 2026-05-29
+  red-team audit.
 
 ### 3.7 SendHighPriority on MOX edge
 - `console.cs:30073`: `NetworkIO.SendHighPriority(1)` called on MOX
@@ -295,15 +330,29 @@ From `src/hl2_stream.{h,cpp}` (verified by direct grep 2026-05-29):
     `flushflag`, waits up to 100 ms for flush.  Forcibly clears on
     timeout.
 - `uslew.c` envelope: cos²-shaped 5 ms ramp gated by ch_upslew on
-  keydown.
-- **OPEN QUESTION for the red-team**: agent dossier asserts uslew is
-  "bypassed for SSB mic" path.  Need direct verification from
-  `wdsp/uslew.c` whether ch_upslew applies universally or only when
-  certain block flags are set.  If uslew DOES envelope-shape SSB
-  keydown universally, Lyra-cpp's MoxEdgeFade only needs to shape the
-  POST-TXA EP2 output (and only for keyup, since WDSP already does the
-  cos² in).  If uslew is bypassed for SSB, MoxEdgeFade carries the
-  full envelope responsibility.
+  keydown — **gated to TUN / tone-gen paths ONLY, NOT SSB mic.**
+
+**RESOLVED (red-team verification, 2026-05-29):** `wdsp/uslew.c` +
+`wdsp/TXA.c` read end-to-end.  uslew **does NOT envelope-shape the
+SSB mic stream**.  Proof:
+- `wdsp/slew.c:90-92` (xuslew, first line):
+  `if (!a->runmode && TXAUslewCheck(a->channel)) a->runmode = 1;` —
+  uslew only arms when `TXAUslewCheck` returns true.
+- `wdsp/TXA.c:819-825` (`TXAUslewCheck`): returns true **only if**
+  `ammod.run || fmmod.run || gen0.run || gen1.run`.  SSB (USB/LSB)
+  sets NONE of those (`SetTXAMode` switch at `TXA.c:762-785` leaves
+  ammod/fmmod off for SSB modes; gen0/gen1 default off and are only
+  enabled for input-signal-gen / TUN / two-tone).
+- `wdsp/slew.c:153-154` (fall-through, !runmode): `memcpy(out, in,
+  size * sizeof(complex))` — mic passes through untouched.
+
+**Consequence for MoxEdgeFade (component 5):** MoxEdgeFade carries
+**the FULL keydown AND keyup envelope responsibility for SSB voice TX**.
+Fade-IN is **load-bearing**, not optional — without it every keydown
+is a hard step at the EP2 packer = audible key click + adjacent-channel
+splatter.  The "worst case both apply, longer wins" framing in earlier
+drafts was wrong: WDSP's 5 ms cos² envelope does not run at all on
+SSB, so MoxEdgeFade is the sole envelope.
 
 ---
 
@@ -315,16 +364,34 @@ From `src/hl2_stream.{h,cpp}` (verified by direct grep 2026-05-29):
 |---|---|---|---|
 | 1 | WDSP TXA cdefs + loader | extend `src/wdsp_native.{h,cpp}` | ~150 |
 | 2 | TxChannel class | extend `src/wdsp_engine.{h,cpp}` | ~350 |
-| 3 | Mic source abstraction + 3 concretes | new `src/mic_source.{h,cpp}` | ~400 |
+| 3 | Hl2Ep6MicSource (single class, no abstraction) | new `src/mic_source.{h,cpp}` | ~150 |
 | 4 | TX DSP worker (dedicated thread) | new `src/tx_dsp_worker.{h,cpp}` | ~250 |
 | 5 | MoxEdgeFade (cos² 50 ms) | new `src/mox_edge_fade.{h,cpp}` | ~120 |
-| 6 | EP2 packer extension | edit `src/hl2_stream.cpp:1622-1638` | ~50 |
+| 6 | EP2 packer extension + sip1 tap | edit `src/hl2_stream.cpp:1622-1638` | ~70 |
 
-Plus: Settings UI (mic source picker, mic gain, ALC max gain, bandpass
-edges, PHROT toggle) ~120 lines in `settingsdialog.cpp`.
+Plus: Settings UI (TX panel: PHROT toggle, Leveler toggle, bandpass
+sliders, mic boost / bias / mic-vs-line / line-in gain, HW-PTT toggle)
+~150 lines in `settingsdialog.cpp`.
 
-**Total estimate**: ~1450 lines.  Not small.  Hence the staged
-methodology.
+**Total estimate**: ~1240 lines (down from v1's ~1450 — MicSource
+abstraction dropped per the §5.4 simplification).
+
+**Per-component bench gates (§15.28 methodology, MANDATORY before
+end-to-end Tier-A):**
+1. WDSP loader: cdef dlsym audit — assert all symbols resolve from
+   bundled libwdsp before any test runs.
+2. TxChannel: `open()` setter-return-code audit; dump post-init bp0
+   passband edges to log.
+3. Hl2Ep6MicSource: loopback test piping a synthetic 1 kHz mic block
+   through the consumer pattern with EP6 telemetry probe confirming
+   bytes parse correctly via the §3.2 nddc-aware formula.  **This is
+   also the Q6.5 mic-route bench** — verify AK4951 voice comes through
+   with `line_in=0` + `mic_bias` as appropriate.
+4. TX DSP worker: queue throughput at 48 kHz cadence with no
+   consumer (just measures producer→worker→consumer plumbing).
+5. MoxEdgeFade: cos² envelope unit test (fade-in monotonic, fade-out
+   reaches exactly zero, abort-continuity on rapid keydown).
+6. EP2 packer: TUN-vs-SSB-vs-silence dispatch unit test.
 
 ### 5.2 WDSP TXA cdefs (component 1)
 
@@ -409,114 +476,190 @@ private:
 };
 ```
 
-Init sequence (in `open()`), per Thetis-grounded dossier B:
-1. `OpenChannel(ch, in_size=512, dsp_size=4096, in=48k, dsp=96k,
+Init sequence (in `open()`), per Thetis-grounded dossier B + red-team
+amendments 2026-05-29:
+1. `OpenChannel(ch, in_size=126, dsp_size=2048, in=48k, dsp=96k,
    out=48k, type=1, state=0, tdelayup=0.010, tslewup=0.025,
    tdelaydown=0.000, tslewdown=0.010, block=1)`
-2. `SetTXAPanelGain1(ch, 1.0)` — override WDSP default 4.0 (which
-   adds +12 dB hot mic)
-3. `SetTXAMode(ch, USB)`
-4. `pushBandpassLocked()` — calls `SetTXABandpassFreqs(ch,
-   signedLow, signedHigh)` per mode.  Does NOT call
-   `SetTXABandpassRun` (the trap).
+   (in_size pinned to the per-datagram mic-sample count at nddc=4 —
+   see §5.5; was `in_size=512` in v1, which would have starved
+   fexchange0.)
+2. `SetTXAPanelGain1(ch, 1.0)` — pin explicitly.  (WDSP `create_panel`
+   default is gain1=1.0 per `wdsp/TXA.c:65-69`; the v1 doc claim of
+   "default 4.0 (+12 dB hot mic)" was wrong — corrected here.  We
+   pin it to centralize operator mic-gain control.)
+3. **`SetTXABandpassFreqs(ch, signedLow, signedHigh)` FIRST** — per
+   mode (operator-positive Hz, engine signs per §4.3).  This avoids a
+   ~2.6 ms window where bp0 runs on stale `(-5000, -100)` defaults
+   because `SetTXAMode` step 4 calls `TXASetupBPFilters` with whatever
+   `f_low/f_high` it currently has (`TXA.c:786`).
+4. `SetTXAMode(ch, USB)` (or LSB) — this re-calls `TXASetupBPFilters`
+   with the bandpass edges already pushed in step 3.
 5. `SetTXAPHROTRun(ch, 1)` + `SetTXAPHROTCorner(ch, 338.0)` +
-   `SetTXAPHROTNstages(ch, 8)`
+   `SetTXAPHROTNstages(ch, 8)` (PHROT default ON per §6.4; operator
+   Settings toggle exposed per §6.4)
 6. `SetTXAALCAttack(1)` + `SetTXAALCDecay(10)` + `SetTXAALCHang(500)`
-   + `SetTXAALCMaxGain(1.0)` + `SetTXAALCSt(1)`
-7. `SetTXALeveler*` defaults + `St(0)` (off by default)
+   + `SetTXAALCMaxGain(1.0)` + `SetTXAALCSt(1)` (always on; splatter
+   protection, no operator opt-out)
+7. `SetTXALeveler*` defaults + `St(0)` initially.  Operator Settings
+   toggle (default OFF) per §6.3 flips `SetTXALevelerSt` live.
 8. `SetChannelState(ch, 1, 0)` to start
 
-### 5.4 Mic source abstraction (component 3)
+Alternative if ordering of 3+4 is awkward in code: hold
+`SetChannelState(ch, 1, 0)` until BOTH steps 3 and 4 have been pushed,
+then start the channel.  Either approach is acceptable — what's NOT
+acceptable is `SetTXAMode` first with no bandpass edges pushed.
+
+### 5.4 Mic source (component 3) — single class, no abstraction
+
+**REWRITTEN 2026-05-29** — collapsed from the v1 3-concrete
+abstraction to a single class, per Thetis-faithful pattern verified
+2026-05-29:
+
+> Thetis HAS NO PC-soundcard mic input.  Operator mic is **always**
+> the radio's onboard codec via EP6 at fixed 48 kHz
+> (`networkproto1.c:562-577`).  The "PC audio for TX" case is
+> **only** VAC1: PortAudio opens at user-selected `vac_rate` and
+> WDSP `rmatchV` resamples to/from 48 kHz (`ChannelMaster/ivac.c:38-44,
+> 343-352`).  Operator selects mic vs line input + boost via standard
+> C&C bytes (cases 10 & 11), not via separate "mic source" objects.
+
+Lyra-cpp therefore ships **one mic source class**:
 
 ```cpp
-class MicSource {
+class Hl2Ep6MicSource {
 public:
-    virtual ~MicSource() = default;
-    virtual void start() = 0;
-    virtual void stop() = 0;
-    // Producer-paced consumer registration.  Source pushes mic
-    // samples (mono float32, normalized [-1,+1)) into the consumer
-    // at whatever rate the source produces (HL2+: 48 kHz; PC SC:
-    // operator-configured; TCI: per protocol).
+    // Consumer registers with HL2Stream's EP6 tap. The producer
+    // (HL2Stream RX loop) extracts mic samples per the §3.2
+    // nddc-aware formula and pushes to the consumer.
     using Consumer = std::function<void(const float* samples, int n)>;
-    virtual void setConsumer(Consumer) = 0;
-    virtual int sampleRate() const = 0;
-    virtual QString label() const = 0;
-};
 
-class Hl2Ep6MicSource : public MicSource;       // EP6 bytes 24-25
-class PcSoundcardMicSource : public MicSource;  // Qt6 QAudioSource
-class TciAudioMicSource : public MicSource;     // TCI audio_stream
+    explicit Hl2Ep6MicSource(HL2Stream& stream);
+    ~Hl2Ep6MicSource();
+
+    void setConsumer(Consumer);
+    int sampleRate() const { return 48000; }
+};
 ```
 
-**Three concretes, operator-selectable** per Q1 answer:
+No abstraction layer.  Only ONE concrete implementation justifies one
+class (per locked rule "three similar lines beats premature
+abstraction" — one concrete doesn't justify an ABC).
 
-- **Hl2Ep6MicSource** — primary for HL2+ operators.  Registers a
-  consumer on `HL2Stream` (new API mirroring Thetis's
-  `Inbound(inid(1,0), ...)` pattern) that taps EP6 bytes 24-25 from
-  each slot, scales `/2^31` to float32 [-1,+1), pushes to consumer in
-  38-sample chunks (one per EP6 datagram at nddc=4: 19 slots × 2 USB
-  frames per datagram).  Per §15.26 G1: AK4951 gateware emits
-  populated mic slot in every EP6 frame unconditionally.
-- **PcSoundcardMicSource** — Qt6 QAudioSource on operator-selected
-  device.  Operator picks device + nominal rate; downsample-to-48k
-  if device rate differs.  Required for std-HL2 operators (no codec)
-  and HL2+ operators who prefer an external USB mic.
-- **TciAudioMicSource** — listens on the TCI server's audio stream
-  channel.  When a TCI client (WSJT-X / FLDigi / etc.) sends audio
-  via TCI, this source emits it as the mic input.  For digital modes.
+**Future PC-audio-for-TX (NOT in TX-1):** when wanted (e.g., bridge
+WSJT-X via Virtual Audio Cable), ship a single VAC1-style feature
+following the Thetis pattern: operator-toggled loopback ring buffer
+between a PC audio device and the TX chain, with a real
+rational-ratio resampler (WDSP RMATCH equivalent) between the device
+rate and the radio's fixed 48 kHz TX input.  This is a future
+milestone (likely v0.2.3 or v0.3 along with digital-mode workflows),
+NOT another mic source class.  Q6.1 (auto-switch on DIGU/DIGL) is
+deleted from TX-1 scope — Thetis doesn't auto-switch and we follow
+suit.
 
-**Open Q for design phase**: does mode selection (DIGU/DIGL) auto-
-switch to TCI source, or is the source picker fully manual?
-Recommendation: **auto-switch with operator-overridable preference**.
-Default: in DIGU/DIGL with a TCI client connected + streaming, use
-TCI source; else use operator-selected default.  Operator can pin a
-specific source per-mode if they want.
+**EP2 C&C cases 10 & 11 (mic routing — already in the round-robin
+wheel):** Settings → TX panel exposes operator controls that compose
+the bytes per `networkproto1.c:1076-1103`:
 
-### 5.5 TX DSP worker (component 4)
+- Case 10 (C&C addr 0x09) C2 carries `mic_boost | (line_in<<1) | …`
+- Case 11 (C&C addr 0x0a) C1 carries `mic_trs | mic_bias | mic_ptt`
+  bits; C2 carries `line_in_gain`.
+
+Settings exposes `mic_boost` (toggle), `line_in` (mic vs line radio
+button, default mic = 0), `mic_bias` (electret toggle, default off),
+`line_in_gain` (slider 0..31).  HL2 gateware reads these and routes
+the AK4951 input accordingly — no AK4951 I²C side-channel needed
+(Thetis-verified 2026-05-29: zero I²C transactions to the codec
+anywhere in the Thetis tree; HL2 gateware initializes the AK4951
+autonomously at bitstream init).
+
+### 5.5 TX DSP worker (component 4) — AMENDED for concurrency
 
 Dedicated thread (NOT folded into the RX DSP worker, NOT inlined into
-the EP2 writer thread).  Rationale per §15.28 lesson and §15.26 R2:
-
-- Wire cadence (48 kHz, 126 samples per 2.6 ms datagram) does NOT
-  match RX cadence (192 kHz block boundaries).  Folding causes
-  cadence mismatch headaches.
-- Inlining into EP2 writer thread loads a sensitive critical path
-  (per §15.26 D-1/D-2/D-3 analysis on Python lyra).
+the EP2 writer thread).  Rationale: wire cadence (48 kHz) and RX
+cadence (192 kHz blocks) don't match; inlining loads a sensitive
+critical path.
 
 The TX DSP worker:
 - Owns the `TxChannel` instance.
-- Receives mic samples from whichever `MicSource` is active (via
-  consumer callback).  Pushes them into a lock-free SPSC ring.
-- **Self-clocks at wire cadence** per §15.26 R2 + Thetis pattern
-  (mandatory — HL2+ AK4951 mic content is codec audio that may be
-  silence; TXA chain must produce I/Q regardless).  Specifically: at
-  each EP2 frame boundary (signalled by a semaphore from the EP2
-  writer), the worker checks if its mic ring has ≥126 samples; if
-  yes, pop 126, call `TxChannel.process(126)`, push the 126 complex
-  I/Q samples to the EP2 writer's TX I/Q ring.  If no, pop whatever
-  is available + zero-pad to 126 (silence — TXA chain still runs).
+- Receives mic samples from `Hl2Ep6MicSource` via consumer callback
+  on the HL2Stream RX thread.  Pushes them into a `std::deque<float>`
+  protected by a `std::mutex` + `std::condition_variable` (the
+  **same** primitive class the existing EP2 writer audio queue uses
+  at `hl2_stream.cpp:1654-1687` — do NOT introduce a second
+  sync-primitive type on the hot path).
+- **Producer-paced clock (Lyra-native, matches the RX1 pattern at
+  `hl2_stream.cpp:926-928`):** the worker wakes from the
+  condition_variable when mic samples arrive (rather than from a
+  separate EP2-writer semaphore).  This eliminates a round-trip,
+  matches the existing RX worker model, and works for HL2+ AK4951
+  where mic content is codec audio.
+- **TXA channel block size pinned:** `OpenChannel` with `in_size=126`
+  (the actual mic-sample count per EP2 datagram at nddc=4), `dsp_size
+  =2048`.  The earlier `in_size=512` proposal would have starved
+  fexchange0 (same gotcha class as the RX cleanup arc — pin the size
+  to the producer, do not leave to integration).
 - On the MOX-off→on edge, the worker applies the MoxEdgeFade
-  envelope to the I/Q output (fade-in over 50 ms).
-- On the MOX-on→off edge, the worker applies fade-out, signals
-  `MoxEdgeFade.is_off()` true when done.  FSM keyup hook waits on
-  this before clearing the wire MOX bit.
+  envelope to the I/Q output (fade-IN over 50 ms — MANDATORY per
+  §4.9/§5.6).
+- On the MOX-on→off edge, the worker applies fade-OUT, then signals
+  completion via a `std::condition_variable` (NOT a Qt-main-thread
+  poll on `MoxEdgeFade.is_off()`).  FSM keyup hook waits on the
+  cv before clearing the wire MOX bit.  Per CLAUDE.md §15.25 ground
+  truth, the wire MOX bit must clear ONLY after the TX I/Q down-ramp
+  fully completes (else key click + splatter on every keyup).
+- **TUN priority interlock:** when TUN is armed, the worker skips
+  `TxChannel.process()` entirely (saves CPU; the EP2 packer §5.7
+  injects the TUN DC inline regardless).  No garbage I/Q queued.
 
-### 5.6 MoxEdgeFade (component 5)
+**Teardown order (pinned, mirrors §15.21 discipline):**
+1. `Hl2Ep6MicSource::stop()` (stop the mic-callback producer)
+2. `TxDspWorker::request_stop() + join` (drain the consumer)
+3. `TxChannel::stop()` — blocking `SetChannelState(ch, 0, 1)` per
+   `wdsp/channel.c:259-297`
+4. `TxChannel::close()` / `CloseChannel(ch)`
+
+Skipping this order risks half-drained EP2 buffers + dangling WDSP
+callbacks (the same bug class §15.21 fought through on the Python
+side).  Documented here so the implementing session pins it on day
+one.
+
+**TR sequencing (Thetis-faithful defaults, per `console.cs:30350-30384,
+19772, 19807`):**
+
+| Delay | Default | Purpose |
+|-------|---------|---------|
+| `mox_delay`     | **10 ms** | After TX-channel-off (blocking flush) before clearing the wire MOX bit — lets in-flight TX I/Q drain past the gateware |
+| `ptt_out_delay` | **20 ms** | After clearing MOX bit before restarting RX — hardware T/R settle |
+| `rf_delay`      | **50 ms** | After MOX bit set, before enabling RF/TX-DSP-on — amp hot-switch protection (operator-tunable for non-amp use; Lyra v2 makes this configurable 1..75 ms with a default of 50) |
+
+These defaults are non-zero by design.  The FSM keyup path
+implements: `MoxEdgeFade.fade_out` → wait on cv for is_off →
+`SetChannelState(ch, 0, 1)` (blocking) → `mox_delay` (10 ms) →
+clear wire MOX bit → `ptt_out_delay` (20 ms) → restart RX DSP.
+Keydown: set wire MOX bit → `rf_delay` → start TX DSP / un-mute path.
+All delays implemented via Qt single-shot timers — NEVER
+`std::this_thread::sleep_for` on the Qt main thread.
+
+### 5.6 MoxEdgeFade (component 5) — LOAD-BEARING
 
 50 ms cos² envelope, applied to TX I/Q at the EP2-writer side just
 before packing (NOT inside TxChannel — keeps WDSP TXA chain pure
 mic→IQ).  Shared between TUN and SSB paths.
 
-**The open question** from §4.9 affects this: if WDSP's own uslew
-applies to SSB keydown (5 ms cos² built in), MoxEdgeFade may only
-need keyup responsibility.  Will resolve in the red-team round.
+**Per the §4.9 resolution:** WDSP uslew DOES NOT envelope-shape the
+SSB mic stream (verified against wdsp/uslew.c + wdsp/TXA.c).
+MoxEdgeFade is therefore the **SOLE** envelope for SSB voice TX, and
+the fade-in is **MANDATORY**, not optional.  Skipping it ships a hard
+step at the EP2 packer on every keydown = audible key click +
+adjacent-channel splatter.  The §1 bench acceptance metric "Zero
+clicks at keydown/keyup" depends on this fade-in being wired.
 
-Worst case: both apply — that's fine, just slightly more aggressive
-shaping at keydown.  The MoxEdgeFade 50 ms cos² subsumes the WDSP
-5 ms cos² envelope (the longer envelope dominates).
+Both keydown (fade-in) and keyup (fade-out) responsibilities lie here.
+TUN path also uses the same envelope (TUN's inline DC injection is
+multiplied by the same cos² envelope coefficient).
 
-### 5.7 EP2 packer extension (component 6)
+### 5.7 EP2 packer extension (component 6) — AMENDED
 
 Edit `hl2_stream.cpp:1622-1638`.  Today:
 
@@ -534,15 +677,51 @@ if (emitTone) {
 } else if (txIq_have_block) {
     txI = txIqBlock[i].real * 32767;
     txQ = txIqBlock[i].imag * 32767;
+} else if (moxBit) {
+    txI = 0;  // No block ready while keyed — silence
+    txQ = 0;
 } else {
-    txI = 0;  // No block ready (TX DSP worker hasn't produced) — silence
+    txI = 0;  // MANDATORY zero-on-no-MOX (mirrors networkproto1.c:1227)
     txQ = 0;
 }
 ```
 
-`txIqBlock` is drained from a lock-free SPSC ring filled by the TX
-DSP worker.  TUN takes priority over SSB (TUN's whole point is "make
-RF without modulation" — if both are armed somehow, TUN wins).
+`txIqBlock` is drained from the **same mutex+cv-protected queue**
+used for audio (or a parallel queue with the same primitive — do NOT
+introduce a different sync-primitive class on the hot path).  TUN
+takes priority over SSB.
+
+**EP2 zero-on-no-MOX is MANDATORY**, not "defence in depth".  Per
+`networkproto1.c:1227`: `if (!XmitBit) memset(prn->outIQbufp, 0, …)`.
+On HL2 community gateware this is benign (PA bias drops on MOX=0),
+but on ANAN-class hardware (v0.4 scope) emitting TX I/Q with no MOX
+could glitch an external linear.  Mandatory now to avoid a v0.4
+regression hunt.
+
+**Keyup ordering invariant (per §5.5 + CLAUDE.md §15.25):**
+1. MoxEdgeFade fade-out reaches zero
+2. Clear `inject_tx_iq` (the flag that gates this packer branch)
+3. Clear the wire MOX bit
+
+Implementing session: pin this order in the FSM keyup callback.
+
+### 5.8 sip1 TX I/Q tap (v0.3 PureSignal forward-compat)
+
+Per CLAUDE.md §7 (v0.2.0 line item: "§8.2 sip1 TX I/Q tap mandatory
+in v0.2"): every TX I/Q sample written to the EP2 packer is also
+written to a ring buffer (the `sip1` tap).  In v0.2.0 the ring has
+no consumer — it's allocated and filled, that's it.  In v0.3
+PureSignal's `calcc` thread reads from it for adaptive predistortion
+calibration.
+
+Wiring it now (~20 LOC) lets v0.3 land without re-validating every TX
+sub-mode (USB/LSB/CW/AM/FM/digital).  Skipping it forces v0.3 to
+introduce the tap retroactively across modes — explicit CLAUDE.md
+§6.7 violation ("don't paint into a corner").
+
+Ring size: 1 second @ 48 kHz @ 8 bytes/sample = 384 KB.  Lock-free
+SPSC or mutex+cv — pick the same primitive as the audio queue (do
+not proliferate primitives).
 
 ### 5.8 PTT/MOX FSM extension (HW-PTT, task #42)
 
@@ -557,77 +736,124 @@ verify on operator's specific unit before any production wiring.
 
 ---
 
-## 6. Open questions for operator before red-team round
+## 6. Operator decisions (LOCKED 2026-05-29)
 
-| # | Q | Recommendation |
-|---|---|---|
-| **6.1** | Mic auto-switch on DIGU/DIGL to TCI source, or manual picker only? | **Auto-switch w/ operator override per-mode preference.**  Default: DIGU/DIGL + TCI client active → TCI source; else default-picker source. |
-| **6.2** | Bandpass edges operator-tunable from day 1? | **Yes, range 50–8000 Hz, default +200..+3100, persisted per-mode.**  Operator's ESSB ambitions noted in CLAUDE.md §15.19. |
-| **6.3** | Leveler ship in TX-1 or defer to v0.2.1? | **Ship wired but OFF by default.**  Operator opt-in toggle.  Marginal code cost, no risk if default OFF. |
-| **6.4** | PHROT on by default (Thetis-faithful) or off? | **ON by default.**  Quiet 3-4 dB PEP-PAR win, no operator-visible side effect.  Mention in tooltip; no operator-visible knob in TX-1. |
-| **6.5** | AK4951 codec I²C mic-route check on the operator's HL2+: required new EP2 surface or already routed? | **Bench-verify FIRST.**  Run current lyra-cpp with a mic plugged into HL2+, speak.  Capture EP6 bytes 24-25 at idle vs speech via the HL2 telemetry probe or Wireshark.  If samples track voice → codec is already routing mic→ADC (likely from prior Thetis configuration persisting).  If silence → I²C side-channel write needed (§3.9-class new EP2 surface; default-OFF gate + dossier). |
-| **6.6** | HW-PTT foot switch fold into TX-1 (task #42)? | **Yes**, share the FSM design pass.  Default-OFF opt-in.  Debounce + edge-detect.  Bench-verify operator's HL2+ ptt_in rest-state first. |
+| # | Q | LOCKED |
+|---|---|--------|
+| **6.1** | Mic auto-switch on DIGU/DIGL → TCI? | **NONE — DELETED from TX-1 scope.**  Thetis-faithful: mic is always-on, mode change never auto-switches audio routing (`console.cs:35370-35398` SetRX1Mode → `SetDigiMode(1, dmssTurnOffSettings)` touches DEXP/TXEQ/Leveler/etc.; zero VAC/routing touches).  Future PC-audio-for-TX is a VAC1-style feature, not a mic source — operator-toggled, mode-independent. |
+| **6.2** | Bandpass edges operator-tunable? | **YES, default 0–10000 Hz** (operator-curated, supports ESSB).  Settings → TX exposes low/high sliders.  Tooltip notes "set ≥50 Hz to suppress 50/60 Hz mains coupling" but default stays 0 (operator's call).  Persisted per-mode. |
+| **6.3** | Leveler ship in TX-1? | **YES, wired with a Settings UI on/off toggle, default OFF.**  Plumb the cdefs + setter; UI toggle in Settings → TX panel.  Testers can flip it; the toggle keeps it from being inert UI. |
+| **6.4** | PHROT default ON? | **YES, default ON, with a Settings UI on/off toggle.**  Thetis-faithful adoption (~3-4 dB PEP/PAR win flattens speech peaks); operator can disable via Settings → TX. |
+| **6.5** | AK4951 I²C mic-route side-channel needed? | **NO.**  Thetis does ZERO AK4951-specific I²C — the HL2 gateware initializes the codec autonomously at FPGA bitstream init.  Operator confirms his HL2+ has worked with Thetis + AK4951 mic for years.  Mic routing is via standard EP2 C&C cases 10 & 11 (`mic_boost`, `line_in`, `mic_bias`, `mic_ptt`, `line_in_gain`).  The earlier "no audio on bytes 24-25" bench result was a Lyra-cpp parser bug — bytes 24-25 are not the mic-sample offset at any nddc value (it's the §3.2 nddc-aware formula).  Implementing session fixes the parser + verifies the C&C bytes per §5.4. |
+| **6.6** | HW-PTT foot-switch fold-in? | **YES, default OFF, operator opt-in toggle in Settings → TX.**  Edge-detect + 10 ms debounce in the forwarder.  Operator uses a foot switch on his station and will enable it; default-OFF protects everyone else from the `ff5f128` regression class (HW-PTT-in mis-read at RX rest → phantom-TX).  Bench-verify operator's HL2+ ptt_in rest-state before production wiring (still applies). |
+
+**No remaining open questions for the implementing session.  Design
+v2 is fully locked.**
 
 ---
 
-## 7. Red-team round — preparation
+## 7. Red-team round — completed 2026-05-29 (3 lenses, converged)
 
-Per §15.28 methodology, 2 independent senior agents review this
-design + dossiers.  Specifically need:
+Three independent senior agents reviewed this design + dossiers with
+file:line evidence against Thetis source.  All three converged
+CONFIRM-WITH-AMENDMENTS in one round.  One BLOCKS-SHIP correctness
+issue (§4.9 uslew dossier — now fixed); all other findings are
+pin-the-mechanism amendments, all folded into v2 above.
 
-**Agent A (concurrency / RT / lyra-cpp-thread-model lens):**
-- Does the dedicated TX DSP worker model cleanly compose with the
-  existing EP2 writer + RX loop?  Any cadence-mismatch hazards?
-- Lock-free SPSC ring between TX worker and EP2 writer: producer/
-  consumer pattern, ring sizing, underrun handling
-- MoxEdgeFade.is_off() polling vs signal: what's the cheapest
-  correct synchronization?
-- Stop/restart safety: does the TX worker tear down cleanly without
-  the §15.21-class bugs (socket-close-before-thread-join, etc.)?
-- Q1: will this cause TX/RX hang/stutter under load (browser, logger
-  open)?
+**Verification asks both decisively answered:**
+- §4.9 — uslew does NOT envelope SSB mic (only TUN/gen1).  Proof
+  cited in §4.9.  MoxEdgeFade is the sole envelope, fade-in
+  load-bearing.
+- C&C round-robin modulus — confirmed 19 cases (0..18) at
+  `networkproto1.c:948-1176`.  Lyra-cpp `% 19` is byte-exact.
 
-**Agent B (safety / §15.23-trap / Thetis-faithfulness lens):**
-- Audit every WDSP TXA setter call site against the §15.23 trap and
-  the Thetis reference dossier file:line.
-- Verify the SetTXABandpassRun trap is structurally prevented (no
-  cdef for the symbol).
-- Verify sign convention transform per mode.
-- AK4951 I²C mic-route question (6.5) — bench-verify-first
-  discipline, default-OFF gate if needed (§3.9).
-- HW-PTT (6.6) — phantom-TX surge prevention.  Default-OFF opt-in
-  + bench-verify before production.
-- Q1: anything worse than HEAD (which is "no SSB voice at all today,
-  only DC TUN")?  No-worse-than-HEAD == always OK (we're adding,
-  not regressing).  But: does the TXA chain init misorder risk a
-  click/splatter at first keydown?  Does the EP2 packer change risk
-  regressing the TUN path (operator-validated 5 W into dummy)?
-- Reference posture vs Thetis / pihpsdr / Quisk / linHPSDR: are we
-  matching, ahead of, or behind the known-good?
+**Agent A (concurrency)** — CONFIRM-WITH-AMENDMENTS: drop SPSC ring
+in favour of the existing mutex+cv (single primitive class on the hot
+path); producer-paced worker from mic-source callback (not
+EP2-semaphore round-trip); pin `fexchange0` block size to `in_size
+=126`; PTT teardown via condition_variable not main-thread poll; pin
+explicit teardown order.
 
-Both agents file:line everything; both answer the charter §6
-questions explicitly (will this hang TX/RX under full v0.2.x feature
-load; how do the references handle this exact problem).
+**Agent B (safety / §15.23-trap / wire-faithfulness)** —
+CONFIRM-WITH-AMENDMENTS + 1 BLOCKS-SHIP: §4.9 uslew dossier inverted
+(now corrected); init order push bandpass edges before
+`SetTXAMode`; add `mox_delay=10ms` + `ptt_out_delay=20ms`; EP2
+zero-on-no-MOX mandatory; fix the `SetTXAPanelGain1` default comment
+(WDSP default is 1.0, not 4.0); add explicit "no DC/IQ calibration in
+v0.2.0" status note.
 
-Convergence target: 2-round loop max (round 1 + round 2 if either
-agent says LOOP).  If round 2 still LOOP → operator decides whether
-to keep iterating or simplify the design.
+**Agent C (scope / methodology / forward-compat)** —
+CONFIRM-WITH-AMENDMENTS: drop `TciAudioMicSource` and
+`PcSoundcardMicSource` from TX-1 (Thetis-faithful: mic is HL2 codec
+only); add per-component bench gates (6); add the sip1 TX I/Q tap
+for v0.3 PureSignal forward-compat; defer leveler to v0.2.1 was
+operator-overridden (ship wired with UI toggle per §6.3).
 
 ---
 
 ## 8. Status
 
-**DESIGN v1 LOCKED, awaiting operator answers to §6 Qs.**
+**DESIGN v2 LOCKED 2026-05-29.  Ready for the implementing session.**
 
-Next steps:
-1. Operator answers 6.1 - 6.6
-2. (If 6.5 = bench-verify-required) operator runs the EP6 mic-slot
-   capture
-3. Spin 2 red-team agents (preferably in a fresh session for agent
-   budget)
-4. Reconcile
-5. Operator decision
-6. Implement
-7. Tier-A unit bench
-8. Hardware bench (§1)
-9. Phase-3-EXIT kill-test (§1)
+3-lens red-team round complete (§7).  All amendments folded.  All §6
+operator decisions answered.  No remaining design questions.
+
+**Explicit status notes for the implementing session:**
+- **No DC/IQ calibration in v0.2.0.**  Carrier suppression on the bench
+  (§1 metric "Carrier (DC) ≤-60 dBFS") is hardware-limited by the HL2
+  AD9866 DC trim, not software.  WDSP TXA's ALC + bp0 carrier
+  suppression at create-time are ≥60 dB by design.  v0.3 ships
+  `iqc.c`/`calcc.c` cffi for PureSignal-grade numbers.
+- **HL2+ AK4951 mic = `Hl2Ep6MicSource` only** (single class).  Future
+  PC-audio-for-TX is a VAC1-style feature, NOT another mic source.
+- **Phase-3-EXIT kill-test (CLAUDE.md §15.20/§15.24-C class) BLOCKS
+  any real-antenna keying.**  Bench: `taskkill /F` mid-TX into a
+  dummy load, scope/confirm HL2 PA bias drops within the gateware
+  watchdog window.  Until that bench passes, treat the watchdog as
+  assumption-pending, NOT established fact.
+
+**Implementing-session plan:**
+1. Fix the EP6 mic byte parser per §3.2 (nddc-aware formula).
+2. Verify EP2 C&C cases 10 & 11 byte composition per §5.4 (`line_in=0`
+   default, expose mic_boost / mic_bias / line_in_gain to Settings).
+3. **First bench gate**: with the parser fix + C&C correction, verify
+   operator's AK4951 mic comes through EP6 (per-component bench gate
+   #3 / §5.1).  This is the Q6.5 verification.
+4. Implement components 1-6 per §5 with their per-component bench
+   gates (§5.1).
+5. Wire Settings → TX panel per §9 below.
+6. End-to-end Tier-A unit bench (§1).
+7. Hardware bench (§1).
+8. Phase-3-EXIT kill-test (§1).
+9. FAIL anywhere → revert that step, diagnose with captured data,
+   no guess-fix.
+
+---
+
+## 9. Settings → TX panel UI spec
+
+All wired-and-live (no-inert-UI per CLAUDE.md §15.13/14/15
+discipline).  Each control plumbs to a real setter that takes effect
+on apply.
+
+| Control | Type | Default | Persists | Setter target |
+|---------|------|---------|----------|---------------|
+| **PHROT** | Toggle (on/off) | ON | per-mode? — TBD by impl | `SetTXAPHROTRun(ch, 0/1)` |
+| **Leveler** | Toggle (on/off) | OFF | yes | `SetTXALevelerSt(ch, 0/1)` |
+| **Bandpass low** | Slider 0..10000 Hz | 0 | per-mode | `TxChannel::setBandpass(low, high)` |
+| **Bandpass high** | Slider 0..10000 Hz | 10000 | per-mode | `TxChannel::setBandpass(low, high)` |
+| **Mic boost** | Toggle (on/off) | OFF | yes | EP2 C&C case 10 C2 bit 0 |
+| **Mic input** | Radio (mic / line-in) | mic (`line_in=0`) | yes | EP2 C&C case 10 C2 bit 1 |
+| **Mic bias** | Toggle (on/off) | OFF (electret operators turn on) | yes | EP2 C&C case 11 C1 bit (per `networkproto1.c:1091-1103`) |
+| **Line-in gain** | Slider 0..31 | 0 | yes | EP2 C&C case 11 C2 |
+| **HW-PTT input** | Toggle (on/off) | OFF (operator opt-in per §6.6) | yes | gate the EP6 `ptt_in` consumer |
+
+Bandpass tooltip: "Set lower edge ≥50 Hz to suppress 50/60 Hz mains
+coupling.  Higher edges above 4000 Hz enable ESSB audio width — verify
+your TX BW conforms to your bandplan."
+
+HW-PTT tooltip: "Forwards the HL2 EP6 foot-switch PTT input as a Lyra
+PTT source.  Default OFF.  Some HL2 units (incl. the AK4951 variant
+in some firmware revs) read non-zero at RX rest — enabling
+unconditionally on those units causes spurious TX.  Bench-verify your
+unit's ptt_in rest behavior before enabling."
