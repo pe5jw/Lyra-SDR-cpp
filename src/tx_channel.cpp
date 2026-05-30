@@ -106,6 +106,15 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     dspRate_ = dspRate;
     outRate_ = outRate;
 
+    // Pre-allocate the fexchange0 hot-path scratch.  At in_rate ==
+    // out_rate (48k → 48k for SSB voice via the 96k DSP rate),
+    // out_size equals in_size — both blocks are kInSize frames =
+    // 2*kInSize interleaved doubles.  Allocating here (single-
+    // thread main path) guarantees process() never touches the
+    // allocator on the RT path that component 4c's worker drives.
+    inBuf_.assign(static_cast<size_t>(2 * kInSize),  0.0);
+    outBuf_.assign(static_cast<size_t>(2 * kInSize), 0.0);
+
     // OpenChannel(channel, in_size, dsp_size, in_rate, dsp_rate,
     //             out_rate, type=TX(1), state=stopped(0),
     //             tdelayup, tslewup, tdelaydown, tslewdown,
@@ -259,17 +268,57 @@ void TxChannel::setPhrotOn(bool on)
 int TxChannel::process(const float *mic_block, int n,
                        std::complex<float> *iq_out)
 {
-    // WIRE-INERT in this slice — the fexchange0 call + the mic →
-    // I-slot / Q=0 / complex<float> unpack are component 4's
-    // job.  Zero the output for caller-safety (a Component-4
-    // smoke test that calls this before wiring will see silence,
-    // not garbage) and return -1 so a misuse caller has a clear
-    // sentinel to early-out on.
-    if (iq_out && n > 0) {
-        for (int i = 0; i < n; ++i) iq_out[i] = {0.0f, 0.0f};
+    // THREAD-SAFETY CONTRACT:
+    //   This method is NOT thread-safe by itself.  Component 4c
+    //   (the dedicated TX DSP worker thread) is the SOLE caller
+    //   on the RT path, and 4c coordinates against the operator-
+    //   facing setters (setMode/setBandpass/setMicGainDb/etc.,
+    //   which may be invoked from the Qt main thread).  Pattern
+    //   mirrors WdspEngine's channelMtx_ on the RX side: the
+    //   worker holds the lock across fexchange0 so a main-thread
+    //   setter cannot fire mid-DSP-frame.
+    //
+    //   For 4b, nothing calls process() yet — this body is here
+    //   for 4c to invoke.  No mutex inside process() itself; the
+    //   caller's lock is the discipline.
+    if (!opened_ || !running_ || !wdsp_) return -1;
+    if (!mic_block || !iq_out)           return -1;
+    if (n != kInSize)                    return -1;   // contract
+    const WdspApi &api = wdsp_->api();
+    if (!api.fexchange0)                 return -1;
+
+    // Build the interleaved input frame.  I = mic, Q = 0.0 — the
+    // SSB voice path takes a real-valued mic stream; the patch-
+    // panel's create-time inselect=2 routes I-from-input + zeros
+    // Q downstream regardless of what we write into the Q slot,
+    // but we explicitly zero it here for clarity + so a future
+    // SetTXAPanelSelect change can't surface as a phantom Q leak.
+    for (int i = 0; i < n; ++i) {
+        inBuf_[static_cast<size_t>(2 * i + 0)] =
+            static_cast<double>(mic_block[i]);
+        inBuf_[static_cast<size_t>(2 * i + 1)] = 0.0;
     }
-    (void)mic_block;
-    return -1;
+
+    // The DSP call.  block=1 at open() makes fexchange0 wait for
+    // the WDSP TXA chain to produce a full output block before
+    // returning — gives a deterministic in-step cadence in
+    // exchange for blocking ~one block period.  err is advisory
+    // (the RX path in WdspEngine::feedIq doesn't check it either
+    // — WDSP writes the output buffer either way; non-zero just
+    // means a transient buffer-management hiccup we can't act
+    // on at this layer).
+    fexErr_ = 0;
+    api.fexchange0(channel_, inBuf_.data(), outBuf_.data(), &fexErr_);
+
+    // Unpack interleaved (I,Q,I,Q,...) doubles → complex<float>.
+    // At in_rate == out_rate (48k → 48k), out_size == in_size so
+    // we emit exactly n complex samples 1:1 with the input.
+    for (int i = 0; i < n; ++i) {
+        iq_out[i] = std::complex<float>(
+            static_cast<float>(outBuf_[static_cast<size_t>(2 * i + 0)]),
+            static_cast<float>(outBuf_[static_cast<size_t>(2 * i + 1)]));
+    }
+    return fexErr_;
 }
 
 } // namespace lyra::dsp

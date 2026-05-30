@@ -47,6 +47,7 @@
 
 #include <complex>
 #include <utility>
+#include <vector>
 
 namespace lyra::dsp {
 
@@ -155,6 +156,13 @@ private:
     int  outRate_       = 48000;
     bool opened_        = false;
     bool running_       = false;
+    // process() hot-path scratch.  Allocated in open() at exactly
+    // 2*kInSize doubles each (interleaved I,Q frames).  NEVER
+    // resized after open() — process() must not allocate on the
+    // RT path that component 4c's MMCSS Pro Audio worker drives.
+    std::vector<double> inBuf_;
+    std::vector<double> outBuf_;
+    int                 fexErr_ = 0;
 };
 
 } // namespace lyra::dsp
