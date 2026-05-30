@@ -233,6 +233,17 @@ public:
     // worker thread every 50 ms (9600 samples at 192 kHz);
     // initial sentinel -200.0 means "no samples yet."
     double  rx1DbFs()           const { return rx1DbFs_.load(std::memory_order_relaxed); }
+    // micDbFs — RMS magnitude of the EP6 mic-byte stream (bytes
+    // [24..25] of each 26-byte slot at nddc=4 = 16-bit BE signed
+    // PCM, see design doc §3.2).  Decode-only bench instrument
+    // for the design-v2 §5.1 gate #3 (Q6.5 verification: does the
+    // AK4951 mic actually deliver samples through EP6?).  Updated
+    // every 50 ms (9600 wire mic samples at the nddc=4 192-kHz
+    // wire rate); sentinel -200.0 = "no samples yet."  Not yet
+    // routed into any DSP — TX-1 will wire this later via
+    // Hl2Ep6MicSource.  Falsifiable: plug mic, talk → dBFS rises
+    // from baseline (~-90) toward speech levels (~-30..-10).
+    double  micDbFs()           const { return micDbFs_.load(std::memory_order_relaxed); }
     quint32 rx1FreqHz()         const { return rx1FreqHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
     bool    autoLna()           const { return autoLnaEnabled_; }
@@ -597,6 +608,11 @@ private:
     // is lock-free on x86_64 so the main-thread read in the Q_PROPERTY
     // getter doesn't take a lock.
     std::atomic<double>  rx1DbFs_{-200.0};
+    // Q6.5 bench instrument — EP6 mic-byte RMS in dBFS.  Decode-
+    // only, no protocol surface change, RX/TX behaviour byte-
+    // identical (mic bytes were already in every datagram; we
+    // just read them and publish a level).  See design doc §3.2.
+    std::atomic<double>  micDbFs_{-200.0};
     // Step 4: DDC0 (RX1) receive frequency, Hz.  Read by the EP2 writer
     // each send.  Default 7.074 MHz (40m FT8) so first launch lands on
     // a known-active spot.  std::atomic<quint32> is lock-free on x86_64.

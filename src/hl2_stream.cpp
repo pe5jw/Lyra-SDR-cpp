@@ -736,6 +736,31 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
     constexpr int kRmsWindowSamples = 9600;        // 50 ms @ 192 kHz
     constexpr double kInv2Pow31      = 1.0 / 2147483648.0;
 
+    // ---- Q6.5 mic bench instrument -----------------------------
+    // Mirrors the rx1DbFs accumulator for the EP6 mic byte stream
+    // (slot bytes [24..25] at nddc=4 = 16-bit BE signed PCM, see
+    // design doc §3.2).  Decode-only: we already iterate every
+    // slot for the IQ extraction above, so reading the trailing
+    // 2 bytes is free.  Window = 9600 mic samples = 50 ms at the
+    // nddc=4 wire mic rate (~192 k mic samples/sec; the AK4951's
+    // 48 kHz codec audio is delivered repeated to fill each slot,
+    // so the wire rate equals the per-DDC sample rate).  At this
+    // accumulator scale a quiet shack reads near -90 dBFS, normal
+    // speech ~-30 to -10 dBFS, hot mic ~0 dBFS.  Operator runs
+    // with a mic plugged in, watches the periodic "mic = ..." log
+    // line below, talks → number rises = Q6.5 bench PASS.  No DSP
+    // wiring; TX-1 will hook this into Hl2Ep6MicSource later.
+    double micAcc                    = 0.0;
+    int    micAccCount               = 0;
+    constexpr int kMicWindowSamples  = 9600;       // 50 ms @ ~192 k
+    constexpr double kInv2Pow15      = 1.0 / 32768.0;
+    // Throttle the operator-visible mic-level log to ~1 Hz so it
+    // doesn't drown the safety log.  rx1 dBFS publishes 20×/sec
+    // to the QML banner; the mic instrument only needs a slower
+    // human-readable trace for the bench check.
+    int    micLogCounter             = 0;
+    constexpr int kMicLogEveryWindows = 20;        // 20 × 50 ms = ~1 s
+
     while (!stop.stop_requested()) {
         sockaddr_in from{};
         int fromLen = sizeof(from);
@@ -918,6 +943,36 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                     rx1DbFs_.store(db, std::memory_order_relaxed);
                     rmsAcc      = 0.0;
                     rmsAccCount = 0;
+                }
+
+                // Q6.5 mic bench — bytes [24..25] of this 26-byte
+                // slot at nddc=4 (per design v2 §3.2; verified vs
+                // ak4951v4 RTL + networkproto1.c).  16-bit BE
+                // signed PCM, normalized to [-1, +1).
+                const std::int16_t micRaw = static_cast<std::int16_t>(
+                    (static_cast<std::uint16_t>(sb[24]) << 8) |
+                     static_cast<std::uint16_t>(sb[25]));
+                const double micVal =
+                    static_cast<double>(micRaw) * kInv2Pow15;
+                micAcc += micVal * micVal;
+                if (++micAccCount >= kMicWindowSamples) {
+                    const double meanSqM =
+                        micAcc / static_cast<double>(kMicWindowSamples);
+                    const double micDb = (meanSqM > 0.0)
+                        ? 10.0 * std::log10(meanSqM)
+                        : -200.0;
+                    micDbFs_.store(micDb, std::memory_order_relaxed);
+                    micAcc      = 0.0;
+                    micAccCount = 0;
+                    if (++micLogCounter >= kMicLogEveryWindows) {
+                        // Use safetyLog so it's both in-session log + qInfo
+                        // (operator can see it in the dock OR in the
+                        // Windows event/console stream).  Throttled to
+                        // ~1 Hz to avoid drowning the safety log.
+                        safetyLog(QStringLiteral("Q6.5 mic bench: %1 dBFS")
+                                  .arg(micDb, 0, 'f', 1));
+                        micLogCounter = 0;
+                    }
                 }
             }
         }
