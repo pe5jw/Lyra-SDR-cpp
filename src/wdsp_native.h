@@ -193,6 +193,88 @@ using fn_SetDisplayNumAverage_t   = void (*)(int disp, int pixout, int num);
 //   mult = exp(-1 / (frame_rate * tau)),  num = frame_rate * tau.
 using fn_SetDisplayAvBackmult_t   = void (*)(int disp, int pixout,
                                              double mult);
+
+// ============================================================
+// TX-1 (design v2 §5.2): WDSP TXA cdef surface.
+// ============================================================
+// SSB voice TX requires the TXA chain setters listed below.
+// Open/Close/SetChannelState/fexchange0 are SHARED with RX
+// (already cdef'd above) — TXA channels open via OpenChannel
+// with type=1 (vs RX type=0).  Signatures verified against
+// wdsp/TXA.c + wdsp/wcpAGC.c + wdsp/iir.c on 2026-05-29.
+//
+// **DELIBERATELY OMITTED** (do NOT add):
+//  • `SetTXABandpassRun` — the §15.23 trap.  Thetis has zero
+//    call sites tree-wide; calling it toggles stale-`bp1`
+//    cascading wrong-sideband / no-output.  bp0 (the SSB
+//    sideband selector) is always-on by `create_txa` and
+//    reconfigured via `SetTXABandpassFreqs` / `SetTXAMode`
+//    only; bp1 stays compressor-aux-only.
+//  • `SetTXAPanelSelect` — `create_txa` default `inselect=2`
+//    routes I=mic + Q=0 correctly via patchpanel case-0 math;
+//    Thetis has zero call sites; calling it would only swap
+//    I/Q for balance-test mode (`copy=3`) — never wanted.
+//  • `SetTXAALCThresh` — does NOT exist.  ALC ceiling is
+//    governed solely by `SetTXAALCMaxGain`.  (Mis-listed in
+//    earlier doc drafts via confusion with RX `SetRXAAGCThresh`.)
+//
+// **Symbol-name hygiene** (Thetis pre-cdef-audit lesson, §15.18):
+//  • UPPERCASE `PHROT` (NOT `PhRot`) per wdsp/iir.c:665+.
+//  • `SetTXAPHROTCorner` (NOT `Freq`).
+//  • Run-state suffix on AGC/leveler is `St` (NOT `Run`):
+//    `SetTXAALCSt`, `SetTXALevelerSt` per wdsp/wcpAGC.c.
+// Signature-verified row-by-row against the WDSP C source
+// before this cdef block was committed — see commit message.
+
+// SSB sideband selector + mode.  Per §5.3 init order, freqs
+// MUST be pushed BEFORE the mode setter to avoid a ~2.6 ms
+// window where bp0 runs on stale defaults (TXA.c:786 calls
+// TXASetupBPFilters with whatever f_low/f_high it has).
+using fn_SetTXAMode_t           = void (*)(int channel, int mode);
+using fn_SetTXABandpassFreqs_t  = void (*)(int channel,
+                                           double low, double high);
+
+// PHROT (phase rotator) — Thetis-faithful default ON,
+// operator Settings toggle.  4-stage all-pass network that
+// flattens speech PEP-to-PAR by ~3-4 dB.  Defaults per
+// create_txa: fc=338 Hz, nstages=8, run=0; we run=1 in init.
+using fn_SetTXAPHROTRun_t       = void (*)(int channel, int run);
+using fn_SetTXAPHROTCorner_t    = void (*)(int channel, double corner);
+using fn_SetTXAPHROTNstages_t   = void (*)(int channel, int nstages);
+
+// ALC — always-on splatter protection.  attack/decay/hang are
+// **int milliseconds** per wcpAGC.c:578-610 (do NOT make these
+// double — the SetRXAAGCSlope register-class regression in
+// the Python tree per §14.9 / v0.0.9.8.1 is the canonical
+// wrong-cdef-type bug class).  MaxGain alone governs the ALC
+// ceiling (no separate Thresh; see omitted list above).
+using fn_SetTXAALCAttack_t      = void (*)(int channel, int attack_ms);
+using fn_SetTXAALCDecay_t       = void (*)(int channel, int decay_ms);
+using fn_SetTXAALCHang_t        = void (*)(int channel, int hang_ms);
+using fn_SetTXAALCMaxGain_t     = void (*)(int channel, double max_gain);
+using fn_SetTXAALCSt_t          = void (*)(int channel, int run);
+
+// Leveler — operator opt-in (default OFF per §6.3).  Ships
+// wired with a Settings UI on/off toggle.  Same int-ms
+// timing convention as ALC.  Top = max-gain ceiling.
+using fn_SetTXALevelerAttack_t  = void (*)(int channel, int attack_ms);
+using fn_SetTXALevelerDecay_t   = void (*)(int channel, int decay_ms);
+using fn_SetTXALevelerHang_t    = void (*)(int channel, int hang_ms);
+using fn_SetTXALevelerTop_t     = void (*)(int channel, double max_gain);
+using fn_SetTXALevelerSt_t      = void (*)(int channel, int run);
+
+// Panel gain — operator mic gain.  WDSP `create_panel`
+// default is gain1=1.0 (NOT 4.0 as earlier docs claimed);
+// pin explicitly for clarity + centralised operator-facing
+// trim.  Hardware preamp (`mic_boost`) is a separate path
+// via EP2 C&C case 10 C2 bit 0 (see hl2_stream.cpp).
+using fn_SetTXAPanelGain1_t     = void (*)(int channel, double gain);
+
+// TXA meter readout — PWR / SWR / MIC / ALC / etc.  Returns
+// the current level for the requested meter type.  The
+// concrete enum (TxaMeterType) lives in wdsp_engine; the
+// cdef stays untyped because WDSP exposes it as `int`.
+using fn_GetTXAMeter_t          = double (*)(int channel, int meter_type);
 } // extern "C"
 
 // Resolved function pointers.  Step 3b populates these via
@@ -258,6 +340,27 @@ struct WdspApi {
     fn_SetDisplayAverageMode_t  SetDisplayAverageMode  = nullptr;
     fn_SetDisplayNumAverage_t   SetDisplayNumAverage   = nullptr;
     fn_SetDisplayAvBackmult_t   SetDisplayAvBackmult   = nullptr;
+    // TX-1 (design v2 §5.2): WDSP TXA surface for the SSB voice
+    // modulator chain.  All nullptr until WdspNative::load() succeeds;
+    // TxChannel (component 2) reads through wdsp.api().SetTXA*.  See
+    // the typedef block above for the deliberately-omitted set.
+    fn_SetTXAMode_t           SetTXAMode           = nullptr;
+    fn_SetTXABandpassFreqs_t  SetTXABandpassFreqs  = nullptr;
+    fn_SetTXAPHROTRun_t       SetTXAPHROTRun       = nullptr;
+    fn_SetTXAPHROTCorner_t    SetTXAPHROTCorner    = nullptr;
+    fn_SetTXAPHROTNstages_t   SetTXAPHROTNstages   = nullptr;
+    fn_SetTXAALCAttack_t      SetTXAALCAttack      = nullptr;
+    fn_SetTXAALCDecay_t       SetTXAALCDecay       = nullptr;
+    fn_SetTXAALCHang_t        SetTXAALCHang        = nullptr;
+    fn_SetTXAALCMaxGain_t     SetTXAALCMaxGain     = nullptr;
+    fn_SetTXAALCSt_t          SetTXAALCSt          = nullptr;
+    fn_SetTXALevelerAttack_t  SetTXALevelerAttack  = nullptr;
+    fn_SetTXALevelerDecay_t   SetTXALevelerDecay   = nullptr;
+    fn_SetTXALevelerHang_t    SetTXALevelerHang    = nullptr;
+    fn_SetTXALevelerTop_t     SetTXALevelerTop     = nullptr;
+    fn_SetTXALevelerSt_t      SetTXALevelerSt      = nullptr;
+    fn_SetTXAPanelGain1_t     SetTXAPanelGain1     = nullptr;
+    fn_GetTXAMeter_t          GetTXAMeter          = nullptr;
 };
 
 class WdspNative : public QObject {

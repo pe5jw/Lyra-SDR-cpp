@@ -239,6 +239,26 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.SetDisplayAverageMode,  "SetDisplayAverageMode");
     resolve(api_.SetDisplayNumAverage,   "SetDisplayNumAverage");
     resolve(api_.SetDisplayAvBackmult,   "SetDisplayAvBackmult");
+    // TX-1 (design v2 §5.2): WDSP TXA surface.  See typedef block
+    // header for the deliberately-omitted symbols (SetTXABandpassRun
+    // §15.23 trap, SetTXAPanelSelect, SetTXAALCThresh-doesn't-exist).
+    resolve(api_.SetTXAMode,           "SetTXAMode");
+    resolve(api_.SetTXABandpassFreqs,  "SetTXABandpassFreqs");
+    resolve(api_.SetTXAPHROTRun,       "SetTXAPHROTRun");
+    resolve(api_.SetTXAPHROTCorner,    "SetTXAPHROTCorner");
+    resolve(api_.SetTXAPHROTNstages,   "SetTXAPHROTNstages");
+    resolve(api_.SetTXAALCAttack,      "SetTXAALCAttack");
+    resolve(api_.SetTXAALCDecay,       "SetTXAALCDecay");
+    resolve(api_.SetTXAALCHang,        "SetTXAALCHang");
+    resolve(api_.SetTXAALCMaxGain,     "SetTXAALCMaxGain");
+    resolve(api_.SetTXAALCSt,          "SetTXAALCSt");
+    resolve(api_.SetTXALevelerAttack,  "SetTXALevelerAttack");
+    resolve(api_.SetTXALevelerDecay,   "SetTXALevelerDecay");
+    resolve(api_.SetTXALevelerHang,    "SetTXALevelerHang");
+    resolve(api_.SetTXALevelerTop,     "SetTXALevelerTop");
+    resolve(api_.SetTXALevelerSt,      "SetTXALevelerSt");
+    resolve(api_.SetTXAPanelGain1,     "SetTXAPanelGain1");
+    resolve(api_.GetTXAMeter,          "GetTXAMeter");
 
     if (!missing.isEmpty()) {
         loadError_ = QStringLiteral(
