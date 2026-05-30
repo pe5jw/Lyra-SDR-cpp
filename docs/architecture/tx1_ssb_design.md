@@ -1,10 +1,11 @@
 # TX-1 SSB modulator arc — design document
 
-Status: **DESIGN v2.1 + 2026-05-30 reference-reconciliation amendments
-LOCKED — Thetis digital-mode auto-bypass folded in on top of v2.
-Components 1-4c shipped + bench-confirmed (TX path parked at state=0,
-RX byte-identical); component 5 (MoxEdgeFade) next.**
-Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + reference-reconciliation).
+Status: **DESIGN v2.1.1 + 2026-05-30 reference-reconciliation amendments
+LOCKED — Thetis digital-mode auto-bypass folded in on top of v2 +
+TX-Meter-picker entry corrected (already exists).  Components 1-4c
+shipped + bench-confirmed (TX path parked at state=0, RX byte-identical);
+component 5 (MoxEdgeFade) next.**
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
@@ -89,6 +90,28 @@ the Setup checkbox in screenshots.  Both are folded in:
 - **§9 reworked**: full Settings → TX layout cross-referenced to
   Thetis's actual Setup → Transmit tab (operator-provided
   screenshots locked the visual template).
+
+**v2.1.1 correction trail (2026-05-30 AM):**
+
+Operator (N8SDR) caught that v2.1 §9.5 wrongly listed "TX Meter
+dropdown" as future-reserved.  Code-verified: `MeterModel::Source`
+enum (`src/metermodel.h:45-56`) ships TODAY on `main` with 9
+sources, MOX-edge auto-switch (`src/metermodel.cpp:170, 130, 622`),
+and a click-to-cycle UI (`src/qml/MeterPanel.qml:97-119`).  Picker
+exists; only the ALC/MIC/COMP source VALUES are pending (blocked
+on TX DSP — wired in component 2c via `GetTXAMeter` already cdef'd
+in component 1).  v2.1.1 amendments:
+- **NEW §9.3.1**: documents the existing MeterModel picker
+  architecture + the pending ALC/MIC/COMP value-population work
+  for component 2c.
+- **§9.5 "Tune" entry corrected**: removes the "TX Meter
+  dropdown" line (it's not future work); the entry now covers
+  only the Use Drive Slider / Use Tune Slider / Use Fixed Drive
+  radio + cross-references §9.3.1.
+
+(This is the §15.28 retrospective lesson working as intended:
+operator-empirical knowledge of the existing codebase corrects
+agent inference from incomplete reads.)
 
 **2026-05-30 reference-reconciliation amendment (PM)** (folded into §5.3
 + §5.5):
@@ -1073,12 +1096,15 @@ operator-overridden (ship wired with UI toggle per §6.3).
 
 ## 8. Status
 
-**DESIGN v2.1 LOCKED 2026-05-30.  Ready for the implementing session.**
+**DESIGN v2.1.1 LOCKED 2026-05-30.  Ready for the implementing session.**
 
 3-lens red-team round complete (§7) for v2.  v2.1 adds the Thetis
 digital-mode TX-DSP auto-bypass (§6.7) + future VAC1 spec lock
 (§5.4.1) + §9 reworked against the operator's Setup screenshots.
-All §6 operator decisions answered.  No remaining design questions.
+v2.1.1 corrects the TX Meter picker entry (operator caught it —
+MeterModel already ships the picker; only the ALC/MIC/COMP source
+values are pending TX DSP per §9.3.1).  All §6 operator decisions
+answered.  No remaining design questions.
 
 **Explicit status notes for the implementing session:**
 - **No DC/IQ calibration in v0.2.0.**  Carrier suppression on the bench
@@ -1167,6 +1193,41 @@ visible: the Settings → TX toggle for each retains the operator's
 stored preference at all times (UI doesn't flip); only the live
 WDSP run-state is overridden.
 
+### 9.3.1 TX/RX Meter source picker (EXISTS today, NOT new work)
+
+**v2.1.1 correction:** the v2.1 §9.5 entry "TX Meter dropdown
+— v0.2.x" was wrong.  The MeterModel infrastructure already
+ships on the lyra-cpp `main` branch: `MeterModel::Source` enum
+(`src/metermodel.h:45-56`) with 9 sources — `RX_SMETER`, `PWR`,
+`SWR`, `PA_CURRENT`, `PA_VOLTS`, `TEMP`, `ALC`, `MIC`, `COMP` —
+plus separate per-state preferences (`rxSource_` default
+`RX_SMETER`, `txSource_` default `PWR`), MOX-edge automatic
+source-swap via the `HL2Stream::moxActiveChanged` signal
+(`src/metermodel.cpp:170, 130, 622`), and a click-to-cycle UI
+on the meter face (`src/qml/MeterPanel.qml:97-119`).
+Secondary digital readouts (`txSecondary` + `txSecondary2`,
+`metermodel.h:109,118`) round out the §15.25-style 3-line
+TX-meter layout.
+
+What's PENDING for TX-1:
+- The click-cycle list in `MeterPanel.qml:106` is currently
+  `[0, 1, 2]` (RX_SMETER, PWR, SWR).  `PA_CURRENT` / `PA_VOLTS`
+  / `TEMP` ship in the enum but aren't in the cycle list yet
+  (likely because the PA-current banner shipped first and the
+  picker shipping order didn't expand).  Expanding the list
+  is a one-line change once the operator confirms which order
+  they want.
+- `ALC` / `MIC` / `COMP` are wired in the enum but blocked on
+  TX DSP existing.  Component 2c (operator setters) will wire
+  the `GetTXAMeter(channel, meter_type)` cffi call (already
+  cdef'd in component 1, `wdsp_native.h:283`) to populate
+  these.  Once 2c lands the click-cycle list extends to
+  include them.
+
+So the TX-Meter picker is NOT TX-1 work — it's already there.
+What TX-1 adds is the values flowing into the existing 3 TX-DSP
+sources (ALC, MIC, COMP) via `GetTXAMeter`.
+
 ### 9.4 PTT section
 
 | Control | Type | Default | Persists | Setter target |
@@ -1187,9 +1248,12 @@ knows the layout slot they belong in:
 
 - **Profiles** (top-left in Thetis): TX profile picker per §15.19
   (CLAUDE.md) — v0.2.3.
-- **Tune** (TX Meter dropdown + Use Drive Slider / Use Tune Slider
-  / Use Fixed Drive radio): TX-meter source picker + tune-power
-  override knob — v0.2.x.
+- **Tune** (Use Drive Slider / Use Tune Slider / Use Fixed Drive
+  radio + the optional fixed-drive value): the tune-power
+  selection mode (operator-curated whether TUN uses the live
+  drive slider, a separate tune-only slider, or a fixed value) —
+  v0.2.x.  (Note: the **TX Meter dropdown** from Thetis's Tune
+  section is NOT here — it already exists in lyra-cpp; see §9.3.1.)
 - **Monitor** (TX AF + "Ignore Master AF Change"): hot-mic monitor
   level + AF-tracking option — v0.2.3 per §15.19.
 - **AM Carrier Level**: AM modulator carrier injection level —
