@@ -915,6 +915,17 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         constexpr int kFramesPerDatagram = 2 * 19;   // 38
         double iqScratch[2 * kFramesPerDatagram];
         int    iqIdx = 0;
+        // TX Component 3 — per-datagram decimated mic scratch.
+        // Max possible decimated count = 38 (when decimation_factor=1
+        // at 48 k wire — Lyra doesn't ship 48 k IQ today, but we size
+        // for the worst case so a future config change can't overrun).
+        float  micScratch[kFramesPerDatagram];
+        int    micIdx = 0;
+        // Snapshot the decimation factor once per datagram.  The atomic
+        // is written by setSampleRate() (main thread); reading it once
+        // up front keeps the per-slot inner loop pure scalar arithmetic.
+        const int micDecFactor = micDecimationFactor_.load(
+            std::memory_order_relaxed);
         for (int usbFrame = 0; usbFrame < 2; ++usbFrame) {
             const std::uint8_t *frame = u + (usbFrame == 0 ? 8 : 520);
             for (int slot = 0; slot < 19; ++slot) {
@@ -955,6 +966,18 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                 const double micVal =
                     static_cast<double>(micRaw) * kInv2Pow15;
                 micAcc += micVal * micVal;
+                // TX Component 3 — decimate wire-rate mic samples to
+                // 48 kHz and stage in micScratch.  Matches the C
+                // reference's `mic_decimation_count`/`mic_decimation_factor`
+                // pattern verbatim (counter persists across datagrams,
+                // resets only on rate change).  Emit only every Nth
+                // wire sample where N = factor (96k→2, 192k→4, 384k→8).
+                if (++micDecimationCount_ >= micDecFactor) {
+                    micDecimationCount_ = 0;
+                    if (micIdx < kFramesPerDatagram) {
+                        micScratch[micIdx++] = static_cast<float>(micVal);
+                    }
+                }
                 if (++micAccCount >= kMicWindowSamples) {
                     const double meanSqM =
                         micAcc / static_cast<double>(kMicWindowSamples);
@@ -980,6 +1003,13 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         // this RX worker thread (no Qt signal / no cross-thread queue).
         if (iqSink_) {
             iqSink_(iqScratch, kFramesPerDatagram);
+        }
+        // TX Component 3 — analogue of the C reference's `Inbound(inid(1,0),
+        // mic_sample_count, prn->TxReadBufp)` call at end-of-datagram.
+        // Synchronous on this RX worker thread; the consumer (Component 4
+        // worker, eventually) is responsible for being lock-free / fast.
+        if (micConsumer_ && micIdx > 0) {
+            micConsumer_(micScratch, micIdx);
         }
     }
 }
@@ -1339,15 +1369,25 @@ void HL2Stream::onTxSafetyTimeout() {
 
 void HL2Stream::setSampleRate(int hz) {
     std::uint8_t bits;
+    int micDec;
     switch (hz) {
-    case 96000:  bits = 0x01; break;
-    case 192000: bits = 0x02; break;
-    case 384000: bits = 0x03; break;
+    case 96000:  bits = 0x01; micDec = 2; break;
+    case 192000: bits = 0x02; micDec = 4; break;
+    case 384000: bits = 0x03; micDec = 8; break;
     default:     return;   // 48k excluded (EP2 cadence)
     }
     sampleRateBits_.store(bits, std::memory_order_relaxed);
-    emit logLine(QStringLiteral("IQ sample rate -> %1 kHz (wire C1)")
-                 .arg(hz / 1000));
+    // TX Component 3 — keep the mic decimation factor coherent with
+    // the new wire rate so the 48 kHz mic output stays at 48 kHz across
+    // rate switches (matches the C reference's `SetDDCRate`
+    // factor table at netInterface.c:1328-1354).  The
+    // `mic_decimation_count_` does NOT need to reset across normal rate
+    // switches — same-direction phase walk-in stabilises within one
+    // datagram; the RX-worker-thread-only counter is safe to leave alone.
+    micDecimationFactor_.store(micDec, std::memory_order_relaxed);
+    emit logLine(QStringLiteral("IQ sample rate -> %1 kHz (wire C1), "
+                                "mic dec /%2")
+                 .arg(hz / 1000).arg(micDec));
 }
 
 void HL2Stream::setFilterBoardEnabled(bool on) {

@@ -304,6 +304,21 @@ public:
         iqSink_ = std::move(sink);
     }
 
+    // TX Component 3 — register a consumer for decimated mic samples.
+    // Called ONCE per EP6 datagram from the RX worker thread with a
+    // block of `n` mono float32 samples at 48 kHz (already decimated
+    // from the wire mic rate by the same factor the C reference's
+    // `mic_decimation_factor` table picks via the current DDC0 rate:
+    // 96 k → /2, 192 k → /4, 384 k → /8).  Sample range [-1, +1).
+    // Same threading contract as setIqSink — must be set before open()
+    // spawns the worker; not changed while running.  Wired by the
+    // Hl2Ep6MicSource shim; the consumer the operator-facing TX DSP
+    // worker (Component 4) registers will be a producer-side push into
+    // the SPSC ring `fexchange0` drains.
+    void setMicConsumer(std::function<void(const float *, int)> cb) {
+        micConsumer_ = std::move(cb);
+    }
+
     // Step 5: RX audio out via the HL2 onboard codec (AK4951).  The DSP
     // engine pushes decoded 48 kHz stereo int16 here (from the RX worker
     // thread, inline after fexchange0); the EP2 writer thread drains 126
@@ -721,6 +736,16 @@ private:
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
     // read on the RX worker thread.  Default-empty = no DSP wired.
     std::function<void(const double *, int)> iqSink_;
+    // TX Component 3 — mic-byte forwarder.  micConsumer_ is set
+    // ONCE pre-open() (same model as iqSink_); RX-worker-thread-only
+    // access during the run.  micDecimationFactor_ tracks the current
+    // wire-rate-derived divisor (the source's `mic_decimation_factor`):
+    // initial 4 = the 192 kHz default; setSampleRate() updates it.
+    // micDecimationCount_ persists across datagrams (per the source's
+    // `mic_decimation_count`), reset only on a rate change.
+    std::function<void(const float *, int)> micConsumer_;
+    std::atomic<int>     micDecimationFactor_{4};  // 192k default → /4
+    int                  micDecimationCount_ = 0;  // RX worker only
     // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).
     // Producer = RX worker (pushAudio, via the DSP engine); consumer =
     // EP2 TX writer thread (drains 126 frames/datagram).  audioMtx_
