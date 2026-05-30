@@ -1,9 +1,10 @@
 # TX-1 SSB modulator arc — design document
 
-Status: **DESIGN v2 + 2026-05-30 reference-reconciliation amendments.
+Status: **DESIGN v2.1 + 2026-05-30 reference-reconciliation amendments
+LOCKED — Thetis digital-mode auto-bypass folded in on top of v2.
 Components 1-4c shipped + bench-confirmed (TX path parked at state=0,
 RX byte-identical); component 5 (MoxEdgeFade) next.**
-Date: 2026-05-29 (v2 lock) / 2026-05-30 (reference-reconciliation).
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + reference-reconciliation).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
@@ -69,7 +70,27 @@ expose at this lifecycle stage.
   panel-gain comment fix, DC/IQ-cal status note).
 - v0.3 PureSignal sip1 tap added (§5.8).
 
-**2026-05-30 reference-reconciliation amendment** (folded into §5.3
+**v2.1 amendment trail (2026-05-30 AM):**
+
+Operator (N8SDR) caught two Thetis digital-mode TX behaviors that
+were not in v2.  A focused source-verification agent confirmed both
+in `console.cs` + `setup.designer.cs`; operator visually confirmed
+the Setup checkbox in screenshots.  Both are folded in:
+- **§6.3 (Leveler) + §6.4 (PHROT)**: digital-mode auto-OFF behavior
+  added per Thetis `dmssTurnOffSettings` (`console.cs:44094-44105`).
+- **NEW §5.4.1**: future VAC1 feature spec locks the "Enable for
+  Digital modes, Disable for all others" checkbox + the
+  PTT/SPACE/MOX-override-VAC options per Thetis
+  `chkAudioVACAutoEnable` (`setup.designer.cs:28915-28935`).
+- **NEW §6.7 (v0.2.1 anchor)**: every TX-DSP block landing in v0.2.1
+  (EQ / Combinator / Tube-plate / formant boost / sibilance / DX
+  cut-through / de-esser / auto-AGC / CESSB) gets the same
+  auto-OFF-on-digital treatment by default.
+- **§9 reworked**: full Settings → TX layout cross-referenced to
+  Thetis's actual Setup → Transmit tab (operator-provided
+  screenshots locked the visual template).
+
+**2026-05-30 reference-reconciliation amendment (PM)** (folded into §5.3
 + §5.5):
 - `OpenChannel` parameters corrected to reference values:
   `in_size=64` (was 126), `dsp_size=4096` (was 2048),
@@ -653,6 +674,90 @@ the AK4951 input accordingly — no AK4951 I²C side-channel needed
 anywhere in the Thetis tree; HL2 gateware initializes the AK4951
 autonomously at bitstream init).
 
+### 5.4.1 Future VAC1 TX-input bridge (v2.1 spec lock — NOT in TX-1)
+
+Per §5.4 v2: PC audio for TX is a future milestone (v0.2.3 or v0.3
+alongside digital-mode workflow).  This subsection LOCKS the spec
+now so the implementing session (when it lands) has zero design
+work to do.  Pattern verified against Thetis Setup → Audio → VAC1
+tab (operator-provided screenshots 2026-05-30 + agent source audit
+of `setup.designer.cs:28901-28935`, `console.cs:13464-13530`,
+`ChannelMaster/ivac.c:1-200`).
+
+**Architecture (Thetis-faithful):**
+
+- ONE feature, ONE toggle (Settings → Audio → VAC1 tab):
+  `enable_vac1` checkbox — when ON, the VAC1 ring-buffer audio
+  feeds the TX chain INSTEAD of the AK4951 mic input.  Operator-
+  driven, mode-independent.
+- WDSP `rmatchV` (cffi) bridges PC sample rate ↔ 48 kHz wire
+  rate, both directions (mic-INPUT VAC→TX, RX-OUTPUT TX→VAC).
+- Used for digital-mode software (WSJT-X / FLDigi / DM780 /
+  fldigi / JS8 / etc.) AND for standard-HL2 operators who lack
+  a codec mic and route a PC USB mic through VAC.  ONE feature,
+  TWO use cases.
+
+**Settings → Audio → VAC1 panel layout** (mirrors Thetis exactly,
+operator-screenshot-template):
+
+| Control | Type | Default | Maps to |
+|---------|------|---------|---------|
+| **Enable VAC 1** | Toggle | OFF | Master enable for the VAC bridge |
+| **Driver** | Dropdown (MME / WASAPI / WDM-KS / DirectSound / ASIO) | system default | Audio backend select |
+| **Input** | Dropdown (Line 1, Line 2, …) | system default | PC audio device the digital app *outputs* to |
+| **Output** | Dropdown | system default | PC audio device that *receives* RX audio from Lyra |
+| **Buffer Size** | Dropdown (256 / 512 / 1024 / 2048 / 4096) | 2048 | rmatchV ring depth |
+| **Sample Rate** | Dropdown (44100 / 48000 / 96000 / 192000) | 48000 | PC-side rate; rmatchV resamples |
+| **Mono/Stereo** | Dropdown (Mono / Stereo) | Stereo | PC-side channel count |
+| **Gain RX (dB)** | Spinbox −60..+20 | 0 | Pre-VAC RX-audio scale (TX→VAC path) |
+| **Gain TX (dB)** | Spinbox −60..+20 | 0 | Post-VAC TX-audio scale (VAC→TX path) |
+| **Direct I/Q → Output to VAC** | Toggle | OFF | Send raw IQ instead of demodulated audio (advanced, for IQ recording) |
+| **Buffer Latency RingBuffer In/Out (ms)** | Spinbox 1..200 | 20/20 | rmatchV PI loop targets |
+| **Buffer Latency PortAudio In/Out (ms)** | Spinbox 1..500 | 120/120 | Host-API buffer targets |
+
+**Auto-enable group** (the operator-flagged checkbox + the locked
+v2.1 anchor):
+
+| Control | Type | Default | Behavior |
+|---------|------|---------|----------|
+| **Enable for Digital modes, Disable for all others** | Toggle | **OFF** (operator opt-in) | On entry to DIGU/DIGL/DRM: if this is checked AND VAC1 is currently DISABLED, auto-enable VAC1 + remember it was auto-enabled.  On exit to a non-digital mode: if VAC1 was auto-enabled by this code path, auto-disable it.  Operator's manual ON/OFF of VAC1 is preserved across the round-trip (never overwritten if they manually flipped it during the digital mode).  Maps to Thetis `chkAudioVACAutoEnable` (`setup.designer.cs:28915-28935`, `console.cs:34930-34979`). |
+
+**VAC-override group** (PTT/SPACE/MOX bypass for phone use over an
+active VAC — Thetis-faithful per the operator's screenshot):
+
+| Control | Type | Default | Behavior |
+|---------|------|---------|----------|
+| **Allow PTT to override/bypass VAC for Phone** | Toggle | ON (Thetis default) | When VAC is ON and operator keys via hardware PTT, route MIC IN (AK4951 codec) instead of VAC1 input for the duration of the keydown.  Mic comes back to VAC on keyup.  Maps to Thetis `chkVACAllowBypass` (`console.cs:26034-26045`, `Audio.cs:540-554`, `ivac.c:682-686`). |
+| **Allow SPACE to override/bypass VAC for Phone** | Toggle | OFF | Same but for spacebar keying (UI MOX equivalent). |
+| **Allow MOX to override/bypass VAC for Phone** | Toggle | OFF | Same but for Radio.set_mox() programmatic keying (CAT/TCI/automation). |
+| **VOX uses MIC instead of VAC** | Toggle | OFF | VOX (voice-activated TX) keys off the AK4951 mic level, not the VAC input.  v0.2.3 alongside the VOX feature itself. |
+| **Mute will mute VAC** | Toggle | OFF | Operator's main-output mute also mutes the VAC1 RX→VAC output path. |
+
+**Implementation notes for the future commit:**
+- WDSP `rmatchV` cdefs land in the cdef loader (mirror of the
+  component-1 §5.2 work for the TX chain).
+- One new Lyra-cpp file: `vac1_bridge.{h,cpp}` — owns the
+  rmatchV instances + the PortAudio in/out streams + the
+  override-VAC FSM.
+- Settings UI: new tab `Settings → Audio → VAC1` per the layout
+  table above.  All controls wired-and-live (no inert UI per
+  CLAUDE.md §15.13/14/15).
+- Mode-change hook: extend the `isDigitalMode(mode)` helper
+  from §6.7 — on the entry/exit edge, the VAC1 auto-enable
+  checkbox is the trigger.
+
+**Out of scope for this v2.1 spec** (capture later as future
+work):
+- VAC2 second-channel bridge (operator may want it for
+  routing audio to a logger separately from a digital-mode
+  app; landing alongside VAC1 is reasonable).
+- TCI audio_stream as a separate TX input source — this is
+  actually a different feature class: TCI's audio_stream is
+  a network protocol surface, not a PortAudio bridge.  It
+  lands as a SEPARATE setting, parallel to but distinct from
+  VAC1.  Same auto-enable-for-digital pattern likely
+  appropriate.
+
 ### 5.5 TX DSP worker (component 4) — AMENDED for concurrency
 
 Dedicated thread (NOT folded into the RX DSP worker, NOT inlined into
@@ -829,13 +934,101 @@ verify on operator's specific unit before any production wiring.
 |---|---|--------|
 | **6.1** | Mic auto-switch on DIGU/DIGL → TCI? | **NONE — DELETED from TX-1 scope.**  Thetis-faithful: mic is always-on, mode change never auto-switches audio routing (`console.cs:35370-35398` SetRX1Mode → `SetDigiMode(1, dmssTurnOffSettings)` touches DEXP/TXEQ/Leveler/etc.; zero VAC/routing touches).  Future PC-audio-for-TX is a VAC1-style feature, not a mic source — operator-toggled, mode-independent. |
 | **6.2** | Bandpass edges operator-tunable? | **YES, default 0–10000 Hz** (operator-curated, supports ESSB).  Settings → TX exposes low/high sliders.  Tooltip notes "set ≥50 Hz to suppress 50/60 Hz mains coupling" but default stays 0 (operator's call).  Persisted per-mode. |
-| **6.3** | Leveler ship in TX-1? | **YES, wired with a Settings UI on/off toggle, default OFF.**  Plumb the cdefs + setter; UI toggle in Settings → TX panel.  Testers can flip it; the toggle keeps it from being inert UI. |
-| **6.4** | PHROT default ON? | **YES, default ON, with a Settings UI on/off toggle.**  Thetis-faithful adoption (~3-4 dB PEP/PAR win flattens speech peaks); operator can disable via Settings → TX. |
+| **6.3** | Leveler ship in TX-1? | **YES, wired with a Settings UI on/off toggle, default OFF.**  Plumb the cdefs + setter; UI toggle in Settings → TX panel.  Testers can flip it; the toggle keeps it from being inert UI.  **v2.1: digital-mode auto-OFF** per §6.7 — operator's chosen ON/OFF is snapshotted on entry to DIGU/DIGL/DRM, forced OFF for the duration, restored on exit to a non-digital mode. |
+| **6.4** | PHROT default ON? | **YES, default ON, with a Settings UI on/off toggle.**  Thetis-faithful adoption (~3-4 dB PEP/PAR win flattens speech peaks); operator can disable via Settings → TX.  **v2.1: digital-mode auto-OFF** per §6.7 — operator's chosen ON/OFF is snapshotted on entry to DIGU/DIGL/DRM, forced OFF for the duration, restored on exit. |
 | **6.5** | AK4951 I²C mic-route side-channel needed? | **NO.**  Thetis does ZERO AK4951-specific I²C — the HL2 gateware initializes the codec autonomously at FPGA bitstream init.  Operator confirms his HL2+ has worked with Thetis + AK4951 mic for years.  Mic routing is via standard EP2 C&C cases 10 & 11 (`mic_boost`, `line_in`, `mic_bias`, `mic_ptt`, `line_in_gain`).  The earlier "no audio on bytes 24-25" bench result was a Lyra-cpp parser bug — bytes 24-25 are not the mic-sample offset at any nddc value (it's the §3.2 nddc-aware formula).  Implementing session fixes the parser + verifies the C&C bytes per §5.4. |
 | **6.6** | HW-PTT foot-switch fold-in? | **YES, default OFF, operator opt-in toggle in Settings → TX.**  Edge-detect + 10 ms debounce in the forwarder.  Operator uses a foot switch on his station and will enable it; default-OFF protects everyone else from the `ff5f128` regression class (HW-PTT-in mis-read at RX rest → phantom-TX).  Bench-verify operator's HL2+ ptt_in rest-state before production wiring (still applies). |
 
 **No remaining open questions for the implementing session.  Design
-v2 is fully locked.**
+v2.1 is fully locked.**
+
+### 6.7 Digital-mode TX-DSP auto-bypass (v2.1, locked 2026-05-30)
+
+Operator-flagged via Setup-screenshot evidence; Thetis source-
+verified at `console.cs:44094-44105` (`dmssTurnOffSettings` switch
+case) + `console.cs:35370-35398` (`SetRX1DSPMode` digital-mode
+entry/exit).
+
+**The Thetis behavior (mirror this exactly):** when the operator
+selects a digital mode (DIGU/DIGL/DRM) on RX1, Thetis automatically
+forces OFF every speech-shaping TX-DSP block — because digital
+signal protocols (WSJT-X, FT8, FT4, PSK, RTTY, etc.) need clean,
+linear audio passing through the modulator chain without speech-
+optimised processing destroying signal integrity.  The auto-OFF is
+**hard-wired** (no operator toggle to disable the auto-bypass —
+that's how Thetis ships).  The operator's pre-digital ON/OFF for
+each block is snapshotted on entry (`dmssStore`,
+`console.cs:44106-44117`) and restored on exit to a non-digital
+mode (`dmssRecall`, `console.cs:44118-44136`).
+
+**Blocks Thetis auto-OFFs on digital entry:**
+- DEXP (Noise Gate)
+- TX EQ
+- TX Leveler
+- CPDR (Compander)
+- RX EQ
+- ANF (auto notch)
+- NR (all four flavors)
+- CESSB (Controlled Envelope SSB)
+- CFC (Continuous Frequency Compression — 5-band speech processor)
+- Phase Rotator (PHROT)
+
+**Blocks NOT in Thetis's bypass list (stay as-operator-set):**
+- ALC (always-on splatter protection)
+- bp0 (always-on SSB sideband selector)
+
+**Lyra-cpp implementation rule (LOCKED):** every TX-DSP block with
+an operator-facing ON/OFF that affects voice-modulator linearity
+gets the same `dmssTurnOffSettings`-equivalent treatment:
+
+1. **Snapshot** the operator's chosen ON/OFF state on entering
+   DIGU/DIGL/DRM.
+2. **Force OFF** for the duration of the digital mode.
+3. **Restore** the snapshot on exit to a non-digital mode.
+4. **Hard-wired** — no Settings toggle to disable the auto-bypass.
+   The operator's per-block ON/OFF is preserved across the digital
+   mode round-trip; they don't lose their pre-digital configuration.
+5. The auto-OFF runs ONCE per mode-change edge (entry / exit), not
+   per-block on every keydown — the Settings ON/OFF UI reads the
+   operator's stored preference at all times; only the live
+   `SetTXA*(ch, 0)` calls flip on the mode edge.
+
+**Lyra-cpp blocks subject to this rule** (current + future):
+
+| Block | Lands in | Setter |
+|-------|----------|--------|
+| **PHROT** | TX-1 (this doc, §6.4) | `SetTXAPHROTRun` |
+| **Leveler** | TX-1 (this doc, §6.3) | `SetTXALevelerSt` |
+| **TX EQ** (3 or 5-band parametric per §15.19) | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **Combinator** (multiband compressor) | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **Tube Plating** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **Formant boost** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **Sibilance / consonant emphasis** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **DX cut-through** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **De-esser** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **Auto-AGC on mic** | v0.2.1 | TBD (Lyra-native pre-processor) |
+| **CESSB Overshoot Control** | v0.2.1 (CLAUDE.md §4.1) | `SetTXAosctrlRun` |
+| **CFC** (5-band speech processor) | NOT planned (per §15.19 operator preference — Combinator replaces) | n/a |
+| **Compander / CPDR** | NOT planned (per §15.19 operator preference) | n/a |
+| **DEXP / Noise Gate** | v0.2.2 (§15.19) | `SetTXAamsq*` exposure |
+| **Phase Rotator (PHROT)** | TX-1 (this doc, §6.4) | `SetTXAPHROTRun` |
+| **ALC** | TX-1 (always-on per §4.4 + Thetis list) | NOT bypassed — splatter protection |
+| **bp0** (SSB sideband selector) | TX-1 (always-on per §4.2 + Thetis) | NOT bypassed — required for SSB modulation |
+
+**Mode-change hook (architectural):** the existing mode setter (in
+`Radio` / `WdspEngine`) gains a `bool isDigitalMode(mode)` helper
++ on the entry edge to digital iterates every block in the table
+above calling its setter with the OFF value, snapshotting the
+prior; on the exit edge restores the snapshot.  The
+`PrevDigitalMode` snapshot dataclass mirrors Thetis's
+`DigiMode rx1dm` struct (`console.cs:54723-54733`).
+
+**v2.1 implementing-session note:** this is a SEPARATE commit
+ladder from the core TX-1 component work (2a → 2b → 2c → 2d).
+It lands as the LAST step of TX-1 (after component 6 EP2 packer +
+the §9 Settings UI), because it needs every TX-DSP block's setter
+already wired so the snapshot loop has something to iterate.  Pin
+this in the implementing-session plan in §8.
 
 ---
 
@@ -880,10 +1073,12 @@ operator-overridden (ship wired with UI toggle per §6.3).
 
 ## 8. Status
 
-**DESIGN v2 LOCKED 2026-05-29.  Ready for the implementing session.**
+**DESIGN v2.1 LOCKED 2026-05-30.  Ready for the implementing session.**
 
-3-lens red-team round complete (§7).  All amendments folded.  All §6
-operator decisions answered.  No remaining design questions.
+3-lens red-team round complete (§7) for v2.  v2.1 adds the Thetis
+digital-mode TX-DSP auto-bypass (§6.7) + future VAC1 spec lock
+(§5.4.1) + §9 reworked against the operator's Setup screenshots.
+All §6 operator decisions answered.  No remaining design questions.
 
 **Explicit status notes for the implementing session:**
 - **No DC/IQ calibration in v0.2.0.**  Carrier suppression on the bench
@@ -909,38 +1104,109 @@ operator decisions answered.  No remaining design questions.
 4. Implement components 1-6 per §5 with their per-component bench
    gates (§5.1).
 5. Wire Settings → TX panel per §9 below.
-6. End-to-end Tier-A unit bench (§1).
-7. Hardware bench (§1).
-8. Phase-3-EXIT kill-test (§1).
-9. FAIL anywhere → revert that step, diagnose with captured data,
+6. **Wire the §6.7 digital-mode auto-bypass** (new in v2.1) — once
+   every TX-DSP block's setter is alive (PHROT + Leveler today; EQ
+   / Combinator / etc. in v0.2.1), implement the `isDigitalMode()`
+   helper + snapshot/restore on mode-change edges per §6.7.  LAST
+   step of TX-1 because it depends on all the block setters
+   existing.
+7. End-to-end Tier-A unit bench (§1).
+8. Hardware bench (§1).
+9. Phase-3-EXIT kill-test (§1).
+10. FAIL anywhere → revert that step, diagnose with captured data,
    no guess-fix.
 
 ---
 
 ## 9. Settings → TX panel UI spec
 
+**v2.1: layout template = Thetis Setup → Transmit tab** (operator-
+provided screenshots 2026-05-30).  Lyra-cpp's Settings → TX panel
+mirrors the Thetis visual organisation so operators bringing prior
+Thetis muscle memory find the controls where they expect.
+
 All wired-and-live (no-inert-UI per CLAUDE.md §15.13/14/15
 discipline).  Each control plumbs to a real setter that takes effect
 on apply.
 
+### 9.1 Mic section (mirrors Thetis Setup → Transmit → Mic)
+
 | Control | Type | Default | Persists | Setter target |
 |---------|------|---------|----------|---------------|
-| **PHROT** | Toggle (on/off) | ON | per-mode? — TBD by impl | `SetTXAPHROTRun(ch, 0/1)` |
-| **Leveler** | Toggle (on/off) | OFF | yes | `SetTXALevelerSt(ch, 0/1)` |
-| **Bandpass low** | Slider 0..10000 Hz | 0 | per-mode | `TxChannel::setBandpass(low, high)` |
-| **Bandpass high** | Slider 0..10000 Hz | 10000 | per-mode | `TxChannel::setBandpass(low, high)` |
-| **Mic boost** | Toggle (on/off) | OFF | yes | EP2 C&C case 10 C2 bit 0 |
-| **Mic input** | Radio (mic / line-in) | mic (`line_in=0`) | yes | EP2 C&C case 10 C2 bit 1 |
-| **Mic bias** | Toggle (on/off) | OFF (electret operators turn on) | yes | EP2 C&C case 11 C1 bit (per `networkproto1.c:1091-1103`) |
+| **Source** | Radio (Mic In / Line In) | Mic In (`line_in=0`) | yes | EP2 C&C case 10 C2 bit 1 |
+| **Gain Max (dB)** | Spinbox −90..+40 | +40 (Thetis default) | yes | Operator-facing scale ceiling for mic-gain slider |
+| **Gain Min (dB)** | Spinbox −90..+40 | −90 (Thetis default) | yes | Operator-facing scale floor for mic-gain slider |
+| **20 dB Mic Boost** | Toggle | OFF | yes | EP2 C&C case 10 C2 bit 0 (`mic_boost`) |
+| **Mic Bias** | Toggle (electret) | OFF | yes | EP2 C&C case 11 C1 bit (per `networkproto1.c:1091-1103`) |
 | **Line-in gain** | Slider 0..31 | 0 | yes | EP2 C&C case 11 C2 |
-| **HW-PTT input** | Toggle (on/off) | OFF (operator opt-in per §6.6) | yes | gate the EP6 `ptt_in` consumer |
+
+### 9.2 Transmit Filter (bandpass) section
+
+| Control | Type | Default | Persists | Setter target |
+|---------|------|---------|----------|---------------|
+| **Low (Hz)** | Slider/Spinbox 0..10000 | 0 | per-mode | `TxChannel::setBandpass(low, high)` |
+| **High (Hz)** | Slider/Spinbox 0..10000 | 10000 | per-mode | `TxChannel::setBandpass(low, high)` |
 
 Bandpass tooltip: "Set lower edge ≥50 Hz to suppress 50/60 Hz mains
 coupling.  Higher edges above 4000 Hz enable ESSB audio width — verify
 your TX BW conforms to your bandplan."
+
+### 9.3 TX-DSP toggles section
+
+| Control | Type | Default | Persists | Setter target | Digital-mode (§6.7) |
+|---------|------|---------|----------|---------------|---------------------|
+| **PHROT** | Toggle (on/off) | ON | per-mode? — TBD by impl | `SetTXAPHROTRun(ch, 0/1)` | **Auto-OFF** on DIGU/DIGL/DRM |
+| **Leveler** | Toggle (on/off) | OFF | yes | `SetTXALevelerSt(ch, 0/1)` | **Auto-OFF** on DIGU/DIGL/DRM |
+| **ALC** | (read-only indicator; always ON) | ON | hard-wired | `SetTXAALCSt(ch, 1)` at init | **NOT bypassed** — splatter protection |
+
+§6.7 auto-bypass behavior: per the locked v2.1 rule, when the
+operator selects DIGU/DIGL/DRM, both PHROT and Leveler are auto-OFF
+for the duration of the digital mode; their pre-digital ON/OFF
+state is snapshotted on entry and restored on exit.  Operator-
+visible: the Settings → TX toggle for each retains the operator's
+stored preference at all times (UI doesn't flip); only the live
+WDSP run-state is overridden.
+
+### 9.4 PTT section
+
+| Control | Type | Default | Persists | Setter target |
+|---------|------|---------|----------|---------------|
+| **HW-PTT input** | Toggle (on/off) | OFF (operator opt-in per §6.6) | yes | gate the EP6 `ptt_in` consumer |
 
 HW-PTT tooltip: "Forwards the HL2 EP6 foot-switch PTT input as a Lyra
 PTT source.  Default OFF.  Some HL2 units (incl. the AK4951 variant
 in some firmware revs) read non-zero at RX rest — enabling
 unconditionally on those units causes spurious TX.  Bench-verify your
 unit's ptt_in rest behavior before enabling."
+
+### 9.5 Future sections (reserved, NOT in TX-1 scope)
+
+The Thetis Setup → Transmit tab also has these sections that Lyra-
+cpp will need eventually.  Reserved here so the implementing session
+knows the layout slot they belong in:
+
+- **Profiles** (top-left in Thetis): TX profile picker per §15.19
+  (CLAUDE.md) — v0.2.3.
+- **Tune** (TX Meter dropdown + Use Drive Slider / Use Tune Slider
+  / Use Fixed Drive radio): TX-meter source picker + tune-power
+  override knob — v0.2.x.
+- **Monitor** (TX AF + "Ignore Master AF Change"): hot-mic monitor
+  level + AF-tracking option — v0.2.3 per §15.19.
+- **AM Carrier Level**: AM modulator carrier injection level —
+  v0.2.2 (CW + AM + FM).
+- **External TX Inhibit** ("Update with TX Inhibit state" /
+  "Reversed logic"): operator-facing controls for an external
+  Inhibit input that gates TX (relay-protect on external SDR/scope
+  hardware) — v0.2.x.
+- **Speech Processor → CESSB Overshoot Control**: TX CESSB toggle
+  — v0.2.1 (`SetTXAosctrlRun`).
+- **Pulsed Tune** (Pulse Freq / Duty / Ramp / Window readout):
+  pulsed TX-tune mode for amp tuning — v0.2.x.
+- **Profile-restore checkboxes** ("Restore VAC1/VAC2 device details
+  from TX Profile", "Restore PA profile from TX Profile",
+  "Auto Save TX Profile…", "Highlight TX Profile Save Items"):
+  TX profile interaction policy — v0.2.3 alongside the profile
+  picker itself.
+
+The §5.4.1 VAC1 panel ships under Settings → Audio → VAC1 (separate
+tab from Settings → TX), per Thetis layout convention.
