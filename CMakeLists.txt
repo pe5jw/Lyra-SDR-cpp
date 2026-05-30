@@ -59,6 +59,8 @@ qt_add_executable(lyra
     src/wdsp_native.cpp
     src/wdsp_engine.h
     src/wdsp_engine.cpp
+    src/tx_channel.h
+    src/tx_channel.cpp
     src/iqstft.h
     src/iqstft.cpp
     src/capturedprofile.h
