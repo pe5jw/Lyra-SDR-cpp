@@ -42,7 +42,8 @@ constexpr int    kHistory       = 90;     // ~4.5 s trail
 
 constexpr auto kKeyStyle    = "meter/style";
 constexpr auto kKeyCal      = "meter/calDb";
-constexpr auto kKeyPeakHold = "meter/peakHoldMs";
+constexpr auto kKeyPeakHold    = "meter/peakHoldMs";
+constexpr auto kKeyPwrPeakHold = "meter/pwrPeakHoldMs";
 constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
 constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
 constexpr auto kKeyRxSource  = "meter/rxSource"; // operator's RX-state preference
@@ -105,6 +106,15 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     peakHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPeakHold), 800).toInt(), 100, 5000);
     peakHoldTicks_ = std::max(1, peakHoldMs_ / kTickMs);
+    // Task #45-class — operator-tunable PWR meter MAX-window hold time
+    // (separate from peakHoldMs_ above, which controls the small peak-
+    // cap indicator's hang/decay; THIS one controls the main needle
+    // hold via the sliding-window MAX detector's window length).
+    pwrPeakHoldMs_ = std::clamp(
+        s.value(QString::fromLatin1(kKeyPwrPeakHold), 3000).toInt(),
+        100, 10000);
+    pwrWinSamples_ = std::clamp(pwrPeakHoldMs_ / kTickMs,
+                                 1, kPwrWindowSamplesMax);
     maxPeakEnabled_ = s.value(QString::fromLatin1(kKeyMaxOn), true).toBool();
     maxHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyMaxHold), 3000).toInt(), 500, 60000);
@@ -263,6 +273,24 @@ void MeterModel::setPeakHoldMs(int ms) {
     peakHoldTicks_ = std::max(1, peakHoldMs_ / kTickMs);
     QSettings().setValue(QString::fromLatin1(kKeyPeakHold), peakHoldMs_);
     emit peakHoldChanged();
+}
+
+// Task #45-class — operator-tunable PWR meter MAX-window hold time.
+// Live-apply: the new sample count takes effect on the next computePwr
+// tick.  Buffer slots beyond the new pwrWinSamples_ become irrelevant
+// (the scan + wraparound use pwrWinSamples_) — they'll naturally
+// stop influencing the displayed value within one full window cycle
+// even without an explicit reset.  pwrWinIdx_ is wrapped down if it
+// would exceed the new range so the next write lands in a valid slot.
+void MeterModel::setPwrPeakHoldMs(int ms) {
+    ms = std::clamp(ms, 100, 10000);
+    if (ms == pwrPeakHoldMs_) return;
+    pwrPeakHoldMs_ = ms;
+    pwrWinSamples_ = std::clamp(pwrPeakHoldMs_ / kTickMs,
+                                 1, kPwrWindowSamplesMax);
+    if (pwrWinIdx_ >= pwrWinSamples_) pwrWinIdx_ = 0;
+    QSettings().setValue(QString::fromLatin1(kKeyPwrPeakHold), pwrPeakHoldMs_);
+    emit pwrPeakHoldMsChanged();
 }
 
 void MeterModel::setMaxPeakEnabled(bool on) {
@@ -811,9 +839,9 @@ void MeterModel::computePwr() {
     // see prior peaks fading off.  Only the NEEDLE-driving value
     // (level_) changes from IIR-smoothed to MAX-of-window.
     pwrWinHist_[pwrWinIdx_] = w;
-    pwrWinIdx_ = (pwrWinIdx_ + 1) % kPwrWindowSamples;
+    pwrWinIdx_ = (pwrWinIdx_ + 1) % pwrWinSamples_;
     double windowMax = 0.0;
-    for (int i = 0; i < kPwrWindowSamples; ++i) {
+    for (int i = 0; i < pwrWinSamples_; ++i) {
         if (pwrWinHist_[i] > windowMax) windowMax = pwrWinHist_[i];
     }
     // Keep dispDbm_ updated for the dbmText_/secondary-readout path

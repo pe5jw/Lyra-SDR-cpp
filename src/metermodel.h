@@ -86,6 +86,27 @@ private:
     // (operator-tunable in Settings → Meter; persisted).
     Q_PROPERTY(int peakHoldMs READ peakHoldMs WRITE setPeakHoldMs
                NOTIFY peakHoldChanged)
+    // PWR meter MAX-window hold time (operator bench 2026-05-31 PM:
+    // "still seems SLOW to react" after the initial 500 ms -> 3 s
+    // bump — operator wants live tunability so they can dial in their
+    // preferred ballistic).  Distinct from peakHoldMs above: that one
+    // controls the small peak-cap indicator's hang/decay; THIS one
+    // controls the MAIN needle / fill-bar hold via the sliding-window
+    // MAX detector's window length.  Live-apply (no restart).
+    // Persisted.  Range 100-10000 ms.  Default 3000 ms.
+    //
+    // Honest scope note: the HARDWARE attack characteristic of the HL2
+    // forward-power sensing chain (directional coupler analog
+    // integrator + gateware ADC sample rate) is what it is — no
+    // software fix can shorten the rise time from key-down to peak.
+    // Operator-observed "slow to react" is partly the HW ramp curve
+    // (the needle visibly sweeps UP through ADC samples as they
+    // climb toward the peak); the MAX detector itself is instant-
+    // attack at the software layer.  This knob only changes how LONG
+    // the captured peak holds before decaying — not how fast it
+    // climbs to peak in the first place.
+    Q_PROPERTY(int pwrPeakHoldMs READ pwrPeakHoldMs WRITE setPwrPeakHoldMs
+               NOTIFY pwrPeakHoldMsChanged)
     // PWR calibration knobs (task #34).  pwrRatedMaxW sets where the
     // red zone starts on the meter face (== operator's expected max
     // forward power: ~5 W for a bare HL2+ on-board PA, ~100 W or more
@@ -176,6 +197,8 @@ public:
     void setCalDb(double d);
     int  peakHoldMs() const { return peakHoldMs_; }
     void setPeakHoldMs(int ms);
+    int  pwrPeakHoldMs() const { return pwrPeakHoldMs_; }
+    void setPwrPeakHoldMs(int ms);
     int  source() const { return int(source_); }
     void setSource(int s);
     int  rxSource() const { return int(rxSource_); }
@@ -201,6 +224,7 @@ signals:
     void styleChanged();
     void calChanged();
     void peakHoldChanged();
+    void pwrPeakHoldMsChanged();
     void maxPeakCfgChanged();
     void sourceChanged();
     void rxSourceChanged();
@@ -305,9 +329,19 @@ private:
     // prefers tighter hold (closer to verified-reference 500 ms)
     // OR wants live tuning, a follow-up adds a Settings → Meter
     // "PWR Peak Hold" spin box mapped to this constant.
-    static constexpr int kPwrWindowSamples = 60;
-    double pwrWinHist_[kPwrWindowSamples] = {};   // zero-initialized
+    // Fixed-max buffer sized for the worst-case hold time (10 sec at
+    // 50 ms tick = 200 slots).  Operator setter (setPwrPeakHoldMs)
+    // updates pwrWinSamples_ to the CURRENT active count; only the
+    // first pwrWinSamples_ entries are scanned/written.  Avoids
+    // dynamic alloc on hold-time changes; cost is 200×8 B = 1.6 KB
+    // member overhead, fine.
+    static constexpr int kPwrWindowSamplesMax = 200;   // 10 sec at 50ms
+    double pwrWinHist_[kPwrWindowSamplesMax] = {};     // zero-initialized
     int    pwrWinIdx_ = 0;
+    int    pwrWinSamples_ = 60;   // active count, derived from
+                                  // pwrPeakHoldMs_ / kTickMs.  Default
+                                  // 60 = 3 sec; updated by the setter.
+    int    pwrPeakHoldMs_ = 3000;
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
     double noiseLevel_ = 0.0;  // floor position on the scale (0..1)
     QString snrText_ = QStringLiteral("—");

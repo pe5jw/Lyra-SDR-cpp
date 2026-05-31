@@ -1651,6 +1651,38 @@ QWidget *SettingsDialog::buildMeterTab() {
             [this](int v) { if (meter_) meter_->setPeakHoldMs(v); });
     form->addRow(tr("Meter peak-hold:"), hold);
 
+    // PWR meter sliding-window MAX hold time — operator-tunable per
+    // the 2026-05-31 PM bench feedback ("still seems SLOW to react" /
+    // "noticed hang time" after the initial 500 ms -> 3 s bump).
+    // Distinct from the peak-hold spin box above: that controls the
+    // small peak-cap indicator's hang/decay; THIS controls the MAIN
+    // needle / fill-bar hold via the MAX detector's window length.
+    // The HW attack characteristic (HL2 directional coupler + ADC
+    // integrator) is what it is — this knob ONLY changes how long
+    // the captured peak holds before decaying, not how fast it
+    // climbs to peak in the first place.
+    auto *pwrHold = new QSpinBox(page);
+    pwrHold->setRange(100, 10000);
+    pwrHold->setSingleStep(100);
+    pwrHold->setSuffix(tr(" ms"));
+    pwrHold->setValue(meter_ ? meter_->pwrPeakHoldMs() : 3000);
+    pwrHold->setToolTip(tr(
+        "PWR meter peak hold — how long the main needle holds a "
+        "captured peak before decaying.  Sliding-window MAX detector: "
+        "needle jumps to peak instantly and holds at that value for "
+        "this duration before the slot wraps and the next-highest "
+        "sample takes over.  Default 3000 ms (3 sec, Bird/Palstar-"
+        "PEAK-style ballistic).  Lower for snappier decay (e.g. 500 "
+        "ms matches verified-reference default); higher for analog-"
+        "needle-style long park.\n\n"
+        "Note: this does NOT change how fast the needle CLIMBS to "
+        "peak — that's limited by the HL2 forward-power ADC's "
+        "hardware response time (directional coupler analog "
+        "integrator), which no software knob can shorten."));
+    connect(pwrHold, &QSpinBox::valueChanged, this,
+            [this](int v) { if (meter_) meter_->setPwrPeakHoldMs(v); });
+    form->addRow(tr("PWR peak-hold:"), pwrHold);
+
     // Max-hold "high-water mark" — a second, slower marker that latches
     // the highest level seen and eases down gently (distinct red marker
     // on the Arc / Bar).  Enable + its own dwell time.
