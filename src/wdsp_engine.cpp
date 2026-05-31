@@ -39,7 +39,7 @@ namespace {
 // upstream WDSP source.  Do NOT change without re-verifying — these
 // map directly onto WDSP's RXA mode + wcpAGC mode switch statements.
 constexpr int    kRxaModeUSB = 1;   // RxaMode.USB
-// wcpAGC mode enum (Thetis AGCMode): FIXD=0 LONG=1 SLOW=2 MED=3 FAST=4.
+// wcpAGC mode enum (WDSP AGC modes): FIXD=0 LONG=1 SLOW=2 MED=3 FAST=4.
 // "off" maps to FIXD (fixed gain) — the operator-facing AGC-off.
 constexpr int    kAgcModeOff  = 0;  // AgcMode.FIXD (fixed gain)
 constexpr int    kAgcModeSlow = 2;  // AgcMode.SLOW
@@ -60,7 +60,7 @@ constexpr double kAgcThreshDbFs    = -100.0;
 constexpr double kAgcThreshFftSize = 4096.0;
 
 // Step 5: WDSP spectral analyzer (panadapter) config.  Values mirror
-// Thetis's HL2 RX analyzer (fft 4096, window 4, kaiser 14).  pixels is
+// the standard HL2 RX analyzer setup (fft 4096, window 4, kaiser 14).  pixels is
 // fixed (the panadapter scales it to its on-screen width).  overlap =
 // fft - feed-block so one FFT advances per IQ feed (smooth).  Detector
 // peak + recursive time-average for a stable display.  All tunable on
@@ -80,7 +80,7 @@ constexpr int    kAnFrameRate   = 60;      // display fps — drives overlap,
                                            // Higher = more responsive trace
                                            // (tau holds the smoothing TIME
                                            // constant).  Operator-adjustable
-                                           // control to come (Thetis-style).
+                                           // control to come.
 constexpr int    kAnDetector    = 0;       // 0 = peak
 // Time-averaging OFF by default (reference ships AverageOn=false) — a
 // LIVE trace, no smoothing lag, so it stays in sync with the audio.
@@ -419,8 +419,8 @@ bool WdspEngine::openRx1()
 
     // Binaural OFF (arg 0) => WDSP panel.copy=1 => I copied to Q at the
     // panel output => mono on BOTH L/R regardless of any upstream stage
-    // that zeroed Q (e.g. EMNR).  This is the Thetis default + the
-    // AM/FM/DSB right-channel-silent fix (CLAUDE.md §14.10).
+    // that zeroed Q (e.g. EMNR).  This is the verified-correct default
+    // + the AM/FM/DSB right-channel-silent fix (CLAUDE.md §14.10).
     api.SetRXAPanelBinaural(channel_, 0);
 
     // Demod mode + passband from the operator's current selection
@@ -446,7 +446,7 @@ bool WdspEngine::openRx1()
                             static_cast<double>(cfg_.inRate));
     }
     // Panel (post-DSP makeup) gain = the operator's AF gain (dB → linear;
-    // 0 dB = unity = Thetis default).
+    // 0 dB = unity = WDSP create_panel default).
     if (api.SetRXAPanelGain1) {
         api.SetRXAPanelGain1(channel_, std::pow(10.0, afGainDb_ / 20.0));
     }

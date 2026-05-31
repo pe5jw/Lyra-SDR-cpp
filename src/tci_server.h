@@ -1,7 +1,7 @@
-// Lyra — TCI server (Transceiver Control Interface, EESDR Expert
-// Electronics public spec v1.9 / v2.0).  Clean-room implementation
-// against the published spec (D:\sdrprojects\TCI Protocol.pdf) and the
-// command surface Thetis exposes — no EESDR/Thetis code is used.
+// Lyra — TCI server (Transceiver Control Interface, public spec
+// v1.9 / v2.0).  Clean-room implementation against the published
+// spec (D:\sdrprojects\TCI Protocol.pdf) and the command surface
+// the working reference exposes — no external code is used.
 //
 // Lets logging / cluster software (SDRLogger+, Log4OM, WSJT-X, …)
 // control and read Lyra over a WebSocket.  Lyra is RX-only today, so

@@ -53,7 +53,7 @@ class CapturedProfile;
 class NoiseReducer;
 
 // Per-channel sample rates + buffer size.  Defaults match the working
-// Thetis/Lyra HL2 setup: 1024-frame 192 kHz IQ in, 4096-sample
+// HL2 setup: 1024-frame 192 kHz IQ in, 4096-sample
 // internal DSP buffer at 48 kHz, 48 kHz audio out.
 struct RxConfig {
     int    inSize     = 1024;     // frames per fexchange0 call
@@ -130,7 +130,7 @@ class WdspEngine : public QObject {
     Q_PROPERTY(double passbandHighHz READ passbandHighHz NOTIFY passbandChanged)
     // CW tone pitch (Hz).  In CW the displayed VFO is the signal CARRIER;
     // the DDS is offset by ±pitch so the carrier lands in the pitch-
-    // centred filter (old-Lyra / Thetis convention).
+    // centred filter (standard HF SDR convention).
     Q_PROPERTY(int cwPitchHz READ cwPitchHz WRITE setCwPitchHz
                NOTIFY cwPitchChanged)
     // VFO − DDS, Hz: +pitch in CWU, −pitch in CWL, 0 otherwise.  The
@@ -234,7 +234,7 @@ public:
     }
 
     // In-passband RX signal strength (WDSP RXA_S_PK), in WDSP's raw
-    // dBm-ish units — the same source Thetis reads for its S-meter.
+    // dBm-ish units — the standard WDSP S-meter source.
     // Returns -200 when the RX channel isn't running.  Safe to call
     // from the UI thread (just reads WDSP's latest stored meter value).
     double sMeterDbm() const;
@@ -270,7 +270,7 @@ public:
     // to the audio chain is also fed to the analyzer; copySpectrum
     // pulls the latest display-width dB array (called from the
     // panadapter's render thread — WDSP serialises feed-vs-read
-    // internally, as Thetis relies on).  Plain C++ (not Q_INVOKABLE):
+    // internally, as standard SDR apps rely on).  Plain C++ (not Q_INVOKABLE):
     // the panadapter is a C++ QQuickPaintedItem, not QML JS.
     int  spectrumPixelCount() const;
     int  copySpectrum(float *dst, int maxN);

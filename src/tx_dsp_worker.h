@@ -19,22 +19,25 @@
 //
 // THE LOCKED OPERATIONAL POSTURE (design v2 §5.5, source-verified):
 //
-//   * Constructed AT STARTUP UNCONDITIONALLY.  Matches the C
-//     reference's create_xmtr + cm_main pump pattern: TX DSP
-//     machinery is created at boot and runs CONTINUOUSLY.  Output
-//     is gated only at the wire-pack stage (Component 6's `if
-//     (!mox) memset(outIQbufp, 0, ...)` at the EP2 packer — the
-//     §15.25-locked behaviour, networkproto1.c:1227 analogue).
-//     This trades ~1-3% sustained CPU for zero latency on first
-//     key-down — the operator-locked design call.
+//   * Constructed AT STARTUP UNCONDITIONALLY.  Matches the
+//     working C-source reference's TX-create + wire-thread pump
+//     pattern: TX DSP machinery is created at boot and runs
+//     CONTINUOUSLY.  Output is gated only at the wire-pack stage
+//     (Component 6's `if (!mox) memset(outIQbufp, 0, ...)` at the
+//     EP2 packer — the §15.25-locked behaviour; see
+//     docs/architecture/tx1_ssb_design.md for the wire-protocol
+//     C-reference cite).  This trades ~1-3% sustained CPU for
+//     zero latency on first key-down — the operator-locked design
+//     call.
 //
 //   * Worker thread runs at MMCSS "Pro Audio" priority 2 — lifts
 //     it out of the normal scheduler so a Qt main-thread paint
 //     storm or a GC pause cannot starve the fexchange0 cadence.
-//     Same primitive the C reference's cm_main uses.
+//     Same primitive the working C-source reference's wire-thread
+//     pump uses.
 //
 //   * TxChannel's own channelMtx_ is the lifecycle guard
-//     (analogue of the C reference's per-stream pcm->update).
+//     (analogue of the C-reference per-stream update lock).
 //     WDSP's INTERNAL csDSP/csEXCH separately serialises
 //     fexchange0 against operator setters — we don't replicate
 //     that lock here.

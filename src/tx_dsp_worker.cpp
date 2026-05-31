@@ -94,8 +94,9 @@ void TxDspWorker::workerLoop()
 {
 #ifdef _WIN32
     // MMCSS "Pro Audio" registration — lifts this thread out of
-    // the normal scheduler.  Same primitive the C reference's
-    // cm_main pump uses (AvSetMmThreadCharacteristics +
+    // the normal scheduler.  Same primitive the working C-source
+    // reference's wire-thread pump uses
+    // (AvSetMmThreadCharacteristics +
     // AvSetMmThreadPriority(hTask, 2)).  Fallback to
     // THREAD_PRIORITY_HIGHEST if registration fails (rare;
     // happens on some Windows Server SKUs without the

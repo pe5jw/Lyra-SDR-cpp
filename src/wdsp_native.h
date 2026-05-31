@@ -72,7 +72,7 @@ using fn_SetRXAAGCSlope_t      = void (*)(int channel, int slope);
 using fn_SetRXAPanelGain1_t    = void (*)(int channel, double gain);
 // RX meter read-back: GetRXAMeter(channel, meterType) → value.
 // meterType 0 = RXA_S_PK (peak signal strength, dBm-ish), 1 = RXA_S_AV.
-// The in-passband S-meter source Thetis reads for signal strength.
+// The in-passband S-meter source standard HF SDR apps read.
 using fn_GetRXAMeter_t         = double (*)(int channel, int meterType);
 // RX noise reduction (EMNR / "NR2") — the operator NR-mode surface.
 // gainMethod 0..3 = Lyra NR Mode 1..4 (Wiener+SPP / Wiener / MMSE-LSA /
@@ -156,10 +156,11 @@ using fn_SetRXABiQuadFreq_t      = void (*)(int channel, double freq);
 using fn_SetRXABiQuadBandwidth_t = void (*)(int channel, double bw);
 using fn_SetRXABiQuadGain_t      = void (*)(int channel, double gain);
 
-// Step 5: WDSP spectral analyzer (panadapter source).  Same pipeline
-// Thetis uses — XCreateAnalyzer + SetAnalyzer to configure, Spectrum0
-// to feed IQ (interleaved doubles, like fexchange0), GetPixels to
-// retrieve a display-width dB array.  Signatures verified against
+// Step 5: WDSP spectral analyzer (panadapter source).  Standard
+// WDSP analyzer pipeline — XCreateAnalyzer + SetAnalyzer to
+// configure, Spectrum0 to feed IQ (interleaved doubles, like
+// fexchange0), GetPixels to retrieve a display-width dB array.
+// Signatures verified against
 // wdsp/analyzer.h.  GetPixels writes FLOAT pixels (dOUTREAL=float);
 // Spectrum0 takes DOUBLE IQ.  Do NOT swap those.
 using fn_XCreateAnalyzer_t        = void (*)(int disp, int *success,
@@ -204,21 +205,22 @@ using fn_SetDisplayAvBackmult_t   = void (*)(int disp, int pixout,
 // wdsp/TXA.c + wdsp/wcpAGC.c + wdsp/iir.c on 2026-05-29.
 //
 // **DELIBERATELY OMITTED** (do NOT add):
-//  • `SetTXABandpassRun` — the §15.23 trap.  Thetis has zero
-//    call sites tree-wide; calling it toggles stale-`bp1`
-//    cascading wrong-sideband / no-output.  bp0 (the SSB
-//    sideband selector) is always-on by `create_txa` and
-//    reconfigured via `SetTXABandpassFreqs` / `SetTXAMode`
-//    only; bp1 stays compressor-aux-only.
+//  • `SetTXABandpassRun` — the §15.23 trap.  Verified zero
+//    call sites tree-wide in the working C-source reference;
+//    calling it toggles stale-`bp1` cascading wrong-sideband /
+//    no-output.  bp0 (the SSB sideband selector) is always-on
+//    by `create_txa` and reconfigured via `SetTXABandpassFreqs`
+//    / `SetTXAMode` only; bp1 stays compressor-aux-only.
 //  • `SetTXAPanelSelect` — `create_txa` default `inselect=2`
 //    routes I=mic + Q=0 correctly via patchpanel case-0 math;
-//    Thetis has zero call sites; calling it would only swap
-//    I/Q for balance-test mode (`copy=3`) — never wanted.
+//    verified zero call sites in the C-source reference;
+//    calling it would only swap I/Q for balance-test mode
+//    (`copy=3`) — never wanted.
 //  • `SetTXAALCThresh` — does NOT exist.  ALC ceiling is
 //    governed solely by `SetTXAALCMaxGain`.  (Mis-listed in
 //    earlier doc drafts via confusion with RX `SetRXAAGCThresh`.)
 //
-// **Symbol-name hygiene** (Thetis pre-cdef-audit lesson, §15.18):
+// **Symbol-name hygiene** (pre-cdef-audit lesson, §15.18):
 //  • UPPERCASE `PHROT` (NOT `PhRot`) per wdsp/iir.c:665+.
 //  • `SetTXAPHROTCorner` (NOT `Freq`).
 //  • Run-state suffix on AGC/leveler is `St` (NOT `Run`):
@@ -234,7 +236,8 @@ using fn_SetTXAMode_t           = void (*)(int channel, int mode);
 using fn_SetTXABandpassFreqs_t  = void (*)(int channel,
                                            double low, double high);
 
-// PHROT (phase rotator) — Thetis-faithful default ON,
+// PHROT (phase rotator) — default ON (matches the verified
+// working reference),
 // operator Settings toggle.  4-stage all-pass network that
 // flattens speech PEP-to-PAR by ~3-4 dB.  Defaults per
 // create_txa: fc=338 Hz, nstages=8, run=0; we run=1 in init.

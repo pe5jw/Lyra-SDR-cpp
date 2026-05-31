@@ -75,8 +75,9 @@ QByteArray buildEp2KeepaliveTemplate() {
 
     // USB frame 2 (offset 520): frame-2 C&C = RX1 (DDC0) frequency
     // (Step 4 tuning).  C0 = addr 2 << 1 = 0x04 (MOX off); C1..C4 =
-    // 32-bit freq in Hz, big-endian (reference: networkproto1.c
-    // case 2).  The writer overwrites C1..C4 from rx1FreqHz_ every
+    // 32-bit freq in Hz, big-endian (per the HL2 wire-protocol
+    // reference, case 2; see hl2_stream.h header doc for cites).
+    // The writer overwrites C1..C4 from rx1FreqHz_ every
     // send; the 7.074 MHz default here just makes the template sane
     // pre-first-send.  Frame-0 (USB frame 1 above) still carries the
     // duplex bit every datagram, which is what lets these RX-freq
@@ -185,9 +186,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                    kLnaMinDb, kLnaMaxDb),
         std::memory_order_relaxed);
     // Auto-LNA: restore enable + undo + hold time.  Fresh-install
-    // defaults match the operator's Thetis station export
-    // (chkAutoStepAttenuator=True, chkAutoAttUndoRX1=True,
-    // nudAutoAttHoldRX1=4): Auto ON / undo ON / 4 s hold.
+    // defaults match the operator's working station export
+    // (auto-step-att=True, auto-att-undo-RX1=True,
+    // hold-RX1=4): Auto ON / undo ON / 4 s hold.
     autoLnaEnabled_ = QSettings().value(QStringLiteral("rx/autoLna"), true).toBool();
     autoLnaUndo_    = QSettings().value(QStringLiteral("rx/autoLnaUndo"), true).toBool();
     autoLnaHoldSec_ = std::clamp(
@@ -720,7 +721,8 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
     // 5 Hz QML stats tick always sees the most recent ~50 ms RMS.
     //
     // Wire format for each 26-byte slot (nddc=4, gateware default
-    // verified ak4951v4 RTL + Thetis networkproto1.c:527-541):
+    // verified against ak4951v4 RTL + the HL2 wire-protocol C
+    // reference; see hl2_stream.h header doc for file:line cites):
     //   bytes [0..2]   DDC0 I — 24-bit signed BE
     //   bytes [3..5]   DDC0 Q — 24-bit signed BE
     //   bytes [6..23]  DDC1/2/3 I/Q  — Step 5 RX2 work, ignored here
@@ -853,7 +855,7 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         // frames (C0 bit 7).  Store the bit by DIRECT OVERWRITE (most-
         // recent address-0 frame wins) — NOT a window-OR — so the
         // 400 ms tick samples it instantaneously, exactly like the
-        // reference HL2 read loop (networkproto1.c:502).
+        // HL2 wire-protocol read-loop reference.
         // The address field (C0 bits [7:3] = c0 & 0xF8) rotates through
         // 0x00 / 0x08 / 0x10 / 0x18.  Address 0 carries ADC0 overload
         // (C1 bit 0); the others carry 12-bit ADC telemetry as two
@@ -958,8 +960,8 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
 
                 // Q6.5 mic bench — bytes [24..25] of this 26-byte
                 // slot at nddc=4 (per design v2 §3.2; verified vs
-                // ak4951v4 RTL + networkproto1.c).  16-bit BE
-                // signed PCM, normalized to [-1, +1).
+                // ak4951v4 RTL + the HL2 wire-protocol reference).
+                // 16-bit BE signed PCM, normalized to [-1, +1).
                 const std::int16_t micRaw = static_cast<std::int16_t>(
                     (static_cast<std::uint16_t>(sb[24]) << 8) |
                      static_cast<std::uint16_t>(sb[25]));
@@ -1049,8 +1051,9 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
 // ---------------------------------------------------------------
 // TX-0b: RF-transmit state setters (foundation; WIRE-INERT).
 // Each clamps + stores the HL2+ byte encoding for its TX C&C frame
-// (Thetis WriteMainLoop_HL2 + ak4951v4 gateware decode; see
-// hl2_stream.h for the per-register map + cites).  NONE are read by the EP2 emission loop
+// (per the HL2 wire-protocol C reference + ak4951v4 gateware decode;
+// see hl2_stream.h header doc for the per-register map + file:line
+// cites).  NONE are read by the EP2 emission loop
 // yet, so at MOX=0 / PA-off the datagram stays byte-identical to RX.
 // A later TX phase wires these into the C&C round-robin under MOX gating.
 
@@ -1160,7 +1163,8 @@ void HL2Stream::setTuneEnabled(bool on) {
 // moxActive_ for the UI-visible "on the air" truth.  Re-entrancy
 // is handled by re-reading requestedMox_ at every timer boundary —
 // an operator cancel mid-keydown unwinds cleanly, a re-key during
-// the keyup space window collapses to stay TX (Thetis pattern).
+// the keyup space window collapses to stay TX (standard HF-rig
+// PTT-FSM pattern).
 
 void HL2Stream::requestMox(bool on) {
     requestedMox_ = on;
@@ -1418,8 +1422,8 @@ void HL2Stream::setFilterBoardEnabled(bool on) {
 // Pure function (no allocs, no locks); writes 5 bytes to `out[0..4]`
 // = C0..C4.  C0's bit 0 carries MOX (caller snapshots it once per
 // datagram so both USB frames are coherent).  See header doc block
-// for the verified slot map + cites (Thetis WriteMainLoop_HL2 +
-// ak4951v4 gateware control.v).
+// for the verified slot map + cites (HL2 wire-protocol C reference
+// + ak4951v4 gateware control.v).
 //
 // WIRE-IDENTICAL TO PRE-TX-0c AT MOX=0 / PA-OFF:
 //   * MOX bit clears (mox=false) -> C0 bit 0 = 0 as before.
@@ -1447,7 +1451,8 @@ void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
     }
     case 1: {
         // 0x02 TX freq (BE u32) — cases 1/5/6 all load tx[0].frequency
-        // per networkproto1.c; slots 5/6 below mirror it on DDC2/DDC3.
+        // per the HL2 wire-protocol reference; slots 5/6 below mirror
+        // it on DDC2/DDC3.
         setAddr(0x02);
         const quint32 f = txFreqHz_.load(std::memory_order_relaxed);
         out[1] = static_cast<std::uint8_t>((f >> 24) & 0xFF);
@@ -1477,8 +1482,8 @@ void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
         break;
     }
     case 4: {
-        // 0x1C TX step-att — C3 = (31 - db) & 0x1F (HL2 inverted range;
-        // networkproto1.c:1019 + console.cs:10658 SetTxAttenData(31-x)).
+        // 0x1C TX step-att — C3 = (31 - db) & 0x1F (HL2 inverted
+        // range; see hl2_stream.h header doc for wire-protocol cite).
         setAddr(0x1C);
         const int db = txStepAttnDb_.load(std::memory_order_relaxed);
         out[3] = static_cast<std::uint8_t>((31 - db) & 0x1F);
@@ -1643,8 +1648,9 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
             "EP2 keepalive engaging @380 Hz"));
     }, Qt::QueuedConnection);
 
-    // EP2 writer pacing — Thetis's sendProtocol1Samples model: sends are
-    // driven by AUDIO PRODUCTION, not a free-running PC timer.  RX audio
+    // EP2 writer pacing — the verified HL2 wire-protocol reference's
+    // sendProtocol1Samples model: sends are driven by AUDIO
+    // PRODUCTION, not a free-running PC timer.  RX audio
     // is decoded from the HL2's own IQ (its crystal), so sending one
     // datagram per 126-frame chunk AS IT'S PRODUCED locks the EP2 cadence
     // to the HL2 clock — single crystal, no two-clock drift, no codec
@@ -1653,7 +1659,8 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
     // keepalive maintains the gateware's EP2 watchdog.
     //
     // HIGHEST priority + a 1 ms scheduler tick keep send jitter low
-    // (Thetis runs this thread at MMCSS "Pro Audio").
+    // (the verified HL2 wire-protocol reference runs this thread at
+    // MMCSS "Pro Audio").
     ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     ::timeBeginPeriod(1);
 
@@ -1671,8 +1678,8 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         pktBytes[7] = static_cast<std::uint8_t>( seq        & 0xFF);
 
         // TX-0c-emit: HL2 19-slot round-robin C&C cycle, one slot per
-        // USB frame (two slots per datagram).  Matches Thetis
-        // WriteMainLoop_HL2 cadence (1 slot per USB frame, ~760/s on EP2);
+        // USB frame (two slots per datagram).  Matches the verified
+        // HL2 wire-protocol cadence (1 slot per USB frame, ~760/s on EP2);
         // each slot revisits at ~40 Hz, plenty responsive for VFO/LNA/PA
         // state.  ccIdx_ is single-thread owned by the EP2 writer thread
         // (no atomic).  MOX is snapshotted once per datagram so both USB
@@ -1714,7 +1721,7 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // Tune carrier = zero-beat at LO (DC injection): a constant
         // value in the I channel produces a pure carrier exactly at
         // TX freq on the air, no audio offset.  Matches the universal
-        // HF-rig TUN convention — Thetis, every commercial HF rig,
+        // HF-rig TUN convention — every commercial HF rig,
         // SSB/CW/DIGU all expect "tune carrier at the dial".  Because
         // there's no audio component there's no sideband to choose,
         // so mode (USB / LSB / CWL / etc.) doesn't matter — the carrier

@@ -5,7 +5,7 @@
 // combo for wheel resolution, double-click-to-type entry, and a CW
 // Pitch control (shown in CW modes).
 //
-// CW carrier convention (old Lyra / Thetis): the LED shows the signal
+// CW carrier convention (standard HF SDR practice): the LED shows the signal
 // CARRIER (VFO); the hardware DDS is offset by ±pitch so the carrier
 // lands in the pitch-centred filter.  VFO = DDS + WdspEngine.markerOffsetHz,
 // so we display centerHz+offset and write (vfo − offset) to the wire.

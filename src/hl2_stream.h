@@ -110,14 +110,14 @@ class HL2Stream : public QObject {
     // 0x14 register (C4 = 0x40 | ((dB+12)&0x3F)), rotated into the EP2
     // C&C cadence at ~20 Hz.  Persisted.
     Q_PROPERTY(int lnaGainDb READ lnaGainDb WRITE setLnaGainDb NOTIFY lnaGainChanged)
-    // Auto-LNA — overload-triggered gain protection (Thetis-style).
+    // Auto-LNA — overload-triggered gain protection (standard HF SDR pattern).
     // When on, sustained ADC overload backs the LNA off 3 dB; when the
     // band is clear it creeps gain back up 1 dB per hold interval,
     // riding the overload edge.  Roams the full −12…+48 range
     // independently of the manual set point; auto adjustments are NOT
     // persisted (the manual slider value remains the stored set point,
     // restored when Auto is turned off).  Fresh-install default ON
-    // (matches the operator's Thetis chkAutoStepAttenuator=True).
+    // (matches the operator's working-station config).
     Q_PROPERTY(bool autoLna       READ autoLna        WRITE setAutoLna        NOTIFY autoLnaChanged)
     Q_PROPERTY(bool autoLnaUndo   READ autoLnaUndo    WRITE setAutoLnaUndo    NOTIFY autoLnaChanged)
     Q_PROPERTY(int  autoLnaHoldSec READ autoLnaHoldSec WRITE setAutoLnaHoldSec NOTIFY autoLnaChanged)
@@ -178,8 +178,8 @@ class HL2Stream : public QObject {
     // so wire values 0/16/32/.../255 are the meaningful endpoints (the
     // bottom 4 bits are ignored).  Operator-facing UI uses 0..100 %;
     // raw 0..255 is the on-wire value (UI converts via
-    // c1 = round(255 * pct/100), matching the Thetis-faithful flat
-    // map — per-band calibration is a later polish item, not first-RF).
+    // c1 = round(255 * pct/100), matching the verified flat map —
+    // per-band calibration is a later polish item, not first-RF).
     // At drive=0 the wire is byte-identical to TX-0c-pa-debug B-pa
     // regardless of PA enable / MOX: zero amplitude on the DAC = no
     // carrier.  Persisted: tx/driveLevel.  NOT defensively cleared on
@@ -195,7 +195,7 @@ class HL2Stream : public QObject {
     // injection in I produces a pure carrier at LO exactly (no audio
     // offset, no sideband), which lands the on-air carrier at the
     // operator's dial freq — the universal HF-rig TUN convention
-    // (Thetis, every commercial rig).  This is the host-streamed
+    // (every commercial HF rig).  This is the host-streamed
     // carrier the HL2+ ak4951v4 gateware requires for any RF (the
     // gateware has NO internal tune carrier, so bias + MOX + drive
     // without a non-zero TX I/Q stream = zero RF).  Drive % scales
@@ -298,7 +298,8 @@ public:
     // The sink runs SYNCHRONOUSLY on the RX worker thread — it is a
     // plain std::function, NOT a Qt signal, so there is no cross-thread
     // queueing on the hot path (the DSP engine consumes it inline,
-    // mirroring how Thetis's cmaster pump calls fexchange0).  Must be
+    // mirroring how the working C-source reference's wire-thread pump
+    // calls fexchange0).  Must be
     // set before open() spawns the worker; not changed while running.
     void setIqSink(std::function<void(const double *, int)> sink) {
         iqSink_ = std::move(sink);
@@ -384,8 +385,11 @@ public slots:
     // ---- TX-state C&C registers (TX-0b foundation) -----------------
     // Operator / PTT-FSM RF-transmit state.  Each setter clamps + stores
     // an atomic holding the HL2+ byte encoding for its TX C&C frame,
-    // verified against Thetis WriteMainLoop_HL2 (networkproto1.c) +
-    // the ak4951v4 gateware decode (control.v) — NOT prior Lyra TX code.
+    // verified against the HL2 wire-protocol C reference's HL2
+    // main-loop emitter (WriteMainLoop_HL2) + the ak4951v4
+    // gateware decode (control.v).  See
+    // docs/architecture/tx1_ssb_design.md for the C-reference
+    // file:line cites (provenance home per the no-attribution rule).
     // These are the SINGLE source of truth for the byte layout; a later
     // TX phase wires them into the EP2 C&C round-robin under MOX gating.
     //
@@ -394,17 +398,17 @@ public slots:
     // thread-safe (lock-free atomics on x86_64).
     //
     //   setMox(on)            RF transmit active -> C0 bit 0
-    //                         (networkproto1.c:896 C0=XmitBit)
+    //                         (C-reference: C0=XmitBit)
     //   setTxFreqHz(hz)       TX NCO -> C0 0x02/0x08/0x0a (BE, all three
-    //                         carry tx[0].frequency: networkproto1.c
-    //                         cases 1/5/6)
-    //   setTxDriveLevel(0..255)  drive DAC; C0 0x12 C1 (networkproto1.c:
-    //                            1078; gateware uses top 4 bits -> 16 steps)
+    //                         carry tx[0].frequency: C-reference cases
+    //                         1/5/6)
+    //   setTxDriveLevel(0..255)  drive DAC; C0 0x12 C1 (C-reference;
+    //                            gateware uses top 4 bits -> 16 steps)
     //   setTxStepAttnDb(0..31)   C0 0x1C C3 = (31 - db) & 0x1F  (HL2's
-    //                            inverted range: networkproto1.c:1019 +
-    //                            console.cs:10658 SetTxAttenData(31-x))
+    //                            inverted range; C-reference uses the
+    //                            same SetTxAttenData(31-x) form)
     //   setPaEnabled(on)      onboard PA -> C0 0x12 C2 bit 3 (0x08),
-    //                         active-high (networkproto1.c:1079 ApolloTuner
+    //                         active-high (C-reference ApolloTuner
     //                         =0x8 netInterface.c:581; control.v:213
     //                         pa_enable<=cmd_data[19]).  NB: C2 bit 7
     //                         (0x80, VNA) must stay clear or the PA won't
@@ -453,8 +457,8 @@ public slots:
     //
     // Re-entrancy: requestMox() is the SINGLE funnel; calling it during
     // a transition just updates the intent and the sequencer reads it
-    // at each step (Thetis-style re-key collapse, cancel mid-keydown,
-    // etc., all work).
+    // at each step (standard HF-rig re-key collapse, cancel mid-
+    // keydown, etc., all work).
     void requestMox(bool on);
 
     // ---- TX-0c-pa-debug: host-side safety timeout ----------------
@@ -569,7 +573,8 @@ private:
     // are lock-free atomics).  `mox` is snapshotted once per datagram by
     // the caller so both USB frames of one datagram carry coherent MOX.
     //
-    // Slot map (19-slot HL2 round-robin, matches Thetis WriteMainLoop_HL2):
+    // Slot map (19-slot HL2 round-robin, matches the verified HL2
+    // wire-protocol C reference's HL2 main-loop emitter):
     //   0  0x00 general   C1=rate C2=OC C3=0 C4=0x1C (duplex|nddc=4)
     //   1  0x02 TX freq   BE u32 (cases 1/5/6 all carry tx[0].frequency)
     //   2  0x04 RX1 freq  BE u32 (DDC0)
@@ -592,8 +597,9 @@ private:
     //   17 0x22 placeholder
     //   18 0x24 placeholder
     // All "placeholder" slots emit C1..C4=0 with the correct addr in C0
-    // so the gateware sees a valid frame in every slot (matches Thetis's
-    // unconditional 19-slot emission — no slot skipping).
+    // so the gateware sees a valid frame in every slot (matches the
+    // verified reference's unconditional 19-slot emission — no slot
+    // skipping).
     void composeCC(int idx, bool mox, std::uint8_t out[5]) const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
@@ -650,7 +656,7 @@ private:
     // ~760 USB frames/sec.  Owned by the EP2 writer thread (txWorker_)
     // = single-thread, no atomic needed.
     int                  ccIdx_{0};
-    // ADC-overload telemetry + Auto-LNA (Thetis-style, gain-sense).
+    // ADC-overload telemetry + Auto-LNA (standard HF SDR pattern, gain-sense).
     // adcOverloadNow_ holds the ADC0 overload bit from the MOST RECENT
     // EP6 address-0 status frame (direct overwrite — NOT a window-OR
     // latch).  The 400 ms tick samples it INSTANTANEOUSLY, matching the
@@ -694,8 +700,9 @@ private:
     // Read by the EP2 writer each send.
     std::atomic<std::uint8_t> sampleRateBits_{0x02};
     // ---- TX-0b: RF-transmit state (foundation; NOT yet emitted) ----
-    // Encodings per Thetis WriteMainLoop_HL2 + ak4951v4 gateware decode
-    // (see the setter doc block for cites).  INERT — read by no emission path yet;
+    // Encodings per the verified HL2 wire-protocol C reference's HL2
+    // main-loop emitter + ak4951v4 gateware decode (see the setter
+    // doc block for cite pointers).  INERT — read by no emission path yet;
     // at MOX=0/PA-off the datagram is byte-identical to RX.  A later TX
     // phase wires these into the C&C round-robin under MOX gating.
     std::atomic<bool>    mox_{false};          // C0 bit 0 (RF transmit)
@@ -785,7 +792,8 @@ private:
     static constexpr int     kStatPeriodMs = 200;    // 5 Hz UI updates
     // EP2 keepalive cadence: 48000 audio samples/sec ÷ 126 samples
     // per datagram (63 LRIQ tuples × 2 USB frames) = 380.95 dg/sec
-    // → 2.6316 ms period.  Same cadence Thetis/pihpsdr/Quisk fire.
+    // → 2.6316 ms period.  Same cadence the verified HL2 wire-
+    // protocol references all fire.
     static constexpr int     kEp2RateHz    = 380;
     // Auto-LNA overload-poll cadence (matches the reference ~400 ms loop).
     static constexpr int     kAutoLnaPeriodMs = 400;
@@ -795,7 +803,7 @@ private:
     // operator's hold-time setting; only the pull-UP is sped up.
     static constexpr int     kAutoLnaRecoverMs = 1000;
     // ---- TX-0c-fsm: TR-sequencing delays (ms) -----------------------
-    // Values pulled from the operator's Thetis DB export
+    // Values pulled from the operator's working-station DB export
     // (Default_5_16_2026; HL2+/AK4951 bench-validated set):
     //   udMoxDelay         = 15  → kMoxDelayMs        (RX-protect → MOX)
     //   udRFDelay          = 50  → kRfDelayMs         (MOX → RF settle;
@@ -811,7 +819,7 @@ private:
     static constexpr int     kRfDelayMs       = 50;
     static constexpr int     kSpaceMoxDelayMs = 13;
     static constexpr int     kPttOutDelayMs   = 5;
-    // ATT-on-TX value (matches operator's Thetis udATTOnTX=31): forces
+    // ATT-on-TX value (matches operator's working-station config = 31): forces
     // the AD9866 step-att to its 31-dB code on TX, which the encoder
     // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the
     // FAST_LNA arbiter = max RX-ADC protection during TX coupling.

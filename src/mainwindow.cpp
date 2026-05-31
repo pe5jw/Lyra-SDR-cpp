@@ -207,7 +207,7 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     eibi_ = new EibiStore(prefs_, bands_, this);
 
     // RX signal-strength meter (Horizon Arc / Plasma Bar panel).
-    // Source = WDSP RXA_S_PK (in-passband), Thetis-style S-unit scale.
+    // Source = WDSP RXA_S_PK (in-passband), standard HF S-unit scale.
     meter_ = new MeterModel(qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                             qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                             this);

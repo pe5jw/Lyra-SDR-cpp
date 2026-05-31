@@ -1,11 +1,12 @@
 // Lyra — RX signal-strength meter model.  See metermodel.h.
 //
-// Calibration mirrors Thetis: the source is WDSP's in-passband
-// RXA_S_PK meter (WdspEngine::sMeterDbm), an operator trim (calDb)
-// stands in for Thetis's per-radio RXMeterCalOffset (+ the fixed HL2
-// LNA offset, until an LNA-gain control is ported), and dBm→S-units
-// uses Thetis's SMeterFromDBM table with the 30 MHz HF/VHF split
-// (S9 = -73 dBm below 30 MHz, -93 dBm above).
+// Calibration follows the standard HF SDR pattern: the source is
+// WDSP's in-passband RXA_S_PK meter (WdspEngine::sMeterDbm), an
+// operator trim (calDb) stands in for the per-radio meter-cal
+// offset (+ the fixed HL2 LNA offset, until an LNA-gain control
+// is ported), and dBm→S-units uses the standard HF dBm→S-unit
+// table with the 30 MHz HF/VHF split (S9 = -73 dBm below 30 MHz,
+// -93 dBm above).
 
 #include "metermodel.h"
 
@@ -77,8 +78,8 @@ constexpr double kSwrSmooth     = 0.40;        // calmer than PWR (operator
 constexpr double kSwrPeakDecay  = 0.06;
 constexpr double kSwrGlowDecay  = 0.12;
 
-// Thetis SMeterFromDBM, compact form. Ascending (upperBound, label):
-// return the first row whose dbm <= upperBound.
+// Standard HF dBm→S-unit table, compact form. Ascending
+// (upperBound, label): return the first row whose dbm <= upperBound.
 struct SRow { double upper; const char *label; };
 const SRow kHfRows[] = {
     {-124, "S0"}, {-118, "S1"}, {-112, "S2"}, {-106, "S3"}, {-100, "S4"},

@@ -147,12 +147,12 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     //             tdelayup, tslewup, tdelaydown, tslewdown,
     //             block=1 — fexchange0 blocks until output ready).
     //
-    // The 13 parameters here match the reference's TX
-    // channel-open call BYTE-FOR-BYTE at the HL2+ AK4951 48 kHz
-    // mic rate (cmaster.c create_xmtr).  Earlier Lyra picked
-    // in_size=126 (per-datagram mic count) and dsp_size=2048;
-    // both diverged from the reference's getbuffsize() rule
-    // (in_size = 64 * rate / 48000) and dsp_size=4096 standard.
+    // The 13 parameters here match the working C-source
+    // reference's TX channel-open call BYTE-FOR-BYTE at the HL2+
+    // AK4951 48 kHz mic rate.  Earlier Lyra picked in_size=126
+    // (per-datagram mic count) and dsp_size=2048; both diverged
+    // from the reference's getbuffsize() rule (in_size = 64 *
+    // rate / 48000) and dsp_size=4096 standard.
     // The non-integer ratio of dsp_insize / in_size that 126
     // produced caused WDSP's r1/r2 ring math to compute
     // anomalous mid-call sizes (the 93-frame memcpy that
@@ -167,9 +167,10 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     opened_ = true;
 
     // NO SetTXA* setters here.  This is the second half of
-    // matching the reference: cmaster.c::create_xmtr opens the
-    // TXA channel and creates the cmaster-layer support objects
-    // (txgain / EER / interleaver / sidetone) — it does NOT
+    // matching the verified reference: the working C-source
+    // TX-create entry opens the TXA channel and creates the
+    // wire-thread-layer support objects (txgain / EER /
+    // interleaver / sidetone) — it does NOT
     // touch ANY SetTXA* setter at this lifecycle stage.  The
     // TXA chain (bandpass / mode / PHROT / ALC / Leveler) stays
     // at WDSP's create-time defaults until the operator-settings

@@ -335,7 +335,7 @@ void TciServer::onMaintenanceTick() {
 
 QString TciServer::modulationsList() const {
     QString list = QStringLiteral("USB,LSB,CWU,CWL,AM,SAM,DSB,FM,DIGU,DIGL");
-    if (cwluBecomesCw_) list += QStringLiteral(",CW");   // Thetis-style alias
+    if (cwluBecomesCw_) list += QStringLiteral(",CW");   // legacy-client alias
     return list;
 }
 
@@ -356,7 +356,7 @@ void TciServer::sendInit(QWebSocket *ws) {
     sendTo(ws, QStringLiteral("receive_only:false"));
     sendTo(ws, QStringLiteral("trx_count:1"));
     sendTo(ws, QStringLiteral("channel_count:1"));    // RX1 only (no RX2 yet)
-    sendTo(ws, QStringLiteral("channels_count:1"));   // Thetis spelling (compat)
+    sendTo(ws, QStringLiteral("channels_count:1"));   // legacy plural spelling (compat)
     sendTo(ws, QStringLiteral("vfo_limits:%1,%2").arg(kVfoLo).arg(kVfoHi));
     sendTo(ws, QStringLiteral("if_limits:%1,%2").arg(-half).arg(half));
     sendTo(ws, QStringLiteral("modulations_list:") + modulationsList());

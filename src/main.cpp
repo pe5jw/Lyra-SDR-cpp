@@ -83,7 +83,7 @@ int main(int argc, char *argv[])
 
     // Qt RHI backend selection.  Lyra targets Vulkan as the
     // primary graphics path per FEATURES.md §0 (cross-vendor /
-    // cross-platform; Thetis is D3D12-only).  setGraphicsApi()
+    // cross-platform).  setGraphicsApi()
     // MUST be called BEFORE QGuiApplication construction.  If
     // Vulkan is unavailable at runtime (no driver loader / no
     // SDK / unsupported GPU) Qt RHI transparently falls back to

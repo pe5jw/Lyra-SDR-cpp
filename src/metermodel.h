@@ -238,7 +238,7 @@ private:
     void   ladderRowFor(int src, double *level, double *danger) const;
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
-    QString sLabel(double dbm) const;  // Thetis SMeterFromDBM table
+    QString sLabel(double dbm) const;  // standard HF dBm→S-unit table
     // PWR cal: operator's reference anchor (10m / dummy / full TUN
     // reading on a known watt-meter) maps the provisional fwd_power ADC
     // -> watts curve to a true scalar.  Single global cal for v0.2.x
@@ -265,7 +265,7 @@ private:
     QTimer timer_;
 
     // Active scale endpoints (recomputed each tick from the VFO freq;
-    // S9 = -73 dBm below 30 MHz, -93 dBm above — Thetis S9Frequency).
+    // S9 = -73 dBm below 30 MHz, -93 dBm above — standard HF/VHF split).
     double floorDbm_ = -124.0;
     double ceilDbm_  = -13.0;
     double s9Dbm_    = -73.0;
