@@ -1,11 +1,12 @@
 # TX-1 SSB modulator arc — design document
 
 Status: **DESIGN v2.1.1 + 2026-05-30 reference-reconciliation amendments
-LOCKED — Thetis digital-mode auto-bypass folded in on top of v2 +
-TX-Meter-picker entry corrected (already exists).  Components 1-4c
-shipped + bench-confirmed (TX path parked at state=0, RX byte-identical);
-component 5 (MoxEdgeFade) next.**
-Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation).
+LOCKED.  Components 1-5 shipped + operator-HL2-bench-confirmed
+(TX path produces cos²-ramped TUN carrier with hot-switch protection
+for external SS linears; Settings → TX tab live for the 6 tunable
+knobs).  Component 6 (EP2 SSB I/Q packing) next — first end-to-end
+SSB voice TX.**
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (component 5 ship + session-start discipline).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
@@ -129,6 +130,32 @@ agent inference from incomplete reads.)
   the worker thread (component 4c) cycles harmlessly until
   `start()` flips the flag.  No `fexchange0` call possible
   until then.
+
+**2026-05-31 — Component 5 ship trail (5a + 5b complete + bench-confirmed):**
+- **5a** `5d5a9e1`: MoxEdgeFade engine.  `src/mox_edge_fade.{h,cpp}`
+  + 4 TR-sequencing constants promoted to mutable instance members
+  + 6 Q_PROPERTY decls + QSettings persistence + fade wired into
+  the EP2 TUN-tone packing loop.  Defaults: MOX 15 / RF 50 /
+  Space-MOX 13 / PTT-Out 5 / Fade-In 50 / Fade-Out 13 ms (operator's
+  bench-validated working-station config; hot-switch-safe for
+  typical 1 kW SS HF linears).  Unit test 21/21 PASS.  Operator
+  HL2 bench: smooth cos² ramps, drive × fade composition correct,
+  rapid re-key mid-fade reversal works, no clicks, no regressions.
+- **5b** `6210ac9`: Settings → TX tab UI.  Six QSpinBoxes + Restore-
+  Defaults button + ⚠ HOT-SWITCH PROTECTION tooltips on RF Delay
+  + Fade-In Duration.  Bidirectional Q_PROPERTY binding.  Operator
+  HL2 bench: tab visible (between Hardware and Bands), defaults
+  loaded, tooltips show, persistence verified across restart,
+  Restore-Defaults works.
+- **Reconcile chore** (same day, pre-5a): cherry-picked v2.1
+  + v2.1.1 docs commits off origin's stale TX-1-on-WdspEngine
+  branch; applied fresh no-attribution sweep (`4cef88d`, 15 src/
+  files, 67→0 leaks); force-pushed local over the superseded
+  origin TX-1 architecture.  Operator HL2 bench confirmed clean.
+- **Session-start discipline locked** (memory file): `git fetch
+  origin` is the FIRST action every session; push after every
+  component ships, not at EOD; operator verbal cue at session
+  start if they solo-pushed from another machine.
 
 ---
 
