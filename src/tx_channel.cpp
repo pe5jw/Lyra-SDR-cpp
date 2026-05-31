@@ -257,7 +257,24 @@ void TxChannel::stop()
 void TxChannel::setMode(Mode m)
 {
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (m == mode_) return;
+    // NO early-return on (m == mode_) — that guard was the root cause of
+    // the 2026-05-31 USB-stuck-LSB bug.  mode_ defaults to USB at TxChannel
+    // construction (tx_channel.h), so an operator's initial setMode(USB)
+    // (or any call where the cached value already matches) used to early-
+    // return without ever invoking pushBandpassLocked → SetTXAMode was
+    // NEVER called on the WDSP TXA channel → WDSP stayed at its create-
+    // time default (mode=0=LSB) regardless of operator selection.  Symptom:
+    // operator selects USB → bp0 freqs pushed for USB sign (positive
+    // baseband) but modulator generates LSB content → bp0 kills most of
+    // the wrong-sideband content → only leakage reaches the wire
+    // (~6 dB power deficit vs the reference at matched settings, plus
+    // visibly-wrong-sideband on the waterfall).  Fix: always invoke
+    // pushBandpassLocked.  Cost is negligible (WDSP's internal
+    // csDSP/csEXCH serialises this against in-flight processes;
+    // setter call is O(microseconds); operator mode changes are
+    // infrequent).  Forward-compat: when AM/FM/DSB/SAM/CW/DIG land in
+    // later TX slices, they will also depend on this setter actually
+    // propagating to WDSP every time.
     mode_ = m;
     pushBandpassLocked();
 }

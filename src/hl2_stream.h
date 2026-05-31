@@ -377,6 +377,17 @@ public:
         std::function<void()> start;
         std::function<void()> stop;
         std::function<void(bool)> setInjectTxIq;
+        // TX-1 component 8a-tx-mode — operator USB/LSB mode propagated
+        // to the WDSP TXA channel.  Slaved to the operator's RX mode
+        // selection (WdspEngine::modeChanged) — TX always uses the
+        // same sideband as RX, which matches the reference posture and
+        // the operator's "I picked USB" expectation.  Argument is the
+        // WDSP TXA mode integer: 0 = LSB, 1 = USB (matches the
+        // kTxaModeLSB/USB constants in tx_channel.cpp).  Non-SSB modes
+        // (AM/FM/CW/DIG) translate to closest SSB sideband at the call
+        // site (CWU/DIGU → USB, CWL/DIGL → LSB) — TX-1 is SSB-only so
+        // operator shouldn't be keying in those modes anyway.
+        std::function<void(int)> setMode;
         // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
         // Called by the Q_PROPERTY setters (operator slider/spin-box
         // moves) AND once on registerTxControl() with the autoloaded
@@ -694,6 +705,17 @@ public slots:
     // TxControl callback (no-op if TxControl not yet registered).
     void setMicGainDb(double db);
     void setAlcMaxGainDb(double db);
+
+    // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
+    // to the TX channel via the registered TxControl.setMode callback.
+    // Driven by main.cpp from the operator's RX-mode change handler
+    // (WdspEngine::modeChanged) — TX always tracks RX sideband.  Not
+    // persisted here (the source-of-truth lives in WdspEngine via its
+    // own mode QSettings); HL2Stream just relays the WDSP integer to
+    // the TxControl callback so the TX channel sees the operator's
+    // current sideband selection.  No-op if TxControl not registered
+    // or if the callback is null.
+    void setTxMode(int wdspMode);
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
     void setTxStopDelayMs(int ms);

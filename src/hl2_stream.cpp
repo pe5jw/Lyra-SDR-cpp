@@ -1610,6 +1610,25 @@ void HL2Stream::setAlcMaxGainDb(double db) {
     if (fwd) fwd(clamped);
 }
 
+// TX-1 component 8a-tx-mode — relay the operator's WDSP TXA mode to the
+// TX channel via the registered TxControl.setMode callback.  No
+// persistence here (RX mode in WdspEngine is the operator-driven source
+// of truth + already QSettings-persisted; TX mode is the slave that
+// tracks it).  No no-op guard on (mode == cached) — the TxChannel side
+// (post-fix to tx_channel.cpp::setMode) deliberately propagates every
+// call to WDSP, so this layer doesn't need to second-guess either.  The
+// wdspMode argument is the raw WDSP TXA mode integer (0=LSB, 1=USB);
+// clamped to [0, 1] here as a defence against translator bugs.
+void HL2Stream::setTxMode(int wdspMode) {
+    const int clamped = std::clamp(wdspMode, 0, 1);
+    std::function<void(int)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setMode;
+    }
+    if (fwd) fwd(clamped);
+}
+
 // ─────────────────────────────────────────────────────────────
 // TX-1 component 6: SSB I/Q injection gate + source registration
 // ─────────────────────────────────────────────────────────────

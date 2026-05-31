@@ -405,7 +405,59 @@ int main(int argc, char *argv[])
                 /*setAlcMaxGainDb=*/[txWorker](double db) {
                     txWorker->setAlcMaxGainDb(db);
                 },
+                // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB,
+                // 1=USB) to the TX channel.  Wired below to
+                // engine->modeChanged so TX always tracks the operator's
+                // RX-side mode selection (the operator's intent — they
+                // picked USB on the Mode panel, TX should be USB).
+                /*setMode=*/[txWorker](int wdspMode) {
+                    txWorker->setMode(wdspMode == 1
+                        ? lyra::dsp::TxChannel::Mode::USB
+                        : lyra::dsp::TxChannel::Mode::LSB);
+                },
             });
+
+            // TX-1 component 8a-tx-mode — wire the operator's RX-mode
+            // changes through to the TX channel so the WDSP TXA mode
+            // tracks the operator's sideband selection.  Without this
+            // wiring the TX channel sits at whatever mode WDSP picked
+            // at create-time (mode=0=LSB), which the operator would
+            // observe as "USB doesn't take effect on TX, stays LSB"
+            // (the 2026-05-31 bench symptom).  The translator handles
+            // non-SSB modes (CWU/DIGU → USB, CWL/DIGL → LSB) for
+            // forward-compat; TX-1 is SSB-only so AM/FM/CW/DIG aren't
+            // operationally valid for keying yet, but mapping them to
+            // a sensible SSB sideband prevents an undefined state.
+            auto wdspTxModeFor = [](const QString &uiMode) -> int {
+                const QString m = uiMode.toUpper();
+                if (m == QStringLiteral("LSB")  ||
+                    m == QStringLiteral("CWL")  ||
+                    m == QStringLiteral("DIGL") ||
+                    m == QStringLiteral("DRMD")) {
+                    return 0;   // WDSP TXA mode LSB
+                }
+                return 1;       // WDSP TXA mode USB (default for
+                                // USB / CWU / DIGU / AM / FM / DSB /
+                                // SAM / SPEC / DRMU / unknown)
+            };
+
+            // Live propagation: every RX-mode change pushes TX mode too.
+            QObject::connect(wdspEngine,
+                             &lyra::dsp::WdspEngine::modeChanged,
+                             stream, [stream, wdspEngine, wdspTxModeFor]() {
+                stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+            });
+
+            // Initial sync: push the operator's current mode to the
+            // freshly-registered TX channel ONCE right now, so the
+            // first TX keydown after app launch uses the correct
+            // sideband — not WDSP's create-time mode=0 (LSB) default.
+            // This is the actual fix for the operator's "USB stuck in
+            // LSB" symptom — the operator's saved mode (e.g. USB) is
+            // already loaded into wdspEngine by this point in init;
+            // we just need to relay it onto the TX channel since it
+            // was never previously pushed.
+            stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
         }
 
         // Radio memory: auto-connect to the last radio so the operator
