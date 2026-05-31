@@ -1,12 +1,13 @@
 # TX-1 SSB modulator arc — design document
 
 Status: **DESIGN v2.1.1 + 2026-05-30 reference-reconciliation amendments
-LOCKED.  Components 1-5 shipped + operator-HL2-bench-confirmed
-(TX path produces cos²-ramped TUN carrier with hot-switch protection
-for external SS linears; Settings → TX tab live for the 6 tunable
-knobs).  Component 6 (EP2 SSB I/Q packing) next — first end-to-end
-SSB voice TX.**
-Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (component 5 ship + session-start discipline).
+LOCKED.  Components 1-6 shipped + operator-HL2-bench-confirmed.
+Component 6 ships wire-inert (injectTxIq defaults FALSE — EP2 SSB
+hand-off plumbing in place, sip1 tap allocated, but no SSB I/Q
+emitted on the wire until the FSM wires injectTxIq at keydown).
+Component 7 (FSM keydown/keyup + WDSP TXA channel start/stop) next
+— that's the first end-to-end SSB voice TX commit.**
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (components 5 + 6 ship + session-start discipline).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
@@ -156,6 +157,55 @@ agent inference from incomplete reads.)
   origin` is the FIRST action every session; push after every
   component ships, not at EOD; operator verbal cue at session
   start if they solo-pushed from another machine.
+
+**2026-05-31 PM — Component 6 ship trail (wire-inert plumbing, bench-confirmed):**
+- **6** `d7b415b`: EP2 SSB I/Q hand-off — reference-faithful
+  two-semaphore producer-consumer handshake (txIqDataReady_ +
+  txIqConsumed_ + shared 126-sample txIqBuf_), mirroring the
+  verified reference's outIQbufp + hsendIQSem + hobbuffsRun[0]
+  pattern.  Producer side (TxDspWorker) accumulates 64-sample
+  fexchange0 outputs → fills the buffer → releases dataReady →
+  blocks on consumed.  Consumer side (HL2Stream EP2 packer)
+  non-blocking try_acquire dataReady → if data: pack with cos²
+  fade × reference-faithful symmetric quantize → release consumed
+  → if no data: mandatory zero-fill (matching the reference's
+  `!XmitBit ⇒ zero outIQbufp` posture).  TUN takes priority over
+  SSB.  **Lyra deviation (documented, per design rule 2):**
+  consumer uses non-blocking try_acquire instead of the
+  reference's blocking WaitForMultipleObjects — required because
+  Lyra's EP2 writer is on a hard 2.6 ms timer cadence (S2-locked)
+  and cannot afford to block; sample-by-sample wire content
+  functionally identical to reference for both XmitBit states.
+- **sip1 tap ring**: 1 sec @ 48 kHz = 48000 complex samples,
+  teed from every EP2 hand-off into a wraparound ring.  No
+  consumer in v0.2 — allocated + filled, that's it.  v0.3
+  PureSignal calcc reads it for adaptive predistortion
+  calibration.  Wiring now lets v0.3 land without re-validating
+  every TX sub-mode (per CLAUDE.md §6.7 "don't paint into a
+  corner").
+- **Wire-inert by construction**: `injectTxIq_` defaults FALSE.
+  While false, producer NEVER signals dataReady → consumer
+  always falls through to zero-fill → no SSB I/Q on the wire
+  even with MOX keyed.  Operator HL2 bench: 17 TUN cycles +
+  2 MOX-only cycles + rapid TUN stress (14 cycles in 7 sec) —
+  every cycle clean, zero `inject_tx_iq ARMED` log lines,
+  zero sip1 fills, mic Q6.5 + RX baseline unchanged from 5b.
+- **Unit test**: 21/21 PASS — handshake mechanics, reference-
+  faithful quantize endpoints + saturation, non-blocking
+  try_acquire underrun, 64-→-126 accumulator math (2-sample +
+  4-sample carryover).
+- **Teardown safety**: `aboutToQuit` clears the source
+  registration FIRST (mutex-guarded in HL2Stream) BEFORE
+  deleting txWorker — prevents the EP2 writer thread from
+  calling a captured-pointer callback on a deleted object.
+
+**Component 7 (NEXT) — FSM keydown/keyup wiring + first end-to-end
+SSB voice TX:** keydown after rfDelayMs → start WDSP TXA channel
+(`SetChannelState(1,1,0)`) → `setInjectTxIq(true)`; keyup →
+`setInjectTxIq(false)` → wait for MoxEdgeFade fade-out → stop
+WDSP TXA channel (blocking flush) → wire MOX clears (per §5.7
+keyup ordering invariant).  Bench: operator dummy load + low
+drive + mic input → first SSB voice key-up.
 
 ---
 
