@@ -22,13 +22,16 @@ namespace lyra::dsp {
 
 TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     : tx_(/*channelId=*/1, wdsp)
-    // Task #46 (2026-05-31): ring 8× → 32× kBlockSize (512 → 2048
-    // samples ≈ 43 ms buffer).  Absorbs EP2 lockstep stalls up to
-    // ~40 ms — operator's bench showed 19801 overruns in a session
-    // where Qt-main paint storms or AK4951 device-buffer jitter
-    // stalled the EP2 timer-paced writer beyond the previous
-    // 10.7 ms headroom.  See tx_ring.h for the full rationale.
-    , ring_(/*capacitySamples=*/32 * kBlockSize, kBlockSize)
+    // Ring stays at 8× kBlockSize (= 512 samples ≈ 10.7 ms).  An
+    // earlier Task #46 attempt bumped to 32× as a "headroom for
+    // EP2 lockstep stalls" patch — operator-flagged correctly as
+    // band-aid masking a symptom instead of fixing the cause.
+    // Reverted; the high-water instrument added in the same Task
+    // #46 commit (TxRing::highWaterSamples) is the honest tell —
+    // if the next bench shows high-water chronically near 512,
+    // we chase the underlying stall (EP2 timer-paced writer? Qt
+    // main thread? something else?) instead of papering it.
+    , ring_(/*capacitySamples=*/8 * kBlockSize, kBlockSize)
     , mic_(micSource)
     , txIqBuf_(static_cast<std::size_t>(kEp2BlockSize),
                std::complex<float>(0.0f, 0.0f))

@@ -24,20 +24,21 @@
 // ║  producer side mutated outIdx_ — racing the consumer's        ║
 // ║  outIdx_ write under different mutexes → corrupted outIdx_ →  ║
 // ║  out-of-bounds buffer access → crash.  We do NOT drop-oldest. ║
-// ║  Ring is sized 32× blockSize (Task #46 bump; was 8×).  The    ║
-// ║  steady-state cadence is producer ~10 samples / 200 µs        ║
-// ║  datagram = 48 kHz vs consumer 64 samples / ~1.3 ms = 48 kHz  ║
-// ║  — perfectly matched.  The bump is HEADROOM for TX-active     ║
-// ║  EP2-consumer stalls: the producer-consumer lockstep blocks   ║
-// ║  the worker thread in txIqConsumed_.acquire() for one EP2     ║
-// ║  cycle (~2.6 ms) per 126-sample wire chunk.  An EP2 timer     ║
-// ║  hiccup (Qt main-thread paint storm, AK4951 buffer jitter,    ║
-// ║  S2 timer slip) stalls the lockstep, the producer keeps       ║
-// ║  pushing mic at 48 kHz, and the ring fills.  At 32× = 2048    ║
-// ║  samples = ~43 ms buffer, any stall under ~40 ms is absorbed  ║
-// ║  cleanly.  The bench instrument is overrunCount() (drops      ║
-// ║  ticked) + highWaterSamples() (peak fill — early-warning      ║
-// ║  before we'd actually overrun).                               ║
+// ║  Ring is sized 8× blockSize.  The steady-state cadence is     ║
+// ║  producer ~10 samples / 200 µs datagram = 48 kHz vs consumer  ║
+// ║  64 samples / ~1.3 ms = 48 kHz — perfectly matched.  Overrun  ║
+// ║  is structurally unreachable in steady state.                 ║
+// ║                                                               ║
+// ║  Transients (TX-active EP2 lockstep stalls — Qt main-thread   ║
+// ║  paint storm, AK4951 buffer jitter, S2 timer slip) CAN tip    ║
+// ║  the ring over for a window.  Bench instruments:              ║
+// ║    overrunCount()      — pushes the producer rejected         ║
+// ║    highWaterSamples()  — peak fill since startup              ║
+// ║  Earlier Task #46 attempt papered overruns by bumping the     ║
+// ║  ring to 32× (~43 ms headroom); operator-flagged correctly    ║
+// ║  as a band-aid masking the cause.  Reverted.  Treat overruns  ║
+// ║  + high-water-near-capacity as a diagnostic signal that the   ║
+// ║  underlying stall needs investigation, NOT as a sizing knob.  ║
 // ║                                                               ║
 // ║  If overrun DOES happen, the producer drops the NEW samples   ║
 // ║  and ticks the overrun counter — outIdx_ is never touched.    ║

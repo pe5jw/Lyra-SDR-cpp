@@ -6,7 +6,7 @@
 //   mic samples (rx loop, 48 kHz via Hl2Ep6MicSource)
 //        │ producer push
 //        ▼
-//   TxRing (SPSC, 32x blockSize, semaphore-signalled)
+//   TxRing (SPSC, 8x blockSize, semaphore-signalled)
 //        │ consumer popBlock
 //        ▼
 //   TX worker thread (MMCSS "Pro Audio" prio 2)
@@ -47,9 +47,11 @@
 // THOSE PATTERNS ARE STRUCTURALLY IMPOSSIBLE IN THIS DESIGN:
 //   * TxRing has NO drop-oldest (overrun = drop new + count); the
 //     producer NEVER mutates outIdx_.
-//   * Ring is sized 32x blockSize (Task #46 bump from 8x) so a
-//     transient EP2 lockstep stall up to ~40 ms is absorbed
-//     cleanly.  Steady-state overrun is structurally unreachable.
+//   * Ring is sized 8x blockSize.  Steady-state overrun is
+//     structurally unreachable.  Transient EP2 lockstep stalls
+//     surface as overrunCount + highWaterSamples ticks (Task
+//     #46 instrumentation) — those are diagnostics, not bugs
+//     to paper over with a bigger buffer.
 //   * Worker drains in fixed blockSize chunks; producer pushes
 //     decimated 48 kHz mic samples per datagram.
 //   * The mutex on TxChannel covers the lifecycle race that bit
