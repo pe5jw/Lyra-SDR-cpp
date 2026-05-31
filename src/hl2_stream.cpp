@@ -19,6 +19,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <timeapi.h>     // timeBeginPeriod / timeEndPeriod (winmm)
+#include <iphlpapi.h>    // GetUdpStatisticsEx (Task #48 diagnostic)
 
 #include <QByteArray>
 #include <QDebug>           // qInfo / qCritical for safety-event mirror
@@ -111,6 +112,61 @@ QString winsockError(int code) {
     return descr.isEmpty()
         ? QStringLiteral("WSA=%1").arg(code)
         : QStringLiteral("WSA=%1: %2").arg(code).arg(descr);
+}
+
+// Task #48 — snapshot the Windows system-wide UDPv4 RX counters
+// via GetUdpStatisticsEx.  Returns true on success and fills the
+// three outputs; returns false on any failure (caller writes
+// sentinel -1).  Read-only, ~microsecond cost — safe to call from
+// start/close.  Counters are SYSTEM-WIDE (Windows doesn't expose
+// per-socket UDP drop counts), so other UDP apps on the box (DNS
+// lookups, mDNS, browser, etc.) move them too — interpret deltas
+// IN CONTEXT, alongside Lyra's per-session totalDg_/seqErrors_.
+//
+// Field mapping (per Microsoft docs + Windows TCP/IP-stack
+// behaviour):
+//   dwInDatagrams — total UDP datagrams delivered by the IP layer
+//                   to the kernel UDP code (system-wide).
+//   dwNoPorts     — datagrams arriving for an unlistened port.
+//                   For a healthy Lyra session this should be ~0
+//                   for HL2 traffic; a spike could mean HL2 sent
+//                   after we closed the socket (timing diagnostic
+//                   for clean shutdown).
+//   dwInErrors    — datagrams that arrived BUT the kernel could
+//                   not deliver to any socket for reasons OTHER
+//                   than no-listener.  On Windows this INCLUDES
+//                   socket-receive-buffer-full discards.  THIS is
+//                   the counter that should move if our 4 MiB
+//                   SO_RCVBUF is overflowing because Lyra's RX
+//                   thread stalled.
+//
+// Interpreting the delta at close():
+//   * Δ dwInErrors  > 0  AND  seqErrors > 0
+//     → drops in the kernel UDP layer.  Lyra RX thread stalled,
+//       socket buffer filled, kernel dropped packets.  Look at
+//       Lyra-side: thread starvation, scheduler stall, paint
+//       storm, etc.
+//   * Δ dwInErrors == 0  AND  seqErrors > 0
+//     → kernel saw NO problem; drops happened UPSTREAM of the
+//       kernel.  Look at: NIC driver receive ring (Device
+//       Manager → NIC → Properties → Advanced → "Receive
+//       Buffers" → bump to max; "Interrupt Moderation" → off),
+//       NIC hardware, switch in the path, EMI on the cable.
+//   * Δ dwInDatagrams ≈ Lyra's totalDg_  (within a few % from
+//     unrelated apps' traffic): sanity check that the system
+//     stats are coherent with our session.
+bool snapshotUdpStatsV4(qint64 *inDatagrams,
+                        qint64 *inNoPorts,
+                        qint64 *inErrors) {
+    MIB_UDPSTATS stats{};
+    const DWORD rc = ::GetUdpStatisticsEx(&stats, AF_INET);
+    if (rc != NO_ERROR) {
+        return false;
+    }
+    if (inDatagrams) *inDatagrams = static_cast<qint64>(stats.dwInDatagrams);
+    if (inNoPorts)   *inNoPorts   = static_cast<qint64>(stats.dwNoPorts);
+    if (inErrors)    *inErrors    = static_cast<qint64>(stats.dwInErrors);
+    return true;
 }
 
 // Open a native UDP socket bound to ANY:ephemeral.  Sets a 4 MiB
@@ -483,6 +539,24 @@ void HL2Stream::open(const QString &ip) {
     targetIp_ = ip;
     totalDg_.store(0);  seqErrors_.store(0);
     framingErrors_.store(0);  windowDg_.store(0);
+
+    // Task #48 — baseline the system-wide UDPv4 counters so the
+    // close() log line can subtract and print the per-session
+    // delta.  Snapshot is read-only + microsecond-cost; never
+    // fails on any sane Windows install but we keep the -1
+    // sentinel for paranoia / future cross-platform builds.
+    {
+        qint64 rx = -1, np = -1, er = -1;
+        if (snapshotUdpStatsV4(&rx, &np, &er)) {
+            udpStartInDatagrams_.store(rx);
+            udpStartInNoPorts_.store(np);
+            udpStartInErrors_.store(er);
+        } else {
+            udpStartInDatagrams_.store(-1);
+            udpStartInNoPorts_.store(-1);
+            udpStartInErrors_.store(-1);
+        }
+    }
     txTotalDg_.store(0);  txWindowDg_.store(0);
     txSendErrors_.store(0);  txSeq_.store(0);
     rx1DbFs_.store(-200.0, std::memory_order_relaxed);
@@ -664,6 +738,48 @@ void HL2Stream::close() {
         .arg(framingErrors_.load())
         .arg(txTotalDg_.load())
         .arg(txSendErrors_.load()));
+
+    // Task #48 — Windows system-wide UDPv4 delta for this session.
+    // Lets the operator (and us) tell whether seq-error drops are
+    // happening in the kernel UDP layer (Δ udpInErrors > 0 → Lyra
+    // RX thread stalled, rcvbuf overflowed) or upstream of the
+    // kernel (Δ udpInErrors == 0 while seqErrors > 0 → drops are
+    // in the NIC ring / driver / hardware — operator-side fix via
+    // Device Manager → NIC → Advanced → Receive Buffers ↑ +
+    // Interrupt Moderation off).  Counters are SYSTEM-WIDE; other
+    // UDP apps (DNS, mDNS, browser) inflate the totals — interpret
+    // alongside Lyra-side numbers, not in isolation.
+    {
+        const qint64 startRx = udpStartInDatagrams_.load();
+        const qint64 startNp = udpStartInNoPorts_.load();
+        const qint64 startEr = udpStartInErrors_.load();
+        qint64 endRx = -1, endNp = -1, endEr = -1;
+        const bool ok = snapshotUdpStatsV4(&endRx, &endNp, &endEr);
+        if (ok && startRx >= 0 && startNp >= 0 && startEr >= 0) {
+            const qint64 dRx = endRx - startRx;
+            const qint64 dNp = endNp - startNp;
+            const qint64 dEr = endEr - startEr;
+            emit logLine(QStringLiteral(
+                "udp4 stats Δ (system-wide): inDatagrams=%1  "
+                "noPorts=%2  inErrors=%3   (vs Lyra seqErrors=%4)")
+                .arg(dRx).arg(dNp).arg(dEr)
+                .arg(seqErrors_.load()));
+            // Mirror to qInfo so it lands in the captured stderr
+            // log too (the operator's lyra-log.txt path).
+            qInfo("[udp4 stats] Δ inDatagrams=%lld noPorts=%lld "
+                  "inErrors=%lld  (vs Lyra seqErrors=%lld)",
+                  static_cast<long long>(dRx),
+                  static_cast<long long>(dNp),
+                  static_cast<long long>(dEr),
+                  static_cast<long long>(seqErrors_.load()));
+        } else {
+            emit logLine(QStringLiteral(
+                "udp4 stats Δ: snapshot unavailable "
+                "(start=%1/%2/%3 end ok=%4)")
+                .arg(startRx).arg(startNp).arg(startEr)
+                .arg(ok ? 1 : 0));
+        }
+    }
     qWarning("[shutdown] HL2Stream::close EXIT");
 }
 

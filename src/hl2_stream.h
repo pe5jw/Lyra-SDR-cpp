@@ -917,6 +917,28 @@ private:
     std::atomic<qint64>  totalDg_{0};
     std::atomic<qint64>  seqErrors_{0};
     std::atomic<qint64>  framingErrors_{0};
+    // Task #48 diagnostic — Windows system-wide UDP RX counters
+    // (GetUdpStatisticsEx, AF_INET).  Snapshotted at stream start
+    // so close() logs the per-session delta:
+    //   * udpStartInDatagrams_ — total UDP datagrams the IP layer
+    //     handed to the kernel UDP code (system-wide).
+    //   * udpStartInNoPorts_   — datagrams to an unlistened port.
+    //   * udpStartInErrors_    — datagrams the kernel could not
+    //     deliver for reasons OTHER than no-listener; on Windows
+    //     this INCLUDES socket-receive-buffer-full discards (the
+    //     interesting one for diagnosing where EP6 drops happen).
+    // Compare Δ udpInErrors vs Lyra-side seqErrors:
+    //   * Δ udpInErrors > 0  → drops in kernel UDP layer (our RX
+    //     thread stalled, rcvbuf overflowed).  Lyra-side issue.
+    //   * Δ udpInErrors == 0 but seqErrors > 0 → drops upstream
+    //     of kernel (NIC ring, NIC HW, fabric).  Operator-side
+    //     fix: NIC Properties → Advanced → Receive Buffers ↑,
+    //     Interrupt Moderation off, etc.
+    // -1 sentinel = snapshot failed.  See snapshotUdpStatsV4()
+    // in hl2_stream.cpp for the full interpretation table.
+    std::atomic<qint64>  udpStartInDatagrams_{-1};
+    std::atomic<qint64>  udpStartInNoPorts_{-1};
+    std::atomic<qint64>  udpStartInErrors_{-1};
     std::atomic<qint64>  windowDg_{0};
     std::atomic<qint64>  txTotalDg_{0};
     std::atomic<qint64>  txWindowDg_{0};
