@@ -1,15 +1,59 @@
 # TX-1 SSB modulator arc — design document
 
-Status: **DESIGN v2 LOCKED — 3-lens red-team converged + operator decisions in.
-Ready for implementing-session.**
-Date: 2026-05-29
+Status: **DESIGN v2 + 2026-05-30 reference-reconciliation amendments.
+Components 1-4c shipped + bench-confirmed (TX path parked at state=0,
+RX byte-identical); component 5 (MoxEdgeFade) next.**
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (reference-reconciliation).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
 remains relevant ONLY for (a) TX panadapter visual rule (red passband
 rectangle on TX-active) and (b) 2RX + SUB/SPLIT UI design ideas.
 
-**v2 amendment trail (this revision, 2026-05-29 EOD):**
+## ⚠ DESIGN PRINCIPLE (operator-mandated, ENFORCE EVERY COMMIT)
+
+**"Do as Thetis does, Lyra-Native style."**
+
+Three rules with no exceptions:
+
+1. **Every WDSP API call must match the reference byte-for-byte.**
+   Parameter values, parameter order, the SET of setters called,
+   the lifecycle stage at which they fire — all match the
+   reference exactly.  If you're considering a value the reference
+   doesn't use, STOP and find what the reference uses (typically
+   in `cmaster.c` / `console.cs` / `radio.cs` / the `wdsp/*.c`
+   stages).  "I have a reason to pick something different" =
+   you don't.  Reference has been right every verified time.
+
+2. **"Lyra-Native style" applies to the SURROUNDING architecture
+   ONLY.**  Qt + Vulkan + QML + our process model + thread model +
+   facade APIs + IPC + UI shell.  This is what `Lyra-native`
+   gives us latitude over.  The DSP-engine call surface (WDSP
+   TXA / RXA / fexchange0 / OpenChannel / SetTXA* / SetRXA*) is
+   NOT Lyra-native — it's reference-bound.
+
+3. **Provenance lives only in code COMMENTS + design docs +
+   memory.**  Never in commit messages.  Never in operator-
+   visible UI strings.  This is the unchanged no-attribution rule
+   from §2 of the project memory.
+
+This principle has been the standing directive since TX work
+started.  The 2026-05-30 `fexchange0` crash arc proved its
+necessity in hardware: Lyra picked `in_size=126` (per-datagram
+mic count) where the reference picks `getbuffsize(48000) = 64`
+(constant-latency rule); the resulting non-integer-divisor
+ratio against `dsp_insize=1024` corrupted WDSP's internal ring
+math on the first `fexchange0` call → access violation inside
+a WDSP-internal `memcpy` (1488 bytes / 93 frames vs an
+overrun-short source buffer).  Reverting to the reference's
+parameters + removing the 17 `SetTXA*` setters that
+`create_xmtr` doesn't call removed both the crash hazard and a
+class of WDSP-state-machine perturbations the reference doesn't
+expose at this lifecycle stage.
+
+---
+
+**v2 amendment trail (2026-05-29 EOD):**
 - Three independent red-team lenses (concurrency / safety / scope) ran
   with file:line evidence against Thetis source.
 - §4.9 uslew open question DEFINITIVELY ANSWERED via wdsp/uslew.c +
@@ -24,6 +68,23 @@ rectangle on TX-active) and (b) 2RX + SUB/SPLIT UI design ideas.
 - Safety amendments applied (init order, TR delays, EP2 zero-on-no-MOX,
   panel-gain comment fix, DC/IQ-cal status note).
 - v0.3 PureSignal sip1 tap added (§5.8).
+
+**2026-05-30 reference-reconciliation amendment** (folded into §5.3
++ §5.5):
+- `OpenChannel` parameters corrected to reference values:
+  `in_size=64` (was 126), `dsp_size=4096` (was 2048),
+  `tdelayup=0.000` (was 0.010), `tslewup=0.010` (was 0.025).
+- All 17 `SetTXA*` setters REMOVED from `open()` — the
+  reference's `create_xmtr` calls zero such setters at this
+  lifecycle stage; TXA chain stays at WDSP create-time defaults
+  until operator-settings layer fires.
+- `SetChannelState(1,1,0)` REMOVED from `open()` — channel
+  parks at state=0; `start()` arms it from the PTT/MOX edge
+  handler when keyed.  Mirrors reference `create_xmtr` posture.
+- `TxChannel::process()` early-returns on `!running_` guard so
+  the worker thread (component 4c) cycles harmlessly until
+  `start()` flips the flag.  No `fexchange0` call possible
+  until then.
 
 ---
 
@@ -476,39 +537,58 @@ private:
 };
 ```
 
-Init sequence (in `open()`), per Thetis-grounded dossier B + red-team
-amendments 2026-05-29:
-1. `OpenChannel(ch, in_size=126, dsp_size=2048, in=48k, dsp=96k,
-   out=48k, type=1, state=0, tdelayup=0.010, tslewup=0.025,
-   tdelaydown=0.000, tslewdown=0.010, block=1)`
-   (in_size pinned to the per-datagram mic-sample count at nddc=4 —
-   see §5.5; was `in_size=512` in v1, which would have starved
-   fexchange0.)
-2. `SetTXAPanelGain1(ch, 1.0)` — pin explicitly.  (WDSP `create_panel`
-   default is gain1=1.0 per `wdsp/TXA.c:65-69`; the v1 doc claim of
-   "default 4.0 (+12 dB hot mic)" was wrong — corrected here.  We
-   pin it to centralize operator mic-gain control.)
-3. **`SetTXABandpassFreqs(ch, signedLow, signedHigh)` FIRST** — per
-   mode (operator-positive Hz, engine signs per §4.3).  This avoids a
-   ~2.6 ms window where bp0 runs on stale `(-5000, -100)` defaults
-   because `SetTXAMode` step 4 calls `TXASetupBPFilters` with whatever
-   `f_low/f_high` it currently has (`TXA.c:786`).
-4. `SetTXAMode(ch, USB)` (or LSB) — this re-calls `TXASetupBPFilters`
-   with the bandpass edges already pushed in step 3.
-5. `SetTXAPHROTRun(ch, 1)` + `SetTXAPHROTCorner(ch, 338.0)` +
-   `SetTXAPHROTNstages(ch, 8)` (PHROT default ON per §6.4; operator
-   Settings toggle exposed per §6.4)
-6. `SetTXAALCAttack(1)` + `SetTXAALCDecay(10)` + `SetTXAALCHang(500)`
-   + `SetTXAALCMaxGain(1.0)` + `SetTXAALCSt(1)` (always on; splatter
-   protection, no operator opt-out)
-7. `SetTXALeveler*` defaults + `St(0)` initially.  Operator Settings
-   toggle (default OFF) per §6.3 flips `SetTXALevelerSt` live.
-8. `SetChannelState(ch, 1, 0)` to start
+**🔒 AMENDED 2026-05-30 (operator-mandated "do as Thetis does,
+Lyra-Native style"):** the v2 init sequence below was WRONG.  It
+was caught only after `TxChannel::open()` shipped with these v2
+parameters + setters, was wired into the worker thread, and
+crashed on the FIRST `fexchange0` call inside a WDSP-internal
+memcpy (1488 B / 93 complex<double> frames, source buffer
+overrun).  Root cause: **Lyra picked parameters that diverge from
+the reference, breaking integer-divisor assumptions inside WDSP's
+ring math.**  Specifically:
 
-Alternative if ordering of 3+4 is awkward in code: hold
-`SetChannelState(ch, 1, 0)` until BOTH steps 3 and 4 have been pushed,
-then start the channel.  Either approach is acceptable — what's NOT
-acceptable is `SetTXAMode` first with no bandpass edges pushed.
+| v2 (WRONG) | Reference (`cmaster.c::create_xmtr`, line 177-190) | Why it matters |
+|---|---|---|
+| `in_size=126` (per-datagram mic count) | `in_size = getbuffsize(in_rate) = 64 * rate / 48000` = **64** at 48 k | Reference's universal "constant-latency" rule.  64 divides `dsp_insize=2048` cleanly (×32); 126 does not (1024/126 = 8.127), and the residuals corrupt WDSP's ring-position arithmetic on first call. |
+| `dsp_size=2048` | **4096** | Reference value; `max(2048, dsp_size)` clamp in TXA.c sizes downstream FFT-coef buffers |
+| `tdelayup=0.010` | **0.000** | We added a 480-sample delay the reference doesn't |
+| `tslewup=0.025` | **0.010** | Different envelope shape |
+| 17× `SetTXA*` setters at open() (mode, bandpass, PHROT, ALC, Leveler) | **ZERO** `SetTXA*` calls in `create_xmtr` | Reference leaves TXA chain at WDSP create-time defaults until the operator-settings layer (radio.cs / console.cs) flows through.  We were exercising WDSP code paths the reference doesn't touch at this lifecycle stage. |
+| `SetChannelState(ch, 1, 0)` inlined at end of open() | NOT called in create_xmtr (channel armed later by `chkMOX_CheckedChanged` only when keyed) | We fused "open" with "start" — making TX go live with zero operator intent the moment the channel was constructed. |
+
+**The Lyra-Native style is the SURROUNDING architecture** (Qt
++ Vulkan + our process/thread model + our facade APIs).  **The
+WDSP calls themselves must match the reference byte-for-byte** —
+every parameter value, every setter, every lifecycle stage.  If
+Lyra picks a value the reference doesn't pick, we're saying
+"we know better than the reference" — and the reference has been
+right every single time it's been verified this project.
+
+Init sequence (in `open()`), reference-faithful (2026-05-30):
+
+1. `OpenChannel(ch, in_size=64, dsp_size=4096, in=48k, dsp=96k,
+   out=48k, type=1, state=0, tdelayup=0.000, tslewup=0.010,
+   tdelaydown=0.000, tslewdown=0.010, block=1)` — byte-for-byte
+   matches `cmaster.c::create_xmtr` line 177-190 for HL2 family
+   TX at 48 kHz mic.  In_size derived from
+   `cmsetup.c::getbuffsize` rule.
+
+2. **No `SetTXA*` calls.**  The TXA chain stays at WDSP
+   create-time defaults (`wdsp/TXA.c::create_txa`).  Operator-
+   tunable state (mode, bandpass, PHROT, ALC, Leveler, panel
+   gain) is configured LATER by the operator-settings layer
+   when the operator interacts with the TX panel.  The
+   per-setter API methods (`setMode`, `setBandpass`,
+   `setMicGainDb`, `setPhrotOn`, `setLevelerOn`,
+   `setAlcMaxGainDb`) remain on `TxChannel` for that flow.
+
+3. **Channel STAYS at state=0 (parked).**  Do NOT call
+   `SetChannelState(ch, 1, 0)` here.  The reference opens the
+   channel parked in `create_xmtr` and only arms it later when
+   the operator actually keys (`chkMOX_CheckedChanged` →
+   `SetChannelState(id(1,0), 1, 0)` in console.cs).  Our
+   `start()` method serves this role; the PTT/MOX edge handler
+   in component 5/6 will call it when ready.
 
 ### 5.4 Mic source (component 3) — single class, no abstraction
 
@@ -594,11 +674,18 @@ The TX DSP worker:
   separate EP2-writer semaphore).  This eliminates a round-trip,
   matches the existing RX worker model, and works for HL2+ AK4951
   where mic content is codec audio.
-- **TXA channel block size pinned:** `OpenChannel` with `in_size=126`
-  (the actual mic-sample count per EP2 datagram at nddc=4), `dsp_size
-  =2048`.  The earlier `in_size=512` proposal would have starved
-  fexchange0 (same gotcha class as the RX cleanup arc — pin the size
-  to the producer, do not leave to integration).
+- **TXA channel block size pinned (CORRECTED 2026-05-30):**
+  `OpenChannel` with `in_size=64` (from the reference's
+  `cmsetup.c::getbuffsize(48000) = 64 * 48000 / 48000`),
+  `dsp_size=4096`.  Earlier this doc said `in_size=126` (per-
+  datagram mic count) and `dsp_size=2048` — both diverged from
+  the reference and the resulting non-integer-divisor ratio
+  caused a WDSP-internal ring-math overrun on first fexchange0
+  call (see §5.3 amendment).  The mic-source's per-datagram
+  rate (~9-10 samples) doesn't have to match `in_size` directly
+  — the ring buffers between producer and `fexchange0` chunks,
+  draining in clean 64-sample blocks aligned with the
+  reference's universal constant-latency rule.
 - On the MOX-off→on edge, the worker applies the MoxEdgeFade
   envelope to the I/Q output (fade-IN over 50 ms — MANDATORY per
   §4.9/§5.6).
