@@ -72,6 +72,7 @@
 #include <QString>
 #include <QTimer>
 #include <atomic>
+#include <complex>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -208,6 +209,41 @@ class HL2Stream : public QObject {
     // explicit operator gesture, not a configured state).
     Q_PROPERTY(bool tuneEnabled READ tuneEnabled WRITE setTuneEnabled
                NOTIFY tuneEnabledChanged)
+    // TX-1 component 6 — SSB modulator I/Q injection.  When TRUE
+    // *and* the wire MOX bit is high, the EP2 writer pulls 126
+    // complex<float> samples per datagram from the registered TX
+    // I/Q source (typically TxDspWorker), multiplies by the cos²
+    // fade coef, quantizes via the reference-faithful symmetric
+    // round-to-nearest, and packs them into the TX-I/TX-Q bytes
+    // of each LRIQ tuple.  TUN takes priority over SSB (if both
+    // are armed simultaneously, TUN carrier wins — operator gesture
+    // semantics).  When FALSE, the SSB branch is INACTIVE — even
+    // with MOX keyed, no SSB I/Q lands on the wire (the mandatory
+    // zero-fill branch runs instead, mirroring the verified
+    // reference's `!XmitBit ⇒ zero outIQbufp` posture (see
+    // docs/architecture/tx1_ssb_design.md §5.7).
+    //
+    // Defaults FALSE.  Set TRUE by the FSM at keydown (after the
+    // WDSP TXA channel is started + the rf_delay window has
+    // elapsed) and cleared FALSE at keyup (before the wire MOX
+    // bit clears, per §5.7 keyup ordering invariant).
+    //
+    // NOT persisted — TX intent doesn't survive a stream stop /
+    // restart cycle (safety: come-up-not-keyed posture).
+    Q_PROPERTY(bool injectTxIq READ injectTxIq WRITE setInjectTxIq
+               NOTIFY injectTxIqChanged)
+    // TX-1 component 6 — EP2-side underrun counter.  Increments
+    // when MOX + injectTxIq are BOTH true (so the EP2 packer
+    // expected SSB I/Q on this datagram) but tryConsumeTxIq
+    // returned false (the producer hadn't signalled dataReady in
+    // time — usually because WDSP TXA hadn't accumulated 126
+    // samples yet at keydown, OR the producer thread was
+    // momentarily starved).  The EP2 packer falls through to the
+    // mandatory zero-fill on underrun (silent slot — safe but
+    // would be audible as a brief gap on actual SSB voice).
+    // Bench instrument; should stay ≈ 0 in steady state once the
+    // FSM keydown is wired.
+    Q_PROPERTY(qint64 txIqUnderruns READ txIqUnderruns NOTIFY statsChanged)
     // TX-1 component 5a — TR-sequencing + cos² envelope durations.
     //
     // ⚠ HOT-SWITCH PROTECTION (operator-mandated, 2026-05-31):
@@ -243,6 +279,28 @@ class HL2Stream : public QObject {
 public:
     explicit HL2Stream(QObject *parent = nullptr);
     ~HL2Stream() override;
+
+    // TX-1 component 6 — type alias for the TX I/Q source callback
+    // (full contract documented at registerTxIqSource below in the
+    // public-slots section).  Declared here at the top of public:
+    // because Qt MOC doesn't allow `using` declarations in
+    // `public slots:` sections.
+    //
+    // The callback runs on the EP2 wire writer thread, ONCE per
+    // datagram, with a 126-element complex<float> output buffer the
+    // callback should fill (samples in [-1, +1)).  Returns true if
+    // it filled the buffer, false if no data was ready (the EP2
+    // packer then zero-fills + increments the underrun counter).
+    // MUST be non-blocking — the EP2 writer is on a hard ~2.6 ms
+    // timer cadence and cannot afford to block.
+    //
+    // Typical wire-up: main.cpp calls registerTxIqSource with a
+    // lambda that delegates to TxDspWorker::tryConsumeTxIq.
+    // Caller-owned lifetime: caller must clear the source
+    // (registerTxIqSource({})) BEFORE the underlying object goes
+    // away.  Passing {} (empty std::function) clears the source
+    // (the EP2 packer then falls through to zero-fill).
+    using TxIqSource = std::function<bool(std::complex<float> *)>;
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
     QString targetIp()          const { return targetIp_; }
@@ -324,6 +382,11 @@ public:
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
     bool    tuneEnabled() const { return tuneEnabled_.load(std::memory_order_relaxed); }
+    // TX-1 component 6 — SSB modulator I/Q injection gate (Q_PROPERTY
+    // getter).  See the Q_PROPERTY decl above for the full contract.
+    bool    injectTxIq() const { return injectTxIq_.load(std::memory_order_relaxed); }
+    // TX-1 component 6 — EP2-side underrun count (Q_PROPERTY getter).
+    qint64  txIqUnderruns() const { return txIqUnderruns_.load(std::memory_order_relaxed); }
     // TX-1 component 5a — TR-sequencing + cos² fade durations.
     // Getters read the live operator-tuned values (or defaults if
     // unset).  See Q_PROPERTY block above for the safety rationale.
@@ -530,6 +593,17 @@ public slots:
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
 
+    // TX-1 component 6 — SSB I/Q injection gate.  See the
+    // Q_PROPERTY decl above for the contract; defaults FALSE,
+    // not persisted, set by the FSM at keydown / cleared at keyup.
+    void setInjectTxIq(bool on);
+
+    // TX-1 component 6 — register a TX I/Q source for the EP2
+    // packer to pull from when (MOX && injectTxIq) is true on a
+    // given datagram.  See the public TxIqSource type alias above
+    // for the callback contract.
+    void registerTxIqSource(TxIqSource src);
+
 signals:
     void runningChanged();
     void statsChanged();
@@ -572,6 +646,8 @@ signals:
     // TX-0c-tune — tune-tone armed state changed (via TX panel button,
     // operator unarm, or the moxActiveChanged(false) safety auto-clear).
     void tuneEnabledChanged(bool on);
+    // TX-1 component 6 — SSB I/Q injection gate edge.
+    void injectTxIqChanged(bool on);
     // TX-1 component 5a — TR-sequencing + cos² envelope tuning.
     // Emitted on every successful setter call (post-clamp + persist).
     // QML Settings UI binds to these to refresh spin-box values when
@@ -780,6 +856,24 @@ private:
     // phase below is owned single-thread by that writer (no atomic
     // needed since only that thread mutates it).
     std::atomic<bool>    tuneEnabled_{false};
+
+    // ── TX-1 component 6: SSB I/Q injection (wire-inert default) ──
+    // Gate atomic — see Q_PROPERTY decl + setInjectTxIq() doc for
+    // the contract.  Defaults FALSE = no SSB I/Q on the wire even
+    // with MOX keyed; the FSM (follow-up commit) sets it TRUE at
+    // keydown after rf_delay + WDSP TXA channel start.
+    std::atomic<bool>    injectTxIq_{false};
+    // EP2-side underrun count.  See Q_PROPERTY decl for semantics.
+    std::atomic<qint64>  txIqUnderruns_{0};
+    // Registered source callback + the lock that protects it from
+    // mid-flight clearing by a registerTxIqSource({}) call.  The
+    // EP2 writer thread reads/calls this; the Qt main thread
+    // writes it via registerTxIqSource.  Mutex is fine here —
+    // contention is essentially zero (source is registered at
+    // app boot, possibly cleared at app shutdown, never touched
+    // on the hot path).
+    TxIqSource           txIqSource_;
+    mutable std::mutex   txIqSourceMtx_;
     // ---- TX-0c-fsm: MOX/PTT sequencer state (single-thread, this thread) -
     // Operator/CAT intent — last requested MOX state.  Sequencer reads
     // it at every timer step so an operator change mid-transition takes

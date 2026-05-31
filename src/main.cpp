@@ -237,15 +237,24 @@ int main(int argc, char *argv[])
     // a well-defined no-op — RX path is unaffected either way.
     //
     // Teardown order (aboutToQuit fires in connection order):
-    //   1. txWorker delete -> clears its mic consumer, joins
+    //   1. stream->registerTxIqSource({}) -> clears the EP2
+    //      packer's TX I/Q source FIRST.  The callback captures
+    //      txWorker by value (pointer); deleting txWorker before
+    //      clearing the source would leave a dangling pointer
+    //      that the EP2 writer thread could call concurrently.
+    //      registerTxIqSource takes a brief mutex, after which
+    //      the EP2 writer's next datagram pulls falls through to
+    //      zero-fill (the universal mandatory zero-fill branch).
+    //   2. txWorker delete -> clears its mic consumer, joins
     //      worker thread, closes TX WDSP channel.
-    //   2. micSource delete -> clears HL2Stream's forwarder
+    //   3. micSource delete -> clears HL2Stream's forwarder
     //      while HL2Stream is still alive.
-    //   3. stream->close() -> joins the rx-loop thread.
+    //   4. stream->close() -> joins the rx-loop thread.
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
     lyra::dsp::TxDspWorker     *txWorker  = nullptr;
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [&txWorker, &micSource]() {
+                     [stream, &txWorker, &micSource]() {
+        if (stream) stream->registerTxIqSource({});
         delete txWorker;  txWorker  = nullptr;
         delete micSource; micSource = nullptr;
     });
@@ -344,6 +353,20 @@ int main(int argc, char *argv[])
             // earlier) sees them populated at teardown.
             micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
             txWorker  = new lyra::dsp::TxDspWorker(wdsp, *micSource);
+
+            // TX-1 component 6: register TxDspWorker as the HL2Stream
+            // EP2 packer's TX I/Q source.  The packer pulls 126
+            // complex<float> samples per datagram via this callback
+            // when (moxBit && injectTxIq) is true.  injectTxIq
+            // defaults FALSE (wire-inert) — the FSM (follow-up
+            // commit) flips it true at keydown.  Caller-owned
+            // lifetime: txWorker outlives the registration; the
+            // aboutToQuit handler above tears down stream + workers
+            // in safe order (handlers fire before destructors).
+            stream->registerTxIqSource(
+                [txWorker](std::complex<float> *out) {
+                    return txWorker->tryConsumeTxIq(out);
+                });
         }
 
         // Radio memory: auto-connect to the last radio so the operator

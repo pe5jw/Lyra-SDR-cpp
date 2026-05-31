@@ -64,7 +64,9 @@
 
 #include <atomic>
 #include <complex>
+#include <cstddef>
 #include <mutex>
+#include <semaphore>
 #include <thread>
 #include <vector>
 
@@ -119,13 +121,64 @@ public:
     }
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
-    // Component-6 hook.  Copies up to maxFrames complex<float>
-    // samples of the LATEST TX I/Q block into `out`; returns the
-    // number of frames copied (0 if no block has been produced
-    // yet).  Takes latestMtx_ briefly — main-thread or wire-
-    // thread can call this safely.  Component 6 (the EP2 packer)
-    // will read this every wire cadence tick when it lands.
-    int latestTxBlock(std::complex<float> *out, int maxFrames) const;
+    // ── Component 6: TX I/Q output (wire side) ──────────────────
+    //
+    // Datagram-sized handshake to the EP2 wire writer.  Matches the
+    // verified C-source reference's outIQbufp + hsendIQSem +
+    // hobbuffsRun[0] pattern (see docs/architecture/tx1_ssb_design.md
+    // §5.7 for the verified cite + handshake semantics): a shared
+    // 126-sample buffer + two binary semaphores giving strict
+    // producer-consumer lockstep with NO accumulation queue between
+    // WDSP TXA output and the wire.
+    //
+    // Reference flow (mapped):
+    //   producer side:
+    //     memcpy(outIQbufp, out, sizeof(complex) * 126)
+    //     ReleaseSemaphore(hsendIQSem)        ← "data ready"
+    //     WaitForSingleObject(hobbuffsRun[0]) ← BLOCK on consumed
+    //   consumer side:
+    //     WaitForMultipleObjects(...sem...)   ← wait for data
+    //     pack to wire bytes
+    //     ReleaseSemaphore(hobbuffsRun[0])    ← "consumed"
+    //
+    // Lyra deviation (documented + reasoned, per design rule 2):
+    // the EP2 writer is on a hard 2.6 ms timer cadence (S2-locked
+    // timer-paced writer) and CANNOT block — blocking would break
+    // wire keepalive.  Consumer therefore uses NON-BLOCKING
+    // try_acquire: if data ready, consume + release consumed; if
+    // not, fall through to the mandatory zero-fill (which is
+    // exactly what the reference does for !XmitBit anyway).
+    // Sample-by-sample wire content is functionally identical to
+    // the reference for both XmitBit states; only the consumer's
+    // wait policy is adapted to Lyra's wire cadence guarantee.
+    //
+    // Wire-inert by construction: injectTxIq_ defaults FALSE.
+    // While false, the producer NEVER calls signalAndWait() so
+    // dataReady is never released → consumer always falls through
+    // to zero-fill → no SSB I/Q ever lands on the wire.  Component
+    // 6 plumbing ships safe; a follow-up commit wires the FSM
+    // keydown/keyup to set/clear injectTxIq_ + start/stop the
+    // WDSP TXA channel for the actual first SSB voice key-up.
+    static constexpr int kEp2BlockSize = 126;  // samples per datagram
+
+    // EP2 writer side — non-blocking try-acquire.  If data is ready
+    // for this datagram: copies kEp2BlockSize complex<float> samples
+    // into `out`, releases the consumed semaphore, returns true.  If
+    // not: returns false (consumer zero-fills its wire buffer).
+    bool tryConsumeTxIq(std::complex<float> *out) noexcept;
+
+    // Operator-arm gate.  Defaults FALSE.  When false, the producer
+    // NEVER signals dataReady → tryConsumeTxIq always returns false
+    // → no SSB I/Q on the wire.  Set to true once the FSM is wired
+    // to start/stop the WDSP TXA channel + the operator is on a
+    // bench safe to actually emit SSB voice (first-RF-SSB-voice
+    // commit is a separate follow-up).
+    void setInjectTxIq(bool on) noexcept {
+        injectTxIq_.store(on, std::memory_order_release);
+    }
+    bool injectTxIq() const noexcept {
+        return injectTxIq_.load(std::memory_order_acquire);
+    }
 
     // Diagnostics.
     long long blockCount()   const {
@@ -135,25 +188,75 @@ public:
         return errorCount_.load(std::memory_order_relaxed);
     }
     long long overrunCount() const { return ring_.overrunCount(); }
+    // sip1 tap counter — bench instrument confirming the v0.3
+    // PureSignal forward-compat ring is filling.  Counts complete
+    // 126-sample blocks teed off the EP2 hand-off into the sip1
+    // ring (which has NO consumer in v0.2; v0.3 calcc reads it).
+    long long sip1FillCount() const {
+        return sip1FillCount_.load(std::memory_order_relaxed);
+    }
+    // EP2-consumer underrun accounting lives on the HL2Stream
+    // EP2-packer side (natural owner — underrun is the wire's
+    // perspective).  HL2Stream tracks "SSB expected on this
+    // datagram but tryConsumeTxIq returned false" → zero-fill +
+    // counter increment.  See HL2Stream::txIqUnderruns.
 
 private:
     void workerLoop();
+    // Producer side of the EP2 hand-off — fills txIqBuf_,
+    // releases dataReady, blocks on consumed.  Tees the buffer
+    // into the sip1 ring on the way through.  Called only when
+    // injectTxIq_ is true AND the accumulator has ≥ kEp2BlockSize
+    // samples ready.
+    void signalAndWaitForEp2Consumer() noexcept;
 
     TxChannel        tx_;
     TxRing           ring_;
     Hl2Ep6MicSource &mic_;   // caller-owned; outlives this
 
-    // Latest TX I/Q block — written by the worker after each
-    // successful process() call, read by Component 6's EP2
-    // packer when it lands.  Sized exactly kBlockSize.
-    std::vector<std::complex<float>> latestBlock_;
-    int                              latestBlockSize_ = 0;
-    mutable std::mutex               latestMtx_;
-
     std::thread       worker_;
     std::atomic<bool> stopRequested_{false};
     std::atomic<long long> blockCount_{0};
     std::atomic<long long> errorCount_{0};
+
+    // ── EP2 hand-off (reference-faithful 2-semaphore handshake) ──
+    // Shared 126-sample buffer; written by the producer right
+    // before releasing dataReady, read by the consumer right after
+    // acquiring dataReady.  No protection needed beyond the
+    // semaphore happens-before — only ONE party touches the buffer
+    // at any moment by virtue of the handshake.
+    std::vector<std::complex<float>> txIqBuf_;
+    // Accumulator for fexchange0 64-sample blocks → 126-sample
+    // wire buffer.  Producer-thread-only.  Carries 0-63 samples
+    // over from the previous round-trip when 64+64=128 was packed
+    // as 126+2.  Capacity 64+126 = 190 covers the worst case.
+    std::vector<std::complex<float>> accum_;
+
+    // Two binary semaphores, mirroring the reference's hsendIQSem
+    // (data-ready) + hobbuffsRun[0] (consumed) pair.  std::
+    // counting_semaphore<1> = binary semaphore in C++20.
+    std::counting_semaphore<1> txIqDataReady_{0};
+    std::counting_semaphore<1> txIqConsumed_{1};  // start "consumed"
+                                                  // = buffer available
+                                                  // for first fill
+
+    std::atomic<bool>      injectTxIq_{false};
+
+    // ── sip1 TX I/Q tap (v0.3 PureSignal forward-compat) ────────
+    // Per design doc §5.8 / CLAUDE.md §7 (v0.2.0 mandatory): every
+    // 126-sample EP2 hand-off is teed into this ring.  No consumer
+    // in v0.2.0 — allocated + filled, that's it.  v0.3 PureSignal
+    // calcc thread reads from it for adaptive predistortion
+    // calibration.  Wiring now lets v0.3 land without re-validating
+    // every TX sub-mode.  Size: 1 sec @ 48 kHz = 48000 complex
+    // samples ≈ 384 KB.  SPSC; producer is the worker thread,
+    // consumer (when v0.3 lands) will be the calcc thread.  No
+    // backpressure: oldest data drops when ring wraps (PS
+    // calibration only cares about RECENT samples anyway).
+    static constexpr std::size_t kSip1RingSamples = 48000;
+    std::vector<std::complex<float>> sip1Ring_;
+    std::atomic<std::size_t>         sip1WriteIdx_{0};
+    std::atomic<long long>           sip1FillCount_{0};
 };
 
 } // namespace lyra::dsp

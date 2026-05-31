@@ -1455,6 +1455,49 @@ void HL2Stream::setFadeOutMs(int ms) {
     emit fadeOutMsChanged(after);
 }
 
+// ─────────────────────────────────────────────────────────────
+// TX-1 component 6: SSB I/Q injection gate + source registration
+// ─────────────────────────────────────────────────────────────
+//
+// setInjectTxIq is the FSM hand-off point.  Wire-inert default
+// (false) means the EP2 packer's SSB branch is never taken, so
+// no SSB I/Q can land on the wire even with MOX keyed.  The FSM
+// (follow-up commit) flips this TRUE at keydown AFTER the WDSP
+// TXA channel is started + rf_delay has elapsed, and FALSE at
+// keyup BEFORE the wire MOX bit clears (per §5.7 keyup ordering
+// invariant).
+//
+// NOT persisted to QSettings — operator intent is captured in
+// the FSM gestures (PTT, MOX, TUN buttons), not in a "default
+// SSB armed" preference.  Stream stop / restart always comes
+// up with injectTxIq_=false (matches the cb58bcb-class
+// come-up-not-keyed safety posture for MOX + tune).
+
+void HL2Stream::setInjectTxIq(bool on) {
+    const bool prev = injectTxIq_.exchange(on, std::memory_order_acq_rel);
+    if (prev == on) return;
+    safetyLog(QStringLiteral(
+        "TX: inject_tx_iq -> %1 (EP2 packer %2 SSB samples on MOX)")
+        .arg(on ? QStringLiteral("ARMED") : QStringLiteral("disarmed"))
+        .arg(on ? QStringLiteral("pulling") : QStringLiteral("ignoring")));
+    emit injectTxIqChanged(on);
+}
+
+// Source registration — caller-owned lifetime.  The wire writer
+// thread calls the registered std::function once per datagram when
+// (moxBit && injectTxIq_); the callback fills 126 complex<float>
+// samples and returns true, or returns false if no data was ready.
+//
+// Passing an empty std::function ({}) clears the source.  Caller
+// MUST clear before the underlying object goes away.  The mutex
+// here is for the register/clear race only — the hot-path read
+// inside the EP2 packer takes the same mutex briefly per datagram,
+// which is fine at ~380 Hz (uncontested unless mid-registration).
+void HL2Stream::registerTxIqSource(TxIqSource src) {
+    std::lock_guard<std::mutex> lk(txIqSourceMtx_);
+    txIqSource_ = std::move(src);
+}
+
 void HL2Stream::armTxSafetyTimer() {
     if (txTimeoutBypass_ || !txSafetyTimer_) return;
     // QTimer::start(int) with a fresh duration replaces any pending
@@ -1844,22 +1887,105 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // feature than TUN).
         //
         // Component 5a wires the cos² envelope here: the TUN constant
-        // is multiplied by the fade coefficient per LRIQ sample.  At
-        // operator keydown the envelope ramps 0 → 1 over fadeInMs;
-        // at keyup it ramps 1 → 0 over fadeOutMs.  When TUN is not
-        // armed, txI stays zero regardless — the fade coefficient
-        // still advances internally so a mid-flight TUN-arm sees the
-        // correct state.  Component 6 (SSB EP2 packer extension) will
-        // multiply the SSB I/Q by the same coefficient.
+        // (and the component-6 SSB I/Q below) is multiplied by the
+        // fade coefficient per LRIQ sample.  At operator keydown the
+        // envelope ramps 0 → 1 over fadeInMs; at keyup it ramps
+        // 1 → 0 over fadeOutMs.  When neither TUN nor SSB is active,
+        // txI/txQ stay zero — the fade coefficient still advances
+        // internally so a mid-flight arm sees the correct state.
         constexpr float kTuneCarrierFullScale = 0.95f * 32767.0f;
+
+        // ── TX-1 component 6: SSB I/Q source pull ────────────────
+        //
+        // Reference-faithful match to the HL2 wire-protocol C
+        // reference's EP2 TX I/Q consumer (see docs/architecture/
+        // tx1_ssb_design.md §5.7 for the verified cite + handshake
+        // semantics).  Pattern:
+        //
+        //   if (!XmitBit) memset(outIQbufp, 0, sizeof(complex)*126)
+        //
+        // = MANDATORY zero on no-MOX.  We extend the rule slightly:
+        // zero ALSO when injectTxIq is false, OR when the source
+        // callback isn't registered, OR when it returned false (no
+        // data ready).  All four cases fall through to the same
+        // zero-fill path — the reference's universal posture.
+        //
+        // TUN takes priority over SSB (operator gesture semantics).
+        // If both happen to be armed, TUN wins.  This is rare in
+        // practice (operator either arms TUN or relies on SSB mic,
+        // not both at once).
+        //
+        // The source callback (typically TxDspWorker::tryConsumeTxIq)
+        // returns true if it filled the 126-element buffer, false if
+        // it had no data ready.  Non-blocking — the EP2 writer
+        // cannot afford to wait (it's on a hard 2.6 ms timer cadence).
+        //
+        // Buffer is stack-allocated per-datagram (~1 KB).  No
+        // heap traffic on the hot path.
+        std::complex<float> ssbBuf[126];
+        bool emitSsb = false;
+        if (moxBit && injectTxIq_.load(std::memory_order_acquire)
+                   && !emitTone) {
+            // Brief lock — uncontested at the ~380 Hz wire cadence
+            // unless mid-registration (which only happens at app
+            // boot / shutdown, not on the hot path).
+            TxIqSource src;
+            {
+                std::lock_guard<std::mutex> lk(txIqSourceMtx_);
+                src = txIqSource_;
+            }
+            if (src && src(ssbBuf)) {
+                emitSsb = true;
+            } else {
+                // SSB expected on this datagram but data not ready
+                // (source unregistered, or producer not signalling
+                // yet).  Count the underrun; the zero-fill branch
+                // below runs as the universal fall-through.
+                txIqUnderruns_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         for (int i = 0; i < 126; ++i) {
             const qint16 L = audio ? audio[i * 2 + 0] : 0;
             const qint16 R = audio ? audio[i * 2 + 1] : 0;
             const float coef = fade_.advance();
-            const qint16 txI = emitTone
-                ? static_cast<qint16>(kTuneCarrierFullScale * coef + 0.5f)
-                : qint16{0};
-            const qint16 txQ = 0;
+            qint16 txI;
+            qint16 txQ;
+            if (emitTone) {
+                // TUN priority path — DC carrier × cos² envelope.
+                txI = static_cast<qint16>(
+                    kTuneCarrierFullScale * coef + 0.5f);
+                txQ = qint16{0};
+            } else if (emitSsb) {
+                // SSB I/Q × cos² envelope, quantized via the
+                // reference-faithful symmetric round-to-nearest
+                // (see docs/architecture/tx1_ssb_design.md §5.7
+                // for the verified reference cite):
+                //   x >= 0 ? floor(x * 32767 + 0.5) : ceil(x * 32767 - 0.5)
+                // float saturates to qint16 range via clamp to
+                // [-32768, 32767] before the int cast (defensive —
+                // the WDSP TXA chain's ALC should keep output in
+                // [-1, +1) but cap anyway).
+                const float scI = ssbBuf[i].real() * coef * 32767.0f;
+                const float scQ = ssbBuf[i].imag() * coef * 32767.0f;
+                const float rndI = scI >= 0.0f ? std::floor(scI + 0.5f)
+                                               : std::ceil( scI - 0.5f);
+                const float rndQ = scQ >= 0.0f ? std::floor(scQ + 0.5f)
+                                               : std::ceil( scQ - 0.5f);
+                const float clI = rndI < -32768.0f ? -32768.0f
+                                : rndI >  32767.0f ?  32767.0f : rndI;
+                const float clQ = rndQ < -32768.0f ? -32768.0f
+                                : rndQ >  32767.0f ?  32767.0f : rndQ;
+                txI = static_cast<qint16>(clI);
+                txQ = static_cast<qint16>(clQ);
+            } else {
+                // Mandatory zero-fill — covers !moxBit AND
+                // (moxBit && !injectTxIq) AND (moxBit && injectTxIq
+                // && no data).  Matches the verified reference's
+                // universal `!XmitBit ⇒ zero` posture.
+                txI = qint16{0};
+                txQ = qint16{0};
+            }
             const int base = (i < 63) ? (16 + i * 8) : (528 + (i - 63) * 8);
             pktBytes[base + 0] = static_cast<std::uint8_t>((L >> 8) & 0xFF);
             pktBytes[base + 1] = static_cast<std::uint8_t>( L       & 0xFF);

@@ -1,11 +1,13 @@
-// Lyra-cpp — TX-1 component 4c: dedicated TX DSP worker thread (impl).
-// See tx_dsp_worker.h for the locked operational posture.
+// Lyra-cpp — TX-1 component 4c+6: dedicated TX DSP worker thread (impl).
+// See tx_dsp_worker.h for the locked operational posture + the
+// EP2 hand-off semaphore-pair design.
 
 #include "tx_dsp_worker.h"
 
 #include <QDebug>
 
 #include <algorithm>
+#include <chrono>
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -22,8 +24,10 @@ TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     : tx_(/*channelId=*/1, wdsp)
     , ring_(/*capacitySamples=*/8 * kBlockSize, kBlockSize)
     , mic_(micSource)
-    , latestBlock_(static_cast<size_t>(kBlockSize),
-                   std::complex<float>(0.0f, 0.0f))
+    , txIqBuf_(static_cast<std::size_t>(kEp2BlockSize),
+               std::complex<float>(0.0f, 0.0f))
+    , sip1Ring_(kSip1RingSamples,
+                std::complex<float>(0.0f, 0.0f))
 {
     // Open the WDSP TX channel at the locked design v2 rates:
     // 48 kHz mic in / 96 kHz DSP / 48 kHz I/Q out.  TxChannel::open
@@ -35,6 +39,12 @@ TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
                  "(RX path unaffected)");
         return;
     }
+
+    // Pre-size the 64-→-126 accumulator to its worst case
+    // (one fresh kBlockSize push + the carryover up to kBlockSize-1
+    // = 2*kBlockSize - 1 capacity covers it without realloc on the
+    // hot path).
+    accum_.reserve(static_cast<std::size_t>(2 * kBlockSize));
 
     // Hook mic samples into the SPSC ring.  Capturing `this` is
     // safe — the destructor clears the mic consumer before this
@@ -50,8 +60,8 @@ TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     // signals stop + joins.
     worker_ = std::thread(&TxDspWorker::workerLoop, this);
 
-    qInfo("[tx-worker] spawned (TX DSP runs continuously; output gated only "
-          "at the wire pack when component 6 lands)");
+    qInfo("[tx-worker] spawned (TX DSP runs continuously; EP2 hand-off "
+          "wire-inert until setInjectTxIq(true) is called by the FSM)");
 }
 
 TxDspWorker::~TxDspWorker()
@@ -73,8 +83,19 @@ TxDspWorker::~TxDspWorker()
     //    popBlock returns false on the next iteration.
     ring_.shutdown();
 
+    // 2a) Also un-stick the worker if it's blocked on
+    //     txIqConsumed_.acquire() (the EP2-consumed wait).  At
+    //     teardown there's no real EP2 consumer left, so we
+    //     release the consumed semaphore manually — the worker's
+    //     next stopRequested_ check catches it and exits the loop.
+    //     Releasing on a wire-inert worker (injectTxIq_ never
+    //     became true) is a no-op (nothing's waiting on the
+    //     binary semaphore — release just bumps the count to 1,
+    //     which is harmless; the dtor frees the object next).
+    txIqConsumed_.release();
+
     // 3) Join.  Bounded — the worker only ever blocks in
-    //    popBlock, which now returns false.
+    //    popBlock or txIqConsumed_, both released above.
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -85,9 +106,10 @@ TxDspWorker::~TxDspWorker()
     tx_.close();
 
     qInfo("[tx-worker] stopped (blocks=%lld, errors=%lld, "
-          "ring-overruns=%lld)",
+          "ring-overruns=%lld, ep2-fills=%lld)",
           blockCount_.load(), errorCount_.load(),
-          ring_.overrunCount());
+          ring_.overrunCount(),
+          sip1FillCount_.load());
 }
 
 void TxDspWorker::workerLoop()
@@ -117,7 +139,7 @@ void TxDspWorker::workerLoop()
     // sized exactly kBlockSize; never resized.
     float                            inBlock[kBlockSize];
     std::vector<std::complex<float>> outBlock(
-        static_cast<size_t>(kBlockSize),
+        static_cast<std::size_t>(kBlockSize),
         std::complex<float>(0.0f, 0.0f));
 
     while (!stopRequested_.load(std::memory_order_acquire)) {
@@ -135,14 +157,34 @@ void TxDspWorker::workerLoop()
             errorCount_.fetch_add(1, std::memory_order_relaxed);
             continue;   // skip publishing on a non-zero status
         }
-        // Publish the latest TX I/Q block for component 6.
-        // Brief lock; the copy is small (126 complex<float> =
-        // 1 KiB).
-        {
-            std::lock_guard<std::mutex> lk(latestMtx_);
-            std::copy(outBlock.begin(), outBlock.end(),
-                      latestBlock_.begin());
-            latestBlockSize_ = kBlockSize;
+
+        // EP2 hand-off gate.  injectTxIq_ defaults FALSE and stays
+        // false until the FSM keydown wires it true (a follow-up
+        // commit).  While false: discard the WDSP output here —
+        // do NOT accumulate, do NOT signal dataReady, no SSB I/Q
+        // can land on the wire by construction.  Wire-inert.
+        if (!injectTxIq_.load(std::memory_order_acquire)) {
+            // Keep the accumulator drained while inert so when
+            // injectTxIq_ eventually flips true we don't dump
+            // stale samples from before the keydown.
+            if (!accum_.empty()) {
+                accum_.clear();
+            }
+            continue;
+        }
+
+        // Accumulate this 64-sample fexchange0 output into the
+        // EP2-sized buffer.  Worst case: previous round-trip
+        // left up to kBlockSize-1 carryover; we add kBlockSize
+        // here; total ≤ 2*kBlockSize.
+        accum_.insert(accum_.end(), outBlock.begin(), outBlock.end());
+
+        // Hand off every full kEp2BlockSize-sized chunk to the
+        // EP2 consumer.  The loop covers the (rare) case where
+        // a burst of mic samples produced two fexchange0 outputs
+        // back-to-back and the accumulator now has ≥ 2*kEp2BlockSize.
+        while (static_cast<int>(accum_.size()) >= kEp2BlockSize) {
+            signalAndWaitForEp2Consumer();
         }
     }
 
@@ -153,21 +195,89 @@ void TxDspWorker::workerLoop()
 #endif
 }
 
-int TxDspWorker::latestTxBlock(std::complex<float> *out,
-                               int maxFrames) const
+void TxDspWorker::signalAndWaitForEp2Consumer() noexcept
 {
-    if (!out || maxFrames <= 0) return 0;
-    std::lock_guard<std::mutex> lk(latestMtx_);
-    // Ternary instead of std::min — matches the C reference's
-    // Windows-min-macro / inline-ternary idiom (no NOMINMAX dance,
-    // no std::min vs Windows macro conflict).
-    const int n = (maxFrames < latestBlockSize_) ? maxFrames
-                                                 : latestBlockSize_;
-    if (n <= 0) return 0;
-    std::copy(latestBlock_.begin(),
-              latestBlock_.begin() + n,
+    // Wait for the previous in-flight buffer to be CONSUMED before
+    // we overwrite txIqBuf_.  Reference-faithful match to the
+    // verified reference's
+    //   WaitForSingleObject(hobbuffsRun[0], INFINITE)
+    // — INFINITE wait, matching the reference's strict producer-
+    // consumer lockstep (see docs/architecture/tx1_ssb_design.md
+    // §5.7 for the cite).  Bounded in practice by the EP2 wire
+    // cadence (~2.6 ms per datagram).  On teardown the dtor
+    // releases txIqConsumed_ to unstick us; the stopRequested_
+    // check immediately below catches it and returns without
+    // touching the shared buffer or signalling dataReady.
+    //
+    // Underrun accounting lives on the CONSUMER side (HL2Stream
+    // EP2 packer increments its own counter when SSB was expected
+    // but tryConsumeTxIq returned false).  This is the natural
+    // ownership: underrun is the wire's perspective on missing
+    // samples, not the producer's.
+    txIqConsumed_.acquire();
+
+    if (stopRequested_.load(std::memory_order_acquire)) {
+        // Stop requested while we were waiting.  Don't touch the
+        // shared buffer, don't signal dataReady — just return and
+        // let the workerLoop's stopRequested_ check exit cleanly.
+        return;
+    }
+
+    // Fill the shared buffer from the front of the accumulator.
+    // Matches the verified reference's
+    //   memcpy(outIQbufp, out, sizeof(complex) * 126)
+    // (see docs/architecture/tx1_ssb_design.md §5.7 for the cite).
+    std::copy(accum_.begin(),
+              accum_.begin() + kEp2BlockSize,
+              txIqBuf_.begin());
+    accum_.erase(accum_.begin(),
+                 accum_.begin() + kEp2BlockSize);
+
+    // Tee the same 126-sample chunk into the sip1 ring for v0.3
+    // PureSignal forward-compat.  No consumer in v0.2; calcc reads
+    // this at predistortion-calibration time when v0.3 lands.
+    // Wraparound is by simple modulo on the write index — the
+    // ring has no read index in v0.2 (oldest data drops by
+    // overwrite, which is exactly what PS calcc wants).
+    const std::size_t base = sip1WriteIdx_.load(std::memory_order_relaxed);
+    for (int i = 0; i < kEp2BlockSize; ++i) {
+        sip1Ring_[(base + static_cast<std::size_t>(i)) % kSip1RingSamples]
+            = txIqBuf_[i];
+    }
+    sip1WriteIdx_.store((base + static_cast<std::size_t>(kEp2BlockSize))
+                            % kSip1RingSamples,
+                        std::memory_order_relaxed);
+    sip1FillCount_.fetch_add(1, std::memory_order_relaxed);
+
+    // Signal "data ready".  Matches the verified reference's
+    //   ReleaseSemaphore(hsendIQSem, 1, 0)
+    // (see docs/architecture/tx1_ssb_design.md §5.7 for the cite).
+    txIqDataReady_.release();
+}
+
+bool TxDspWorker::tryConsumeTxIq(std::complex<float> *out) noexcept
+{
+    if (!out) return false;
+    // Non-blocking try-acquire.  If injectTxIq_ is false the
+    // producer never released dataReady → this always returns
+    // false → consumer zero-fills (mandatory zero-on-no-MOX per
+    // §5.7 + the verified reference's universal `!XmitBit ⇒ zero`
+    // posture; see docs/architecture/tx1_ssb_design.md §5.7 for
+    // the cite).  Wire-inert by construction until the FSM
+    // wires injectTxIq_.
+    if (!txIqDataReady_.try_acquire()) {
+        return false;
+    }
+    // We hold the data-ready guarantee.  Copy the 126 samples out
+    // of the shared buffer and release consumed so the producer
+    // can refill next round.  Matches the verified reference's
+    //   pack to wire bytes ; ReleaseSemaphore(hobbuffsRun[0], 1, 0)
+    // (see docs/architecture/tx1_ssb_design.md §5.7 for the cite).
+    std::copy(txIqBuf_.begin(),
+              txIqBuf_.begin() + kEp2BlockSize,
               out);
-    return n;
+    txIqConsumed_.release();
+    return true;
 }
 
 } // namespace lyra::dsp
