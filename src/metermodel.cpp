@@ -785,12 +785,43 @@ void MeterModel::computePwr() {
                           ? 0.0
                           : raw * pwrCalScale_;
 
-    // Reuse dispDbm_ as the general "smoothed value" cache across all
-    // sources (slot is dBm for the S-meter; watts here).  This avoids
-    // adding a parallel field family per source while keeping each
-    // compute self-contained.
-    dispDbm_ += kPwrSmooth * (w - dispDbm_);
-    const double n = std::clamp(dispDbm_ / pwrScaleMaxW_, 0.0, 1.0);
+    // Sliding-window MAX detector — the verified reference's PWR
+    // meter ballistic (max over the last multimeter_peak_hold_samples
+    // = 10 ticks = 500 ms at the 50 ms tick rate; see
+    // hl2_stream.cpp / consoles.cs metering path).  This is the
+    // 2026-05-31 operator-bench-identified fix for the "brief
+    // whistles read low" symptom: an IIR-smoother averages brief
+    // peaks AWAY (the needle barely twitches because the average
+    // over the smoothing window stays low), while a MAX detector
+    // HOLDS them for the full window duration so the operator can
+    // actually read peak power off the needle.  Sustained tones
+    // converge identically under either ballistic — which is why
+    // continuous-whistle bench readings matched the Palstar before
+    // this fix.  TUN mode, being a steady carrier, also read
+    // correctly pre-fix for the same reason.  After the fix the
+    // needle behaves like every HF rig's "PEP" reading: jumps to
+    // peak on each speech burst and holds 500 ms; in operator-keyed
+    // CW or sustained voice the held peak matches the actual carrier
+    // level.
+    //
+    // Note: the existing peak_ / maxPeak_ glow / max-hold indicators
+    // (rendered separately as ticks above the needle for longer-decay
+    // "what was the highest reading recently" markers) STAY in place
+    // — they're operating-time references the operator can use to
+    // see prior peaks fading off.  Only the NEEDLE-driving value
+    // (level_) changes from IIR-smoothed to MAX-of-window.
+    pwrWinHist_[pwrWinIdx_] = w;
+    pwrWinIdx_ = (pwrWinIdx_ + 1) % kPwrWindowSamples;
+    double windowMax = 0.0;
+    for (int i = 0; i < kPwrWindowSamples; ++i) {
+        if (pwrWinHist_[i] > windowMax) windowMax = pwrWinHist_[i];
+    }
+    // Keep dispDbm_ updated for the dbmText_/secondary-readout path
+    // so any caller that reads the smoothed value (e.g. text-format
+    // output) doesn't suddenly see step changes.  The needle itself
+    // uses windowMax via level_ below.
+    dispDbm_ = windowMax;
+    const double n = std::clamp(windowMax / pwrScaleMaxW_, 0.0, 1.0);
     level_ = n;
 
     if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }

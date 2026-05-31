@@ -277,7 +277,22 @@ private:
     double glow_  = 0.0;       // afterglow normalized
     int    holdCtr_ = 0;       // peak-hold dwell counter
     int    maxHoldCtr_ = 0;    // max-hold dwell counter
-    double dispDbm_ = -140.0;  // smoothed dBm for the readout
+    double dispDbm_ = -140.0;  // smoothed dBm for the readout (S-meter)
+
+    // PWR meter sliding-window MAX state (operator bench 2026-05-31
+    // identified the meter ballistic bug: brief whistles read low on
+    // the needle because Lyra used IIR-smoothing while the verified
+    // reference uses a sliding-window MAX detector — sustained tone
+    // converges either way but brief peaks are averaged-out by IIR
+    // and properly held by MAX).  Ring buffer of the last
+    // kPwrWindowSamples ticks of measured watts; the needle reads
+    // max() over the ring.  10 samples × 50 ms tick = 500 ms window
+    // matches the reference's multimeter_peak_hold_samples=10 +
+    // meter_delay=50 ms exactly.  Zero-init = needle starts at 0 W
+    // and rises as samples accumulate (correct first-TX behaviour).
+    static constexpr int kPwrWindowSamples = 10;
+    double pwrWinHist_[kPwrWindowSamples] = {};   // zero-initialized
+    int    pwrWinIdx_ = 0;
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
     double noiseLevel_ = 0.0;  // floor position on the scale (0..1)
     QString snrText_ = QStringLiteral("—");
