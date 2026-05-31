@@ -92,9 +92,19 @@ TxChannel::signedEdges(Mode m, double low, double high)
 
 void TxChannel::pushBandpassLocked()
 {
-    if (!opened_ || !wdsp_) return;
+    if (!opened_ || !wdsp_) {
+        qInfo("[tx] pushBandpassLocked: SKIPPED (opened=%d wdsp=%p)",
+              opened_ ? 1 : 0, static_cast<void*>(wdsp_));
+        return;
+    }
     const WdspApi &api = wdsp_->api();
-    if (!api.SetTXABandpassFreqs || !api.SetTXAMode) return;
+    if (!api.SetTXABandpassFreqs || !api.SetTXAMode) {
+        qWarning("[tx] pushBandpassLocked: SKIPPED — WDSP symbol(s) "
+                 "unresolved (SetTXABandpassFreqs=%p SetTXAMode=%p)",
+                 reinterpret_cast<void*>(api.SetTXABandpassFreqs),
+                 reinterpret_cast<void*>(api.SetTXAMode));
+        return;
+    }
 
     const auto [lo, hi] = signedEdges(mode_, opLow_, opHigh_);
     // Freqs FIRST so bp0 doesn't run on stale (-5000,-100)
@@ -102,6 +112,14 @@ void TxChannel::pushBandpassLocked()
     // gets called off SetTXAMode (see design v2 §5.3 step 3-4).
     api.SetTXABandpassFreqs(channel_, lo, hi);
     api.SetTXAMode(channel_, modeToWdsp(mode_));
+    // Diagnostic: confirms the full chain from operator mode-change
+    // landed on WDSP with the correct sign-coded passband.  Operator's
+    // 2026-05-31 bench follow-up showed "no change"; this log lets
+    // the bench answer "did the WDSP setter actually fire and with
+    // what values" without re-instrumenting.
+    qInfo("[tx] WDSP pushed: mode=%s (wdsp=%d), bandpass=(%.0f, %.0f) Hz",
+          (mode_ == Mode::USB) ? "USB" : "LSB",
+          modeToWdsp(mode_), lo, hi);
 }
 
 bool TxChannel::open(int micRate, int dspRate, int outRate)

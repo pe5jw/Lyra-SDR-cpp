@@ -1626,6 +1626,17 @@ void HL2Stream::setTxMode(int wdspMode) {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         fwd = txControl_.setMode;
     }
+    // TX-1 component 8a-tx-mode — diagnostic log so we can verify the
+    // mode-push chain is firing end-to-end on bench.  Operator's
+    // 2026-05-31 follow-up bench showed "no change" after the initial
+    // 8a-tx-mode commit; one possibility is the path was never reached
+    // (stale build, callback unwired).  This log answers "did
+    // setTxMode get called and was the callback registered" in the
+    // bench [tx] log lines so we don't have to guess next time.
+    qInfo("[tx] setTxMode(wdsp=%d) -> %s",
+          clamped,
+          fwd ? "forwarded to TxControl.setMode"
+              : "NO-OP (TxControl.setMode not registered)");
     if (fwd) fwd(clamped);
 }
 
