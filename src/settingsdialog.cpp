@@ -85,6 +85,12 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(buildHardwareTab(), tr("Hardware"));
     }
+    // TX-1 component 5b — Settings → TX tab.  Only meaningful when
+    // the stream is connected (everything here writes through
+    // HL2Stream setters).
+    if (stream_) {
+        tabs_->addTab(buildTxTab(), tr("TX"));
+    }
     if (memory_ || eibi_) {
         tabs_->addTab(buildBandsTab(), tr("Bands"));
     }
@@ -1682,6 +1688,221 @@ QWidget *SettingsDialog::buildMeterTab() {
     hint->setStyleSheet(QStringLiteral("color:#8a9aac;"));
     form->addRow(hint);
 
+    return page;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// TX-1 component 5b: Settings → TX tab.
+//
+// Operator-facing UI for the TR-sequencing + cos² amplitude envelope
+// knobs that ship as load-bearing hot-switch protection for external
+// solid-state HF linear amplifiers.  Defaults are the operator's
+// bench-validated working-station config (matches the existing TR-
+// sequencing values + cos² envelope durations the engine ships at).
+//
+// ⚠ HOT-SWITCH WARNING: tooltips on RF Delay + Fade-In Duration carry
+// the explicit warning that reducing these below the external amp's
+// T/R relay settle spec can destroy the PA.  Settings UI honours the
+// operator's value (clamped to [1, 500] ms) — no internal floor —
+// because the operator's specific amp is the authority.  An informed
+// low value is an operator choice, not a UI lockout.
+// ─────────────────────────────────────────────────────────────────
+QWidget *SettingsDialog::buildTxTab() {
+    auto *page = new QWidget(this);
+    auto *root = new QVBoxLayout(page);
+
+    // Common spin-box bounds — match HL2Stream::kMin/kMaxFsmDelayMs +
+    // MoxEdgeFade::kMin/kMaxFadeMs (deliberately literal here so the
+    // settings UI doesn't have to reach into private class constants).
+    constexpr int kMinMs = 1;
+    constexpr int kMaxMs = 500;
+
+    // Helper: builds a labelled spin box bound to a stream getter/
+    // setter pair + change signal.  Bidirectional — operator value
+    // change calls the setter; an external (e.g. Restore Defaults)
+    // setter call updates the spin box via the signal.
+    auto makeSpin = [this](int initial, int minMs, int maxMs,
+                           const QString &tooltip)
+        -> QSpinBox * {
+        auto *sb = new QSpinBox(this);
+        sb->setRange(minMs, maxMs);
+        sb->setSuffix(tr(" ms"));
+        sb->setValue(initial);
+        sb->setToolTip(tooltip);
+        return sb;
+    };
+
+    // ── TR Sequencing group ────────────────────────────────────
+    {
+        auto *grp = new QGroupBox(
+            tr("TR Sequencing  (PTT → wire-MOX → RF timing)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *moxSpin = makeSpin(
+            stream_->moxDelayMs(), kMinMs, kMaxMs,
+            tr("Time from operator-PTT to the wire MOX bit going hot.\n"
+               "Gives the RX-protect step-att + external filter-board "
+               "relays a window to settle into TX configuration before "
+               "any RF appears.\n\n"
+               "Default 15 ms (bench-validated for typical HL2+ + "
+               "external filter board)."));
+        connect(moxSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setMoxDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::moxDelayMsChanged,
+                moxSpin, [moxSpin](int v) {
+                    if (moxSpin->value() != v) moxSpin->setValue(v);
+                });
+        form->addRow(tr("MOX Delay:"), moxSpin);
+
+        auto *rfSpin = makeSpin(
+            stream_->rfDelayMs(), kMinMs, kMaxMs,
+            tr("⚠ HOT-SWITCH PROTECTION — load-bearing for external "
+               "solid-state HF linear amps.\n\n"
+               "Time from wire MOX bit going hot to the 'RF settled' "
+               "edge (when actual RF appears on the antenna).  Gives "
+               "the external amp's T/R relay enough settle time before "
+               "RF hits — typical SS HF linears need 30-50 ms.\n\n"
+               "Default 50 ms is bench-safe for typical 1 kW SS HF "
+               "linears.  REDUCING THIS BELOW YOUR AMP'S T/R RELAY "
+               "SETTLE SPEC CAN DESTROY THE PA via hot-switching "
+               "RF into mid-transition relays."));
+        connect(rfSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setRfDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::rfDelayMsChanged,
+                rfSpin, [rfSpin](int v) {
+                    if (rfSpin->value() != v) rfSpin->setValue(v);
+                });
+        form->addRow(tr("RF Delay:"), rfSpin);
+
+        auto *spaceSpin = makeSpin(
+            stream_->spaceMoxDelayMs(), kMinMs, kMaxMs,
+            tr("Keyup re-key window — time after operator-keyup before "
+               "the wire MOX bit actually clears.  Allows mic-clip / CW-"
+               "dot-tail re-keying within this window to collapse-stay-"
+               "TX (no on-the-air drop, no extra T/R cycle).\n\n"
+               "Default 13 ms.  Sets the upper bound on Fade-Out "
+               "Duration below — fade-out must fit inside this window "
+               "or it gets truncated at MOX-clear."));
+        connect(spaceSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setSpaceMoxDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::spaceMoxDelayMsChanged,
+                spaceSpin, [spaceSpin](int v) {
+                    if (spaceSpin->value() != v) spaceSpin->setValue(v);
+                });
+        form->addRow(tr("Space MOX Delay:"), spaceSpin);
+
+        auto *pttSpin = makeSpin(
+            stream_->pttOutDelayMs(), kMinMs, kMaxMs,
+            tr("Final cleanup window after wire MOX clears — time "
+               "before step-att restores + OC pattern flips back to RX "
+               "+ moxActive_=false emits.  Lets external relays finish "
+               "switching back before the RX front-end re-opens.\n\n"
+               "Default 5 ms (bench-validated)."));
+        connect(pttSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setPttOutDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::pttOutDelayMsChanged,
+                pttSpin, [pttSpin](int v) {
+                    if (pttSpin->value() != v) pttSpin->setValue(v);
+                });
+        form->addRow(tr("PTT-Out Delay:"), pttSpin);
+
+        root->addWidget(grp);
+    }
+
+    // ── Amplitude Envelope group ────────────────────────────────
+    {
+        auto *grp = new QGroupBox(
+            tr("Amplitude Envelope  (cos² fade on TX I/Q)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *inSpin = makeSpin(
+            stream_->fadeInMs(), kMinMs, kMaxMs,
+            tr("⚠ HOT-SWITCH PROTECTION — belt-and-suspenders layer on "
+               "top of RF Delay.\n\n"
+               "Cos² amplitude ramp duration when TX I/Q rises from "
+               "zero to full at keydown.  Soft amplitude rise INSIDE "
+               "the RF Delay window — even if RF Delay is right, the "
+               "soft ramp adds redundant protection against any "
+               "residual MOX-bit / relay timing skew.\n\n"
+               "Default 50 ms (matches the default RF Delay so the "
+               "ramp completes exactly when 'RF settled' fires).  "
+               "REDUCING THIS WITHOUT KNOWING YOUR AMP'S SWITCHING "
+               "BEHAVIOUR can expose the PA to hot-switch transients."));
+        connect(inSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setFadeInMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::fadeInMsChanged,
+                inSpin, [inSpin](int v) {
+                    if (inSpin->value() != v) inSpin->setValue(v);
+                });
+        form->addRow(tr("Fade-In Duration:"), inSpin);
+
+        auto *outSpin = makeSpin(
+            stream_->fadeOutMs(), kMinMs, kMaxMs,
+            tr("Cos² amplitude ramp duration when TX I/Q falls from "
+               "full to zero at keyup.\n\n"
+               "MUST be less than or equal to Space MOX Delay above — "
+               "the gateware DAC stops consuming TX I/Q the instant "
+               "the wire MOX bit clears, so a fade-out longer than "
+               "Space MOX Delay gets truncated mid-ramp (audible click).\n\n"
+               "Default 13 ms (matches the default Space MOX Delay).  "
+               "RF going DOWN doesn't damage amps (relay disengages "
+               "cleanly), so this is shorter than Fade-In — purely "
+               "click-prevention on the host → gateware transition."));
+        connect(outSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setFadeOutMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::fadeOutMsChanged,
+                outSpin, [outSpin](int v) {
+                    if (outSpin->value() != v) outSpin->setValue(v);
+                });
+        form->addRow(tr("Fade-Out Duration:"), outSpin);
+
+        root->addWidget(grp);
+    }
+
+    // ── Restore hot-switch-safe defaults button ──────────────────
+    auto *restoreBtn = new QPushButton(
+        tr("Restore hot-switch-safe defaults"), page);
+    restoreBtn->setToolTip(tr(
+        "Resets all six values above to the bench-validated defaults "
+        "(MOX 15 / RF 50 / Space-MOX 13 / PTT-Out 5 / Fade-In 50 / "
+        "Fade-Out 13 ms).  These are hot-switch-safe for typical 1 kW "
+        "solid-state HF linears.  Use this to get back to a known-good "
+        "starting point if you've experimented with values and want to "
+        "return to the safe profile."));
+    connect(restoreBtn, &QPushButton::clicked, this, [this]() {
+        if (!stream_) return;
+        // Bench-validated working-station defaults.
+        stream_->setMoxDelayMs(15);
+        stream_->setRfDelayMs(50);
+        stream_->setSpaceMoxDelayMs(13);
+        stream_->setPttOutDelayMs(5);
+        stream_->setFadeInMs(50);
+        stream_->setFadeOutMs(13);
+    });
+    root->addWidget(restoreBtn);
+
+    // ── Operator-facing explainer (italic, dim) ──────────────────
+    auto *hint = new QLabel(
+        tr("<p style='font-size:11px;color:#8fa6ba'>"
+           "The TR-sequencing values control <i>scheduling</i> of the "
+           "MOX → step-att → RF → cleanup edges; the amplitude envelope "
+           "shapes the <i>I/Q amplitude</i> itself at the EP2 wire-pack "
+           "stage.  Both layers compose into a single 'clean PTT onset' "
+           "story — at defaults the fade-in completes exactly when "
+           "'RF settled' fires (50 ms after wire-MOX hot), and the "
+           "fade-out completes exactly when wire-MOX clears "
+           "(13 ms after operator-keyup).</p>"
+           "<p style='font-size:11px;color:#8fa6ba'>"
+           "Live-apply: changes take effect on the next MOX edge — "
+           "no restart, no MOX cycle required.  If you change values "
+           "while the radio is keyed, the in-flight transition "
+           "finishes at the prior rate; the new values apply at the "
+           "next keydown or keyup.</p>"), page);
+    hint->setWordWrap(true);
+    hint->setTextFormat(Qt::RichText);
+    root->addWidget(hint);
+
+    root->addStretch(1);
     return page;
 }
 

@@ -52,6 +52,9 @@ private:
     QWidget *buildBandsTab();    // Memory bank (+ Time Stations / SW DB later)
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
     QWidget *buildMeterTab();    // S-meter calibration trim
+    QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
+                                 // + cos² amplitude envelope (amp
+                                 // hot-switch protection knobs)
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
