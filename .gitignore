@@ -42,3 +42,9 @@ Thumbs.db
 
 # Local source-backup zips (not part of the repo)
 _backups/
+
+# Local operator-machine build helpers + logs (not part of the repo)
+_b.bat
+_b*.bat
+build_out.log
+build_out*.log

@@ -1,13 +1,15 @@
 # TX-1 SSB modulator arc — design document
 
 Status: **DESIGN v2.1.1 + 2026-05-30 reference-reconciliation amendments
-LOCKED.  Components 1-6 shipped + operator-HL2-bench-confirmed.
-Component 6 ships wire-inert (injectTxIq defaults FALSE — EP2 SSB
-hand-off plumbing in place, sip1 tap allocated, but no SSB I/Q
-emitted on the wire until the FSM wires injectTxIq at keydown).
-Component 7 (FSM keydown/keyup + WDSP TXA channel start/stop) next
-— that's the first end-to-end SSB voice TX commit.**
-Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (components 5 + 6 ship + session-start discipline).
+LOCKED.  Components 1-7 shipped + operator-HL2-bench-confirmed (C7 =
+first end-to-end SSB voice TX, wire path clean, 0.2 W bench result
+root-caused to ALC `max_gain=0 dB` default trap + missing operator
+mic gain UI).  Pre-Component-8 Thetis TX audio-path study landed
+2026-05-31 EVE (`docs/architecture/tx_audio_path_reference.md`, 807
+lines) — Component 8 ship order locked: 8a-0 (ALC init fix) → 8a
+(mic gain UI) → 8a+ (HW mic boost) → 8b (mic source) → 8c (TX BW)
+→ 8d (TX multimeter ALC/MIC/COMP values) → 8e (HW PTT).**
+Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (components 5 + 6 + 7 ship + Thetis TX audio-path study + Component 8 ship order locked).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
 Python lyra is NOT a reference for TX-DSP / WDSP-TXA / mic-input; it
@@ -206,6 +208,95 @@ SSB voice TX:** keydown after rfDelayMs → start WDSP TXA channel
 WDSP TXA channel (blocking flush) → wire MOX clears (per §5.7
 keyup ordering invariant).  Bench: operator dummy load + low
 drive + mic input → first SSB voice key-up.
+
+**2026-05-31 EVE — Component 7 SHIPPED + Thetis TX audio-path
+study landed (pre-Component-8 design):**
+
+- **Component 7** `7119214`: FSM keydown/keyup wired end-to-end.
+  Operator first-SSB bench (dummy load, drive 100%): voice TX
+  worked — wire path / TR-sequencing FSM / MoxEdgeFade two-stage
+  release / §5.7 keyup invariant all clean over multiple cycles.
+  ONLY issue: **0.2 W peak out** at 100% drive (mic peaks
+  consistently −11 to −13 dBFS in the existing Q6.5 mic bench).
+  Operator flagged the missing operator-tunable mic gain UI; bench
+  itself was structurally clean.
+
+- **Pre-Component-8 study commissioned + landed:** a focused
+  research agent did a full read of Thetis 2.10.3.13 (console.cs
+  + audio.cs + setup.cs + radio.cs + cmaster.c + the wdsp/TXA.c
+  chain). Output =
+  `docs/architecture/tx_audio_path_reference.md` (807 lines, every
+  claim cited file:line). The study reframed the 0.2 W result:
+
+  - **🚨 ALC `max_gain` default = 1.0 (0 dB) at WDSP create time**
+    (`wdsp/TXA.c:322`). Thetis only escapes this because Setup
+    immediately calls `SetTXAALCMaxGain(channel, 3.0)` from the
+    profile default on first load (`setup.cs:9296-9301`, profile
+    default at `setup.designer.cs:39547`). **Lyra-cpp NEVER calls
+    this setter** — the ALC pins the entire TXA output chain at a
+    hard 0 dB ceiling regardless of mic level. This is the
+    load-bearing cause of the 0.2 W bench result, BIGGER than the
+    missing mic-gain UI. One-line fix at TX channel open. Becomes
+    **Component 8a-0** (ships ahead of 8a).
+  - **PanelGain1 (the Mic Gain knob) is TXA chain stage #3** — before
+    phrot, mic meter, EQ, leveler, CFCOMP, bandpass, compressor,
+    OSCtrl, AND ALC (`wdsp/TXA.c` chain order; `patchpanel.c:55-101`
+    `xpanel()` math). It is the ONLY operator-tunable software gain
+    in the chain. Thetis default `mic_gain = 0.5` (≈ −6 dB) at
+    construction (`radio.cs:4127`); lyra-cpp default 1.0 (= +6 dB
+    hotter than Thetis-at-construction — operator slider should
+    map 0..100 % onto dB Min/Max with default ~+10 dB to match
+    Thetis-Setup-loaded behavior).
+  - **20 dB Mic Boost is a HARDWARE codec PGA bit, NOT software**
+    (`setup.cs:7851-7855` → `console.cs:13310-13320` →
+    `console.cs:41787-41800` `SetMicGain()` → `NetworkIO.SetMicBoost`
+    → ChannelMaster → HL2 C&C status bytes → AK4951 PGA register).
+    Same for Line In (codec mux) and Line In Boost (0..31 dB step).
+    Lyra-cpp Component 8a+ MUST wire these as C&C bits, NOT a
+    TXA-side software multiplier (a parallel software boost
+    double-counts and saturates the chain).
+  - **VAC1/VAC2 routing is a 3D runtime truth table**:
+    DSPMode × VAC1Enabled × PTT/MOX/SPACE override-bypass
+    checkboxes, rewritten on every mode/VAC/bypass change via
+    `cmaster.cs:1070-1110` `CMSetTXAPanelGain1`. Far more state
+    surface than the original Component 8b plan assumed. **Beta-1
+    decision: collapse Mic Source selector to 2-position (Mic In /
+    Line In, both codec-mux C&C); defer VAC1/VAC2 to v2** with a
+    UI tooltip noting it. (Aligns with operator preference for
+    Combinator/EQ pre-processing — the digital-mode VAC path can
+    land when the speech-chain UI lands.)
+  - **TX bandpass is ONE H/L pair reinterpreted per-mode** via
+    `UpdateTXLowHighFilterForMode` (`console.cs:8079-8118`). No
+    per-mode preset matrix exists in Thetis. Default 100/3000;
+    USB pass-through, LSB negate-and-swap, AM/SAM symmetric ±,
+    FM symmetric, CW special. Component 8c ships two operator spin
+    boxes (High/Low) driving `SetTXABandpassFreqs` via this
+    transform; no preset-matrix UI work needed.
+  - **TX meter rates**: 20 Hz for analog modes, 5 Hz for digital
+    (`meter_delay=50`, `meter_dig_delay=200`). Per-meter getters
+    documented in §10 of the study doc (`TXA_MIC_PK`,
+    `TXA_LVLR_PK / GAIN`, `TXA_COMP_PK / AV`, `TXA_ALC_PK / AV /
+    GAIN`, plus the HL2 C&C status bytes for Fwd / Rev / SWR / VDD
+    / ID with HL2 decode formulas).
+
+- **No-CFC reaffirmation:** the study doc's §8 documents Thetis
+  CFCOMP at length, but ONLY for chain-position reference — Lyra
+  does NOT ship CFC (§6.7 deferral table line 1111). The
+  Lyra-native **5-band Combinator** replaces it (per `FEATURES.md`
+  §3.3, operator-locked 2026-05-20). The study's read-first
+  header makes this explicit so the spec isn't misread later.
+
+**Component 8 ship order (locked 2026-05-31 EVE):**
+
+| Slice | What | Why first |
+|---|---|---|
+| **8a-0** | `SetTXAALCMaxGain(channel, 3.0)` at TX channel open | Smoking gun for 0.2 W; ~5 LOC; should ~triple peak before mic gain even moves |
+| **8a** | Mic Gain UI: HL2Stream Q_PROPERTY `micGainDb` + TxControl callback + TX panel slider (dB-to-linear via `SetTXAPanelGain1`). Range −20..+40 dB, default 0 dB (Thetis-construction-equivalent unity at the WDSP layer; operator slider can dial to typical +10 dB ESSB starting point). Hot-tunable during keydown. QSettings persistence. USER_GUIDE TX panel update. | First operator-visible knob |
+| **8a+** | 20 dB Mic Boost checkbox → HL2 C&C MicBoost bit (NOT software) | If 8a-0 + 8a alone don't deliver typical-mic headroom on operator's bench |
+| **8b** | Mic Source: Mic In / Line In codec mux via C&C. VAC1/VAC2 anchor only (placeholder tooltip "available in v2") — no inert UI | Codec-input change; small surface |
+| **8c** | TX Bandwidth: 2 spin boxes (High/Low) + `UpdateTXLowHighFilterForMode` transform. SSB-only for beta (USB pass-through, LSB negate-and-swap) | Operator-tunable filter |
+| **8d** | TX multimeter: Mic / Comp / ALC / PO / SWR / VDD / ID source selector via MeterModel (existing picker per v2.1.1 §9.3.1); fills the ALC / MIC / COMP values pending from C7 | Operator-visible drive levels |
+| **8e** | Hardware PTT input (foot switch / hand mic) — opt-in default OFF per ff5f128 regression class | After audio chain is fully tunable |
 
 ---
 
