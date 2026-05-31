@@ -6,7 +6,7 @@
 //   mic samples (rx loop, 48 kHz via Hl2Ep6MicSource)
 //        │ producer push
 //        ▼
-//   TxRing (SPSC, 8x blockSize, semaphore-signalled)
+//   TxRing (SPSC, 32x blockSize, semaphore-signalled)
 //        │ consumer popBlock
 //        ▼
 //   TX worker thread (MMCSS "Pro Audio" prio 2)
@@ -47,8 +47,9 @@
 // THOSE PATTERNS ARE STRUCTURALLY IMPOSSIBLE IN THIS DESIGN:
 //   * TxRing has NO drop-oldest (overrun = drop new + count); the
 //     producer NEVER mutates outIdx_.
-//   * Ring is sized 8x blockSize so steady-state overrun is
-//     structurally unreachable.
+//   * Ring is sized 32x blockSize (Task #46 bump from 8x) so a
+//     transient EP2 lockstep stall up to ~40 ms is absorbed
+//     cleanly.  Steady-state overrun is structurally unreachable.
 //   * Worker drains in fixed blockSize chunks; producer pushes
 //     decimated 48 kHz mic samples per datagram.
 //   * The mutex on TxChannel covers the lifecycle race that bit
@@ -195,13 +196,31 @@ public:
     void stopTxChannel()  { tx_.stop();  }
 
     // Diagnostics.
+    //
+    // blockCount  — popBlocks where fexchange0 ran (channel running_).
+    // errorCount  — popBlocks where fexchange0 returned non-zero
+    //               (genuine WDSP buffer-management hiccups).  Task
+    //               #46: this no longer conflates the "channel
+    //               stopped" state with fexchange0 errors.
+    // skipCount   — popBlocks where the channel was NOT running and
+    //               fexchange0 was skipped.  Normal during RX-only;
+    //               not an error.  Operator can compare against
+    //               blockCount to see TX-active vs RX-only ratio.
+    // overrunCount — ring drops (producer-side, mic source rejected
+    //               new samples).
+    // highWater    — peak ring fill since startup (samples).
     long long blockCount()   const {
         return blockCount_.load(std::memory_order_relaxed);
     }
     long long errorCount()   const {
         return errorCount_.load(std::memory_order_relaxed);
     }
+    long long skipCount()    const {
+        return skipCount_.load(std::memory_order_relaxed);
+    }
     long long overrunCount() const { return ring_.overrunCount(); }
+    int       ringHighWater() const { return ring_.highWaterSamples(); }
+    int       ringCapacity()  const { return ring_.capacitySamples(); }
     // sip1 tap counter — bench instrument confirming the v0.3
     // PureSignal forward-compat ring is filling.  Counts complete
     // 126-sample blocks teed off the EP2 hand-off into the sip1
@@ -232,6 +251,9 @@ private:
     std::atomic<bool> stopRequested_{false};
     std::atomic<long long> blockCount_{0};
     std::atomic<long long> errorCount_{0};
+    // Task #46: popBlocks where the TX channel wasn't running, so
+    // fexchange0 was skipped.  Normal during RX-only operation.
+    std::atomic<long long> skipCount_{0};
 
     // ── EP2 hand-off (reference-faithful 2-semaphore handshake) ──
     // Shared 126-sample buffer; written by the producer right

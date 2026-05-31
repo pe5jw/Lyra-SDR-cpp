@@ -214,7 +214,7 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     // `if (exchange & 1)` short-circuits when state=0, so the
     // chain is never invoked, and TxChannel::process() early-
     // returns on its running_ check (still false here).
-    running_ = false;
+    running_.store(false, std::memory_order_release);
 
     qInfo("[tx] channel %d opened (TX, mic=%d → dsp=%d → out=%d Hz; "
           "in_size=%d, dsp_size=%d — TXA at WDSP defaults; "
@@ -234,20 +234,21 @@ void TxChannel::close()
     // channel DSP thread — another candidate wedge point.
     qWarning("[shutdown] TxChannel::close ENTRY (channel=%d)", channel_);
     std::lock_guard<std::mutex> lk(channelMtx_);
+    const bool wasRunning = running_.load(std::memory_order_acquire);
     qWarning("[shutdown] TxChannel::close mutex acquired (opened=%d running=%d)",
-             opened_ ? 1 : 0, running_ ? 1 : 0);
+             opened_ ? 1 : 0, wasRunning ? 1 : 0);
     if (!opened_) {
         qWarning("[shutdown] TxChannel::close NO-OP (not opened)");
         return;
     }
-    if (running_ && wdsp_ && wdsp_->api().SetChannelState) {
+    if (wasRunning && wdsp_ && wdsp_->api().SetChannelState) {
         // Inlined stop (same reason as the start() inlining at the
         // end of open()): we're holding the channel mutex; stop()
         // takes the same mutex.  dmode=1 = blocking flush.
         qWarning("[shutdown] TxChannel::close SetChannelState(ch,0,1) BLOCKING - start");
         wdsp_->api().SetChannelState(channel_, 0, 1);
         qWarning("[shutdown] TxChannel::close SetChannelState(ch,0,1) - done");
-        running_ = false;
+        running_.store(false, std::memory_order_release);
     }
     if (wdsp_) {
         const WdspApi &api = wdsp_->api();
@@ -265,23 +266,23 @@ void TxChannel::close()
 void TxChannel::start()
 {
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || running_ || !wdsp_) return;
+    if (!opened_ || running_.load(std::memory_order_relaxed) || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetChannelState) return;
     api.SetChannelState(channel_, 1, 0);
-    running_ = true;
+    running_.store(true, std::memory_order_release);
 }
 
 void TxChannel::stop()
 {
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !running_ || !wdsp_) return;
+    if (!opened_ || !running_.load(std::memory_order_relaxed) || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetChannelState) return;
     // dmode=1 — blocking flush; WDSP waits up to 100 ms for the
     // downslew envelope to complete before returning.
     api.SetChannelState(channel_, 0, 1);
-    running_ = false;
+    running_.store(false, std::memory_order_release);
 }
 
 // Operator setters — each takes channelMtx_ briefly around the
@@ -379,7 +380,7 @@ int TxChannel::process(const float *mic_block, int n,
     // in-flight process() to finish — fine for the infrequent
     // setter-call cadence on TX).
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !running_ || !wdsp_) return -1;
+    if (!opened_ || !running_.load(std::memory_order_relaxed) || !wdsp_) return -1;
     if (!mic_block || !iq_out)           return -1;
     if (n != kInSize)                    return -1;   // contract
     const WdspApi &api = wdsp_->api();

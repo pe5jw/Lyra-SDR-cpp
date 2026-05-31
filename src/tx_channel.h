@@ -45,6 +45,7 @@
 
 #include <QString>
 
+#include <atomic>
 #include <complex>
 #include <mutex>
 #include <utility>
@@ -87,7 +88,14 @@ public:
     void stop();
 
     bool isOpen()    const { return opened_; }
-    bool isRunning() const { return running_; }
+    // Atomic load — safe to call from the TxDspWorker thread without
+    // holding channelMtx_.  Task #46 fix (2026-05-31): the worker
+    // skips fexchange0 when this returns false so RX-only quiescent
+    // state isn't mis-classified as fexchange0 errors.  A racy read
+    // around a start/stop edge at worst costs one extra fexchange0
+    // returning -1 (channel state=0 in WDSP), or skips one block on
+    // a fresh-start — both transient and benign.
+    bool isRunning() const { return running_.load(std::memory_order_acquire); }
 
     // Operator-positive passband Hz; the engine signs internally
     // per the current mode.  Re-pushed atomically with the mode
@@ -168,7 +176,12 @@ private:
     int  dspRate_       = 96000;
     int  outRate_       = 48000;
     bool opened_        = false;
-    bool running_       = false;
+    // Atomic so the TxDspWorker thread can read via isRunning()
+    // without taking channelMtx_ on the hot path.  Writers
+    // (open/start/stop/close) hold channelMtx_ AND release-store
+    // here; the worker's acquire-load pairs with that store.
+    // Task #46 (2026-05-31).
+    std::atomic<bool> running_{false};
     // process() hot-path scratch.  Allocated in open() at exactly
     // 2*kInSize doubles each (interleaved I,Q frames).  NEVER
     // resized after open() — process() must not allocate on the

@@ -49,6 +49,23 @@ int TxRing::push(const float *samples, int n)
     inIdx_.store(in + static_cast<std::uint64_t>(n),
                  std::memory_order_release);
 
+    // High-water update.  Producer-thread-only writer (CAS-loop
+    // against any reader's eventual-consistent view).  Approximate
+    // — uses the just-loaded `out` (acquire) + the new in-index;
+    // a slightly-stale `out` only causes a slightly-pessimistic
+    // (= larger) high-water reading, which is the safe direction
+    // for an early-warning instrument.  Task #46.
+    const int newFilled = static_cast<int>(
+        (in + static_cast<std::uint64_t>(n)) - out);
+    int prevHigh = highWaterSamples_.load(std::memory_order_relaxed);
+    while (newFilled > prevHigh &&
+           !highWaterSamples_.compare_exchange_weak(
+               prevHigh, newFilled,
+               std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+        // CAS retries on contention; loop body intentionally empty.
+    }
+
     // Block-grained semaphore release — once per complete
     // blockSize accumulated since the last release.  Mirrors the
     // reference's Inbound() releasing ONCE PER COMPLETE BLOCK.

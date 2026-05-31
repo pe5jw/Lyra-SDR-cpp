@@ -24,13 +24,23 @@
 // ║  producer side mutated outIdx_ — racing the consumer's        ║
 // ║  outIdx_ write under different mutexes → corrupted outIdx_ →  ║
 // ║  out-of-bounds buffer access → crash.  We do NOT drop-oldest. ║
-// ║  Ring is sized 8× blockSize so overrun is structurally        ║
-// ║  unreachable in the steady state (the producer pushes ~10     ║
-// ║  samples per 200 µs datagram; the consumer drains 126         ║
-// ║  samples per ~2.6 ms wake-up — consumer keeps up by design).  ║
-// ║  If overrun DOES happen (a long Qt-main GIL stall, a sudden   ║
-// ║  storm of mic bytes), the producer drops the NEW samples and  ║
-// ║  ticks an overrun counter — outIdx_ is never touched.         ║
+// ║  Ring is sized 32× blockSize (Task #46 bump; was 8×).  The    ║
+// ║  steady-state cadence is producer ~10 samples / 200 µs        ║
+// ║  datagram = 48 kHz vs consumer 64 samples / ~1.3 ms = 48 kHz  ║
+// ║  — perfectly matched.  The bump is HEADROOM for TX-active     ║
+// ║  EP2-consumer stalls: the producer-consumer lockstep blocks   ║
+// ║  the worker thread in txIqConsumed_.acquire() for one EP2     ║
+// ║  cycle (~2.6 ms) per 126-sample wire chunk.  An EP2 timer     ║
+// ║  hiccup (Qt main-thread paint storm, AK4951 buffer jitter,    ║
+// ║  S2 timer slip) stalls the lockstep, the producer keeps       ║
+// ║  pushing mic at 48 kHz, and the ring fills.  At 32× = 2048    ║
+// ║  samples = ~43 ms buffer, any stall under ~40 ms is absorbed  ║
+// ║  cleanly.  The bench instrument is overrunCount() (drops      ║
+// ║  ticked) + highWaterSamples() (peak fill — early-warning      ║
+// ║  before we'd actually overrun).                               ║
+// ║                                                               ║
+// ║  If overrun DOES happen, the producer drops the NEW samples   ║
+// ║  and ticks the overrun counter — outIdx_ is never touched.    ║
 // ╚═══════════════════════════════════════════════════════════════╝
 //
 // Indices are monotonically growing size_t; the buffer is indexed
@@ -106,6 +116,15 @@ public:
         return overruns_.load(std::memory_order_relaxed);
     }
     int       filledSamples()   const noexcept;
+    // Peak fill (in samples) since startup.  Updated on every push()
+    // after the producer accepts the new samples.  Task #46
+    // instrument — tells the bench whether the 32× ring bump was
+    // actually needed and how close we got to overrun.  Strictly
+    // monotonic; no reset path (a session-scope tell, like the
+    // overrunCount).
+    int       highWaterSamples() const noexcept {
+        return highWaterSamples_.load(std::memory_order_relaxed);
+    }
 
 private:
     std::vector<float> buf_;
@@ -126,6 +145,10 @@ private:
     std::counting_semaphore<kSemMax> sem_{0};
     std::atomic<bool>      shutdown_{false};
     std::atomic<long long> overruns_{0};
+    // High-water mark of ring occupancy in samples.  Producer-side
+    // update only (relaxed CAS-loop in push()); readable from any
+    // thread.  Task #46 diagnostic.
+    std::atomic<int>       highWaterSamples_{0};
 };
 
 } // namespace lyra::dsp

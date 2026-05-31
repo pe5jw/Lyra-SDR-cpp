@@ -22,7 +22,13 @@ namespace lyra::dsp {
 
 TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     : tx_(/*channelId=*/1, wdsp)
-    , ring_(/*capacitySamples=*/8 * kBlockSize, kBlockSize)
+    // Task #46 (2026-05-31): ring 8× → 32× kBlockSize (512 → 2048
+    // samples ≈ 43 ms buffer).  Absorbs EP2 lockstep stalls up to
+    // ~40 ms — operator's bench showed 19801 overruns in a session
+    // where Qt-main paint storms or AK4951 device-buffer jitter
+    // stalled the EP2 timer-paced writer beyond the previous
+    // 10.7 ms headroom.  See tx_ring.h for the full rationale.
+    , ring_(/*capacitySamples=*/32 * kBlockSize, kBlockSize)
     , mic_(micSource)
     , txIqBuf_(static_cast<std::size_t>(kEp2BlockSize),
                std::complex<float>(0.0f, 0.0f))
@@ -125,10 +131,11 @@ TxDspWorker::~TxDspWorker()
     tx_.close();
     qWarning("[shutdown] ~TxDspWorker step 4: done");
 
-    qInfo("[tx-worker] stopped (blocks=%lld, errors=%lld, "
-          "ring-overruns=%lld, ep2-fills=%lld)",
-          blockCount_.load(), errorCount_.load(),
+    qInfo("[tx-worker] stopped (blocks=%lld, errors=%lld, skipped=%lld, "
+          "ring-overruns=%lld, ring-high-water=%d/%d, ep2-fills=%lld)",
+          blockCount_.load(), errorCount_.load(), skipCount_.load(),
           ring_.overrunCount(),
+          ring_.highWaterSamples(), ring_.capacitySamples(),
           sip1FillCount_.load());
     qWarning("[shutdown] ~TxDspWorker EXIT");
 }
@@ -169,6 +176,30 @@ void TxDspWorker::workerLoop()
         if (!ring_.popBlock(inBlock)) {
             break;
         }
+
+        // Task #46 (2026-05-31) — channel-running gate.  When the
+        // FSM hasn't keyed yet (RX-only quiescent state), WDSP TXA
+        // state is 0 and TxChannel::process() would return -1.  Pre-
+        // fix that -1 was counted as an "error" (operator bench:
+        // 2097/16182 = 13% spurious "error" rate that was really
+        // just popBlocks during RX-only state).  Now we read the
+        // atomic isRunning() flag once and skip fexchange0 entirely
+        // when not keyed.  Cheap (one atomic acquire-load) and
+        // honest in the bench numbers.  Drain the ring (we already
+        // popped above — keeps the producer happy) and roll on.
+        //
+        // The accum drain on the falling-edge of injectTxIq_ below
+        // would also fire here, but be explicit: if injectTxIq_ ever
+        // got latched true with channel not running (transient
+        // start/stop reorder), don't carry stale outputs.
+        if (!tx_.isRunning()) {
+            skipCount_.fetch_add(1, std::memory_order_relaxed);
+            if (!accum_.empty()) {
+                accum_.clear();
+            }
+            continue;
+        }
+
         // Drive the WDSP TXA chain.  TxChannel::process takes
         // its own channelMtx_ internally (lifecycle guard).
         const int err = tx_.process(inBlock, kBlockSize,
