@@ -382,38 +382,40 @@ int main(int argc, char *argv[])
             // side flag stay in lockstep — single point of FSM
             // control.  Same caller-owned lifetime as above; cleared
             // FIRST in the aboutToQuit chain via {} below.
-            stream->registerTxControl({
-                /*start=*/[txWorker]() { txWorker->startTxChannel(); },
-                /*stop =*/[txWorker]() { txWorker->stopTxChannel();  },
-                /*setInjectTxIq=*/[txWorker](bool on) {
+            // TX-1 component 8a-tx-mode follow-up (2026-05-31 PM): use
+            // C++20 DESIGNATED INITIALIZERS (.name = value) so the
+            // compiler enforces field-name matching, NOT positional
+            // order.  This prevents a recurrence of the silent
+            // misalignment bug that caused 8a-tx-mode to ship broken:
+            // a void(double) mic-gain lambda silently wrapped into a
+            // std::function<void(int)> setMode slot (implicit int→
+            // double conversion makes std::function happy), so every
+            // setMode call actually invoked setMicGainDb, every
+            // setMicGainDb call actually invoked setAlcMaxGainDb, and
+            // every setAlcMaxGainDb call actually invoked setMode.
+            // The result was the operator's Mic Gain slider silently
+            // capping ALC ceiling (and thus output power), TX mode
+            // stuck in LSB regardless of selection, and ALC default
+            // 3.0 push setting WDSP TXA mode to 3 (clamped LSB).
+            // Designated initializers make any future struct-field
+            // reorder or addition a hard compile error if the call
+            // site doesn't match — bug class eliminated.
+            stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
+                .start            = [txWorker]() { txWorker->startTxChannel(); },
+                .stop             = [txWorker]() { txWorker->stopTxChannel();  },
+                .setInjectTxIq    = [txWorker](bool on) {
                     txWorker->setInjectTxIq(on);
                 },
-                // TX-1 component 8a — operator-tunable WDSP TXA gain
-                // stages forwarded to the TxChannel WDSP setters.
-                // registerTxControl() ALSO pushes the autoloaded
-                // micGainDb/alcMaxGainDb values to the channel ONCE
-                // right after this registration so the freshly-opened
-                // WDSP TXA channel doesn't sit at WDSP create-time
-                // defaults (in particular the load-bearing ALC
-                // max-gain = 0 dB trap that pins the entire TXA
-                // output chain at the ALC ceiling regardless of mic
-                // level — the root cause of the 2026-05-31 0.2 W
-                // first-SSB bench result).
-                /*setMicGainDb=*/[txWorker](double db) {
-                    txWorker->setMicGainDb(db);
-                },
-                /*setAlcMaxGainDb=*/[txWorker](double db) {
-                    txWorker->setAlcMaxGainDb(db);
-                },
-                // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB,
-                // 1=USB) to the TX channel.  Wired below to
-                // engine->modeChanged so TX always tracks the operator's
-                // RX-side mode selection (the operator's intent — they
-                // picked USB on the Mode panel, TX should be USB).
-                /*setMode=*/[txWorker](int wdspMode) {
+                .setMode          = [txWorker](int wdspMode) {
                     txWorker->setMode(wdspMode == 1
                         ? lyra::dsp::TxChannel::Mode::USB
                         : lyra::dsp::TxChannel::Mode::LSB);
+                },
+                .setMicGainDb     = [txWorker](double db) {
+                    txWorker->setMicGainDb(db);
+                },
+                .setAlcMaxGainDb  = [txWorker](double db) {
+                    txWorker->setAlcMaxGainDb(db);
                 },
             });
 
