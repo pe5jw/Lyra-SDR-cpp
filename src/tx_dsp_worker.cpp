@@ -204,7 +204,26 @@ void TxDspWorker::workerLoop()
         // EP2 consumer.  The loop covers the (rare) case where
         // a burst of mic samples produced two fexchange0 outputs
         // back-to-back and the accumulator now has ≥ 2*kEp2BlockSize.
+        //
+        // Task #40 — TX-triggered zombie shutdown ROOT-CAUSE FIX
+        // (operator bench 2026-05-31): without the stopRequested_
+        // check inside this inner loop, teardown deadlocked here.
+        // Scenario:
+        //   1. Worker keyed (accum_.size() >= kEp2BlockSize).
+        //   2. signalAndWait blocked on txIqConsumed_.acquire().
+        //   3. Dtor sets stopRequested_=true + releases the
+        //      semaphore ONCE to unstick the worker.
+        //   4. signalAndWait's acquire succeeds, sees stopRequested_,
+        //      EARLY-RETURNS without erasing from accum_.
+        //   5. Outer while sees accum_.size() unchanged + re-enters
+        //      signalAndWait → acquire blocks forever (no more
+        //      releases coming from the now-gone dtor).
+        // Checking stopRequested_ BEFORE re-entering signalAndWait
+        // breaks the loop on the same iteration that the early-
+        // return happened.  Bench-confirmed wedge point via watchdog
+        // diagnostic trace (commit 65c965d).
         while (static_cast<int>(accum_.size()) >= kEp2BlockSize) {
+            if (stopRequested_.load(std::memory_order_acquire)) break;
             signalAndWaitForEp2Consumer();
         }
     }
@@ -239,8 +258,23 @@ void TxDspWorker::signalAndWaitForEp2Consumer() noexcept
 
     if (stopRequested_.load(std::memory_order_acquire)) {
         // Stop requested while we were waiting.  Don't touch the
-        // shared buffer, don't signal dataReady — just return and
-        // let the workerLoop's stopRequested_ check exit cleanly.
+        // shared buffer, don't signal dataReady.
+        //
+        // Task #40 — TX-triggered zombie shutdown ROOT-CAUSE FIX
+        // (operator bench 2026-05-31): clear accum_ here as
+        // defense-in-depth.  The outer workerLoop while-loop now
+        // ALSO checks stopRequested_ before re-entering this
+        // function (see workerLoop), so the loop terminates
+        // regardless.  This clear is a second safety net: any
+        // future caller that doesn't add the outer-loop check
+        // (refactor, new entry point, etc.) still terminates
+        // because the accumulator drains, the
+        // `accum.size() >= kEp2BlockSize` condition fails, and the
+        // outer while exits naturally.  Cost: drops up to
+        // kEp2BlockSize-1 samples of TX audio that would have
+        // gone on the wire — irrelevant at teardown, the operator
+        // already keyed up.
+        accum_.clear();
         return;
     }
 
