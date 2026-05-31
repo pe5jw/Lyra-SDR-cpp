@@ -1181,6 +1181,7 @@ event:
 | **RF Delay** ⚠ | 50 ms | From wire-MOX hot to the "RF settled" edge (when actual RF appears on the antenna). **This is the hot-switch protection window for external SS linears** — their T/R relay needs typically 30–50 ms to settle. The default is bench-safe for typical 1 kW SS HF linears. **Reducing this below your amp's T/R settle spec can destroy the PA.** |
 | **Space MOX Delay** | 13 ms | Keyup re-key window: the time between operator-keyup and the wire-MOX bit clearing. Allows a mic-clip / CW-dot-tail re-key in this window to collapse-stay-TX (no on-the-air drop, no extra T/R cycle). Also sets the upper bound on **Fade-Out Duration** below — fade-out must fit inside this window or it gets truncated at MOX-clear. |
 | **PTT-Out Delay** | 5 ms | Final cleanup window after wire-MOX clears — before step-att restores, OC pattern flips back to RX, and `moxActive` emits false. Lets external relays finish switching back **before** the RX front-end re-opens. |
+| **TX-Stop Delay** | 10 ms | **In-flight UDP datagram clear window.** Time between the TX-DSP channel stopping (blocking flush) and the wire MOX bit clearing on keyup. UDP datagrams already-sent (or sitting in your OS network buffer) carrying MOX=1 + non-zero TX I/Q need this window to actually reach + be processed by the HL2 BEFORE the wire MOX state flips — otherwise the gateware could see momentary MOX=0 with stale TX I/Q from a previous datagram. Default 10 ms matches the verified-reference value. Reduce only on a very low-latency NIC + LAN where you're confident no datagrams sit in OS buffer. |
 
 ### Amplitude Envelope (cos² fade on TX I/Q)
 
@@ -1200,10 +1201,11 @@ destroy amps; RF coming DOWN cannot.
 
 ### Restore hot-switch-safe defaults
 
-A single button that resets all six values to **15 / 50 / 13 / 5 /
-50 / 13** ms — the bench-validated profile that's safe for typical
-1 kW SS HF linears. Use it any time you've experimented with values
-and want a known-good starting point.
+A single button that resets all seven values to **15 / 50 / 13 / 5 /
+50 / 13 / 10** ms — the bench-validated profile that's safe for typical
+1 kW SS HF linears (and reference-faithful for the in-flight UDP
+datagram clear). Use it any time you've experimented with values and
+want a known-good starting point.
 
 > **The two layers compose into one "clean PTT onset" story.** The
 > TR-sequencing values control *scheduling* of the MOX → step-att →

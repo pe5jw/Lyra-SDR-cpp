@@ -1806,6 +1806,28 @@ QWidget *SettingsDialog::buildTxTab() {
                 });
         form->addRow(tr("PTT-Out Delay:"), pttSpin);
 
+        auto *txStopSpin = makeSpin(
+            stream_->txStopDelayMs(), kMinMs, kMaxMs,
+            tr("In-flight UDP datagram clear window — time between "
+               "the TX-DSP channel stopping (blocking flush) and "
+               "the wire MOX bit clearing on keyup.\n\n"
+               "Datagrams already-sent or in your OS network buffer "
+               "(still carrying MOX=1 + non-zero TX I/Q) need time "
+               "to actually reach + be processed by the HL2 BEFORE "
+               "the wire MOX state flips — otherwise the gateware "
+               "could see momentary MOX=0 with stale TX I/Q from a "
+               "prior keyed-state datagram.\n\n"
+               "Default 10 ms is the verified-reference value.  "
+               "Reduce only on a very low-latency NIC + LAN where "
+               "you're confident no datagrams sit in OS buffer."));
+        connect(txStopSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { stream_->setTxStopDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::txStopDelayMsChanged,
+                txStopSpin, [txStopSpin](int v) {
+                    if (txStopSpin->value() != v) txStopSpin->setValue(v);
+                });
+        form->addRow(tr("TX-Stop Delay:"), txStopSpin);
+
         root->addWidget(grp);
     }
 
@@ -1863,12 +1885,13 @@ QWidget *SettingsDialog::buildTxTab() {
     auto *restoreBtn = new QPushButton(
         tr("Restore hot-switch-safe defaults"), page);
     restoreBtn->setToolTip(tr(
-        "Resets all six values above to the bench-validated defaults "
+        "Resets all seven values above to the bench-validated defaults "
         "(MOX 15 / RF 50 / Space-MOX 13 / PTT-Out 5 / Fade-In 50 / "
-        "Fade-Out 13 ms).  These are hot-switch-safe for typical 1 kW "
-        "solid-state HF linears.  Use this to get back to a known-good "
-        "starting point if you've experimented with values and want to "
-        "return to the safe profile."));
+        "Fade-Out 13 / TX-Stop 10 ms).  These are hot-switch-safe for "
+        "typical 1 kW solid-state HF linears and reference-faithful "
+        "for the in-flight UDP datagram clear.  Use this to get back "
+        "to a known-good starting point if you've experimented with "
+        "values and want to return to the safe profile."));
     connect(restoreBtn, &QPushButton::clicked, this, [this]() {
         if (!stream_) return;
         // Bench-validated working-station defaults.
@@ -1878,6 +1901,7 @@ QWidget *SettingsDialog::buildTxTab() {
         stream_->setPttOutDelayMs(5);
         stream_->setFadeInMs(50);
         stream_->setFadeOutMs(13);
+        stream_->setTxStopDelayMs(10);
     });
     root->addWidget(restoreBtn);
 

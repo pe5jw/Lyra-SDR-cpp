@@ -259,6 +259,17 @@ class HL2Stream : public QObject {
     //   pttOutDelayMs    — MOX-off → final cleanup             (default 5)
     //   fadeInMs         — cos² TX I/Q amplitude rise          (default 50)
     //   fadeOutMs        — cos² TX I/Q amplitude fall          (default 13)
+    //   txStopDelayMs    — TX-stop → wire-MOX-clear in-flight  (default 10)
+    //                      Component 7 (reference-faithful match to
+    //                      the verified reference's keyup `mox_delay`):
+    //                      time between TX-DSP-channel-stop (blocking
+    //                      WDSP internal flush) and the wire MOX bit
+    //                      clearing.  Lets UDP datagrams already-sent
+    //                      or in-OS-buffer (with MOX=1 + non-zero
+    //                      samples) actually reach + be processed by
+    //                      the HL2 BEFORE we flip the wire state, so
+    //                      the gateware processes them as the keyed
+    //                      samples they were when sent.
     //
     // Persisted under tx/trSeq/<key> in QSettings.  Live-apply (no
     // restart): a value change while the radio is keyed takes effect
@@ -275,6 +286,8 @@ class HL2Stream : public QObject {
                WRITE setFadeInMs        NOTIFY fadeInMsChanged)
     Q_PROPERTY(int fadeOutMs       READ fadeOutMs
                WRITE setFadeOutMs       NOTIFY fadeOutMsChanged)
+    Q_PROPERTY(int txStopDelayMs   READ txStopDelayMs
+               WRITE setTxStopDelayMs   NOTIFY txStopDelayMsChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -301,6 +314,28 @@ public:
     // away.  Passing {} (empty std::function) clears the source
     // (the EP2 packer then falls through to zero-fill).
     using TxIqSource = std::function<bool(std::complex<float> *)>;
+
+    // TX-1 component 7 — TX channel lifecycle callbacks.  The FSM
+    // calls these at keydown (start) / keyup (stop) to bring the
+    // WDSP TXA channel in/out of run-state.  Matches the verified
+    // reference's `WDSP.SetChannelState(id(1,0), 1, 0)` (start,
+    // non-blocking) and `WDSP.SetChannelState(id(1,0), 0, 1)`
+    // (stop, BLOCKING flush up to 100 ms for WDSP internal drain).
+    //
+    // start: non-blocking; arms WDSP DSP thread for the channel.
+    // stop:  BLOCKING; waits up to ~100 ms for WDSP internal flush
+    //        (the ALC + bandpass + other stateful stages drain).
+    //        Reference also blocks (Thread.Sleep) — accept the
+    //        Qt-main-thread block during the keyup chain.
+    //
+    // Typical wire-up: main.cpp registers TxDspWorker's start/stop
+    // pass-throughs.  Caller-owned lifetime: clear via {} before
+    // the underlying object goes away.  Empty std::function = no-op.
+    struct TxControl {
+        std::function<void()> start;
+        std::function<void()> stop;
+        std::function<void(bool)> setInjectTxIq;
+    };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
     QString targetIp()          const { return targetIp_; }
@@ -396,6 +431,7 @@ public:
     int     pttOutDelayMs()   const { return pttOutDelayMs_;   }
     int     fadeInMs()        const { return fade_.fadeInMs();  }
     int     fadeOutMs()       const { return fade_.fadeOutMs(); }
+    int     txStopDelayMs()   const { return txStopDelayMs_;    }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -592,11 +628,24 @@ public slots:
     void setPttOutDelayMs(int ms);
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
+    void setTxStopDelayMs(int ms);
 
     // TX-1 component 6 — SSB I/Q injection gate.  See the
     // Q_PROPERTY decl above for the contract; defaults FALSE,
     // not persisted, set by the FSM at keydown / cleared at keyup.
+    // Component 7 wires this: HL2Stream's setter ALSO forwards to
+    // the registered TxControl.setInjectTxIq callback so the
+    // TxDspWorker producer side is gated in lockstep with the
+    // EP2-packer consumer side.  Single point of control from
+    // the FSM.
     void setInjectTxIq(bool on);
+
+    // TX-1 component 7 — register TX channel lifecycle callbacks
+    // (start, stop, setInjectTxIq).  See TxControl struct doc above.
+    // Caller-owned lifetime; clear via {} before the underlying
+    // object goes away.  Mutex-protected (same pattern as
+    // registerTxIqSource).
+    void registerTxControl(TxControl ctl);
 
     // TX-1 component 6 — register a TX I/Q source for the EP2
     // packer to pull from when (MOX && injectTxIq) is true on a
@@ -658,6 +707,7 @@ signals:
     void pttOutDelayMsChanged(int ms);
     void fadeInMsChanged(int ms);
     void fadeOutMsChanged(int ms);
+    void txStopDelayMsChanged(int ms);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -693,11 +743,20 @@ private:
     // requestedMox_ so an operator change mid-transition (cancel during
     // keydown, re-key during keyup space window) takes effect cleanly.
     void fsmAdvance();        // entry — picks keydown vs keyup vs idle
-    void fsmKeydownPostMox(); // after kMoxDelayMs — set wire MOX bit
-    void fsmKeydownSettled(); // after kRfDelayMs  — emit moxActiveChanged(true)
-    void fsmKeyupPostSpace(); // after kSpaceMoxDelayMs — clear wire MOX bit
+    void fsmKeydownPostMox(); // after moxDelayMs — wire MOX bit set,
+                              //   fade-in starts, TX channel started,
+                              //   inject_tx_iq armed (component 7)
+    void fsmKeydownSettled(); // after rfDelayMs  — emit moxActiveChanged(true)
+    void fsmKeyupPostSpace(); // after spaceMoxDelayMs — fade-out + inject
+                              //   cleared, schedule fsmKeyupFadeOut
                               //   (or collapse-stay-TX if re-keyed)
-    void fsmKeyupSettled();   // after kPttOutDelayMs  — restore step-att,
+    void fsmKeyupFadeOut();   // after fade_.fadeOutMs() — TX channel
+                              //   stopped (blocking flush), schedule
+                              //   fsmKeyupInFlight (component 7 NEW)
+    void fsmKeyupInFlight();  // after txStopDelayMs_ — wire MOX bit
+                              //   clears (in-flight UDP datagrams
+                              //   processed by HL2 by now) (NEW)
+    void fsmKeyupSettled();   // after pttOutDelayMs  — restore step-att,
                               //   emit moxActiveChanged(false)
     // TX-0c-pa-debug — arm the safety timer (called at moxActive=true
     // edge if bypass is off) / cancel it (at moxActive=false edge).
@@ -874,6 +933,13 @@ private:
     // on the hot path).
     TxIqSource           txIqSource_;
     mutable std::mutex   txIqSourceMtx_;
+
+    // TX-1 component 7 — TX channel lifecycle callbacks (start, stop,
+    // setInjectTxIq).  See TxControl struct + registerTxControl() doc
+    // above for the contract.  Same mutex pattern as txIqSourceMtx_
+    // (contention zero — registration is app-boot, never on hot path).
+    TxControl            txControl_;
+    mutable std::mutex   txControlMtx_;
     // ---- TX-0c-fsm: MOX/PTT sequencer state (single-thread, this thread) -
     // Operator/CAT intent — last requested MOX state.  Sequencer reads
     // it at every timer step so an operator change mid-transition takes
@@ -985,6 +1051,13 @@ private:
     static constexpr int     kDefaultRfDelayMs       = 50;
     static constexpr int     kDefaultSpaceMoxDelayMs = 13;
     static constexpr int     kDefaultPttOutDelayMs   = 5;
+    // TX-1 component 7 — keyup-side in-flight clear delay (between
+    // TX-DSP-stop blocking flush and wire-MOX-clear).  Reference-
+    // faithful default 10 ms, matches the verified reference's
+    // keyup `mox_delay`.  Lets UDP datagrams already-sent or in-OS-
+    // buffer (carrying MOX=1 + non-zero samples) actually reach +
+    // be processed by the HL2 BEFORE we flip the wire state.
+    static constexpr int     kDefaultTxStopDelayMs   = 10;
     // Operator-tuning bounds.  Below kMinFsmDelayMs lands you in
     // hot-switch-unsafe territory for typical SS amps; above
     // kMaxFsmDelayMs is unphysical (PTT events don't last that long).
@@ -997,6 +1070,7 @@ private:
     int rfDelayMs_       = kDefaultRfDelayMs;
     int spaceMoxDelayMs_ = kDefaultSpaceMoxDelayMs;
     int pttOutDelayMs_   = kDefaultPttOutDelayMs;
+    int txStopDelayMs_   = kDefaultTxStopDelayMs;
 
     // ---- TX-1 component 5a: cos² TX-IQ amplitude envelope ----------
     // Owned by HL2Stream, lives on the EP2 wire writer thread.  See

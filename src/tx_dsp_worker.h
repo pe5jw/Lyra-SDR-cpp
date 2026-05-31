@@ -169,16 +169,30 @@ public:
 
     // Operator-arm gate.  Defaults FALSE.  When false, the producer
     // NEVER signals dataReady → tryConsumeTxIq always returns false
-    // → no SSB I/Q on the wire.  Set to true once the FSM is wired
-    // to start/stop the WDSP TXA channel + the operator is on a
-    // bench safe to actually emit SSB voice (first-RF-SSB-voice
-    // commit is a separate follow-up).
+    // → no SSB I/Q on the wire.  Component 7 wires this from
+    // HL2Stream's FSM keydown/keyup (via the registered TxControl
+    // callback) so producer and consumer flags flip in lockstep.
     void setInjectTxIq(bool on) noexcept {
         injectTxIq_.store(on, std::memory_order_release);
     }
     bool injectTxIq() const noexcept {
         return injectTxIq_.load(std::memory_order_acquire);
     }
+
+    // ── Component 7: TX channel lifecycle pass-throughs ─────────
+    //
+    // FSM-callable wrappers around TxChannel::start() / ::stop().
+    // start() = SetChannelState(ch, 1, 0) — non-blocking; arms the
+    // WDSP TXA DSP thread for this channel.  stop() = SetChannelState
+    // (ch, 0, 1) — BLOCKING flush (≤100ms for WDSP internal drain
+    // of ALC + bandpass + other stateful stages).  HL2Stream's
+    // registerTxControl callback wires these to the FSM keydown
+    // (start at fsmKeydownPostMox) and keyup (stop at fsmKeyupFadeOut
+    // — AFTER MoxEdgeFade reaches zero, per §5.7 keyup ordering
+    // invariant).  Reference parity to SetChannelState(id(1,0), ...)
+    // calls in the verified reference's chkMOX handler.
+    void startTxChannel() { tx_.start(); }
+    void stopTxChannel()  { tx_.stop();  }
 
     // Diagnostics.
     long long blockCount()   const {

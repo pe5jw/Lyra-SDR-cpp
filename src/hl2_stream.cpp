@@ -255,6 +255,10 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         QSettings().value(QStringLiteral("tx/trSeq/pttOutDelayMs"),
                           kDefaultPttOutDelayMs).toInt(),
         kMinFsmDelayMs, kMaxFsmDelayMs);
+    txStopDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/trSeq/txStopDelayMs"),
+                          kDefaultTxStopDelayMs).toInt(),
+        kMinFsmDelayMs, kMaxFsmDelayMs);
     fade_.setFadeInMs(
         QSettings().value(QStringLiteral("tx/trSeq/fadeInMs"),
                           lyra::dsp::MoxEdgeFade::kDefaultFadeInMs).toInt());
@@ -1273,6 +1277,32 @@ void HL2Stream::fsmKeydownPostMox() {
     // frames of the next datagram (composeCC snapshots mox_ once
     // per send) — coherent.
     mox_.store(true, std::memory_order_release);
+
+    // TX-1 component 7 — bring up the TX-DSP + envelope + injection
+    // gate, all at this same moment (wire MOX bit just went hot).
+    //
+    // Reference parity: the verified reference's keydown chain runs
+    // `rf_delay` THEN `SetChannelState(id(1,0), 1, 0)` THEN audio-on
+    // — TX DSP starts AFTER rf_delay.  Lyra moves the TX-on hooks
+    // HERE (before rf_delay) so the WDSP TXA accumulator has the
+    // ~50ms rfDelayMs window to pre-fill the 126-sample EP2 hand-off
+    // buffer (producer needs 2-3 fexchange0 outputs to fill one
+    // wire datagram); otherwise the first SSB datagram after fade
+    // ramps in arrives several ms late and creates a hard step from
+    // silence to a non-zero sample = audible click.  The fade-in
+    // ramps the AMPLITUDE smoothly 0→1 over the rfDelayMs window,
+    // so on-air rise is still cos²-shaped + hot-switch-protected.
+    fade_.notifyMoxState(true);
+    {
+        std::function<void()> startFn;
+        {
+            std::lock_guard<std::mutex> lk(txControlMtx_);
+            startFn = txControl_.start;
+        }
+        if (startFn) startFn();
+    }
+    setInjectTxIq(true);
+
     QTimer::singleShot(rfDelayMs_, this,
                        [this]() { fsmKeydownSettled(); });
 }
@@ -1309,6 +1339,61 @@ void HL2Stream::fsmKeyupPostSpace() {
         fsmRunning_ = false;
         return;
     }
+
+    // TX-1 component 7 — §5.7 keyup ordering invariant:
+    //   (1) MoxEdgeFade fade-out reaches zero
+    //   (2) Clear inject_tx_iq (SSB EP2 branch goes silent)
+    //   (3) Clear wire MOX bit
+    //
+    // Step (1) is started here; we then schedule fsmKeyupFadeOut
+    // after fade_.fadeOutMs() to give the cos² ramp time to reach
+    // zero BEFORE we stop the TX channel (so the gateware DAC sees
+    // a smoothly-faded tail, not a hard chop, on the way out).
+    //
+    // Step (2) is done here-and-now: setInjectTxIq(false) stops the
+    // producer from accumulating new SSB samples.  The fade ramps
+    // existing/in-flight buffer content down to zero independently.
+    fade_.notifyMoxState(false);
+    setInjectTxIq(false);
+
+    QTimer::singleShot(fade_.fadeOutMs(), this,
+                       [this]() { fsmKeyupFadeOut(); });
+}
+
+void HL2Stream::fsmKeyupFadeOut() {
+    // TX-1 component 7 — fade-out has reached zero; now we can stop
+    // the WDSP TXA channel (blocking flush) without any audible chop
+    // on the gateware side.  Matches the verified reference's
+    //   WDSP.SetChannelState(WDSP.id(1,0), 0, 1)
+    // at the equivalent point in the keyup chain.  BLOCKING (≤100 ms
+    // for WDSP internal drain) — same Qt-main-thread block the
+    // reference's own UI thread takes via Thread.Sleep.
+    {
+        std::function<void()> stopFn;
+        {
+            std::lock_guard<std::mutex> lk(txControlMtx_);
+            stopFn = txControl_.stop;
+        }
+        if (stopFn) stopFn();
+    }
+    // Schedule the in-flight clear wait BEFORE the wire MOX clears.
+    // Reference-faithful match to:
+    //   Thread.Sleep(mox_delay);  // default 10, allows in-flight
+    //                                samples to clear
+    // Lets UDP datagrams already-sent or in-OS-buffer (with MOX=1
+    // + non-zero samples) actually reach + be processed by the HL2
+    // BEFORE we flip the wire state — so the gateware processes
+    // them as the keyed samples they were when sent, not as bogus
+    // "MOX=0 with TX I/Q" samples.
+    QTimer::singleShot(txStopDelayMs_, this,
+                       [this]() { fsmKeyupInFlight(); });
+}
+
+void HL2Stream::fsmKeyupInFlight() {
+    // TX-1 component 7 — in-flight UDP datagrams have cleared; now
+    // safe to flip the wire MOX bit.  Next composeCC pass on each
+    // EP2 datagram will read this as 0 → C0 bit-0 = 0 → gateware
+    // T/R transition begins.
     mox_.store(false, std::memory_order_release);
     QTimer::singleShot(pttOutDelayMs_, this,
                        [this]() { fsmKeyupSettled(); });
@@ -1455,6 +1540,14 @@ void HL2Stream::setFadeOutMs(int ms) {
     emit fadeOutMsChanged(after);
 }
 
+void HL2Stream::setTxStopDelayMs(int ms) {
+    const int clamped = std::clamp(ms, kMinFsmDelayMs, kMaxFsmDelayMs);
+    if (clamped == txStopDelayMs_) return;
+    txStopDelayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/trSeq/txStopDelayMs"), clamped);
+    emit txStopDelayMsChanged(clamped);
+}
+
 // ─────────────────────────────────────────────────────────────
 // TX-1 component 6: SSB I/Q injection gate + source registration
 // ─────────────────────────────────────────────────────────────
@@ -1480,7 +1573,28 @@ void HL2Stream::setInjectTxIq(bool on) {
         "TX: inject_tx_iq -> %1 (EP2 packer %2 SSB samples on MOX)")
         .arg(on ? QStringLiteral("ARMED") : QStringLiteral("disarmed"))
         .arg(on ? QStringLiteral("pulling") : QStringLiteral("ignoring")));
+    // TX-1 component 7 — forward to the registered TxControl callback
+    // so the TxDspWorker producer-side flag flips in lockstep with the
+    // EP2-packer consumer-side flag.  Single point of control from
+    // the FSM.  Brief lock; uncontested (registration at app boot only).
+    {
+        std::function<void(bool)> fwd;
+        {
+            std::lock_guard<std::mutex> lk(txControlMtx_);
+            fwd = txControl_.setInjectTxIq;
+        }
+        if (fwd) fwd(on);
+    }
     emit injectTxIqChanged(on);
+}
+
+// TX-1 component 7 — register the TX channel lifecycle callbacks.
+// Empty TxControl = clear all three.  See TxControl struct doc in
+// the header for the contract.  Same mutex pattern as
+// registerTxIqSource.
+void HL2Stream::registerTxControl(TxControl ctl) {
+    std::lock_guard<std::mutex> lk(txControlMtx_);
+    txControl_ = std::move(ctl);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer
@@ -1862,16 +1976,18 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // BOTH USB frames so the on-air carrier is continuous.
         const bool emitTone =
             moxBit && tuneEnabled_.load(std::memory_order_relaxed);
-        // TX-1 component 5a — drive the cos² amplitude envelope from
-        // the per-datagram wire-MOX snapshot.  Rising-edge starts a
-        // fade-in (default 50 ms, aligns with rfDelayMs_ for hot-
-        // switch protection of an external SS linear); falling-edge
-        // starts a fade-out (default 13 ms, fits inside spaceMoxDelayMs_
-        // before the gateware DAC stops consuming TX I/Q).  Mid-fade
-        // reversal preserves the coefficient via cos² phase complement
-        // — no jump, smooth pivot.  See mox_edge_fade.h for the full
-        // design + safety rationale.
-        fade_.notifyMoxState(moxBit);
+        // TX-1 component 7 — cos² fade is FSM-driven now, not EP2-
+        // packer driven.  The FSM calls fade_.notifyMoxState(true)
+        // at fsmKeydownPostMox (T+15 ms, same moment wire MOX bit
+        // goes hot — but BEFORE rf_delay, so fade-in ramps the
+        // amplitude 0→1 over rfDelayMs to pre-fill the producer's
+        // EP2 hand-off accumulator + provide hot-switch protection
+        // for the external amp).  It calls notifyMoxState(false) at
+        // fsmKeyupPostSpace (T+spaceMoxDelayMs after keyup) so the
+        // fade-out completes BEFORE the wire MOX bit clears (§5.7
+        // keyup ordering invariant) — gateware sees a smoothly-
+        // faded tail, not a hard chop.  EP2 packer just calls
+        // fade_.advance() per LRIQ sample below.
         // Tune carrier = zero-beat at LO (DC injection): a constant
         // value in the I channel produces a pure carrier exactly at
         // TX freq on the air, no audio offset.  Matches the universal

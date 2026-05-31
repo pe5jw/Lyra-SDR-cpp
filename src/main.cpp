@@ -237,14 +237,16 @@ int main(int argc, char *argv[])
     // a well-defined no-op — RX path is unaffected either way.
     //
     // Teardown order (aboutToQuit fires in connection order):
-    //   1. stream->registerTxIqSource({}) -> clears the EP2
-    //      packer's TX I/Q source FIRST.  The callback captures
-    //      txWorker by value (pointer); deleting txWorker before
-    //      clearing the source would leave a dangling pointer
-    //      that the EP2 writer thread could call concurrently.
-    //      registerTxIqSource takes a brief mutex, after which
-    //      the EP2 writer's next datagram pulls falls through to
-    //      zero-fill (the universal mandatory zero-fill branch).
+    //   1. stream->registerTxIqSource({}) +
+    //      stream->registerTxControl({}) -> clears BOTH callback
+    //      registrations FIRST.  Both callbacks capture txWorker
+    //      by value (pointer); deleting txWorker before clearing
+    //      them would leave dangling pointers that the EP2 writer
+    //      thread (source) and the FSM (control: start/stop/inject)
+    //      could call concurrently.  Both registrations take a
+    //      brief mutex; after clearing, EP2 writer falls through
+    //      to zero-fill on next datagram and FSM keydown/keyup
+    //      hooks no-op cleanly (app is shutting down anyway).
     //   2. txWorker delete -> clears its mic consumer, joins
     //      worker thread, closes TX WDSP channel.
     //   3. micSource delete -> clears HL2Stream's forwarder
@@ -254,7 +256,10 @@ int main(int argc, char *argv[])
     lyra::dsp::TxDspWorker     *txWorker  = nullptr;
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
                      [stream, &txWorker, &micSource]() {
-        if (stream) stream->registerTxIqSource({});
+        if (stream) {
+            stream->registerTxIqSource({});
+            stream->registerTxControl({});
+        }
         delete txWorker;  txWorker  = nullptr;
         delete micSource; micSource = nullptr;
     });
@@ -358,15 +363,32 @@ int main(int argc, char *argv[])
             // EP2 packer's TX I/Q source.  The packer pulls 126
             // complex<float> samples per datagram via this callback
             // when (moxBit && injectTxIq) is true.  injectTxIq
-            // defaults FALSE (wire-inert) — the FSM (follow-up
-            // commit) flips it true at keydown.  Caller-owned
-            // lifetime: txWorker outlives the registration; the
-            // aboutToQuit handler above tears down stream + workers
-            // in safe order (handlers fire before destructors).
+            // defaults FALSE (wire-inert) — the FSM (component 7
+            // flips it true at keydown).  Caller-owned lifetime:
+            // txWorker outlives the registration; the aboutToQuit
+            // handler above tears down stream + workers in safe
+            // order (handlers fire before destructors).
             stream->registerTxIqSource(
                 [txWorker](std::complex<float> *out) {
                     return txWorker->tryConsumeTxIq(out);
                 });
+
+            // TX-1 component 7: register TX channel lifecycle
+            // callbacks.  FSM calls start at keydown (after
+            // moxDelayMs, in fsmKeydownPostMox) and stop at keyup
+            // (after fadeOutMs elapses, in fsmKeyupFadeOut).
+            // setInjectTxIq is forwarded from HL2Stream's own setter
+            // so the EP2-packer flag and the TxDspWorker producer-
+            // side flag stay in lockstep — single point of FSM
+            // control.  Same caller-owned lifetime as above; cleared
+            // FIRST in the aboutToQuit chain via {} below.
+            stream->registerTxControl({
+                /*start=*/[txWorker]() { txWorker->startTxChannel(); },
+                /*stop =*/[txWorker]() { txWorker->stopTxChannel();  },
+                /*setInjectTxIq=*/[txWorker](bool on) {
+                    txWorker->setInjectTxIq(on);
+                },
+            });
         }
 
         // Radio memory: auto-connect to the last radio so the operator
