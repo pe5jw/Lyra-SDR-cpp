@@ -67,6 +67,8 @@ qt_add_executable(lyra
     src/tx_ring.cpp
     src/tx_dsp_worker.h
     src/tx_dsp_worker.cpp
+    src/mox_edge_fade.h
+    src/mox_edge_fade.cpp
     src/iqstft.h
     src/iqstft.cpp
     src/capturedprofile.h

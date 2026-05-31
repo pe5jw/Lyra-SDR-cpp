@@ -80,6 +80,8 @@
 #include <stop_token>
 #include <vector>
 
+#include "mox_edge_fade.h"
+
 namespace lyra::ipc {
 
 // Platform socket handle, opaque to consumers of this header (we do
@@ -206,6 +208,37 @@ class HL2Stream : public QObject {
     // explicit operator gesture, not a configured state).
     Q_PROPERTY(bool tuneEnabled READ tuneEnabled WRITE setTuneEnabled
                NOTIFY tuneEnabledChanged)
+    // TX-1 component 5a — TR-sequencing + cos² envelope durations.
+    //
+    // ⚠ HOT-SWITCH PROTECTION (operator-mandated, 2026-05-31):
+    // These values are the load-bearing safety profile for external
+    // solid-state HF linear amplifiers.  Defaults come from the
+    // operator's bench-validated working-station config (HL2+ +
+    // 1 kW SS linear); reducing them without knowing the amp's T/R
+    // relay settle spec can destroy the PA via hot-switching.
+    //
+    //   moxDelayMs       — operator-PTT → wire-MOX-bit hot     (default 15)
+    //   rfDelayMs        — wire-MOX hot → "RF settled" emit    (default 50)
+    //   spaceMoxDelayMs  — keyup re-key window before MOX-off  (default 13)
+    //   pttOutDelayMs    — MOX-off → final cleanup             (default 5)
+    //   fadeInMs         — cos² TX I/Q amplitude rise          (default 50)
+    //   fadeOutMs        — cos² TX I/Q amplitude fall          (default 13)
+    //
+    // Persisted under tx/trSeq/<key> in QSettings.  Live-apply (no
+    // restart): a value change while the radio is keyed takes effect
+    // on the NEXT MOX edge.
+    Q_PROPERTY(int moxDelayMs      READ moxDelayMs
+               WRITE setMoxDelayMs      NOTIFY moxDelayMsChanged)
+    Q_PROPERTY(int rfDelayMs       READ rfDelayMs
+               WRITE setRfDelayMs       NOTIFY rfDelayMsChanged)
+    Q_PROPERTY(int spaceMoxDelayMs READ spaceMoxDelayMs
+               WRITE setSpaceMoxDelayMs NOTIFY spaceMoxDelayMsChanged)
+    Q_PROPERTY(int pttOutDelayMs   READ pttOutDelayMs
+               WRITE setPttOutDelayMs   NOTIFY pttOutDelayMsChanged)
+    Q_PROPERTY(int fadeInMs        READ fadeInMs
+               WRITE setFadeInMs        NOTIFY fadeInMsChanged)
+    Q_PROPERTY(int fadeOutMs       READ fadeOutMs
+               WRITE setFadeOutMs       NOTIFY fadeOutMsChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -291,6 +324,15 @@ public:
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
     bool    tuneEnabled() const { return tuneEnabled_.load(std::memory_order_relaxed); }
+    // TX-1 component 5a — TR-sequencing + cos² fade durations.
+    // Getters read the live operator-tuned values (or defaults if
+    // unset).  See Q_PROPERTY block above for the safety rationale.
+    int     moxDelayMs()      const { return moxDelayMs_;      }
+    int     rfDelayMs()       const { return rfDelayMs_;       }
+    int     spaceMoxDelayMs() const { return spaceMoxDelayMs_; }
+    int     pttOutDelayMs()   const { return pttOutDelayMs_;   }
+    int     fadeInMs()        const { return fade_.fadeInMs();  }
+    int     fadeOutMs()       const { return fade_.fadeOutMs(); }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -475,6 +517,19 @@ public slots:
     void setTxTimeoutSec(int sec);
     void setTxTimeoutBypass(bool on);
 
+    // TX-1 component 5a — TR-sequencing + cos² envelope tuning.
+    // Each setter clamps to a sane operator range, persists to
+    // QSettings (tx/trSeq/<key>), and emits the matching changed
+    // signal.  Live-apply: the FSM picks up the new value at the
+    // next QTimer::singleShot scheduling boundary (so a change made
+    // while keyed takes effect on the NEXT MOX edge).
+    void setMoxDelayMs(int ms);
+    void setRfDelayMs(int ms);
+    void setSpaceMoxDelayMs(int ms);
+    void setPttOutDelayMs(int ms);
+    void setFadeInMs(int ms);
+    void setFadeOutMs(int ms);
+
 signals:
     void runningChanged();
     void statsChanged();
@@ -517,6 +572,16 @@ signals:
     // TX-0c-tune — tune-tone armed state changed (via TX panel button,
     // operator unarm, or the moxActiveChanged(false) safety auto-clear).
     void tuneEnabledChanged(bool on);
+    // TX-1 component 5a — TR-sequencing + cos² envelope tuning.
+    // Emitted on every successful setter call (post-clamp + persist).
+    // QML Settings UI binds to these to refresh spin-box values when
+    // changed programmatically (e.g. Restore Defaults button).
+    void moxDelayMsChanged(int ms);
+    void rfDelayMsChanged(int ms);
+    void spaceMoxDelayMsChanged(int ms);
+    void pttOutDelayMsChanged(int ms);
+    void fadeInMsChanged(int ms);
+    void fadeOutMsChanged(int ms);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -803,22 +868,50 @@ private:
     // operator's hold-time setting; only the pull-UP is sped up.
     static constexpr int     kAutoLnaRecoverMs = 1000;
     // ---- TX-0c-fsm: TR-sequencing delays (ms) -----------------------
-    // Values pulled from the operator's working-station DB export
-    // (Default_5_16_2026; HL2+/AK4951 bench-validated set):
-    //   udMoxDelay         = 15  → kMoxDelayMs        (RX-protect → MOX)
-    //   udRFDelay          = 50  → kRfDelayMs         (MOX → RF settle;
-    //                                                  hot-switch-safe
-    //                                                  for ext linear)
-    //   udSpaceMoxDelay    = 13  → kSpaceMoxDelayMs   (keyup re-key win)
-    //   udGenPTTOutDelay   = 5   → kPttOutDelayMs     (MOX-clear → done)
-    // (udPTTHang = 10 ms / udHermesStepAttenuatorDelay = 100 ms /
-    //  udPSMoxDelay = 0.2 s land later — CW hang, RX att settle, PS.)
-    // Per CLAUDE.md §6.7 these eventually live in a per-radio
+    // Defaults pulled from the operator's working-station DB export
+    // (HL2+/AK4951 bench-validated, hot-switch-safe for typical 1 kW
+    // solid-state HF linears):
+    //   moxDelayMs_       = 15  (RX-protect → wire MOX bit)
+    //   rfDelayMs_        = 50  (MOX → RF settle; AMP HOT-SWITCH SAFE)
+    //   spaceMoxDelayMs_  = 13  (keyup re-key window before MOX-off)
+    //   pttOutDelayMs_    = 5   (MOX-clear → final cleanup)
+    //
+    // Promoted to mutable instance fields (component 5a) so the
+    // operator can tune via Settings UI to match their specific amp's
+    // T/R relay switching spec.  Persisted under tx/trSeq/<key>.
+    //
+    // ⚠ HOT-SWITCH PROTECTION: reducing rfDelayMs_ below the external
+    // amp's T/R relay settle spec risks PA damage from RF into mid-
+    // transition relays.  Defaults are bench-safe; Settings UI
+    // tooltips carry the warning.
+    //
+    // Per project-memory §6.7: per-radio defaults eventually live in a
     // capabilities struct; HL2+ values here are the v0.2 starting set.
-    static constexpr int     kMoxDelayMs      = 15;
-    static constexpr int     kRfDelayMs       = 50;
-    static constexpr int     kSpaceMoxDelayMs = 13;
-    static constexpr int     kPttOutDelayMs   = 5;
+    static constexpr int     kDefaultMoxDelayMs      = 15;
+    static constexpr int     kDefaultRfDelayMs       = 50;
+    static constexpr int     kDefaultSpaceMoxDelayMs = 13;
+    static constexpr int     kDefaultPttOutDelayMs   = 5;
+    // Operator-tuning bounds.  Below kMinFsmDelayMs lands you in
+    // hot-switch-unsafe territory for typical SS amps; above
+    // kMaxFsmDelayMs is unphysical (PTT events don't last that long).
+    static constexpr int     kMinFsmDelayMs = 1;
+    static constexpr int     kMaxFsmDelayMs = 500;
+    // Live values — written by setters on the Qt main thread, read by
+    // the FSM (also on the Qt main thread via QTimer::singleShot).
+    // Single-threaded access; no atomic needed.
+    int moxDelayMs_      = kDefaultMoxDelayMs;
+    int rfDelayMs_       = kDefaultRfDelayMs;
+    int spaceMoxDelayMs_ = kDefaultSpaceMoxDelayMs;
+    int pttOutDelayMs_   = kDefaultPttOutDelayMs;
+
+    // ---- TX-1 component 5a: cos² TX-IQ amplitude envelope ----------
+    // Owned by HL2Stream, lives on the EP2 wire writer thread.  See
+    // mox_edge_fade.h for the design + safety rationale.  Defaults
+    // (50 ms fade-in / 13 ms fade-out, asymmetric) align with the
+    // hot-switch-safe TR-sequencing defaults above so the fade-in
+    // ramp completes exactly when rfDelayMs_ elapses + moxActive_
+    // emits true.
+    lyra::dsp::MoxEdgeFade fade_;
     // ATT-on-TX value (matches operator's working-station config = 31): forces
     // the AD9866 step-att to its 31-dB code on TX, which the encoder
     // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the

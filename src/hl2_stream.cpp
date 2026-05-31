@@ -231,6 +231,36 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
                                      0).toInt(), 0, 255),
         std::memory_order_relaxed);
+    // TX-1 component 5a — load operator-tuned TR-sequencing + fade
+    // durations from QSettings (tx/trSeq/<key>).  Defaults match the
+    // operator's working-station HL2+ DB export (15/50/13/5 ms) which
+    // is hot-switch-safe for typical external SS HF linears; fade
+    // defaults (50 ms in / 13 ms out) align with rfDelayMs_ and
+    // spaceMoxDelayMs_ respectively.  Clamped to [kMinFsmDelayMs,
+    // kMaxFsmDelayMs] on load to defend against stale / corrupt
+    // QSettings (e.g. an operator hand-edited the file).
+    moxDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/trSeq/moxDelayMs"),
+                          kDefaultMoxDelayMs).toInt(),
+        kMinFsmDelayMs, kMaxFsmDelayMs);
+    rfDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/trSeq/rfDelayMs"),
+                          kDefaultRfDelayMs).toInt(),
+        kMinFsmDelayMs, kMaxFsmDelayMs);
+    spaceMoxDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/trSeq/spaceMoxDelayMs"),
+                          kDefaultSpaceMoxDelayMs).toInt(),
+        kMinFsmDelayMs, kMaxFsmDelayMs);
+    pttOutDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/trSeq/pttOutDelayMs"),
+                          kDefaultPttOutDelayMs).toInt(),
+        kMinFsmDelayMs, kMaxFsmDelayMs);
+    fade_.setFadeInMs(
+        QSettings().value(QStringLiteral("tx/trSeq/fadeInMs"),
+                          lyra::dsp::MoxEdgeFade::kDefaultFadeInMs).toInt());
+    fade_.setFadeOutMs(
+        QSettings().value(QStringLiteral("tx/trSeq/fadeOutMs"),
+                          lyra::dsp::MoxEdgeFade::kDefaultFadeOutMs).toInt());
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -1207,18 +1237,18 @@ void HL2Stream::fsmAdvance() {
         updateOcPattern(/*transmitting=*/true);
         emit logLine(QStringLiteral(
             "TX: keydown — ATT-on-TX %1 dB, mox_delay %2 ms")
-            .arg(kAttOnTxDb).arg(kMoxDelayMs));
-        QTimer::singleShot(kMoxDelayMs, this,
+            .arg(kAttOnTxDb).arg(moxDelayMs_));
+        QTimer::singleShot(moxDelayMs_, this,
                            [this]() { fsmKeydownPostMox(); });
     } else if (!requestedMox_ && wireOn) {
         // Keyup: schedule the space_mox re-key window.  Don't touch
-        // mox_ yet — kSpaceMoxDelayMs gives the operator a chance to
+        // mox_ yet — spaceMoxDelayMs_ gives the operator a chance to
         // re-key (CW dot tail, mic re-key) before the wire flip.
         fsmRunning_ = true;
         emit logLine(QStringLiteral(
             "TX: keyup — space_mox_delay %1 ms (re-key window)")
-            .arg(kSpaceMoxDelayMs));
-        QTimer::singleShot(kSpaceMoxDelayMs, this,
+            .arg(spaceMoxDelayMs_));
+        QTimer::singleShot(spaceMoxDelayMs_, this,
                            [this]() { fsmKeyupPostSpace(); });
     } else {
         // Nothing to do: intent already matches wire state.
@@ -1243,7 +1273,7 @@ void HL2Stream::fsmKeydownPostMox() {
     // frames of the next datagram (composeCC snapshots mox_ once
     // per send) — coherent.
     mox_.store(true, std::memory_order_release);
-    QTimer::singleShot(kRfDelayMs, this,
+    QTimer::singleShot(rfDelayMs_, this,
                        [this]() { fsmKeydownSettled(); });
 }
 
@@ -1254,7 +1284,7 @@ void HL2Stream::fsmKeydownSettled() {
         // restore att).  Schedule the keyup chain directly.
         safetyLog(QStringLiteral(
             "TX: keydown cancelled mid-rf_delay; initiating keyup"));
-        QTimer::singleShot(kSpaceMoxDelayMs, this,
+        QTimer::singleShot(spaceMoxDelayMs_, this,
                            [this]() { fsmKeyupPostSpace(); });
         return;
     }
@@ -1280,7 +1310,7 @@ void HL2Stream::fsmKeyupPostSpace() {
         return;
     }
     mox_.store(false, std::memory_order_release);
-    QTimer::singleShot(kPttOutDelayMs, this,
+    QTimer::singleShot(pttOutDelayMs_, this,
                        [this]() { fsmKeyupSettled(); });
 }
 
@@ -1352,6 +1382,77 @@ void HL2Stream::setTxTimeoutBypass(bool on) {
         else     armTxSafetyTimer();       // safety just turned ON;
                                            // fresh full duration
     }
+}
+
+// ---- TX-1 component 5a: TR-sequencing + cos² envelope setters ----
+//
+// Each setter clamps, persists to QSettings, and emits the matching
+// change signal so Settings UI bindings refresh.  All run on the Qt
+// main thread (Settings UI / FSM thread — same QObject).  The FSM's
+// next QTimer::singleShot scheduling reads the live member, so any
+// change made while the radio is keyed takes effect on the NEXT MOX
+// edge (no mid-transition perturbation).
+//
+// ⚠ HOT-SWITCH SAFETY: rfDelayMs_ in particular is load-bearing
+// protection for external solid-state HF linears.  The setter
+// honours the operator's value (clamped to [kMinFsmDelayMs,
+// kMaxFsmDelayMs]) — no internal floor beyond that — because the
+// operator's specific amp's switching spec is the authority, not a
+// generic safe default.  Settings UI tooltips carry the hot-switch
+// warning so a low value is an informed operator choice.
+
+void HL2Stream::setMoxDelayMs(int ms) {
+    const int clamped = std::clamp(ms, kMinFsmDelayMs, kMaxFsmDelayMs);
+    if (clamped == moxDelayMs_) return;
+    moxDelayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/trSeq/moxDelayMs"), clamped);
+    emit moxDelayMsChanged(clamped);
+}
+
+void HL2Stream::setRfDelayMs(int ms) {
+    const int clamped = std::clamp(ms, kMinFsmDelayMs, kMaxFsmDelayMs);
+    if (clamped == rfDelayMs_) return;
+    rfDelayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/trSeq/rfDelayMs"), clamped);
+    emit rfDelayMsChanged(clamped);
+}
+
+void HL2Stream::setSpaceMoxDelayMs(int ms) {
+    const int clamped = std::clamp(ms, kMinFsmDelayMs, kMaxFsmDelayMs);
+    if (clamped == spaceMoxDelayMs_) return;
+    spaceMoxDelayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/trSeq/spaceMoxDelayMs"), clamped);
+    emit spaceMoxDelayMsChanged(clamped);
+}
+
+void HL2Stream::setPttOutDelayMs(int ms) {
+    const int clamped = std::clamp(ms, kMinFsmDelayMs, kMaxFsmDelayMs);
+    if (clamped == pttOutDelayMs_) return;
+    pttOutDelayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/trSeq/pttOutDelayMs"), clamped);
+    emit pttOutDelayMsChanged(clamped);
+}
+
+void HL2Stream::setFadeInMs(int ms) {
+    // MoxEdgeFade::setFadeInMs clamps internally to [kMinFadeMs,
+    // kMaxFadeMs]; we read back the post-clamp live value to emit +
+    // persist the actual stored quantity (avoids drift if the
+    // operator typed an out-of-range value).
+    const int before = fade_.fadeInMs();
+    fade_.setFadeInMs(ms);
+    const int after  = fade_.fadeInMs();
+    if (after == before) return;
+    QSettings().setValue(QStringLiteral("tx/trSeq/fadeInMs"), after);
+    emit fadeInMsChanged(after);
+}
+
+void HL2Stream::setFadeOutMs(int ms) {
+    const int before = fade_.fadeOutMs();
+    fade_.setFadeOutMs(ms);
+    const int after  = fade_.fadeOutMs();
+    if (after == before) return;
+    QSettings().setValue(QStringLiteral("tx/trSeq/fadeOutMs"), after);
+    emit fadeOutMsChanged(after);
 }
 
 void HL2Stream::armTxSafetyTimer() {
@@ -1718,6 +1819,16 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // BOTH USB frames so the on-air carrier is continuous.
         const bool emitTone =
             moxBit && tuneEnabled_.load(std::memory_order_relaxed);
+        // TX-1 component 5a — drive the cos² amplitude envelope from
+        // the per-datagram wire-MOX snapshot.  Rising-edge starts a
+        // fade-in (default 50 ms, aligns with rfDelayMs_ for hot-
+        // switch protection of an external SS linear); falling-edge
+        // starts a fade-out (default 13 ms, fits inside spaceMoxDelayMs_
+        // before the gateware DAC stops consuming TX I/Q).  Mid-fade
+        // reversal preserves the coefficient via cos² phase complement
+        // — no jump, smooth pivot.  See mox_edge_fade.h for the full
+        // design + safety rationale.
+        fade_.notifyMoxState(moxBit);
         // Tune carrier = zero-beat at LO (DC injection): a constant
         // value in the I channel produces a pure carrier exactly at
         // TX freq on the air, no audio offset.  Matches the universal
@@ -1729,14 +1840,25 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // no harmonics either, so it's the cleanest possible test
         // tone for linearity and PA-current bench.  Q=0 keeps the
         // signal real (no quadrature component).  Future: a separate
-        // 2-tone test signal for IMD/linearity work (the reference's
-        // "Two Tone" button, a different feature than TUN).
-        constexpr qint16 kTuneCarrierI =
-            static_cast<qint16>(0.95 * 32767.0 + 0.5);  // ~31128, ~0.4 dB hr
+        // 2-tone test signal for IMD/linearity work (a different
+        // feature than TUN).
+        //
+        // Component 5a wires the cos² envelope here: the TUN constant
+        // is multiplied by the fade coefficient per LRIQ sample.  At
+        // operator keydown the envelope ramps 0 → 1 over fadeInMs;
+        // at keyup it ramps 1 → 0 over fadeOutMs.  When TUN is not
+        // armed, txI stays zero regardless — the fade coefficient
+        // still advances internally so a mid-flight TUN-arm sees the
+        // correct state.  Component 6 (SSB EP2 packer extension) will
+        // multiply the SSB I/Q by the same coefficient.
+        constexpr float kTuneCarrierFullScale = 0.95f * 32767.0f;
         for (int i = 0; i < 126; ++i) {
             const qint16 L = audio ? audio[i * 2 + 0] : 0;
             const qint16 R = audio ? audio[i * 2 + 1] : 0;
-            const qint16 txI = emitTone ? kTuneCarrierI : qint16{0};
+            const float coef = fade_.advance();
+            const qint16 txI = emitTone
+                ? static_cast<qint16>(kTuneCarrierFullScale * coef + 0.5f)
+                : qint16{0};
             const qint16 txQ = 0;
             const int base = (i < 63) ? (16 + i * 8) : (528 + (i - 63) * 8);
             pktBytes[base + 0] = static_cast<std::uint8_t>((L >> 8) & 0xFF);
