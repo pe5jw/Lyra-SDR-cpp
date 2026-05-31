@@ -65,6 +65,8 @@ qt_add_executable(lyra
     src/mic_source.cpp
     src/tx_ring.h
     src/tx_ring.cpp
+    src/tx_dsp_worker.h
+    src/tx_dsp_worker.cpp
     src/iqstft.h
     src/iqstft.cpp
     src/capturedprofile.h

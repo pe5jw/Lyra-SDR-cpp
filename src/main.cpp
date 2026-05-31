@@ -13,6 +13,8 @@
 #include "waterfall.h"
 #include "freqdisplay.h"
 #include "wdsp_engine.h"
+#include "mic_source.h"
+#include "tx_dsp_worker.h"
 #include "wdsp_native.h"
 
 #include <QCoreApplication>
@@ -218,6 +220,36 @@ int main(int argc, char *argv[])
         [stream](const qint16 *lr, int n) { stream->pushAudio(lr, n); },
         [stream](bool on) { stream->setInjectAudio(on); });
 
+    // TX-1 components 3 + 4c — Path A construction ordering
+    // (matches the C reference's create_cmaster + create_xmtr
+    // posture: the TXA channel is only OpenChannel'd AFTER the
+    // WDSP DLL has been loaded).  The pointers are declared
+    // here at outer scope (nullptr-initialised) so the
+    // aboutToQuit teardown lambda — connected NOW, in
+    // connection order BEFORE the stream->close() connect
+    // below at line ~250 — captures them BY REFERENCE and
+    // sees whichever value is live at app exit.  Actual
+    // construction is deferred to the QTimer::singleShot block
+    // further down (the same block that gates wdsp->ensureWisdom
+    // + wdspEngine->openRx1 on wdsp->load() succeeding).  If
+    // wdsp->load() fails or the user closes before the timer
+    // fires, the pointers stay nullptr and `delete nullptr` is
+    // a well-defined no-op — RX path is unaffected either way.
+    //
+    // Teardown order (aboutToQuit fires in connection order):
+    //   1. txWorker delete -> clears its mic consumer, joins
+    //      worker thread, closes TX WDSP channel.
+    //   2. micSource delete -> clears HL2Stream's forwarder
+    //      while HL2Stream is still alive.
+    //   3. stream->close() -> joins the rx-loop thread.
+    lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
+    lyra::dsp::TxDspWorker     *txWorker  = nullptr;
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     [&txWorker, &micSource]() {
+        delete txWorker;  txWorker  = nullptr;
+        delete micSource; micSource = nullptr;
+    });
+
     // Task #26 — auto-mute RX1 audio while the wire MOX bit is live so
     // the operator doesn't self-deafen off their own TX coupling.
     // moxActiveChanged fires on the TR-settled edges only (post-mox_delay
@@ -279,7 +311,8 @@ int main(int argc, char *argv[])
     // observed — only [disc]/[strm], which fire after exec, showed).
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
-    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream]() {
+    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream,
+                                  &micSource, &txWorker]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
@@ -297,6 +330,20 @@ int main(int argc, char *argv[])
             // worker -> fexchange0).  The engine's destructor closes
             // the channel at app exit.
             wdspEngine->openRx1();
+
+            // TX-1 Path A: construct micSource + txWorker NOW that
+            // the WDSP DLL is loaded.  TxChannel::open requires the
+            // DLL; constructing earlier (e.g. right after the
+            // wdspEngine setup) silently spawned an inert worker
+            // and logged `[tx] open: WDSP DLL not loaded`.  This
+            // ordering matches the C reference's create_cmaster
+            // flow: TXA channel-open follows WDSP init.
+            //
+            // Pointers are captured by reference from main()'s
+            // outer scope so the aboutToQuit lambda (connected
+            // earlier) sees them populated at teardown.
+            micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
+            txWorker  = new lyra::dsp::TxDspWorker(wdsp, *micSource);
         }
 
         // Radio memory: auto-connect to the last radio so the operator

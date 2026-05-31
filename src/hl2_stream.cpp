@@ -1008,8 +1008,19 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         // mic_sample_count, prn->TxReadBufp)` call at end-of-datagram.
         // Synchronous on this RX worker thread; the consumer (Component 4
         // worker, eventually) is responsible for being lock-free / fast.
-        if (micConsumer_ && micIdx > 0) {
-            micConsumer_(micScratch, micIdx);
+        //
+        // micConsumerMtx_ is the C reference's csIN analog (cmbuffs.c:97):
+        // held around the WHOLE read+call so a concurrent setMicConsumer
+        // (e.g. teardown clearing the consumer) cannot tear the captured
+        // state out from under an in-flight call.  The lock is held only
+        // for the duration of the consumer call, which pushes a small
+        // sample block into a lock-free ring downstream — bounded
+        // microseconds, no contention in steady state.
+        {
+            std::lock_guard<std::mutex> lk(micConsumerMtx_);
+            if (micConsumer_ && micIdx > 0) {
+                micConsumer_(micScratch, micIdx);
+            }
         }
     }
 }

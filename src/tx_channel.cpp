@@ -19,20 +19,42 @@ namespace {
 constexpr int kTxaModeLSB = 0;
 constexpr int kTxaModeUSB = 1;
 
-// Channel-open envelope timing — same shape as the RX path uses,
-// gives a smooth start/stop without producing audible artefacts
-// on the channel itself.  uslew is gated to TUN / tone-gen so
-// these only matter for non-SSB modes; harmless on SSB voice.
-constexpr double kTDelayUp   = 0.010;
-constexpr double kTSlewUp    = 0.025;
+// Channel-open envelope timing matches the reference TX
+// channel-open posture: no up-delay, 10 ms up-slew / 10 ms
+// down-slew.  These map cleanly to the FFT-coefficient
+// allocations downstream and keep the keydown/keyup ramps
+// inside one or two fexchange0 chunks at our wire cadence.
+constexpr double kTDelayUp   = 0.000;
+constexpr double kTSlewUp    = 0.010;
 constexpr double kTDelayDown = 0.000;
 constexpr double kTSlewDown  = 0.010;
 
-// fexchange0 in_size at the radio's per-datagram mic-sample
-// count for nddc=4 EP6 framing.  dsp_size 2048 leaves
-// comfortable WDSP internal headroom at the 96 kHz DSP rate.
-constexpr int kInSize  = 126;
-constexpr int kDspSize = 2048;
+// fexchange0 in_size + dsp_size match the reference's
+// constant-latency rule (in_size = 64 * rate / 48000) and its
+// TX dsp_size (4096) at dsp_rate=96 kHz.  At 48 kHz mic, that
+// is 64 samples per fexchange0 call.  THESE VALUES MATTER:
+//
+//   * 64 is a CLEAN DIVISOR of dsp_insize = dsp_size / 2 = 2048
+//     at the 48 k↔96 k rate ratio (2048 / 64 = 32 fexchange0
+//     calls per DSP block).  Non-divisor in_size values (e.g.
+//     the 126-per-datagram count Lyra used to choose) leave
+//     residual samples in the reference's r1/r2 rings, and
+//     the integer-division resampler/ring math then produces
+//     anomalous mid-call sizes that overrun the destination
+//     buffer on first fexchange0.  Same root cause class as
+//     the §15.23 SSB-bp1 trap: a parameter chosen locally
+//     that doesn't compose with WDSP's internal sizing.
+//   * 4096 sizes the FFT-coefficient buffers downstream (the
+//     reference's `max(2048, dsp_size)` clamp in TXA.c).
+//
+// Mic samples arrive from the rx-loop in datagram-sized
+// chunks (~9-10 samples per HL2+ EP6 datagram at 48 k mic),
+// accumulate in the SPSC ring, and the worker thread drains
+// the ring in kInSize=64-sample chunks.  Datagram-vs-fexchange0
+// alignment is handled BY THE RING — not by matching in_size
+// to per-datagram count, which is what bit us.
+constexpr int kInSize  = 64;
+constexpr int kDspSize = 4096;
 
 // Operator dB → linear gain.
 double dbToLin(double db) {
@@ -84,6 +106,7 @@ void TxChannel::pushBandpassLocked()
 
 bool TxChannel::open(int micRate, int dspRate, int outRate)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (opened_) return true;
     if (!wdsp_ || !wdsp_->isLoaded()) {
         qWarning("[tx] open: WDSP DLL not loaded");
@@ -119,69 +142,78 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     //             out_rate, type=TX(1), state=stopped(0),
     //             tdelayup, tslewup, tdelaydown, tslewdown,
     //             block=1 — fexchange0 blocks until output ready).
+    // OpenChannel(channel, in_size, dsp_size, in_rate, dsp_rate,
+    //             out_rate, type=TX(1), state=stopped(0),
+    //             tdelayup, tslewup, tdelaydown, tslewdown,
+    //             block=1 — fexchange0 blocks until output ready).
+    //
+    // The 13 parameters here match the reference's TX
+    // channel-open call BYTE-FOR-BYTE at the HL2+ AK4951 48 kHz
+    // mic rate (cmaster.c create_xmtr).  Earlier Lyra picked
+    // in_size=126 (per-datagram mic count) and dsp_size=2048;
+    // both diverged from the reference's getbuffsize() rule
+    // (in_size = 64 * rate / 48000) and dsp_size=4096 standard.
+    // The non-integer ratio of dsp_insize / in_size that 126
+    // produced caused WDSP's r1/r2 ring math to compute
+    // anomalous mid-call sizes (the 93-frame memcpy that
+    // overran the output buffer on first fexchange0).
     api.OpenChannel(channel_, kInSize, kDspSize,
                     micRate_, dspRate_, outRate_,
                     1,            // type = TX
-                    0,            // state = stopped; explicit start() below
+                    0,            // state = stopped at open
                     kTDelayUp, kTSlewUp,
                     kTDelayDown, kTSlewDown,
                     1);           // block until output available
     opened_ = true;
 
-    // ── Init setter sequence (design v2 §5.3 steps 2..7).
+    // NO SetTXA* setters here.  This is the second half of
+    // matching the reference: cmaster.c::create_xmtr opens the
+    // TXA channel and creates the cmaster-layer support objects
+    // (txgain / EER / interleaver / sidetone) — it does NOT
+    // touch ANY SetTXA* setter at this lifecycle stage.  The
+    // TXA chain (bandpass / mode / PHROT / ALC / Leveler) stays
+    // at WDSP's create-time defaults until the operator-settings
+    // layer wires through (mode change, filter edits, mic gain
+    // slider, etc.) and calls the per-setter API exposed on this
+    // class (setMode / setBandpass / setMicGainDb / setPhrotOn /
+    // setLevelerOn / setAlcMaxGainDb).
+    //
+    // The earlier Lyra code crammed 17 SetTXA* calls into open()
+    // at boot — exercising WDSP code paths the reference doesn't
+    // touch at this stage and risking interactions with WDSP's
+    // internal state machine before the channel has ever run
+    // fexchange0.  All those setters are gone now; the channel
+    // comes up with WDSP create-time defaults, exactly as the
+    // reference does.
 
-    // 2. Pin panel gain explicitly at unity.  WDSP create_panel
-    //    default is gain1=1.0; pinning here centralises the
-    //    operator mic-gain control through one setter we own.
-    if (api.SetTXAPanelGain1) {
-        api.SetTXAPanelGain1(channel_, 1.0);
-    }
-
-    // 3 + 4. Bandpass freqs + mode, in that order.
-    pushBandpassLocked();
-
-    // 5. PHROT on by default — flattens speech PEP-to-PAR by
-    //    ~3-4 dB.  Operator Settings toggle wires through
-    //    setPhrotOn() later.
-    if (api.SetTXAPHROTCorner)  api.SetTXAPHROTCorner(channel_, 338.0);
-    if (api.SetTXAPHROTNstages) api.SetTXAPHROTNstages(channel_, 8);
-    if (api.SetTXAPHROTRun)     api.SetTXAPHROTRun(channel_, 1);
-
-    // 6. ALC — always on (mandatory splatter protection, no
-    //    operator opt-out; operator only tunes MaxGain).
-    //    attack/decay/hang are INT ms (do NOT pass doubles —
-    //    wrong-cdef-type is the canonical regression class for
-    //    these setters).  MaxGain stays at the WDSP create-time
-    //    1.0 (0 dB) until the operator dials it.
-    if (api.SetTXAALCAttack)  api.SetTXAALCAttack(channel_, 1);
-    if (api.SetTXAALCDecay)   api.SetTXAALCDecay(channel_, 10);
-    if (api.SetTXAALCHang)    api.SetTXAALCHang(channel_, 500);
-    if (api.SetTXAALCMaxGain) api.SetTXAALCMaxGain(channel_, 1.0);
-    if (api.SetTXAALCSt)      api.SetTXAALCSt(channel_, 1);
-
-    // 7. Leveler — WIRED but OFF by default.  Operator Settings
-    //    toggle flips SetTXALevelerSt live.  Defaults mirror the
-    //    WDSP create-time values (top = 1.778 ≈ +5 dB).
-    if (api.SetTXALevelerAttack) api.SetTXALevelerAttack(channel_, 1);
-    if (api.SetTXALevelerDecay)  api.SetTXALevelerDecay(channel_, 500);
-    if (api.SetTXALevelerHang)   api.SetTXALevelerHang(channel_, 500);
-    if (api.SetTXALevelerTop)    api.SetTXALevelerTop(channel_, dbToLin(5.0));
-    if (api.SetTXALevelerSt)     api.SetTXALevelerSt(channel_, 0);
-
-    // 8. Start the channel.  state=1 (running), dmode=0 ignored.
-    start();
+    // open() PARKS the channel — the WDSP state stays 0
+    // (stopped) until the PTT/MOX edge handler later calls
+    // TxChannel::start().  The reference does the same: the
+    // channel is opened in create_xmtr with state=0, and only
+    // later does Console.cs / radio.cs flip state=1 when the
+    // operator actually keys.  WDSP fexchange0's entry guard
+    // `if (exchange & 1)` short-circuits when state=0, so the
+    // chain is never invoked, and TxChannel::process() early-
+    // returns on its running_ check (still false here).
+    running_ = false;
 
     qInfo("[tx] channel %d opened (TX, mic=%d → dsp=%d → out=%d Hz; "
-          "USB 200-3100; ALC on, leveler off, PHROT on); in_size=%d",
-          channel_, micRate_, dspRate_, outRate_, kInSize);
+          "in_size=%d, dsp_size=%d — TXA at WDSP defaults; "
+          "start() arms; stop() flushes); PARKED",
+          channel_, micRate_, dspRate_, outRate_, kInSize, kDspSize);
     return true;
 }
 
 void TxChannel::close()
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_) return;
-    if (running_) {
-        stop();
+    if (running_ && wdsp_ && wdsp_->api().SetChannelState) {
+        // Inlined stop (same reason as the start() inlining at the
+        // end of open()): we're holding the channel mutex; stop()
+        // takes the same mutex.  dmode=1 = blocking flush.
+        wdsp_->api().SetChannelState(channel_, 0, 1);
+        running_ = false;
     }
     if (wdsp_) {
         const WdspApi &api = wdsp_->api();
@@ -195,6 +227,7 @@ void TxChannel::close()
 
 void TxChannel::start()
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || running_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetChannelState) return;
@@ -204,6 +237,7 @@ void TxChannel::start()
 
 void TxChannel::stop()
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !running_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetChannelState) return;
@@ -213,8 +247,15 @@ void TxChannel::stop()
     running_ = false;
 }
 
+// Operator setters — each takes channelMtx_ briefly around the
+// opened_ check + the WDSP setter call so a close() can't tear the
+// channel down between the check and the call.  WDSP's internal
+// csDSP/csEXCH then serialises the setter against any in-flight
+// fexchange0 on the worker thread.
+
 void TxChannel::setMode(Mode m)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (m == mode_) return;
     mode_ = m;
     pushBandpassLocked();
@@ -222,6 +263,7 @@ void TxChannel::setMode(Mode m)
 
 void TxChannel::setBandpass(double opLowHz, double opHighHz)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (opLowHz < 0.0)  opLowHz  = 0.0;
     if (opHighHz < opLowHz) opHighHz = opLowHz + 1.0;
     opLow_  = opLowHz;
@@ -231,6 +273,7 @@ void TxChannel::setBandpass(double opLowHz, double opHighHz)
 
 void TxChannel::setMicGainDb(double db)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetTXAPanelGain1) return;
@@ -239,6 +282,7 @@ void TxChannel::setMicGainDb(double db)
 
 void TxChannel::setAlcMaxGainDb(double db)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetTXAALCMaxGain) return;
@@ -247,6 +291,7 @@ void TxChannel::setAlcMaxGainDb(double db)
 
 void TxChannel::setLevelerOn(bool on, double topDb)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (api.SetTXALevelerTop) {
@@ -259,6 +304,7 @@ void TxChannel::setLevelerOn(bool on, double topDb)
 
 void TxChannel::setPhrotOn(bool on)
 {
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetTXAPHROTRun) return;
@@ -268,19 +314,17 @@ void TxChannel::setPhrotOn(bool on)
 int TxChannel::process(const float *mic_block, int n,
                        std::complex<float> *iq_out)
 {
-    // THREAD-SAFETY CONTRACT:
-    //   This method is NOT thread-safe by itself.  Component 4c
-    //   (the dedicated TX DSP worker thread) is the SOLE caller
-    //   on the RT path, and 4c coordinates against the operator-
-    //   facing setters (setMode/setBandpass/setMicGainDb/etc.,
-    //   which may be invoked from the Qt main thread).  Pattern
-    //   mirrors WdspEngine's channelMtx_ on the RX side: the
-    //   worker holds the lock across fexchange0 so a main-thread
-    //   setter cannot fire mid-DSP-frame.
-    //
-    //   For 4b, nothing calls process() yet — this body is here
-    //   for 4c to invoke.  No mutex inside process() itself; the
-    //   caller's lock is the discipline.
+    // THREAD-SAFETY: process() takes channelMtx_ across the whole
+    // body — the same mutex open()/close()/start()/stop() take.
+    // A close() on the main thread therefore can't tear the
+    // channel down between the opened_/running_ check and the
+    // fexchange0 call.  WDSP's internal csDSP/csEXCH separately
+    // serialise the fexchange0 against any operator setter (each
+    // setter ALSO takes channelMtx_, which means in practice an
+    // operator setter waits one ~2.6 ms block period for any
+    // in-flight process() to finish — fine for the infrequent
+    // setter-call cadence on TX).
+    std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !running_ || !wdsp_) return -1;
     if (!mic_block || !iq_out)           return -1;
     if (n != kInSize)                    return -1;   // contract

@@ -310,12 +310,17 @@ public:
     // from the wire mic rate by the same factor the C reference's
     // `mic_decimation_factor` table picks via the current DDC0 rate:
     // 96 k → /2, 192 k → /4, 384 k → /8).  Sample range [-1, +1).
-    // Same threading contract as setIqSink — must be set before open()
-    // spawns the worker; not changed while running.  Wired by the
-    // Hl2Ep6MicSource shim; the consumer the operator-facing TX DSP
-    // worker (Component 4) registers will be a producer-side push into
-    // the SPSC ring `fexchange0` drains.
+    //
+    // Thread-safety: micConsumerMtx_ protects this assignment AND the
+    // rx-loop's read+call of micConsumer_, the same way the C
+    // reference's csIN critical section protects Inbound() against
+    // destroy_cmbuffs (cmbuffs.c:55, :97, :64).  Calling
+    // setMicConsumer({}) at teardown BLOCKS until any in-flight
+    // rx-loop call has finished — so a caller that holds a reference
+    // to objects the consumer captures can safely tear them down
+    // after this returns.
     void setMicConsumer(std::function<void(const float *, int)> cb) {
+        std::lock_guard<std::mutex> lk(micConsumerMtx_);
         micConsumer_ = std::move(cb);
     }
 
@@ -736,14 +741,21 @@ private:
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
     // read on the RX worker thread.  Default-empty = no DSP wired.
     std::function<void(const double *, int)> iqSink_;
-    // TX Component 3 — mic-byte forwarder.  micConsumer_ is set
-    // ONCE pre-open() (same model as iqSink_); RX-worker-thread-only
-    // access during the run.  micDecimationFactor_ tracks the current
-    // wire-rate-derived divisor (the source's `mic_decimation_factor`):
-    // initial 4 = the 192 kHz default; setSampleRate() updates it.
+    // TX Component 3 — mic-byte forwarder.  micConsumer_ is the
+    // producer entry point the rx-loop calls per datagram with the
+    // decimated 48 kHz mic block.  micConsumerMtx_ is the
+    // csIN-equivalent (cmbuffs.c:55-72): the rx-loop holds it
+    // around the read+call of micConsumer_, and setMicConsumer
+    // holds it around the assign — so a teardown-time
+    // setMicConsumer({}) BLOCKS until any in-flight rx-loop call
+    // has finished, matching the destroy_cmbuffs csIN protocol.
+    // micDecimationFactor_ tracks the current wire-rate-derived
+    // divisor (the source's `mic_decimation_factor`): initial 4 =
+    // the 192 kHz default; setSampleRate() updates it.
     // micDecimationCount_ persists across datagrams (per the source's
     // `mic_decimation_count`), reset only on a rate change.
     std::function<void(const float *, int)> micConsumer_;
+    mutable std::mutex   micConsumerMtx_;          // csIN equivalent
     std::atomic<int>     micDecimationFactor_{4};  // 192k default → /4
     int                  micDecimationCount_ = 0;  // RX worker only
     // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).

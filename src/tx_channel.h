@@ -46,6 +46,7 @@
 #include <QString>
 
 #include <complex>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -145,6 +146,18 @@ private:
 
     // Mode → WDSP mode enum int.  USB and LSB only in TX-1.
     static int modeToWdsp(Mode m);
+
+    // Lifecycle guard.  Mirrors the C reference's per-stream
+    // pcm->update[stream] critical section: protects the
+    // CloseChannel/OpenChannel ↔ fexchange0 race that WDSP's own
+    // internal csDSP/csEXCH does NOT cover (those guard the
+    // setter ↔ DSP race, not lifecycle teardown).  Held across
+    // open()/close()/start()/stop(), across each process() call
+    // in TxDspWorker, and briefly inside every operator setter
+    // (around the opened_ check + the WDSP setter call — so a
+    // close() can't race the setter's WDSP call into a torn-down
+    // channel).  Same pattern WdspEngine uses for the RX path.
+    mutable std::mutex channelMtx_;
 
     WdspNative *wdsp_   = nullptr;
     int  channel_       = 1;
