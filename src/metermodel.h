@@ -286,11 +286,26 @@ private:
     // converges either way but brief peaks are averaged-out by IIR
     // and properly held by MAX).  Ring buffer of the last
     // kPwrWindowSamples ticks of measured watts; the needle reads
-    // max() over the ring.  10 samples × 50 ms tick = 500 ms window
-    // matches the reference's multimeter_peak_hold_samples=10 +
-    // meter_delay=50 ms exactly.  Zero-init = needle starts at 0 W
-    // and rises as samples accumulate (correct first-TX behaviour).
-    static constexpr int kPwrWindowSamples = 10;
+    // max() over the ring.  Zero-init = needle starts at 0 W and
+    // rises as samples accumulate (correct first-TX behaviour).
+    //
+    // Window length tuning (operator bench follow-up 2026-05-31 PM):
+    // initial fix used 10 samples × 50 ms = 500 ms (verified-
+    // reference default).  Operator-observed peak amplitudes were
+    // correct (4.6 W Lyra vs 4.3 W Palstar) but the visual hold
+    // "felt instant" — a digital bar holding the same pixel value
+    // for 500 ms reads as a flash because there's no visible decay
+    // motion like an analog needle.  Bumped to 60 samples × 50 ms =
+    // 3000 ms = 3 sec hold, matching typical Bird-Palstar PEAK
+    // ballistic where a peak parks for several seconds so the
+    // operator can read it at leisure.  Trade-off: rapid-fire CW
+    // dits or fast voice peaks will show the highest single peak
+    // for up to 3 sec — operationally normal for a peak-power
+    // meter, less useful for rapidly-changing power.  If operator
+    // prefers tighter hold (closer to verified-reference 500 ms)
+    // OR wants live tuning, a follow-up adds a Settings → Meter
+    // "PWR Peak Hold" spin box mapped to this constant.
+    static constexpr int kPwrWindowSamples = 60;
     double pwrWinHist_[kPwrWindowSamples] = {};   // zero-initialized
     int    pwrWinIdx_ = 0;
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
