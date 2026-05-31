@@ -71,17 +71,30 @@ TxDspWorker::~TxDspWorker()
     // TxChannel::close runs, so close() cannot race a fexchange0
     // in flight (TxChannel::channelMtx_ would protect against
     // that too, but the explicit sequencing is clearer).
+    //
+    // Task #40 — TX-triggered zombie shutdown investigation
+    // (operator-flagged 2026-05-31, repro: RX-only close clean,
+    // TX-touched close leaves zombie).  qWarning at each step so
+    // the next bench can show via lyra-log.txt which step (if any)
+    // wedged.  Pre-fix qInfo SUMMARY line at the bottom would not
+    // print if any step blocks above it — its absence in the log
+    // is itself diagnostic data.
+    qWarning("[shutdown] ~TxDspWorker ENTRY");
     stopRequested_.store(true, std::memory_order_release);
 
     // 1) Stop new mic samples landing.  The Hl2Ep6MicSource
     //    destructor will also clear this on its own teardown,
     //    but we do it explicitly here so the order is unambig.
+    qWarning("[shutdown] ~TxDspWorker step 1: mic_.setConsumer({}) - start");
     mic_.setConsumer({});
+    qWarning("[shutdown] ~TxDspWorker step 1: done");
 
     // 2) Wake the worker.  shutdown() releases the semaphore
     //    AND flips the ring's shutdown flag, so any in-flight
     //    popBlock returns false on the next iteration.
+    qWarning("[shutdown] ~TxDspWorker step 2: ring_.shutdown() - start");
     ring_.shutdown();
+    qWarning("[shutdown] ~TxDspWorker step 2: done");
 
     // 2a) Also un-stick the worker if it's blocked on
     //     txIqConsumed_.acquire() (the EP2-consumed wait).  At
@@ -92,24 +105,32 @@ TxDspWorker::~TxDspWorker()
     //     became true) is a no-op (nothing's waiting on the
     //     binary semaphore — release just bumps the count to 1,
     //     which is harmless; the dtor frees the object next).
+    qWarning("[shutdown] ~TxDspWorker step 2a: txIqConsumed_.release() - start");
     txIqConsumed_.release();
+    qWarning("[shutdown] ~TxDspWorker step 2a: done");
 
     // 3) Join.  Bounded — the worker only ever blocks in
     //    popBlock or txIqConsumed_, both released above.
+    qWarning("[shutdown] ~TxDspWorker step 3: worker_.join() - start (joinable=%d)",
+             worker_.joinable() ? 1 : 0);
     if (worker_.joinable()) {
         worker_.join();
     }
+    qWarning("[shutdown] ~TxDspWorker step 3: done");
 
     // 4) Now safe to close the TX channel (no more fexchange0
     //    callers).  TxChannel::close holds its own mutex so a
     //    double-close from the destructor chain is idempotent.
+    qWarning("[shutdown] ~TxDspWorker step 4: tx_.close() - start");
     tx_.close();
+    qWarning("[shutdown] ~TxDspWorker step 4: done");
 
     qInfo("[tx-worker] stopped (blocks=%lld, errors=%lld, "
           "ring-overruns=%lld, ep2-fills=%lld)",
           blockCount_.load(), errorCount_.load(),
           ring_.overrunCount(),
           sip1FillCount_.load());
+    qWarning("[shutdown] ~TxDspWorker EXIT");
 }
 
 void TxDspWorker::workerLoop()

@@ -17,6 +17,40 @@
 #include "tx_dsp_worker.h"
 #include "wdsp_native.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+#ifdef _WIN32
+// WIN32_LEAN_AND_MEAN prevents windows.h pulling in winsock1, which
+// would clash with winsock2.h (transitively included via the existing
+// networking headers later in this file).  Need just TerminateProcess
+// + GetCurrentProcess for the Task #40 zombie-shutdown watchdog.
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
+
+namespace {
+// Task #40 — TX-triggered zombie shutdown watchdog.  Operator-flagged
+// 2026-05-31: closing Lyra after using TX leaves the process running in
+// the background (clean exit on RX-only sessions).  Until the root
+// cause is identified + fixed properly, this watchdog stops the
+// bleeding: a detached thread armed at aboutToQuit polls a
+// "shutdown_complete" flag, and if main() hasn't returned within 10 s
+// of aboutToQuit firing it calls TerminateProcess (Win32) / std::_Exit
+// (fallback).  Aggressive — bypasses static destructors, leaks file
+// handles + sockets back to the OS — but the OS reclaims those at
+// process exit anyway, and the operator-visible symptom (process keeps
+// running) is the bug we're solving.  The companion diagnostic
+// [shutdown] qWarning lines flushed before this fires tell us in the
+// next bench WHICH teardown step took >10 s, so the next commit can
+// fix the actual wedge.  Once root cause is fixed, this watchdog stays
+// as belt-and-suspenders against future regressions.
+std::atomic<bool> g_shutdown_complete{false};
+}  // namespace
+
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QApplication>
@@ -254,14 +288,46 @@ int main(int argc, char *argv[])
     //   4. stream->close() -> joins the rx-loop thread.
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
     lyra::dsp::TxDspWorker     *txWorker  = nullptr;
+
+    // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
+    // FIRST so it fires before any teardown handler and the
+    // 10 s watchdog timer starts at the very beginning of teardown.
+    // Also drops a "[shutdown] === aboutToQuit FIRED ===" marker into
+    // lyra-log.txt so the next bench can confirm aboutToQuit even
+    // ran (a separate-class bug would be aboutToQuit never firing —
+    // e.g. window-close not triggering app quit).
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        qWarning("[shutdown] === aboutToQuit FIRED — watchdog armed (10 s) ===");
+        std::thread([]() {
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+            if (g_shutdown_complete.load(std::memory_order_acquire)) return;
+            qWarning("[shutdown] === WATCHDOG: teardown >10 s — TerminateProcess ===");
+#ifdef _WIN32
+            ::TerminateProcess(::GetCurrentProcess(), 1);
+#else
+            std::_Exit(1);
+#endif
+        }).detach();
+    });
+
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
                      [stream, &txWorker, &micSource]() {
+        qWarning("[shutdown] handler-1 ENTRY");
         if (stream) {
+            qWarning("[shutdown] handler-1 step a: registerTxIqSource({}) - start");
             stream->registerTxIqSource({});
+            qWarning("[shutdown] handler-1 step a: done");
+            qWarning("[shutdown] handler-1 step b: registerTxControl({}) - start");
             stream->registerTxControl({});
+            qWarning("[shutdown] handler-1 step b: done");
         }
+        qWarning("[shutdown] handler-1 step c: delete txWorker - start (~TxDspWorker runs now)");
         delete txWorker;  txWorker  = nullptr;
+        qWarning("[shutdown] handler-1 step c: done");
+        qWarning("[shutdown] handler-1 step d: delete micSource - start (~Hl2Ep6MicSource runs now)");
         delete micSource; micSource = nullptr;
+        qWarning("[shutdown] handler-1 step d: done");
+        qWarning("[shutdown] handler-1 EXIT");
     });
 
     // Task #26 — auto-mute RX1 audio while the wire MOX bit is live so
@@ -284,7 +350,11 @@ int main(int argc, char *argv[])
     // guarantees no feedIq() runs into a half-torn-down engine /
     // freed audio ring (see WdspEngine::stopAudio).
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     stream, &lyra::ipc::HL2Stream::close);
+                     stream, [stream]() {
+        qWarning("[shutdown] handler-2 ENTRY (stream->close)");
+        if (stream) stream->close();
+        qWarning("[shutdown] handler-2 EXIT");
+    });
 
     // Step 5: register the panadapter widget as a QML type under its
     // own URI (keeps it separate from the qt_add_qml_module "Lyra"
@@ -475,8 +545,19 @@ int main(int argc, char *argv[])
 
     const int rc = app.exec();
 
+    // Task #40 — signal the watchdog that teardown completed cleanly
+    // BEFORE WSACleanup or any further work that could itself hang.
+    // The watchdog thread is detached + sleeping; if shutdown_complete
+    // is true when it wakes, it skips TerminateProcess and the OS
+    // reclaims it normally on process exit.
+    qWarning("[shutdown] app.exec() returned cleanly — clearing watchdog");
+    g_shutdown_complete.store(true, std::memory_order_release);
+
 #ifdef _WIN32
+    qWarning("[shutdown] WSACleanup - start");
     ::WSACleanup();
+    qWarning("[shutdown] WSACleanup - done");
 #endif
+    qWarning("[shutdown] main() returning rc=%d", rc);
     return rc;
 }

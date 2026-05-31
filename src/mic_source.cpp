@@ -34,7 +34,16 @@ Hl2Ep6MicSource::~Hl2Ep6MicSource()
     // setIqSink contract — set ONCE before open() spawns the
     // worker — operators tear us down before HL2Stream::stop()
     // joins the worker.  See header threading note.
+    //
+    // Task #40 — TX-triggered zombie shutdown investigation.
+    // setMicConsumer({}) takes the consumer mutex on HL2Stream,
+    // which BLOCKS until any in-flight RX-loop micConsumer_ call
+    // finishes — candidate wedge point if the RX worker thread is
+    // stuck in the middle of forwarding mic samples.  qWarning
+    // brackets so lyra-log.txt shows entry/exit timing.
+    qWarning("[shutdown] ~Hl2Ep6MicSource ENTRY");
     stream_.setMicConsumer({});
+    qWarning("[shutdown] ~Hl2Ep6MicSource EXIT");
 }
 
 void Hl2Ep6MicSource::setConsumer(Consumer c)

@@ -225,23 +225,41 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
 
 void TxChannel::close()
 {
+    // Task #40 — TX-triggered zombie shutdown investigation.  qWarning
+    // at each step so the next bench shows in lyra-log.txt which WDSP
+    // call wedged.  Prime suspect: SetChannelState(0, 1) is BLOCKING
+    // (up to 100 ms in normal operation but can wedge longer if
+    // WDSP's internal downslew flush waits on something that never
+    // arrives).  CloseChannel also internally joins WDSP's per-
+    // channel DSP thread — another candidate wedge point.
+    qWarning("[shutdown] TxChannel::close ENTRY (channel=%d)", channel_);
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_) return;
+    qWarning("[shutdown] TxChannel::close mutex acquired (opened=%d running=%d)",
+             opened_ ? 1 : 0, running_ ? 1 : 0);
+    if (!opened_) {
+        qWarning("[shutdown] TxChannel::close NO-OP (not opened)");
+        return;
+    }
     if (running_ && wdsp_ && wdsp_->api().SetChannelState) {
         // Inlined stop (same reason as the start() inlining at the
         // end of open()): we're holding the channel mutex; stop()
         // takes the same mutex.  dmode=1 = blocking flush.
+        qWarning("[shutdown] TxChannel::close SetChannelState(ch,0,1) BLOCKING - start");
         wdsp_->api().SetChannelState(channel_, 0, 1);
+        qWarning("[shutdown] TxChannel::close SetChannelState(ch,0,1) - done");
         running_ = false;
     }
     if (wdsp_) {
         const WdspApi &api = wdsp_->api();
         if (api.CloseChannel) {
+            qWarning("[shutdown] TxChannel::close CloseChannel(ch) - start");
             api.CloseChannel(channel_);
+            qWarning("[shutdown] TxChannel::close CloseChannel(ch) - done");
         }
     }
     opened_ = false;
     qInfo("[tx] channel %d closed", channel_);
+    qWarning("[shutdown] TxChannel::close EXIT");
 }
 
 void TxChannel::start()

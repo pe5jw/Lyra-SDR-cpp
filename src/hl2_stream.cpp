@@ -560,10 +560,20 @@ void HL2Stream::open(const QString &ip) {
 }
 
 void HL2Stream::close() {
+    // Task #40 — TX-triggered zombie shutdown investigation.  qWarning
+    // brackets so the next bench shows in lyra-log.txt which step (if
+    // any) wedged: rxWorker_.join, txWorker_.join, sendto STOP, or the
+    // closesocket itself.
+    qWarning("[shutdown] HL2Stream::close ENTRY (running=%d rxJoin=%d txJoin=%d sockOpen=%d)",
+             running_.load() ? 1 : 0,
+             rxWorker_.joinable() ? 1 : 0,
+             txWorker_.joinable() ? 1 : 0,
+             socket_ != kInvalidSocket ? 1 : 0);
     if (!running_.load(std::memory_order_acquire) &&
         !rxWorker_.joinable() &&
         !txWorker_.joinable() &&
         socket_ == kInvalidSocket) {
+        qWarning("[shutdown] HL2Stream::close NO-OP (nothing alive)");
         return;
     }
     emit logLine(QStringLiteral("closing EP6 stream ..."));
@@ -612,10 +622,15 @@ void HL2Stream::close() {
     // Request stop on both workers BEFORE joining either so they
     // wind down in parallel (RX: bounded by recv timeout 100 ms,
     // TX: bounded by waitable-timer wait cap 100 ms).
+    qWarning("[shutdown] HL2Stream::close request_stop on rx+tx workers");
     if (rxWorker_.joinable()) rxWorker_.request_stop();
     if (txWorker_.joinable()) txWorker_.request_stop();
+    qWarning("[shutdown] HL2Stream::close rxWorker_.join() - start");
     if (rxWorker_.joinable()) rxWorker_.join();
+    qWarning("[shutdown] HL2Stream::close rxWorker_.join() - done");
+    qWarning("[shutdown] HL2Stream::close txWorker_.join() - start");
     if (txWorker_.joinable()) txWorker_.join();
+    qWarning("[shutdown] HL2Stream::close txWorker_.join() - done");
 
     // Both workers stopped — main thread sends STOP, then closes
     // the socket.  Best-effort; if STOP doesn't reach the gateware
@@ -649,6 +664,7 @@ void HL2Stream::close() {
         .arg(framingErrors_.load())
         .arg(txTotalDg_.load())
         .arg(txSendErrors_.load()));
+    qWarning("[shutdown] HL2Stream::close EXIT");
 }
 
 void HL2Stream::onStatsTick() {
