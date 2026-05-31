@@ -25,6 +25,7 @@ not programmers — if you can click a menu, you can use this.
 - [Why "Lyra"?](#why-lyra)
 - [Getting started](#getting-started)
 - [The header (top toolbar)](#the-header-top-toolbar)
+- [The status bar (bottom — HL2 telemetry)](#the-status-bar-bottom--hl2-telemetry)
 - [Getting around the window](#getting-around-the-window)
 - [The panadapter (spectrum display)](#the-panadapter-spectrum-display)
 - [Tuning panel](#tuning-panel)
@@ -33,18 +34,22 @@ not programmers — if you can click a menu, you can use this.
 - [Audio panel](#audio-panel)
 - [Display panel](#display-panel)
 - [Meter panel](#meter-panel)
+- [TX panel](#tx-panel)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
 - [Updates](#updates)
 - [Backing up & sharing your settings](#backing-up--sharing-your-settings)
+- [Operating with an external amplifier (hot-switch protection)](#operating-with-an-external-amplifier-hot-switch-protection)
 - [Settings → Hardware](#settings--hardware)
   - [Operator / Station](#operator--station)
   - [Band plan (Region)](#band-plan-region)
   - [Diagnostics (debug log)](#diagnostics-debug-log)
   - [Radio](#radio)
+  - [Transmit (PA enable + safety timeout)](#transmit-pa-enable--safety-timeout)
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
+- [Settings → TX (TR sequencing + cos² fade)](#settings--tx-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [DX-cluster spots](#dx-cluster-spots)
 - [Settings → Visuals](#settings--visuals)
@@ -193,6 +198,42 @@ The strip across the top, between the menu bar and the panels:
 - **Weather badges** — ⚡ lightning, 💨 wind, ⚠ severe — appear toward the
   right edge when an alert is active and **flash** on the most serious
   tier. Hidden when all-clear. See [Weather alerts](#weather-alerts).
+
+---
+
+## The status bar (bottom — HL2 telemetry)
+
+The thin strip across the bottom of the main window. While a stream
+is connected, it shows live **HL2 telemetry** read from the EP6
+status rotation:
+
+```
+HL2:  T 24.7°C    V 12.3 V    PA 0.00 A
+```
+
+- **T** — board temperature in °C, sampled every ~400 ms.
+- **V** — HL2 supply voltage in volts (a normal HL2 / HL2+ reads
+  **12.3 – 13.0 V**; well below ~11 V suggests the supply is sagging
+  under load).
+- **PA** — combined PA drain current in amps. The key telemetry
+  during transmit:
+  - **≈ 0 A** at rest (PA bias disabled, gateware idle).
+  - **~0.2 A** at idle bias (PA Enable ON, MOX keyed, Drive = 0 %).
+  - **~1.8 A** at full output on a bare HL2+ on the dummy load.
+  - **Goes BOLD RED at ≥ 50 mA** — visual confirmation that the
+    gateware is producing RF. If you see red and your wattmeter
+    reads zero, something in the chain (relay, BPF, antenna) is
+    eating the RF.
+
+`n/a` in any field means the gateware hasn't delivered that slot
+yet (briefly at startup) or the telemetry decode is mid-rotation.
+A persistent `n/a` is a stream / gateware issue worth investigating.
+
+> The PA-current readout is the **single most useful TX bench
+> instrument** Lyra exposes. It's the gateware's own measurement,
+> independent of any external watt-meter, and tells you whether
+> the PA is actually biased + drawing current the way it should
+> be for the drive you commanded.
 
 ---
 
@@ -643,8 +684,73 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > The relative movement, peak-hold, SNR, and
 > noise-floor behaviour are all live regardless.
 >
-> Transmit meters (Power / SWR / ALC / Mic, etc.) arrive with the
-> transmit feature — the meter panel will gain those sources then.
+> **Transmit meters** are now wired for the sources whose computes
+> exist today: **PWR** (forward power, watts) and **SWR** (antenna
+> match). On every MOX edge, the panel auto-swaps from your RX
+> source to your TX source and back — set both pickers in
+> **[Settings → Meter](#settings--audio)**. Three more TX
+> sources — **ALC**, **MIC**, **COMP** — appear in the picker
+> when their computes land (they depend on the TX DSP chain
+> being driven by a live modulator; today only the **TUN
+> tune-carrier** path emits, which doesn't exercise ALC or MIC).
+
+---
+
+## TX panel
+
+The operating-time TX controls — a single strip across one of the
+docks with three things on it. Layout (left → right):
+
+```
+[TX]    Drive ──●── 25 %                              [ TUN ]  [ MOX ]
+```
+
+- **TX Drive** (slider, 0–100 %, default 0) — how hard the HL2
+  drives its on-board PA. **0 % = no carrier even with PA enabled
+  and MOX keyed.** Start LOW (5–10 %) on a dummy load; raise gradually
+  while watching the watt-meter. **Mouse-wheel** adjusts (Shift + wheel
+  = 5 % steps). Live readback to the right shows the current %.
+- **TUN button** — single-click gesture: arms a 1 kHz **tune carrier**
+  AND keys MOX in one click. Click again to release MOX; the carrier
+  auto-disarms on the next MOX-off edge for any reason (your click,
+  the safety timeout, the FSM unwinding). When armed the button
+  border glows amber. Carrier power scales with TX Drive %.
+- **MOX button** — the keying button. Funnels through Lyra's TR-
+  sequenced FSM (the same one your **space-bar momentary** uses when
+  no text widget has focus). Goes **bold red** the instant the wire-
+  MOX bit settles after the TR-delay window. A short tap shorter
+  than the TR-delay (≈ 65 ms by default) still flashes the button
+  **orange** for ~220 ms so you get visual feedback that your press
+  registered — even if the FSM cancelled mid-keydown.
+
+What the button colours mean, at a glance:
+
+| MOX button colour | Meaning |
+|---|---|
+| Gray | Idle (RX) |
+| **Orange flash** (~220 ms) | You just pressed; wire-MOX hasn't settled yet |
+| **Bold red** | Wire-MOX bit is high — radio is keyed, RF flowing if PA + Drive permit |
+
+TUN is a strict superset of MOX for tune-up: it does what MOX does
+PLUS injects the 1 kHz tune carrier. Use **MOX** when you want the
+relay to switch (CW key-down testing, mic feed-through, or with
+future SSB modulator); use **TUN** when you want a steady carrier
+on your dial frequency to set drive level / read an SWR / cal an
+external watt-meter / bias-tune an external amp.
+
+> **Both buttons honour the safety knobs.** They route through the
+> same FSM that respects the **TR-sequencing delays** (see
+> [Settings → TX](#settings--tx-tr-sequencing--cos-fade)) and the
+> **PA Enable** safety gate (see
+> [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout)).
+> Carrier amplitude follows the **cos² fade envelope** on every
+> keydown and keyup — no hard step, no click.
+
+> **PA Enable is separate from MOX.** With PA disabled, keying MOX
+> or TUN gives you the relay click + the wire-MOX state but **zero
+> RF** (the gateware PA bias never engages). This is the safe state
+> for first-time bench work — leave PA off until you're confident
+> in your Drive setting, fade defaults, and amp configuration.
 
 ---
 
@@ -767,6 +873,81 @@ choice.)
 
 ---
 
+## Operating with an external amplifier (hot-switch protection)
+
+If you're driving an external solid-state HF linear amplifier from
+the HL2, **read this section first.** Hot-switching — applying RF
+into a T/R relay that hasn't finished switching — can destroy a SS
+linear's PA. Lyra has two layers of protection against this; they're
+load-bearing, not cosmetic, and the defaults are chosen for typical
+1 kW SS HF linears.
+
+### How the two layers compose
+
+| Layer | Knob | What it does |
+|---|---|---|
+| 1. **Scheduling** | RF Delay (default 50 ms) | After the wire-MOX bit goes hot, Lyra waits 50 ms before allowing any RF onto the antenna. Gives the external amp's T/R relay time to fully close. |
+| 2. **Amplitude shape** | Fade-In Duration (default 50 ms) | Even WITHIN the RF Delay window, the host-side I/Q amplitude rises smoothly from zero via a cos² envelope. Redundant protection against any residual MOX-bit / relay timing skew. |
+
+Both knobs live on **[Settings → TX](#settings--tx-tr-sequencing--cos-fade)**.
+
+### Workflow before the first on-air keying
+
+The discipline that's saved more amps than anyone wants to admit:
+
+1. **Dummy load on the antenna port.** Until you've confirmed the
+   full chain works the way you expect, the HL2 talks to a 50 Ω
+   resistor, not your antenna. A dummy load tolerates hot-switching;
+   a relay-bypassed antenna won't.
+2. **External amp OFF / bypassed.** First-RF goes to the dummy load
+   straight from the HL2's on-board PA (a few watts). Confirm
+   wattmeter behaviour, panadapter trace, and that TUN / MOX both
+   ramp cleanly.
+3. **PA Enable OFF in [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout).**
+   Run through your keying ergonomics first — TUN button, MOX
+   button, space-bar, drive-slider movement — with **no actual RF**.
+   You should hear the HL2 relays click and see the wire-MOX state
+   flip; the wattmeter should read zero.
+4. **PA Enable ON, Drive low (5–10 %).** Key TUN once. Watch the
+   wattmeter trace ramp up smoothly over ~50 ms, hold steady, then
+   ramp down smoothly. **No clicks, no spikes** at either edge.
+5. **Verify your [Settings → TX](#settings--tx-tr-sequencing--cos-fade) values match your amp.**
+   The defaults are bench-safe for typical 1 kW SS linears.
+   If your amp's documentation specifies a T/R relay settle time
+   greater than 30 ms, **leave RF Delay and Fade-In Duration at
+   their defaults or HIGHER**. Only consider lowering them if your
+   amp's spec explicitly says it can handle a faster onset (e.g.
+   QSK-rated amps with vacuum relays).
+6. **External amp ON / inline.** Re-do the TUN test with the amp in
+   line, still on the dummy load. Confirm the amp keys and reads
+   the right output for your drive level. Watch for any sign of
+   relay arcing or other distress.
+7. **Antenna connected.** Final step. By the time you reach this,
+   the chain has been verified end-to-end.
+
+### What to tune (and what NOT to tune)
+
+| If you're seeing… | Tune this | NOT this |
+|---|---|---|
+| Amp T/R relay arcing on key-up | **Space MOX Delay** (and Fade-Out Duration must stay ≤ Space MOX Delay) | Don't touch RF Delay — keyup arcing is a different problem from keydown hot-switching |
+| Amp shows symptoms of hot-switching on key-DOWN | **RF Delay** (raise it) — match your amp's T/R relay settle spec | Don't reduce Fade-In Duration as a "fix" — it's the second protective layer |
+| Audible click in your monitor at keydown | **Fade-In Duration** — should be ≥ ~30 ms for clean SSB-band sound | Don't extend RF Delay just to remove a click — that's the amplitude envelope's job |
+| Audible click in your monitor at keyup | **Fade-Out Duration** (raise it up to Space MOX Delay) | Don't extend Space MOX Delay just for a click — that lengthens the re-key window too |
+
+### When Lyra is killed mid-transmit (process crash, power glitch)
+
+The HL2 gateware has its own watchdog: no EP2 keepalive frames for
+N seconds (gateware-specific, typically ~1 sec) → gateware drops PA
+bias. This is your last-resort safety if Lyra dies while keyed.
+
+**But it's slow.** A second of stuck carrier into an antenna is
+enough to embarrass yourself or worse. The discipline above —
+dummy-load → external-amp-off → progressively widen — exists
+because the gateware watchdog isn't fast enough to substitute for
+operator-side discipline.
+
+---
+
 ## Settings → Hardware
 
 The **Hardware** tab (Settings — **Ctrl+,**) holds your station identity
@@ -874,6 +1055,42 @@ connects to the selected radio, **Close** disconnects, and the status line
 shows what you're connected to. Lyra remembers the last radio and shows it
 here on launch. (The toolbar **▶ Start / ■ Stop** does the same thing.)
 
+### Transmit (PA enable + safety timeout)
+
+The deliberate-arm safety gates for getting on the air. Both are
+intentionally OUT of the operating-time TX panel — they're set-and-
+forget config you arm once when you're ready to transmit, not knobs
+you touch between QSOs.
+
+- **Enable PA** (checkbox, default **OFF**) — toggles the HL2 gateware's
+  PA bias. With this OFF, keying MOX or TUN gives you the relay click
+  and the wire-MOX state but **zero RF** (the gateware never biases
+  the PA). With this ON, MOX + non-zero Drive % produces real RF. **The
+  safest first-time-on-the-air bench gate**: leave OFF for relay /
+  panadapter / wattmeter wiring checks; turn ON only after you're
+  confident in your Drive setting, fade defaults, and amp configuration.
+  Lyra defensively clears PA on every stream close and open — restart
+  Lyra and PA is OFF again, no matter where you left it.
+- **TX safety timeout** (spin box, default **600 s = 10 min**, range
+  60 – 1200 s) — if the radio stays continuously keyed past this
+  duration, the FSM auto-releases MOX through the normal keyup
+  sequence (no shortcut on the wire — full TR-delay unwind, ATT-on-TX
+  restore, the works). A pop-up toast notes the auto-release.
+- **Bypass safety timeout** (checkbox, default OFF) — for long-form
+  AM ragchews or slow CW beacons where the 10-minute default is
+  genuinely too short. Bypass disables the timer entirely. **Use
+  with intent** — a stuck PTT or a software fault now has no host-
+  side rescue (the HL2 gateware watchdog is still in play, but
+  treats EP2 keepalive as the only liveness signal).
+
+> **Why these are in Hardware, not in TX:** Settings → TX is for
+> *timing* knobs you might tune to match an external amp's switching
+> spec. Settings → Hardware → Transmit is the *arm/disarm* surface
+> for "ready to actually radiate" — different operational gesture,
+> different cognitive bucket. Both honour each other: PA off ⇒ no
+> RF regardless of timing, and the timing knobs are inert when PA
+> is off.
+
 ### Filter board (N2ADR / compatible)
 
 If you have an external band-pass filter board on the HL2's
@@ -935,6 +1152,72 @@ Where Lyra sends received audio:
 
 Pick your output device here; everyday **Mute** and **Vol** stay on the
 [Audio panel](#audio-panel).
+
+---
+
+## Settings → TX (TR sequencing + cos² fade)
+
+> **⚠ Read [Operating with an external amplifier](#operating-with-an-external-amplifier-hot-switch-protection) FIRST**
+> if you're driving a solid-state HF linear from the HL2. The defaults
+> on this tab are **hot-switch-safe** for typical 1 kW SS linears;
+> reducing them without knowing your amp's T/R relay settle spec
+> can damage the PA. Tooltips on the most dangerous knobs carry the
+> warning; don't dismiss it.
+
+Six operator-tunable knobs that control the **timing of the MOX → RF
+edges** and the **amplitude shape** of the TX I/Q at the start and
+end of every keying event. All values are in milliseconds; live-
+apply (changes take effect on the next MOX edge — no restart, no
+MOX cycle required). Persisted across Lyra restarts.
+
+### TR Sequencing (PTT → wire-MOX → RF timing)
+
+Four scheduling knobs. They unwind in this order on every keying
+event:
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **MOX Delay** | 15 ms | From operator-PTT (your click / space-bar / TUN) to the wire-MOX bit going hot. Gives the RX-protect step-attenuator + external filter-board relays a window to settle into TX configuration **before** RF appears. |
+| **RF Delay** ⚠ | 50 ms | From wire-MOX hot to the "RF settled" edge (when actual RF appears on the antenna). **This is the hot-switch protection window for external SS linears** — their T/R relay needs typically 30–50 ms to settle. The default is bench-safe for typical 1 kW SS HF linears. **Reducing this below your amp's T/R settle spec can destroy the PA.** |
+| **Space MOX Delay** | 13 ms | Keyup re-key window: the time between operator-keyup and the wire-MOX bit clearing. Allows a mic-clip / CW-dot-tail re-key in this window to collapse-stay-TX (no on-the-air drop, no extra T/R cycle). Also sets the upper bound on **Fade-Out Duration** below — fade-out must fit inside this window or it gets truncated at MOX-clear. |
+| **PTT-Out Delay** | 5 ms | Final cleanup window after wire-MOX clears — before step-att restores, OC pattern flips back to RX, and `moxActive` emits false. Lets external relays finish switching back **before** the RX front-end re-opens. |
+
+### Amplitude Envelope (cos² fade on TX I/Q)
+
+Two knobs that shape the **amplitude** of the TX I/Q at the EP2
+wire-pack stage. The shape is a cos² half-cycle (raised cosine —
+smooth, no high-frequency content, the gold-standard envelope for
+PTT-onset shaping).
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **Fade-In Duration** ⚠ | 50 ms | The cos² ramp from zero to full amplitude at keydown. **Belt-and-suspenders amp protection** — even if RF Delay is right, the soft amplitude rise INSIDE the RF Delay window adds redundant protection against any residual MOX-bit / relay timing skew. Default matches the default RF Delay so the ramp completes exactly when "RF settled" fires. **Reducing this without knowing your amp's switching behaviour can expose the PA to hot-switch transients.** |
+| **Fade-Out Duration** | 13 ms | The cos² ramp from full amplitude to zero at keyup. **Must fit inside Space MOX Delay above** — the gateware DAC stops consuming TX I/Q the instant wire-MOX clears, so a fade-out longer than Space MOX Delay gets truncated mid-ramp (audible click). RF going DOWN doesn't damage amps (the relay disengages cleanly), so this is shorter than Fade-In — purely click-prevention. |
+
+The asymmetric default (50 ms in / 13 ms out) reflects the
+**asymmetric risk**: RF coming UP into a still-switching relay can
+destroy amps; RF coming DOWN cannot.
+
+### Restore hot-switch-safe defaults
+
+A single button that resets all six values to **15 / 50 / 13 / 5 /
+50 / 13** ms — the bench-validated profile that's safe for typical
+1 kW SS HF linears. Use it any time you've experimented with values
+and want a known-good starting point.
+
+> **The two layers compose into one "clean PTT onset" story.** The
+> TR-sequencing values control *scheduling* of the MOX → step-att →
+> RF → cleanup edges; the amplitude envelope shapes the *I/Q
+> amplitude* itself. At defaults the fade-in completes exactly when
+> "RF settled" fires (50 ms after wire-MOX hot), and the fade-out
+> completes exactly when wire-MOX clears (13 ms after operator-keyup).
+
+> **Live-apply behaviour:** changes take effect on the next MOX edge,
+> not the in-flight one. If you change a value while the radio is
+> keyed, the in-flight transition finishes at the prior rate; the
+> new value applies at the next keydown or keyup. So you can A/B
+> values mid-session by changing then re-keying — no MOX cycle,
+> no app restart.
 
 ---
 
