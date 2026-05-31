@@ -289,6 +289,48 @@ class HL2Stream : public QObject {
     Q_PROPERTY(int txStopDelayMs   READ txStopDelayMs
                WRITE setTxStopDelayMs   NOTIFY txStopDelayMsChanged)
 
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    //
+    // micGainDb       — `SetTXAPanelGain1` (TXA chain stage #3, before
+    //                   phrot/EQ/leveler/CFCOMP/bandpass/compressor/
+    //                   OSCtrl/ALC).  The only operator-tunable software
+    //                   gain stage in the WDSP TXA chain.  Range
+    //                   [-20, +40] dB.  Default 0 dB = WDSP linear
+    //                   unity = no change vs WDSP create-time defaults
+    //                   (matches the lyra-cpp ship-no-setters posture
+    //                   in TxChannel::open()).  Operator dials up via
+    //                   the TxPanel slider for typical ESSB headroom.
+    //
+    // alcMaxGainDb    — `SetTXAALCMaxGain` (always-on ALC ceiling).
+    //                   ⚠ LOAD-BEARING: WDSP create-time default is
+    //                   1.0 linear = 0 dB max gain, which pins the
+    //                   entire TXA output chain at a hard 0 dB ALC
+    //                   ceiling regardless of mic level.  The verified
+    //                   reference bootstraps to 3 dB at first Setup
+    //                   load (its profile default); lyra-cpp never
+    //                   called the setter before component 8a, which
+    //                   is the actual root cause of the 2026-05-31
+    //                   first-SSB-bench 0.2 W result.  Default 3 dB
+    //                   here mirrors the reference's Setup-load value
+    //                   = lifts the ceiling enough for normal SSB
+    //                   peaks to pass through to the wire.  Range
+    //                   [-3, +10] dB; operator-tunable in Settings →
+    //                   TX → ALC.
+    //
+    // Persisted under tx/micGainDb + tx/alcMaxGainDb in QSettings.
+    // Live-apply: setter forwards to the registered TxControl
+    // callback (which calls TxDspWorker pass-through → TxChannel WDSP
+    // setter) so a slider move takes effect on the next ~2.6 ms
+    // fexchange0 block (the WDSP channel mutex serialises the setter
+    // against any in-flight process() call).  registerTxControl()
+    // also pushes the autoloaded values ONCE at registration time so
+    // the freshly-opened WDSP channel doesn't sit at the load-bearing
+    // ALC = 0 dB trap waiting for the operator to nudge the slider.
+    Q_PROPERTY(double micGainDb    READ micGainDb
+               WRITE setMicGainDb    NOTIFY micGainDbChanged)
+    Q_PROPERTY(double alcMaxGainDb READ alcMaxGainDb
+               WRITE setAlcMaxGainDb NOTIFY alcMaxGainDbChanged)
+
 public:
     explicit HL2Stream(QObject *parent = nullptr);
     ~HL2Stream() override;
@@ -335,6 +377,21 @@ public:
         std::function<void()> start;
         std::function<void()> stop;
         std::function<void(bool)> setInjectTxIq;
+        // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+        // Called by the Q_PROPERTY setters (operator slider/spin-box
+        // moves) AND once on registerTxControl() with the autoloaded
+        // persisted values so the freshly-opened TX channel doesn't
+        // sit at the load-bearing WDSP defaults (especially the ALC
+        // max-gain = 0 dB trap that pins the output chain).  dB
+        // forwarded at the public boundary; TxChannel does dB→linear
+        // before the SetTXA* call.  Empty std::function = no-op
+        // (registration order: TxControl is registered AFTER
+        // TxChannel::open() succeeds; if open() failed, the callbacks
+        // never registered, and the Q_PROPERTY setters just persist
+        // + emit without forwarding — operator state lives, channel
+        // bringup applies on next radio start).
+        std::function<void(double)> setMicGainDb;
+        std::function<void(double)> setAlcMaxGainDb;
     };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
@@ -432,6 +489,11 @@ public:
     int     fadeInMs()        const { return fade_.fadeInMs();  }
     int     fadeOutMs()       const { return fade_.fadeOutMs(); }
     int     txStopDelayMs()   const { return txStopDelayMs_;    }
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    // Getters read the live operator-tuned values (or defaults if
+    // unset).  See Q_PROPERTY block above for the safety rationale.
+    double  micGainDb()       const { return micGainDb_;        }
+    double  alcMaxGainDb()    const { return alcMaxGainDb_;     }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -626,6 +688,12 @@ public slots:
     void setRfDelayMs(int ms);
     void setSpaceMoxDelayMs(int ms);
     void setPttOutDelayMs(int ms);
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    // Each clamps to its declared range, persists under tx/<key>,
+    // emits the changed signal, and forwards to the registered
+    // TxControl callback (no-op if TxControl not yet registered).
+    void setMicGainDb(double db);
+    void setAlcMaxGainDb(double db);
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
     void setTxStopDelayMs(int ms);
@@ -708,6 +776,9 @@ signals:
     void fadeInMsChanged(int ms);
     void fadeOutMsChanged(int ms);
     void txStopDelayMsChanged(int ms);
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    void micGainDbChanged(double db);
+    void alcMaxGainDbChanged(double db);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -1071,6 +1142,49 @@ private:
     int spaceMoxDelayMs_ = kDefaultSpaceMoxDelayMs;
     int pttOutDelayMs_   = kDefaultPttOutDelayMs;
     int txStopDelayMs_   = kDefaultTxStopDelayMs;
+
+    // ---- TX-1 component 8a: operator-tunable WDSP TXA gain stages -
+    //
+    // Defaults (the load-bearing ones for the 2026-05-31 0.2 W bench
+    // root-cause fix):
+    //
+    //   alcMaxGainDb_ = +3.0 dB  — matches the reference's Setup-load
+    //                              default.  WDSP create-time is 1.0
+    //                              linear = 0 dB; never calling the
+    //                              setter pins the entire TXA output
+    //                              chain at the 0 dB ALC ceiling.
+    //                              This default is THE smoking-gun
+    //                              fix for the 0.2 W bench result.
+    //   micGainDb_    =  0.0 dB  — WDSP create-time unity.  Matches
+    //                              lyra-cpp's ship-no-setters posture
+    //                              for what the channel sees at boot.
+    //                              Operator dials up via TxPanel for
+    //                              typical ESSB headroom.
+    //
+    // Persisted under tx/micGainDb + tx/alcMaxGainDb in QSettings.
+    static constexpr double  kDefaultMicGainDb     =  0.0;
+    static constexpr double  kDefaultAlcMaxGainDb  =  3.0;
+    // Operator-tuning bounds.  Mic gain range matches the verified
+    // reference's Default TX profile exactly (Max=+40, Min=-90) so a
+    // Lyra-cpp slider drag covers the same operator-facing travel an
+    // operator coming from a reference-pattern radio is used to.
+    // Min=-90 is a deep attenuator (essentially mute for typical mic
+    // levels) — useful for bench-test with a hot signal generator +
+    // matches the reference's profile floor.
+    // ALC max-gain bounds are tighter — the setter is a SAFETY
+    // ceiling, not a gain knob; lower than -3 dB clips most program
+    // material, higher than +10 dB defeats the splatter-protection
+    // purpose.
+    static constexpr double  kMinMicGainDb        = -90.0;
+    static constexpr double  kMaxMicGainDb        = +40.0;
+    static constexpr double  kMinAlcMaxGainDb     =  -3.0;
+    static constexpr double  kMaxAlcMaxGainDb     = +10.0;
+    // Live values — written by the Q_PROPERTY setters on the Qt
+    // main thread, forwarded to the registered TxControl callbacks
+    // (which run on the same thread; TxChannel does the WDSP setter
+    // call under its own channelMtx_).
+    double micGainDb_     = kDefaultMicGainDb;
+    double alcMaxGainDb_  = kDefaultAlcMaxGainDb;
 
     // ---- TX-1 component 5a: cos² TX-IQ amplitude envelope ----------
     // Owned by HL2Stream, lives on the EP2 wire writer thread.  See

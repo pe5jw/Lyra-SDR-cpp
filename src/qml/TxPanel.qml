@@ -125,6 +125,57 @@ Rectangle {
             Layout.preferredWidth: 44
         }
 
+        // ── Mic Gain (dB) — operator tunes between QSOs ────────────
+        // TX-1 component 8a — direct operator surface for
+        // SetTXAPanelGain1 (the only operator-tunable software gain
+        // stage in the WDSP TXA chain, before the bandpass / ALC /
+        // everything downstream).  Default 0 dB = WDSP unity = no
+        // change vs the lyra-cpp ship-no-setters posture at channel
+        // open; typical ESSB headroom dials up via this slider.  ALC
+        // ceiling lives in Settings → TX (operator sets the value;
+        // it's a safety knob, not a per-QSO tweak).
+        Label { text: qsTr("Mic"); color: root.cMuted }
+        Slider {
+            id: micGainSlider
+            Layout.preferredWidth: 200
+            // Range matches the verified reference's Default TX profile
+            // (Max +40, Min -90) so the operator's full reference-style
+            // travel is preserved.  Live value bidirectionally binds
+            // with the Settings → TX Mic Gain spin-box so either
+            // surface tunes the same QSettings tx/micGainDb value.
+            from: -90; to: 40; stepSize: 1; snapMode: Slider.SnapAlways
+            value: Stream.micGainDb
+            onMoved: Stream.setMicGainDb(value)
+            WheelHandler {
+                onWheel: (ev) => {
+                    var step = (ev.modifiers & Qt.ShiftModifier) ? 5 : 1
+                    var nv = micGainSlider.value + (ev.angleDelta.y > 0 ? step : -step)
+                    nv = Math.max(-90, Math.min(40, nv))
+                    Stream.setMicGainDb(nv)
+                }
+            }
+            ToolTip.text: qsTr("Mic gain into the TX modulator (WDSP TXA "
+                + "PanelGain1).  0 dB = unity.  Raise toward +10 to +20 dB for "
+                + "typical SSB voice — watch the ALC meter (Settings → TX → "
+                + "ALC ceiling) and back off when ALC engages hard.  Wheel "
+                + "adjusts (Shift = 5 dB).  Settings → TX → Mic Gain offers "
+                + "a typed spin-box for the same value — both surfaces tune "
+                + "the same control bidirectionally.")
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered && !pressed
+        }
+        Label {
+            // Live readback from the persisted Q_PROPERTY — so an
+            // external change (Settings dialog, persistence reload,
+            // future profile-recall) refreshes the readout.
+            text: (Stream.micGainDb >= 0 ? "+" : "") +
+                  Math.round(Stream.micGainDb) + qsTr(" dB")
+            color: cText
+            font.family: "Consolas"
+            font.bold: true
+            Layout.preferredWidth: 52
+        }
+
         Item { Layout.fillWidth: true }   // pushes TUN + MOX to the right
 
         // ── TUN — armed-tune button (carrier @ TX freq + 1 kHz) ─────

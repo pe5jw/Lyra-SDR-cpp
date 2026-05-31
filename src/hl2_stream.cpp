@@ -265,6 +265,26 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     fade_.setFadeOutMs(
         QSettings().value(QStringLiteral("tx/trSeq/fadeOutMs"),
                           lyra::dsp::MoxEdgeFade::kDefaultFadeOutMs).toInt());
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    // micGainDb defaults to 0 dB = WDSP unity (no change vs the lyra-
+    // cpp ship-no-setters posture at TxChannel::open()).  alcMaxGainDb
+    // defaults to +3 dB which mirrors the verified reference's
+    // Setup-load default — THE smoking-gun fix for the 2026-05-31
+    // 0.2 W first-SSB bench (WDSP create-time is 0 dB, which pins the
+    // TXA output chain at the ALC ceiling regardless of mic level).
+    // Push-to-channel happens in registerTxControl() once the
+    // TxControl callbacks are wired (the channel is open by then; the
+    // operator's persisted/default values land on the channel before
+    // the first keydown).  Clamped on load to defend against stale /
+    // corrupt QSettings (hand-edited file).
+    micGainDb_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/micGainDb"),
+                          kDefaultMicGainDb).toDouble(),
+        kMinMicGainDb, kMaxMicGainDb);
+    alcMaxGainDb_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/alcMaxGainDb"),
+                          kDefaultAlcMaxGainDb).toDouble(),
+        kMinAlcMaxGainDb, kMaxAlcMaxGainDb);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -1548,6 +1568,48 @@ void HL2Stream::setTxStopDelayMs(int ms) {
     emit txStopDelayMsChanged(clamped);
 }
 
+// TX-1 component 8a — operator-tunable WDSP TXA gain stages.  Each
+// setter: (1) clamps to its declared range, (2) compares vs the
+// current value (no-op on no-change to avoid signal storms when QML
+// bindings re-fire on a Restore-Defaults click), (3) persists to
+// QSettings under tx/<key>, (4) emits the changed signal for UI
+// readback, (5) forwards to the registered TxControl callback OUTSIDE
+// the registration lock so TxChannel's channelMtx_ does the WDSP
+// setter serialisation (matches the registerTxControl push pattern).
+//
+// Live-apply contract: when the operator drags the slider, the WDSP
+// setter call lands on the next ~2.6 ms fexchange0 block (TxChannel's
+// channelMtx_ guards the setter ↔ process() race; the operator-setter
+// call simply waits at most one block period if process() is
+// in-flight, which is fine for an infrequent operator click rate).
+void HL2Stream::setMicGainDb(double db) {
+    const double clamped = std::clamp(db, kMinMicGainDb, kMaxMicGainDb);
+    if (clamped == micGainDb_) return;
+    micGainDb_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/micGainDb"), clamped);
+    emit micGainDbChanged(clamped);
+    std::function<void(double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setMicGainDb;
+    }
+    if (fwd) fwd(clamped);
+}
+
+void HL2Stream::setAlcMaxGainDb(double db) {
+    const double clamped = std::clamp(db, kMinAlcMaxGainDb, kMaxAlcMaxGainDb);
+    if (clamped == alcMaxGainDb_) return;
+    alcMaxGainDb_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/alcMaxGainDb"), clamped);
+    emit alcMaxGainDbChanged(clamped);
+    std::function<void(double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setAlcMaxGainDb;
+    }
+    if (fwd) fwd(clamped);
+}
+
 // ─────────────────────────────────────────────────────────────
 // TX-1 component 6: SSB I/Q injection gate + source registration
 // ─────────────────────────────────────────────────────────────
@@ -1589,12 +1651,35 @@ void HL2Stream::setInjectTxIq(bool on) {
 }
 
 // TX-1 component 7 — register the TX channel lifecycle callbacks.
-// Empty TxControl = clear all three.  See TxControl struct doc in
-// the header for the contract.  Same mutex pattern as
+// Empty TxControl = clear all five (start/stop/setInjectTxIq +
+// component-8a setMicGainDb/setAlcMaxGainDb).  See TxControl struct
+// doc in the header for the contract.  Same mutex pattern as
 // registerTxIqSource.
+//
+// TX-1 component 8a — registration ALSO pushes the autoloaded
+// micGainDb_ + alcMaxGainDb_ to the channel ONCE so the freshly-
+// opened WDSP TXA channel doesn't sit at WDSP create-time defaults
+// (especially the load-bearing ALC max-gain = 0 dB trap).  This is
+// the architectural equivalent of the verified reference's Setup
+// first-load pushing the operator's persisted profile values onto
+// the channel.  Capture the callbacks INSIDE the lock, release the
+// lock, then call OUTSIDE the lock — TxChannel's own channelMtx_
+// will serialise the WDSP setter call against any in-flight
+// process() on the worker thread.
 void HL2Stream::registerTxControl(TxControl ctl) {
-    std::lock_guard<std::mutex> lk(txControlMtx_);
-    txControl_ = std::move(ctl);
+    std::function<void(double)> pushMic;
+    std::function<void(double)> pushAlc;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        txControl_ = std::move(ctl);
+        // Only push if BOTH callbacks landed — a clear ({}) call
+        // gives us null function objects, in which case we just
+        // dropped the registration and there's nothing to push.
+        pushMic = txControl_.setMicGainDb;
+        pushAlc = txControl_.setAlcMaxGainDb;
+    }
+    if (pushMic) pushMic(micGainDb_);
+    if (pushAlc) pushAlc(alcMaxGainDb_);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer

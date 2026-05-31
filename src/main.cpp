@@ -388,6 +388,23 @@ int main(int argc, char *argv[])
                 /*setInjectTxIq=*/[txWorker](bool on) {
                     txWorker->setInjectTxIq(on);
                 },
+                // TX-1 component 8a — operator-tunable WDSP TXA gain
+                // stages forwarded to the TxChannel WDSP setters.
+                // registerTxControl() ALSO pushes the autoloaded
+                // micGainDb/alcMaxGainDb values to the channel ONCE
+                // right after this registration so the freshly-opened
+                // WDSP TXA channel doesn't sit at WDSP create-time
+                // defaults (in particular the load-bearing ALC
+                // max-gain = 0 dB trap that pins the entire TXA
+                // output chain at the ALC ceiling regardless of mic
+                // level — the root cause of the 2026-05-31 0.2 W
+                // first-SSB bench result).
+                /*setMicGainDb=*/[txWorker](double db) {
+                    txWorker->setMicGainDb(db);
+                },
+                /*setAlcMaxGainDb=*/[txWorker](double db) {
+                    txWorker->setAlcMaxGainDb(db);
+                },
             });
         }
 

@@ -699,10 +699,10 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 ## TX panel
 
 The operating-time TX controls — a single strip across one of the
-docks with three things on it. Layout (left → right):
+docks. Layout (left → right):
 
 ```
-[TX]    Drive ──●── 25 %                              [ TUN ]  [ MOX ]
+[TX]    Drive ──●── 25 %   Mic ──●── +10 dB              [ TUN ]  [ MOX ]
 ```
 
 - **TX Drive** (slider, 0–100 %, default 0) — how hard the HL2
@@ -710,6 +710,20 @@ docks with three things on it. Layout (left → right):
   and MOX keyed.** Start LOW (5–10 %) on a dummy load; raise gradually
   while watching the watt-meter. **Mouse-wheel** adjusts (Shift + wheel
   = 5 % steps). Live readback to the right shows the current %.
+- **Mic Gain** (slider, −90 dB to +40 dB, default 0 dB) — input gain
+  into the WDSP TXA modulator (PanelGain1 — the only operator-tunable
+  software gain stage in the TX chain, before the bandpass / leveler /
+  ALC / everything downstream). **0 dB is WDSP unity** = no boost vs
+  the raw mic signal. Typical SSB voice runs **+10 to +20 dB**; ESSB
+  with headroom **+25 to +35 dB**. The range matches the reference's
+  Default TX profile (−90 deep-attenuate floor, +40 ceiling), so the
+  full operating travel is preserved. **Mouse-wheel** adjusts (Shift +
+  wheel = 5 dB steps). Bidirectionally bound with the spin-box in
+  **Settings → TX → Mic + ALC** — moving either updates both, so you
+  can adjust on the fly here or type a precise value in Settings.
+  Watch the **ALC meter** as you raise — back off when ALC engages
+  hard (more than ~3 dB of gain reduction means you're driving past
+  the limiter ceiling and creating splatter risk).
 - **TUN button** — single-click gesture: arms a 1 kHz **tune carrier**
   AND keys MOX in one click. Click again to release MOX; the carrier
   auto-disarms on the next MOX-off edge for any reason (your click,
@@ -1155,16 +1169,43 @@ Pick your output device here; everyday **Mute** and **Vol** stay on the
 
 ---
 
-## Settings → TX (TR sequencing + cos² fade)
+## Settings → TX (Mic + ALC, TR sequencing + cos² fade)
 
 > **⚠ Read [Operating with an external amplifier](#operating-with-an-external-amplifier-hot-switch-protection) FIRST**
-> if you're driving a solid-state HF linear from the HL2. The defaults
-> on this tab are **hot-switch-safe** for typical 1 kW SS linears;
-> reducing them without knowing your amp's T/R relay settle spec
-> can damage the PA. Tooltips on the most dangerous knobs carry the
-> warning; don't dismiss it.
+> if you're driving a solid-state HF linear from the HL2. The TR-
+> sequencing + fade defaults on this tab are **hot-switch-safe** for
+> typical 1 kW SS linears; reducing them without knowing your amp's
+> T/R relay settle spec can damage the PA. Tooltips on the most
+> dangerous knobs carry the warning; don't dismiss it.
 
-Six operator-tunable knobs that control the **timing of the MOX → RF
+Three sub-sections. The **Mic + ALC** group controls input/output
+gain on the WDSP TXA chain — operator-tunable, live-apply. The
+**TR Sequencing** and **Amplitude Envelope** groups control the
+timing + amplitude shape of the MOX → RF edges. All values
+persisted across Lyra restarts.
+
+### Mic + ALC (TXA input + output gain stages)
+
+The two operator-tunable gain stages on the WDSP TXA modulator chain
+— input (mic into the modulator) and output (ALC ceiling before the
+I/Q reaches the wire).
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. |
+| **ALC Max Gain** ⚠ | +3 dB | The ALC (Automatic Level Control) max-gain ceiling — the limiter that catches mic-input peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **Load-bearing default**: WDSP's own create-time default for this is 0 dB, which pins the entire TX output chain at a hard 0-dB limiter ceiling regardless of mic level — that was the 2026-05-31 first-SSB-bench 0.2 W root cause (Lyra never called the setter before this slice). +3 dB mirrors the verified reference's profile default and lifts the ceiling enough for normal SSB peaks to pass through to the wire. Operator tuning: lower (e.g. 0 to +1 dB) for tighter splatter protection at the cost of headroom; higher (e.g. +5 to +10 dB) for more program-level headroom at the cost of splatter-protection margin. ±3 dB around the default is the sane range; outside that, ALC stops being a meaningful safety net. |
+
+> **The ALC ceiling is a SAFETY knob, not a daily-use one.** Set it
+> once to match your mic + voice + amp combination, then leave it.
+> The daily-use control is Mic Gain — that's what you tune per QSO.
+> Watch the ALC meter as you raise Mic Gain; if ALC is engaging hard
+> (more than ~3 dB of gain reduction visible on the meter), you're
+> driving past the limiter ceiling and creating splatter risk —
+> either reduce Mic Gain or carefully raise the ALC ceiling.
+
+### TR Sequencing + Amplitude Envelope (timing knobs below)
+
+Seven operator-tunable knobs that control the **timing of the MOX → RF
 edges** and the **amplitude shape** of the TX I/Q at the start and
 end of every keying event. All values are in milliseconds; live-
 apply (changes take effect on the next MOX edge — no restart, no

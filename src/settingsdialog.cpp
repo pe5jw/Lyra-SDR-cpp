@@ -1881,6 +1881,105 @@ QWidget *SettingsDialog::buildTxTab() {
         root->addWidget(grp);
     }
 
+    // ── Mic + ALC (TXA input/output gain stages) group ───────────
+    // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
+    //
+    // Layout mirrors the reference's Setup → Transmit → Mic + ALC
+    // grouping: backend spin-box entry that bidirectionally tracks
+    // the front-UI slider (TxPanel mic-gain slider) so either
+    // surface tunes the same QSettings tx/micGainDb value.  Operator
+    // can drag on the panel for quick QSO-time adjustments OR type a
+    // precise value here in Settings.  Both are the same control;
+    // valueChanged on either side updates the other.
+    //
+    // ⚠ ALC IS LOAD-BEARING: WDSP create-time default for ALC max-gain
+    // is 1.0 linear = 0 dB, which pins the entire TXA output chain at
+    // a hard 0-dB ceiling regardless of mic level.  The verified
+    // reference bootstraps to +3 dB at first Setup load (its profile
+    // default); lyra-cpp never called the setter before component 8a,
+    // which is the actual root cause of the 2026-05-31 first-SSB
+    // bench result (0.2 W peak at 100 % drive with normal mic levels).
+    // Default +3 dB here mirrors the reference's Setup-load value.
+    // Operator can tune in [-3, +10] dB; outside that range either
+    // clips program material (low) or defeats splatter protection
+    // (high).  NOT included in the Restore hot-switch-safe-defaults
+    // button below — that button is scoped to the 7 TR-sequencing
+    // values; ALC ceiling + Mic Gain are independent operator-
+    // tunable settings.
+    {
+        auto *grp = new QGroupBox(
+            tr("Mic + ALC  (TXA input + output gain stages)"), page);
+        auto *form = new QFormLayout(grp);
+
+        // ── Mic Gain (mirrors TxPanel slider) ────────────────────
+        auto *micSpin = new QDoubleSpinBox(this);
+        micSpin->setRange(-90.0, 40.0);   // matches kMinMicGainDb / kMaxMicGainDb
+        micSpin->setSingleStep(1.0);
+        micSpin->setDecimals(1);
+        micSpin->setSuffix(tr(" dB"));
+        micSpin->setValue(stream_->micGainDb());
+        micSpin->setToolTip(tr(
+            "Mic gain into the WDSP TXA modulator (PanelGain1, TXA "
+            "chain stage #3 — the only operator-tunable software gain "
+            "stage in the chain).  0 dB = unity (WDSP create-time "
+            "default).  Typical SSB voice runs +10 to +20 dB; ESSB "
+            "with headroom +25 to +35 dB.\n\n"
+            "Range -90 dB to +40 dB matches the reference's Default TX "
+            "profile.  -90 dB is essentially mute; +40 dB is the top "
+            "of the operator-tunable scale.\n\n"
+            "Bidirectional binding with the front-UI TxPanel Mic Gain "
+            "slider — moving either updates both.  Type here for a "
+            "precise value; drag the slider for quick QSO-time "
+            "adjustments.  Live-apply: takes effect on the next "
+            "~2.6 ms TXA process block."));
+        connect(micSpin,
+                qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    stream_->setMicGainDb(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::micGainDbChanged,
+                micSpin, [micSpin](double v) {
+                    if (micSpin->value() != v) micSpin->setValue(v);
+                });
+        form->addRow(tr("Mic Gain:"), micSpin);
+
+        // ── ALC Max Gain (output limiter ceiling) ────────────────
+        auto *alcSpin = new QDoubleSpinBox(this);
+        alcSpin->setRange(-3.0, 10.0);
+        alcSpin->setSingleStep(0.5);
+        alcSpin->setDecimals(1);
+        alcSpin->setSuffix(tr(" dB"));
+        alcSpin->setValue(stream_->alcMaxGainDb());
+        alcSpin->setToolTip(tr(
+            "ALC (Automatic Level Control) max-gain ceiling — the "
+            "limiter that catches mic-input peaks the leveler and "
+            "compressor didn't bound, BEFORE the I/Q reaches the "
+            "wire.\n\n"
+            "Default +3 dB matches the verified reference's profile "
+            "default.  WDSP's own create-time default is 0 dB which "
+            "pins the entire TX output chain at the limiter regardless "
+            "of mic level — that was the 2026-05-31 first-SSB-bench "
+            "0.2 W root cause.\n\n"
+            "Operator tuning: lower (e.g. 0 to +1 dB) for tighter "
+            "splatter protection at the cost of headroom; higher "
+            "(e.g. +5 to +10 dB) for more program-level headroom at "
+            "the cost of splatter-protection margin.  ±3 dB around "
+            "the default is the operator-tunable range; outside that, "
+            "ALC stops being a meaningful safety net."));
+        connect(alcSpin,
+                qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    stream_->setAlcMaxGainDb(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::alcMaxGainDbChanged,
+                alcSpin, [alcSpin](double v) {
+                    if (alcSpin->value() != v) alcSpin->setValue(v);
+                });
+        form->addRow(tr("ALC Max Gain:"), alcSpin);
+
+        root->addWidget(grp);
+    }
+
     // ── Restore hot-switch-safe defaults button ──────────────────
     auto *restoreBtn = new QPushButton(
         tr("Restore hot-switch-safe defaults"), page);
