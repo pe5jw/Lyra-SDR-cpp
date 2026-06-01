@@ -386,16 +386,20 @@ int TxChannel::process(const float *mic_block, int n,
     const WdspApi &api = wdsp_->api();
     if (!api.fexchange0)                 return -1;
 
-    // Build the interleaved input frame.  I = mic, Q = 0.0 — the
-    // SSB voice path takes a real-valued mic stream; the patch-
-    // panel's create-time inselect=2 routes I-from-input + zeros
-    // Q downstream regardless of what we write into the Q slot,
-    // but we explicitly zero it here for clarity + so a future
-    // SetTXAPanelSelect change can't surface as a phantom Q leak.
+    // Build the interleaved input frame.  I = Q = mic — the
+    // reference convention for a mono voice stream into WDSP TXA
+    // (see the C# side at cmaster.cs:5344-5351
+    // convertStreamSamplesToComplex case `channels == 1`:
+    // complex[2*i]=value; complex[2*i+1]=value).  The earlier
+    // I=mic,Q=0 form gambled on xpanel's create-time inselect=2
+    // zeroing Q downstream — TRUE for the current WDSP build,
+    // but a one-line divergence from the working reference for
+    // zero benefit, so don't bet on internals when the reference
+    // tells us the right thing to write.
     for (int i = 0; i < n; ++i) {
-        inBuf_[static_cast<size_t>(2 * i + 0)] =
-            static_cast<double>(mic_block[i]);
-        inBuf_[static_cast<size_t>(2 * i + 1)] = 0.0;
+        const double s = static_cast<double>(mic_block[i]);
+        inBuf_[static_cast<size_t>(2 * i + 0)] = s;
+        inBuf_[static_cast<size_t>(2 * i + 1)] = s;
     }
 
     // The DSP call.  block=1 at open() makes fexchange0 wait for

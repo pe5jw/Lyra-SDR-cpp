@@ -424,22 +424,64 @@ void TciServer::recomputeStreaming() {
         engine_->setTciAudioStreaming(anyAudio);
         engine_->setTciIqStreaming(anyIq);
     }
+    // Drop the RX-audio accumulator when no client subscribes so
+    // a re-subscribe starts from a clean buffer instead of leaking
+    // stale samples (worst case ≈ 42 ms of pre-disconnect audio).
+    if (!anyAudio) audioPending_.clear();
 }
 
 void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
     if (monoFloat.isEmpty()) return;
     const int frames = monoFloat.size() / int(sizeof(float));
-    const float *mono = reinterpret_cast<const float *>(monoFloat.constData());
-    for (auto it = streams_.cbegin(); it != streams_.cend(); ++it) {
-        if (!it.value().audio) continue;
-        QWebSocket *ws = it.key();
-        if (!ws || ws->state() != QAbstractSocket::ConnectedState) continue;
-        const int chans = it.value().chans, fmt = it.value().fmt;
-        QByteArray frame = streamHeader(0, quint32(rateHz), quint32(fmt),
-                                        quint32(frames * chans),
-                                        STREAM_RX_AUDIO, quint32(chans));
-        frame += audioPayload(mono, frames, fmt, chans);
-        ws->sendBinaryMessage(frame);
+    if (frames <= 0) return;
+    const float *mono =
+        reinterpret_cast<const float *>(monoFloat.constData());
+
+    // Accumulate-and-drain at the reference's per-client packet
+    // size (TCIServer.cs:5437-5513 / m_audioStreamSamples = 2048).
+    // WdspEngine delivers per-DSP-block bursts (typ 256 samples /
+    // ~5.3 ms at 48 kHz) — left un-packetised, clients (MSHV /
+    // JTDX / etc.) see audio at 8× the configured frame cadence
+    // and mis-interpret energy / FT8 symbol timing (the operator-
+    // bench-confirmed hot-waterfall symptom 2026-06-01).  Pack
+    // into kAudioPacketSamples (= 2048) frames before emitting so
+    // the wire matches what we advertise at handshake and what
+    // the client's decoder expects.
+    audioPendingRate_ = rateHz;
+    audioPending_.insert(audioPending_.end(), mono, mono + frames);
+
+    // Drop-oldest cap: never let the accumulator grow unbounded
+    // (recomputeStreaming turns the engine tap off when no client
+    // subscribes — this is belt-and-braces for the connect/
+    // disconnect window).  Older samples are stale by definition;
+    // discard them, keep the freshest tail.
+    if (int(audioPending_.size()) > kAudioPendingCap) {
+        const int drop = int(audioPending_.size()) - kAudioPendingCap;
+        audioPending_.erase(audioPending_.begin(),
+                            audioPending_.begin() + drop);
+    }
+
+    // Drain in a loop: a single onTciAudioBlock call might cross
+    // the threshold more than once (e.g. a backlog from a paused
+    // client returning).  Each iteration emits one fully-formed
+    // kAudioPacketSamples frame per audio-subscribed client.
+    while (int(audioPending_.size()) >= kAudioPacketSamples) {
+        const float *block = audioPending_.data();
+        for (auto it = streams_.cbegin(); it != streams_.cend(); ++it) {
+            if (!it.value().audio) continue;
+            QWebSocket *ws = it.key();
+            if (!ws || ws->state() != QAbstractSocket::ConnectedState)
+                continue;
+            const int chans = it.value().chans, fmt = it.value().fmt;
+            QByteArray frame = streamHeader(
+                0, quint32(audioPendingRate_), quint32(fmt),
+                quint32(kAudioPacketSamples * chans),
+                STREAM_RX_AUDIO, quint32(chans));
+            frame += audioPayload(block, kAudioPacketSamples, fmt, chans);
+            ws->sendBinaryMessage(frame);
+        }
+        audioPending_.erase(audioPending_.begin(),
+                            audioPending_.begin() + kAudioPacketSamples);
     }
 }
 
@@ -671,6 +713,25 @@ void TciServer::sendInit(QWebSocket *ws) {
     sendTo(ws, QStringLiteral("vfo_limits:%1,%2").arg(kVfoLo).arg(kVfoHi));
     sendTo(ws, QStringLiteral("if_limits:%1,%2").arg(-half).arg(half));
     sendTo(ws, QStringLiteral("modulations_list:") + modulationsList());
+    // Audio-stream parameter advertisements — the reference sends
+    // all five at connect (TCIServer.cs:2493-2496 plus
+    // sendTxStreamAudioBuffering on TCI v2 handshake) so the
+    // client knows the wire format up front instead of having to
+    // query / infer from inspected binary-frame headers.  MSHV in
+    // particular pre-configures its decoder from these values; a
+    // mismatch with what Lyra actually emits results in mis-paced
+    // audio interpretation (the operator-bench-confirmed hot-
+    // waterfall symptom 2026-06-01).  Values match Lyra's actual
+    // emit shape: 48 kHz float32 stereo (StreamCfg defaults
+    // chans=2, fmt=3) at the matched packet cadence kAudio
+    // PacketSamples = 2048 enforced by onTciAudioBlock.  TX-side
+    // buffering hint matches MSHV's ms_settings default 50 ms.
+    sendTo(ws, QStringLiteral("audio_samplerate:48000"));
+    sendTo(ws, QStringLiteral("audio_stream_sample_type:float32"));
+    sendTo(ws, QStringLiteral("audio_stream_channels:2"));
+    sendTo(ws, QStringLiteral("audio_stream_samples:%1")
+                   .arg(kAudioPacketSamples));
+    sendTo(ws, QStringLiteral("tx_stream_audio_buffering:50"));
     sendTo(ws, QStringLiteral("ready"));
 
     if (!sendInitialState_) return;

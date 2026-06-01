@@ -25,6 +25,8 @@
 #include <QObject>
 #include <QString>
 
+#include <vector>
+
 class QWebSocketServer;
 class QWebSocket;
 class QTimer;
@@ -162,6 +164,24 @@ private:
     QTimer                *smeterTimer_ = nullptr;
     QTimer                *maintTimer_  = nullptr;   // ping + prune dead clients
     bool                   sensorsEnabled_ = false;
+
+    // Match the reference's RX-audio packetisation cadence (per
+    // TCIServer.cs:5437-5513 PublishRxAudioSamples): accumulate
+    // the per-DSP-block mono floats arriving from WdspEngine and
+    // emit one binary frame only when audioStreamSamples_ samples
+    // are queued.  At 48 kHz × 2048 ≈ 42.6 ms blocks, matching the
+    // advertised `audio_stream_samples:2048` value clients (MSHV /
+    // JTDX / etc.) configure their decoders for.  Without this
+    // packetisation Lyra emits 8× more frames at 8× shorter blocks
+    // and clients mis-interpret the energy density / FT8 symbol
+    // cadence.
+    std::vector<float>     audioPending_;
+    int                    audioPendingRate_  = 48000;
+    static constexpr int   kAudioPacketSamples = 2048;
+    // Drop-oldest cap so a stuck/idle client can't grow the
+    // accumulator unbounded (recomputeStreaming turns the engine
+    // tap off when no clients subscribed; cap is belt-and-braces).
+    static constexpr int   kAudioPendingCap   = 4 * kAudioPacketSamples;
 
     // Task #33: single active TX-audio listener (Thetis-faithful per
     // TCIServer.cs:3503/3510 TryAcquire/Release pattern).  Only ONE
