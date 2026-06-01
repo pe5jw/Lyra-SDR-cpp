@@ -8,6 +8,7 @@
 #include "tci_mic_source.h"
 #include "wdsp_engine.h"
 
+#include <QDateTime>
 #include <QHostAddress>
 #include <QSettings>
 #include <QTimer>
@@ -229,7 +230,19 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                 this, &TciServer::onFreqChanged);
         connect(stream_, &lyra::ipc::HL2Stream::runningChanged,
                 this, &TciServer::onRunningChanged);
+        // Task #33 — SyncTciPttToMox (TCIServer.cs:5560-5577).  If the
+        // wire MOX bit drops externally (operator click, FSM keyup,
+        // foot-switch release, §15.20 TX-timeout fire) AND we owned
+        // the TX-audio path, release ownership + stop the CHRONO
+        // pump.  Keeps TCI-server state coherent with the real wire.
+        connect(stream_, &lyra::ipc::HL2Stream::moxActiveChanged,
+                this, &TciServer::onMoxActiveChanged);
     }
+    // Task #33 — TX_CHRONO outbound pump.  Always constructed; only
+    // ticks when the timer is started (in tryAcquireActiveTxAudioListener).
+    chronoTimer_ = new QTimer(this);
+    chronoTimer_->setInterval(kChronoIntervalMs);
+    connect(chronoTimer_, &QTimer::timeout, this, &TciServer::onChronoTick);
     if (prefs_)
         connect(prefs_, &Prefs::modeChanged, this, &TciServer::onModeChanged);
     if (engine_) {
@@ -363,6 +376,18 @@ void TciServer::onNewConnection() {
 void TciServer::onClientDisconnected() {
     auto *ws = qobject_cast<QWebSocket *>(sender());
     if (!ws) return;
+    // Task #33 — release TX-audio ownership cleanly if the dropping
+    // client was the owner.  Drops in-flight TX_AUDIO_STREAM frames
+    // (binary handler gates on owner identity), stops the CHRONO
+    // pump, and releases MOX via the source-tagged wrapper.
+    if (ws == txAudioOwner_) {
+        txAudioOwner_ = nullptr;
+        chronoOutstanding_ = 0;
+        chronoTimer_->stop();
+        emit statusMessage(QStringLiteral(
+            "TCI: TX-audio ownership released (client disconnected)"));
+        if (stream_) stream_->requestMoxFromTci(false);
+    }
     clients_.removeAll(ws);
     streams_.remove(ws);
     ws->deleteLater();
@@ -438,6 +463,22 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
     // harmlessly + are ignored (the working reference returns early
     // on streamType != TX_AUDIO_STREAM at TCIServer.cs:5614).  See
     // docs/refs/mshv_tci/README.md for the architectural derivation.
+    //
+    // Single-active-listener gate (working reference pattern at
+    // TCIServer.cs:5535-5557): only the client that owns TX-audio
+    // ownership (acquired via trx:0,true,tci) may push frames into
+    // the TX path.  This is also the "clearQueuedTxAudio" equivalent
+    // for Lyra's no-intermediate-buffer architecture — releasing
+    // ownership drops in-flight frames at the door without ever
+    // reaching the decode / sanitize / push path.
+    auto *ws = qobject_cast<QWebSocket *>(sender());
+    if (txAudioOwner_ == nullptr || ws != txAudioOwner_) return;
+    // Note arrival of an inbound TX_AUDIO_STREAM block for the
+    // CHRONO outstanding-counter timeout reset (working reference:
+    // cmaster.cs:1303-1305 decrement on dequeue).
+    if (chronoOutstanding_ > 0) --chronoOutstanding_;
+    chronoLastInboundMs_ = QDateTime::currentMSecsSinceEpoch();
+
     if (frame.size() < 64) return;
     const char *p = frame.constData();
     const quint32 sampleRate = getU32(p + 4);
@@ -504,6 +545,75 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
         return;
     }
     tciMicSource_->submitFromTci(mono.data(), int(mono.size()));
+}
+
+void TciServer::onChronoTick() {
+    // Task #33 — TX_CHRONO outbound pump (TCI v2 §3.4 + working
+    // reference at cmaster.cs:1289-1359).  Only emits when MOX is
+    // ON AND we have an active TX-audio owner.  Asks the owner to
+    // send N samples next; bounded outstanding so we don't flood.
+    if (!txAudioOwner_ || !stream_ || !stream_->moxActive()) return;
+    if (txAudioOwner_->state() != QAbstractSocket::ConnectedState) {
+        // Owner dropped without disconnect signal yet — release now.
+        txAudioOwner_ = nullptr;
+        chronoTimer_->stop();
+        if (stream_) stream_->requestMoxFromTci(false);
+        return;
+    }
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 timeoutMs = std::max<qint64>(kChronoTimeoutMs,
+                                              kChronoIntervalMs * 4);
+    // Timeout reset: if no audio inbound for max(250, interval×4) ms
+    // while we have outstanding CHRONO requests, assume the client
+    // died on the audio side and clear the counter so we resume
+    // pumping fresh requests.  Working reference parallel:
+    // cmaster.cs:1329-1330.
+    if (chronoOutstanding_ > 0 && (nowMs - chronoLastInboundMs_) > timeoutMs) {
+        chronoOutstanding_ = 0;
+    }
+    if (chronoOutstanding_ >= kChronoMaxOutstanding) return;
+
+    // Emit one CHRONO request per tick (50 ms cadence + bounded
+    // outstanding gives us a steady "ask for 50 ms of audio every
+    // 50 ms" pull, with up to ~200 ms of look-ahead under load).
+    QByteArray hdr = streamHeader(0,
+                                  /*rate=*/48000,
+                                  /*fmt=*/FMT_FLOAT32,
+                                  /*length=*/quint32(kChronoBlockSamples),
+                                  /*type=*/STREAM_TX_CHRONO,
+                                  /*channels=*/1);
+    txAudioOwner_->sendBinaryMessage(hdr);
+    ++chronoOutstanding_;
+}
+
+void TciServer::onMoxActiveChanged(bool on) {
+    // Task #33 — SyncTciPttToMox (working reference at TCIServer.cs:
+    // 5560-5577, called from the MOX-change emit sites at :6884/6899).
+    // If the wire MOX bit dropped externally AND we owned the TX-audio
+    // path AND that PTT came from us, release ownership cleanly —
+    // stops the CHRONO pump + notifies the client.  No-op on MOX rise
+    // (we don't grab ownership on a non-TCI keydown).
+    if (on) return;
+    if (!txAudioOwner_) return;
+    if (!stream_) return;
+    // Only release if the source that just released was Tci — an
+    // operator-MOX or HW-PTT keydown that overlapped with a TCI
+    // session should not auto-release the TCI listener.  In normal
+    // operation those overlap windows are vanishingly rare (TCI
+    // sessions are pure FT8 cycles with no operator-keying expected),
+    // but the check is correctness for the corner case.
+    if (stream_->pttSource() != lyra::ipc::HL2Stream::PttSource::Tci)
+        return;
+    QWebSocket *was = txAudioOwner_;
+    txAudioOwner_ = nullptr;
+    chronoOutstanding_ = 0;
+    chronoTimer_->stop();
+    emit statusMessage(QStringLiteral(
+        "TCI: TX-audio ownership released (wire MOX dropped externally)"));
+    if (was && was->state() == QAbstractSocket::ConnectedState) {
+        // Inform the client so it stops pushing TX audio cleanly.
+        sendTo(was, QStringLiteral("trx:0,false"));
+    }
 }
 
 void TciServer::onMaintenanceTick() {
@@ -755,8 +865,71 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
     }
     if (cmd == QStringLiteral("TX_SENSORS_ENABLE")) return;  // RX-only
 
-    // ── RX-only: acknowledge TX-side queries as inactive ─────────
-    if (cmd == QStringLiteral("TRX") || cmd == QStringLiteral("TUNE")
+    // ── Task #33: TRX — TCI keying funnel (working reference's
+    //    handleTrxMessage at TCIServer.cs:3459-3550).  Wired ONLY when
+    //    the request comes with the "tci" source token (per TCI v2
+    //    §3.3 TRX command).  Other forms (operator-tooling MOX requests
+    //    via TRX without source, TUNE / RIT_ENABLE / XIT_ENABLE /
+    //    SPLIT_ENABLE) keep the v0.2.2 acknowledge-inactive stub.
+    if (cmd == QStringLiteral("TRX")) {
+        bool okc = false; const int ch = args.size() >= 1 ? parseChannel(args[0], &okc) : -1;
+        const bool wantsTx = args.size() >= 2 && parseBool(args[1]);
+        const bool useTciAudio = args.size() >= 3
+                              && args[2].compare(QStringLiteral("tci"),
+                                                 Qt::CaseInsensitive) == 0;
+        if (!okc || ch != 0 || !stream_) {
+            const QString idx = args.isEmpty() ? QStringLiteral("0") : args[0];
+            sendTo(ws, QStringLiteral("trx:%1,false").arg(idx));
+            return;
+        }
+        if (wantsTx && useTciAudio) {
+            // Acquire active TX-audio ownership.  If another client
+            // already owns it, deny — operator's existing TX session
+            // wins.  On success: arm the FSM via the source-tagged
+            // wrapper (records PttSource::Tci), start the CHRONO pump.
+            if (txAudioOwner_ != nullptr && txAudioOwner_ != ws) {
+                emit statusMessage(QStringLiteral(
+                    "TCI: trx:0,true,tci denied — another client owns TX audio"));
+                sendTo(ws, QStringLiteral("trx:0,false"));
+                return;
+            }
+            if (txAudioOwner_ == nullptr) {
+                txAudioOwner_ = ws;
+                chronoOutstanding_ = 0;
+                chronoLastInboundMs_ = QDateTime::currentMSecsSinceEpoch();
+                chronoTimer_->start();
+                emit statusMessage(QStringLiteral("TCI: TX-audio ownership ACQUIRED"));
+            }
+            stream_->requestMoxFromTci(true);
+            sendTo(ws, QStringLiteral("trx:0,true,tci"));
+            return;
+        }
+        if (!wantsTx) {
+            // Release ownership IF we held it; clear queued audio by
+            // dropping the listener (the binary handler gates on owner
+            // identity, so inflight TX_AUDIO_STREAM frames will be
+            // discarded the moment ownership clears).  Working
+            // reference parallel: clearQueuedTxAudio + ReleaseActive
+            // TxAudioListener at TCIServer.cs:3479-3486 + 5578-5585.
+            if (txAudioOwner_ == ws) {
+                txAudioOwner_ = nullptr;
+                chronoOutstanding_ = 0;
+                chronoTimer_->stop();
+                emit statusMessage(QStringLiteral("TCI: TX-audio ownership RELEASED"));
+                stream_->requestMoxFromTci(false);
+            }
+            sendTo(ws, QStringLiteral("trx:0,false"));
+            return;
+        }
+        // wantsTx but NOT useTciAudio — operator-tooling MOX via TCI
+        // without claiming the TCI audio path.  Out of scope for this
+        // commit (the audio side would need a non-TCI source already
+        // selected); ack inactive same as the legacy stub.
+        sendTo(ws, QStringLiteral("trx:0,false"));
+        return;
+    }
+    // ── RX-only: acknowledge other TX-side queries as inactive ───
+    if (cmd == QStringLiteral("TUNE")
         || cmd == QStringLiteral("RIT_ENABLE") || cmd == QStringLiteral("XIT_ENABLE")
         || cmd == QStringLiteral("SPLIT_ENABLE")) {
         const QString idx = args.isEmpty() ? QStringLiteral("0") : args[0];

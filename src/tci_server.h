@@ -97,6 +97,15 @@ private slots:
     void onClientDisconnected();
     void onSmeterTick();
     void onMaintenanceTick();   // ping clients + prune dead sockets
+    // Task #33: TCI v2 §3.4 TX_CHRONO outbound pump — periodic when a
+    // TX-audio listener is active AND wire MOX is on; emits a type=3
+    // frame asking the client to deliver N samples next.
+    void onChronoTick();
+    // Task #33: hook to HL2Stream::moxActiveChanged so we release
+    // TX-audio ownership cleanly when MOX drops externally (operator
+    // click, FSM keyup, foot-switch release, §15.20 TX-timeout fire).
+    // Equivalent to the working reference's SyncTciPttToMox.
+    void onMoxActiveChanged(bool on);
     // TCI v2.0 binary streams (from the DSP worker, queued onto this thread).
     void onTciAudioBlock(const QByteArray &monoFloat, int rateHz);
     void onTciIqBlock(const QByteArray &iqFloat, int rateHz);
@@ -153,6 +162,25 @@ private:
     QTimer                *smeterTimer_ = nullptr;
     QTimer                *maintTimer_  = nullptr;   // ping + prune dead clients
     bool                   sensorsEnabled_ = false;
+
+    // Task #33: single active TX-audio listener (Thetis-faithful per
+    // TCIServer.cs:3503/3510 TryAcquire/Release pattern).  Only ONE
+    // TCI client owns the TX audio path at a time; a second client
+    // asking for ownership gets denied.  Owned by the Qt main thread
+    // (all WebSocket signals queue here) — no mutex needed.
+    QWebSocket            *txAudioOwner_      = nullptr;
+    // TX_CHRONO outbound pump (TCI v2 §3.4) — fires when txAudioOwner_
+    // is set AND wire MOX is active.  Asks the owning client to send
+    // N samples (matches MSHV's 50 ms buffering hint by default).
+    // Bounded outstanding via chronoOutstanding_ — see the working
+    // reference at cmaster.cs:1289-1359.
+    QTimer                *chronoTimer_       = nullptr;
+    int                    chronoOutstanding_ = 0;
+    static constexpr int   kChronoMaxOutstanding   = 4;
+    static constexpr int   kChronoIntervalMs       = 50;   // ≈MSHV buffering
+    static constexpr int   kChronoBlockSamples     = 2400; // 50 ms @ 48 kHz
+    static constexpr int   kChronoTimeoutMs        = 250;  // see reference
+    qint64                 chronoLastInboundMs_    = 0;    // monotonic ms
 
     // settings
     bool     enabled_          = false;
