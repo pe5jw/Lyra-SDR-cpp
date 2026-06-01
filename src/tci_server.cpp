@@ -882,59 +882,74 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             sendTo(ws, QStringLiteral("trx:%1,false").arg(idx));
             return;
         }
-        if (wantsTx && useTciAudio) {
-            // Acquire active TX-audio ownership.  If another client
-            // already owns it, deny — operator's existing TX session
-            // wins.  On success: arm the FSM via the source-tagged
-            // wrapper (records PttSource::Tci), start the CHRONO pump.
-            if (txAudioOwner_ != nullptr && txAudioOwner_ != ws) {
-                emit statusMessage(QStringLiteral(
-                    "TCI: trx:0,true,tci denied — another client owns TX audio"));
-                sendTo(ws, QStringLiteral("trx:0,false"));
-                return;
+        if (wantsTx) {
+            // Thetis-faithful: ALWAYS key MOX on trx:0,true regardless
+            // of source token.  Working reference TCIServer.cs:3536-3537
+            // sets TCIPTT = bMox unconditionally; the source token
+            // (tci / mic1 / nothing) controls ONLY audio routing.
+            // Earlier commit-3 incorrectly filtered MOX on
+            // useTciAudio — MSHV (and other TCI clients) send plain
+            // `trx:0,true` without the source token and expect the
+            // radio to key anyway.  Operator-bench-confirmed
+            // 2026-06-01 ("MSHV keys Thetis").
+            //
+            // Acquire TCI audio ownership if EITHER:
+            //   (a) source token explicitly says "tci" (auto-detected
+            //       digital-modes client), OR
+            //   (b) operator has Mic source = "tci" in Settings
+            //       (operator opted in via the picker — covers bare
+            //       trx:0,true from clients that don't include the
+            //       source token).
+            const bool wantTciAudio = useTciAudio
+                || (prefs_ && prefs_->micSource()
+                                  == QStringLiteral("tci"));
+            if (wantTciAudio) {
+                if (txAudioOwner_ != nullptr && txAudioOwner_ != ws) {
+                    emit statusMessage(QStringLiteral(
+                        "TCI: TX-audio acquire denied — another client "
+                        "owns TX audio"));
+                    sendTo(ws, QStringLiteral("trx:0,false"));
+                    return;
+                }
+                if (txAudioOwner_ == nullptr) {
+                    txAudioOwner_ = ws;
+                    chronoOutstanding_ = 0;
+                    chronoLastInboundMs_ =
+                        QDateTime::currentMSecsSinceEpoch();
+                    chronoTimer_->start();
+                    emit statusMessage(QStringLiteral(
+                        "TCI: TX-audio ownership ACQUIRED"));
+                }
+                // Auto-flip the operator picker ONLY on the explicit
+                // ",tci" token — bare trx:0,true with operator-set
+                // Mic source=tci already matches, and we don't want
+                // to flip the picker on a generic TCI-client keying
+                // request that didn't specifically ask for TCI audio.
+                if (useTciAudio && prefs_)
+                    prefs_->setMicSource(QStringLiteral("tci"));
             }
-            if (txAudioOwner_ == nullptr) {
-                txAudioOwner_ = ws;
-                chronoOutstanding_ = 0;
-                chronoLastInboundMs_ = QDateTime::currentMSecsSinceEpoch();
-                chronoTimer_->start();
-                emit statusMessage(QStringLiteral("TCI: TX-audio ownership ACQUIRED"));
-            }
-            // Task #33 commit 4 — auto-flip the operator mic source
-            // to "tci" so submitMicSamples(Tci, ...) is admitted to
-            // the TX ring.  Matches the working reference's auto-
-            // switch behaviour: MSHV / JTDX / any TCI client that
-            // sends `trx:0,true,tci` expects the radio to take its
-            // audio path automatically.  Operator sees the Settings
-            // → TX → Mic Source dropdown move to "TCI" — visible
-            // and reversible via Settings if surprised.  Idempotent:
-            // setMicSource only emits if the value actually changed.
-            if (prefs_) prefs_->setMicSource(QStringLiteral("tci"));
+            // Key MOX (Thetis-faithful) — records PttSource::Tci on
+            // the FSM since the request arrived via the TCI WebSocket.
             stream_->requestMoxFromTci(true);
-            sendTo(ws, QStringLiteral("trx:0,true,tci"));
+            sendTo(ws, useTciAudio
+                       ? QStringLiteral("trx:0,true,tci")
+                       : QStringLiteral("trx:0,true"));
             return;
         }
-        if (!wantsTx) {
-            // Release ownership IF we held it; clear queued audio by
-            // dropping the listener (the binary handler gates on owner
-            // identity, so inflight TX_AUDIO_STREAM frames will be
-            // discarded the moment ownership clears).  Working
-            // reference parallel: clearQueuedTxAudio + ReleaseActive
-            // TxAudioListener at TCIServer.cs:3479-3486 + 5578-5585.
-            if (txAudioOwner_ == ws) {
-                txAudioOwner_ = nullptr;
-                chronoOutstanding_ = 0;
-                chronoTimer_->stop();
-                emit statusMessage(QStringLiteral("TCI: TX-audio ownership RELEASED"));
-                stream_->requestMoxFromTci(false);
-            }
-            sendTo(ws, QStringLiteral("trx:0,false"));
-            return;
+        // wantsTx == false — release MOX + ownership if held.
+        // Working reference parallel: clearQueuedTxAudio + Release
+        // ActiveTxAudioListener at TCIServer.cs:3479-3486 + 5578-5585.
+        // The binary handler gates on owner identity so in-flight
+        // TX_AUDIO_STREAM frames are discarded the moment ownership
+        // clears (Lyra's clearQueuedTxAudio equivalent).
+        if (txAudioOwner_ == ws) {
+            txAudioOwner_ = nullptr;
+            chronoOutstanding_ = 0;
+            chronoTimer_->stop();
+            emit statusMessage(
+                QStringLiteral("TCI: TX-audio ownership RELEASED"));
         }
-        // wantsTx but NOT useTciAudio — operator-tooling MOX via TCI
-        // without claiming the TCI audio path.  Out of scope for this
-        // commit (the audio side would need a non-TCI source already
-        // selected); ack inactive same as the legacy stub.
+        stream_->requestMoxFromTci(false);
         sendTo(ws, QStringLiteral("trx:0,false"));
         return;
     }
