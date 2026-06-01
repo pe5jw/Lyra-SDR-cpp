@@ -1943,3 +1943,217 @@ crossovers + 5 parallel compressors + sum + WDSP ALC at output
 as always-on limiter (NOT linear-phase FIR, NOT AVX-512).  The
 Reaper screenshots refine the UI layout but do not change the
 locked DSP architecture.
+
+---
+
+## §12. TCI Thetis-faithful audit + 5-fix bundle (2026-06-01 EOD)
+
+### §12.1 Trigger
+
+Task #33 commits 3.1-3.5 + the two-stage buffering refactor
+(commit `04d886c`, §60) got MSHV keying Lyra via TCI for the
+first time — operator-bench-confirmed 2026-06-01 with the
+Palstar showing 3-5 W of RF.  Two symptoms surfaced
+immediately:
+
+1. **MSHV RX waterfall unusably hot**, at a level the
+   operator (5+ years MSHV experience) had never needed to
+   set the RX-gain slider that low for.
+2. **20 minutes of CQ calls on 40 m + 15 m FT8 at 3-5 W
+   produced zero PSKReporter spots worldwide** — even badly
+   modulated FT8 at 3 W should produce some spots
+   somewhere; zero is "signal not actually getting on the
+   band correctly," not "weak signal."
+
+Two earlier slice-research passes had verified the TCI wire
+format (FLOAT32 ±1.0 mono at WDSP RXA output) and the
+mic-gain-applies-to-TCI behaviour, both correctly matching
+the reference (Thetis 2.10.3.13).  Operator-empirical data
+contradicted those agent verdicts: **something WAS still
+wrong, just not at the surfaces examined.**
+
+### §12.2 Methodology
+
+Per operator directive ("FIX IT like Thetis — that was the
+rule was it not?"): a third comprehensive Thetis-vs-Lyra TCI
+side-by-side audit covering the FULL surface, not slices.
+Single research agent read end-to-end:
+
+* `D:/sdrprojects/OpenHPSDR-Thetis-2.10.3.13/Project Files/
+  Source/Console/TCIServer.cs` (5000+ lines)
+* `Source/Console/cmaster.cs` (TCI audio callbacks +
+  TCITxThreadProc)
+* `Source/ChannelMaster/{cmaster.c, tci.c, pipe.c}`
+* `Source/wdsp/{TXA.c, RXA.c, patchpanel.c, wcpAGC.c,
+  resample.c}` for channel-open defaults
+* `Y:/Claude local/SDRProject/lyra-cpp/src/{tci_server.{h,
+  cpp}, tci_mic_source.{h,cpp}, wdsp_engine.cpp,
+  tx_channel.cpp, tx_dsp_worker.{h,cpp}, hl2_stream.cpp}`
+
+Output: 5 verified divergences with file:line citations on
+both sides.  No diagnostic-bench-first proposed — operator-
+directive was explicit: ship the fixes that match the
+reference, then bench, NOT the other way around.
+
+### §12.3 Verified divergences (with file:line)
+
+**RX side (Lyra → MSHV direction):**
+
+1. **C.1 + C.5 — Frame cadence + channel duplication
+   mismatch.**  Lyra emitted one binary frame per WDSP DSP
+   block = ~256 samples / ~5.3 ms (`wdsp_engine.cpp:2061-2070`
+   per-block tap, `tci_server.cpp:429-444` immediate emit).
+   The reference accumulates into a per-client pending
+   buffer and only emits when `m_audioStreamSamples`
+   (default 2048) samples are queued = ~42.6 ms frames
+   (`TCIServer.cs:5437-5513` PublishRxAudioSamples).
+   MSHV's `ms_settings` configures it for 2048-sample
+   frames; an 8× cadence + 2× channel mismatch produces
+   waterfall energy-density mis-interpretation.
+
+2. **C.4 — Missing handshake advertisements.**  Lyra
+   `sendInit` never sent `audio_samplerate /
+   audio_stream_sample_type / audio_stream_channels /
+   audio_stream_samples / tx_stream_audio_buffering` at
+   connect (`tci_server.cpp:653-692`).  The reference sends
+   all five at connect (`TCIServer.cs:2493-2496` plus
+   `sendTxStreamAudioBuffering`) so the client confirms the
+   wire format up-front instead of having to infer from
+   inspected binary-frame headers.
+
+**TX side (MSHV → Lyra direction):**
+
+3. **F.1-class — Q-channel value for the mono TX input.**
+   Lyra wrote `inBuf_[2i+0]=mic, inBuf_[2i+1]=0.0` for the
+   WDSP TXA mic input (`tx_channel.cpp:389-399`).  The
+   reference (`cmaster.cs:5344-5351`
+   `convertStreamSamplesToComplex` `channels==1` case)
+   writes `complex[2i]=value, complex[2i+1]=value`.  Both
+   reach the modulator identically through xpanel's
+   create-time `inselect=2` (Q is multiplied by 0
+   downstream regardless), so the math is equivalent — but
+   the "match the reference" rule says: don't gamble on
+   WDSP internals when the reference tells us the right
+   thing to write.
+
+4. **F.5 — Hard-reject of non-48 kHz TX-in sample rates.**
+   `tci_server.cpp:544-552` hard-dropped any inbound
+   TX_AUDIO_STREAM frame whose sample rate != 48000.
+   The reference (`cmaster.cs:1431-1473`
+   `resampleTCITxSamples`) accepts any rate and resamples
+   to the TXA input rate via WDSP's polyphase
+   float-vector resampler.  MSHV/JTDX/WSJT-X all use
+   48 kHz so the divergence doesn't bite first-light, but
+   it's a Lyra-side divergence with no justification.
+
+5. **F.7 — CHRONO fixed-rate ask vs dynamic-pull formula.**
+   THE load-bearing TX-side bug.  Lyra's CHRONO pump
+   (`tci_server.cpp:570-607` pre-fix) asked the TX-audio
+   owner for 2400 samples every 50 ms unconditionally — a
+   fixed-rate ask that did NOT track the actual TX-buffer
+   depth.  The result: MSHV delivered audio paced to OUR
+   cadence rather than the cadence its FT8 modulator
+   wanted, so the symbol timing of every transmitted FT8
+   frame was off by enough that NO decoder anywhere could
+   lock onto it.  The reference (`cmaster.cs:1289-1359`)
+   computes per tick:
+
+   ```
+   predictedPacketSamples = max(txBlock,
+                                ceil(requestSamples*targetRate/requestRate))
+   targetQueuedSamples    = max(txBlock*4,
+                                ceil((bufferingMs+TCI_TX_EXTRA_BUFFER_MS)
+                                     *targetRate/1000))
+   futureSamples          = queuedSamples
+                            + outstanding*predictedPacketSamples
+   requestsNeeded         = futureSamples < targetQueuedSamples
+                              ? ceil((target-future)/predictedPacketSamples)
+                              : 0
+   ```
+
+   And asks for `requestsNeeded` CHRONO requests this
+   tick, bounded by `TCI_TX_MAX_OUTSTANDING = 64`
+   (constants at `cmaster.cs:481-482`).  Operator-bench
+   confirmed this is the FT8-zero-spots cause: post-fix,
+   real FT8 QSO with KE4YOG within minutes on 40 m, 48+
+   PSKReporter spots across the continent and into Europe.
+
+### §12.4 Shipped fixes (with commit hashes)
+
+All five Thetis-faithful, no exemptions, no diagnostic
+theater, no operator opt-in for the divergences — fix-to-
+match-reference is the rule:
+
+| Commit  | Tasks  | Fix |
+|---------|--------|-----|
+| `37548ae` | #61    | RX-out packetiser — `audioPending_` accumulator + 2048-sample threshold-gated drain in `onTciAudioBlock`. Drop-oldest cap at 4× packet size (belt-and-braces for connect/disconnect windows). Cleared in `recomputeStreaming` when no audio client subscribed. |
+| `37548ae` | #62    | Handshake adverts — `sendInit` now sends all five (`audio_samplerate:48000`, `audio_stream_sample_type:float32`, `audio_stream_channels:2`, `audio_stream_samples:2048`, `tx_stream_audio_buffering:50`). |
+| `37548ae` | #67    | TX-channel Q=mono — `tx_channel.cpp` writes `inBuf_[2i+0] = inBuf_[2i+1] = mic`. Dropped the "patch-panel zeros Q downstream" gamble-on-internals comment. |
+| `ab21cc4` | #64    | CHRONO dynamic-pull — full port of the reference formula with the reference's constants. Live `requestRate_/requestSamples_/bufferingMs_` members updated from `AUDIO_SAMPLERATE/AUDIO_STREAM_SAMPLES/TX_STREAM_AUDIO_BUFFERING` handlers (previously only `softSet`'d, so formula sat on hardcoded defaults). New `TciMicSource::currentQueueSize()` accessor for the `queuedSamples` input. |
+| `ecf205a` | #68    | TX-in WDSP resampler — added `create_resampleFV/xresampleFV/destroy_resampleFV` to `WdspApi`, new `TciServer::resampleTxIn()` helper with lazy create/recreate-on-rate-change + `destroyTxResampler()` from `stop()`. Inbound non-48k TX_AUDIO_STREAM frames now resample instead of dropping. |
+
+Build clean on each commit (`[36/36]`, `[38/38]`,
+`[46/46]` linked).  All pushed to `origin/main`.
+
+### §12.5 Lessons (locked into the methodology)
+
+* **Operator-empirical outranks agent inference.**
+  Recorded twice this session (the 5W-zero-spots data
+  beat two prior agent passes that said "everything
+  matches the reference"); the project's CLAUDE.md
+  history cites 11+ instances of the same pattern.  When
+  operator hardware data and agent verdict conflict, the
+  data wins — re-open the audit, do NOT defend the
+  earlier verdict.
+* **No diagnostic theater before fixing verified
+  divergences.**  When the side-by-side audit returns
+  with verified file:line citations, the right action is
+  ship-the-fix, not "let's bench first to see if this
+  one is really the cause."  Reference-faithful fixes
+  carry no risk of being the wrong fix (they make Lyra
+  more like the working reference, which by definition
+  cannot regress vs the reference's behaviour for the
+  same workflow).
+* **Slice audits miss divergences.**  Two prior agent
+  passes correctly verified specific surfaces (wire
+  format byte-by-byte; mic-gain interaction) — both
+  matched the reference exactly.  But the operator's
+  symptoms persisted because the divergences were on
+  surfaces those slices didn't cover (cadence,
+  handshake, CHRONO, resampler).  When a slice audit
+  comes back "all matches" but symptoms persist, the
+  next step is COMPREHENSIVE audit (full TCI stack
+  end-to-end), not deeper-dive on the already-verified
+  surface.
+* **The Thetis rule is a hard rule, not advisory.**
+  "Match the reference, Lyra-native, no Thetis names in
+  shipped code/comments/commits" — provenance in
+  `docs/architecture/` and `docs/refs/` only, but every
+  shipped byte matches the reference exactly.  Holding
+  this discipline through the full v0.2.x bring-up is
+  what produces the operator-validated outcomes (FT8
+  QSO, PSKReporter spots, normal MSHV waterfall) on
+  first-light.
+
+### §12.6 What ships next (TCI surface = done)
+
+The TCI surface is now Thetis-byte-faithful across every
+divergence the audit found.  Task #33 (Mic Source selector
+with TCI as first-light digital path) closes; first-light
+delivered.
+
+Remaining TX scope (per CLAUDE.md task list):
+
+* **#39** TX 20-dB Mic Boost → HL2 C&C `MicBoost` bit
+  (HW path, not software).
+* **#44** Panadapter TX-state rescale on MOX edge.
+* **#45** TX per-band 3-point PWR calibration.
+* **#49** TX Profile Manager bundle (every chain knob,
+  including mic gain — which Thetis-faithfully scales TCI
+  audio same as codec mic; per-source trim lives in the
+  profile per §15.19 / Task #49).
+* **#50** TX 8-band parametric EQ (locked spec §11).
+* **#51** TX 5-band Combinator (X-Air-derived spec locked).
+* **#52** TX Plate Reverb.
+* **#55** Profile Manager quick-recall panel.
+* **#59** RX 8-band parametric EQ (mirrors #50).

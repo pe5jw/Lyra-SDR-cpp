@@ -1354,10 +1354,70 @@ Lyra runs a TCI **server**; the other program connects to it as a client.
 
 **Audio / IQ streaming** is automatic: if a connected client asks for an
 audio or IQ stream, Lyra sends it the receiver audio (or raw I/Q) as TCI
-binary frames — no extra toggle needed.
+binary frames — no extra toggle needed. Lyra advertises the audio format
+(48 kHz / float32 / stereo / 2048-sample frames / 50 ms TX-buffer hint)
+at connect so the client decoder configures itself correctly the moment
+it attaches.
 
 > RX2 over TCI is deferred until Lyra has a second receiver. Today the
 > server advertises a single channel.
+
+### Digital modes over TCI (FT8 / FT4 / MSK144 / Q65 / etc.)
+
+Lyra is a fully bidirectional TCI partner for the digital-modes clients
+operators already use — MSHV, JTDX, WSJT-X and similar. The client
+both **receives** Lyra's RX audio over TCI and **sends** its modulator
+audio back over TCI for Lyra to transmit; no VAC, no virtual cables,
+no host-side sound card needed.
+
+**One-time setup:**
+
+1. **Settings → Network (TCI)** — make sure the server is running and
+   the port matches what your digital-modes client expects (default
+   **50001**).
+2. **Settings → Audio → Mic source** — pick **TCI**. This routes the
+   digital-mode client's audio into Lyra's TX chain in place of the
+   hand-mic. (The client can also auto-select TCI by sending a
+   `TRX:0,true,tci` command — supported, but having the picker on TCI
+   means manual TUNE buttons in the client also work.)
+3. In the client (MSHV / WSJT-X / JTDX) configure: TCI server
+   `127.0.0.1:50001`, sample rate **48 kHz**, block size **2048**,
+   buffering **50 ms**. Most clients set these defaults out of the box;
+   just confirm.
+
+**Operating flow:**
+
+* The client tunes Lyra's VFO and sets the mode (typically **DIGU** for
+  FT8 on the standard 14.074 / 7.074 / 21.074 / … MHz dial frequencies).
+* RX audio streams to the client continuously; its waterfall decodes the
+  band exactly as if the client were attached to a Thetis-class radio.
+* When the client wants to transmit, it sends a TRX-on command. Lyra
+  engages MOX, the client's modulator audio is fed through the WDSP TXA
+  chain (with your **TX mic gain**, **ALC**, **leveler**, **TX bandpass**,
+  and any EQ active), and onto the HL2 wire. At keyup the client sends
+  TRX-off; Lyra returns to RX.
+* The **Mic gain** slider on the TX panel still applies to TCI audio —
+  the same chain handles voice and digital. Once Task #49 (TX Profile
+  Manager) ships you'll save per-profile mic-gain trims, so switching
+  between an SSB-voice profile and an FT8/MSHV profile recalls the
+  right trim automatically.
+
+**Troubleshooting:**
+
+* **MOX engages but the client says "no audio"** — confirm Mic source =
+  TCI; without it Lyra processes audio from the configured hand-mic
+  source while the client's audio gets dropped.
+* **Client RX waterfall looks unusably hot** — Lyra advertises the
+  format at connect so the client's RX gain slider should land in a
+  sensible position. If your client doesn't honour the advertised
+  parameters, drop its RX gain slider until the waterfall sits in the
+  normal -20 to -10 dB range.
+* **You're transmitting but nobody's decoding you (no PSKReporter
+  spots)** — usually means a frequency / band / power issue on the
+  station side (wrong dial, antenna fault, low drive). Check the
+  external watt-meter, confirm the band is open, and try a known-good
+  digital-mode sked partner. The TCI audio path itself is verified
+  reference-faithful end-to-end.
 
 ### DX-cluster spots
 
