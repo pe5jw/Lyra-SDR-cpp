@@ -7,8 +7,9 @@
 // WdspEngine.mode / .bandwidth, which push SetRXAMode + RXASetPassband
 // using the sideband-correct passband convention.
 //
-// SCOPE: RX-only (this build has no TX yet) — TX BW, Rate switching and
-// a CW-pitch control are deferred; CWU/CWL centre on a 600 Hz default.
+// SCOPE: RX BW + Mode + Rate ship; TX BW shipped 2026-06 (Component 8c)
+// alongside the 🔗 lock that mirrors RX↔TX BW changes when ON; CW-pitch
+// control deferred (CWU/CWL centre on a 600 Hz default).
 
 import QtQuick
 import QtQuick.Controls
@@ -103,6 +104,10 @@ Rectangle {
     // follows.  (Engine pushes SetRXAMode + RXASetPassband on change.)
     Binding { target: WdspEngine; property: "mode";      value: Prefs.mode }
     Binding { target: WdspEngine; property: "bandwidth"; value: Prefs.rxBandwidth }
+    // TX Component 8c — TX BW push lives in C++ main.cpp (a
+    // QObject::connect on Prefs::txBandwidthChanged → Stream.setTxBwHz)
+    // so it fires regardless of whether this QML panel is loaded.
+    // No QML binding needed here.
 
     RowLayout {
         anchors.fill: parent
@@ -152,6 +157,35 @@ Rectangle {
             currentIndex: root.bwCurrentIndex(Prefs.mode, Prefs.rxBandwidth)
             onActivated: Prefs.rxBandwidth =
                 root.bwValueAt(Prefs.mode, Prefs.rxBandwidth, currentIndex)
+        }
+
+        // TX Component 8c — 🔗 RX↔TX BW lock.  Sits BETWEEN the RX and
+        // TX combos (the glyph alone carries the meaning; no label).
+        // Checkable toggle wired to Prefs.bwLocked: when ON, every BW
+        // change on either side mirrors to the other (handled in
+        // Prefs::setRxBandwidth / setTxBandwidth).  Toggling ON pulls
+        // RX into TX so the operator's audible RX BW becomes the TX BW
+        // — matches old-Lyra's lock-on direction.
+        Button {
+            id: bwLockBtn
+            Layout.preferredWidth: 32
+            checkable: true
+            checked: Prefs.bwLocked
+            text: "🔗"
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("Lock TX BW to RX BW (mirrors both directions when ON)")
+            onToggled: Prefs.bwLocked = checked
+        }
+
+        Label { text: qsTr("TX BW"); color: "#cccccc"; font.bold: true }
+        ComboBox {
+            id: txBwCombo
+            Layout.preferredWidth: 120
+            // Same per-mode presets + custom-entry handling as RX BW.
+            model: root.bwModel(Prefs.mode, Prefs.txBandwidth)
+            currentIndex: root.bwCurrentIndex(Prefs.mode, Prefs.txBandwidth)
+            onActivated: Prefs.txBandwidth =
+                root.bwValueAt(Prefs.mode, Prefs.txBandwidth, currentIndex)
         }
 
         Item { Layout.fillWidth: true }

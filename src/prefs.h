@@ -110,6 +110,21 @@ class Prefs : public QObject {
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(int rxBandwidth READ rxBandwidth WRITE setRxBandwidth
                NOTIFY rxBandwidthChanged)
+    // TX Component 8c — TX filter bandwidth (Hz) for the CURRENT mode.
+    // Per-mode just like rxBandwidth.  For SSB the value is the high
+    // edge (low fixed at 200 Hz via TxChannel::open() default until a
+    // separate Low spinbox lands per design doc §9.2).  Drives the
+    // TX channel via HL2Stream::setTxBwHz.  See bwLocked for the
+    // mirror-to-RX semantics.
+    Q_PROPERTY(int txBandwidth READ txBandwidth WRITE setTxBandwidth
+               NOTIFY txBandwidthChanged)
+    // TX Component 8c — RX↔TX bandwidth mirror.  When ON, setting
+    // either side updates the other (both directions, single-step,
+    // no recursion).  Toggling ON pulls RX into TX (matches old-Lyra
+    // direction).  Per-mode storage is unchanged; the mirror only
+    // touches the CURRENT mode's pair.
+    Q_PROPERTY(bool bwLocked READ bwLocked WRITE setBwLocked
+               NOTIFY bwLockedChanged)
     // IQ sample rate (Hz): 96000 / 192000 / 384000.  Drives the HL2 wire
     // speed bits + the WDSP channel rate (panadapter span follows).
     Q_PROPERTY(int sampleRate READ sampleRate WRITE setSampleRate
@@ -251,6 +266,11 @@ public:
     void    setMode(const QString &m);
     int  rxBandwidth() const;            // bandwidth for the current mode
     void setRxBandwidth(int hz);
+    // TX Component 8c — current-mode TX bandwidth, mirroring rxBandwidth.
+    int  txBandwidth() const;
+    void setTxBandwidth(int hz);
+    bool bwLocked() const { return bwLocked_; }
+    void setBwLocked(bool v);
     int  sampleRate() const { return sampleRate_; }
     void setSampleRate(int hz);
     bool waterfallCollapsed() const { return waterfallCollapsed_; }
@@ -332,6 +352,8 @@ signals:
     void zoomChanged();
     void modeChanged();
     void rxBandwidthChanged();
+    void txBandwidthChanged();
+    void bwLockedChanged();
     void sampleRateChanged();
     void waterfallCollapsedChanged();
     void callsignChanged();
@@ -386,6 +408,11 @@ private:
     double  zoom_;
     QString mode_;
     QHash<QString, int> bwByMode_;   // per-mode RX bandwidth memory
+    // TX Component 8c — per-mode TX bandwidth memory + the RX↔TX
+    // lock flag.  Defaults come from defaultBandwidthFor() if the
+    // operator hasn't picked a per-mode TX BW yet (fresh install).
+    QHash<QString, int> txBwByMode_;
+    bool                bwLocked_ = false;
     int     sampleRate_;
     bool    waterfallCollapsed_;
     QString callsign_;

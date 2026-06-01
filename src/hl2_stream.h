@@ -403,6 +403,17 @@ public:
         // bringup applies on next radio start).
         std::function<void(double)> setMicGainDb;
         std::function<void(double)> setAlcMaxGainDb;
+        // TX-1 component 8c — operator TX bandpass.  Receives (low Hz,
+        // high Hz); TxChannel internally sign-codes per the current
+        // WDSP mode (USB pass-through, LSB negate-and-swap).  Called
+        // by HL2Stream::setTxBwHz on every Prefs.txBandwidth change
+        // AND once on registerTxControl() with the autoloaded
+        // persisted value so the freshly-opened TX channel doesn't
+        // sit at TxChannel::open()'s create-time (200, 3100)
+        // default.  Low edge is currently fixed at 200 Hz (the
+        // TxChannel SSB default; a separate operator Low spinbox is
+        // a future enhancement per design doc §9.2).
+        std::function<void(double, double)> setBandpass;
     };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
@@ -716,6 +727,13 @@ public slots:
     // current sideband selection.  No-op if TxControl not registered
     // or if the callback is null.
     void setTxMode(int wdspMode);
+
+    // TX-1 component 8c — operator TX bandwidth in Hz (high edge).
+    // Forwarded to the registered TxControl.setBandpass callback as
+    // (200.0, hz) for SSB (USB/LSB).  Low edge is the TxChannel SSB
+    // default until a separate operator Low spinbox is added per
+    // design doc §9.2.  No-op if hz<=0 or no TxControl registered.
+    void setTxBwHz(int hz);
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
     void setTxStopDelayMs(int ms);

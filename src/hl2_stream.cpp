@@ -1772,6 +1772,31 @@ void HL2Stream::setTxMode(int wdspMode) {
     if (fwd) fwd(clamped);
 }
 
+// TX-1 component 8c — operator TX bandwidth (high edge in Hz) forwarded
+// as a (low=200, high=hz) bandpass to the registered TxControl.setBandpass
+// callback.  TxChannel internally sign-codes per the current WDSP mode
+// (USB pass-through, LSB negate-and-swap), so we always pass positive
+// edges.  Low fixed at 200 Hz (the TxChannel SSB default) until a
+// separate operator Low spinbox lands per design doc §9.2.  Same lock
+// + diagnostic-log pattern as setTxMode.
+void HL2Stream::setTxBwHz(int hz) {
+    if (hz <= 0) return;
+    constexpr double kSsbLowHz = 200.0;
+    const double low  = kSsbLowHz;
+    const double high = static_cast<double>(hz);
+    std::function<void(double, double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setBandpass;
+    }
+    qInfo("[tx] setTxBwHz(%d) -> %s (low=%.0f high=%.0f)",
+          hz,
+          fwd ? "forwarded to TxControl.setBandpass"
+              : "NO-OP (TxControl.setBandpass not registered)",
+          low, high);
+    if (fwd) fwd(low, high);
+}
+
 // ─────────────────────────────────────────────────────────────
 // TX-1 component 6: SSB I/Q injection gate + source registration
 // ─────────────────────────────────────────────────────────────

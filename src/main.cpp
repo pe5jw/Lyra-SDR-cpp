@@ -395,7 +395,7 @@ int main(int argc, char *argv[])
     // observed — only [disc]/[strm], which fire after exec, showed).
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
-    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream,
+    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs,
                                   &micSource, &txWorker]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
@@ -487,6 +487,12 @@ int main(int argc, char *argv[])
                 .setAlcMaxGainDb  = [txWorker](double db) {
                     txWorker->setAlcMaxGainDb(db);
                 },
+                // TX-1 component 8c — operator TX bandwidth callback.
+                // Forwards (low, high) Hz straight to TxChannel which
+                // sign-codes per WDSP mode internally.
+                .setBandpass      = [txWorker](double lo, double hi) {
+                    txWorker->setBandpass(lo, hi);
+                },
             });
 
             // TX-1 component 8a-tx-mode — wire the operator's RX-mode
@@ -530,6 +536,20 @@ int main(int argc, char *argv[])
             // we just need to relay it onto the TX channel since it
             // was never previously pushed.
             stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+
+            // TX-1 component 8c — operator TX bandwidth wiring.  Same
+            // pattern as setTxMode above: a live signal connection
+            // pushes every Prefs.txBandwidth change (operator combo
+            // moves AND mode-change-triggered per-mode-dict swaps) to
+            // the TX channel, plus one initial push right now so the
+            // freshly-opened channel uses the operator's persisted
+            // per-mode TX BW rather than TxChannel's create-time
+            // (200, 3100) default.
+            QObject::connect(prefs, &lyra::ui::Prefs::txBandwidthChanged,
+                             stream, [stream, prefs]() {
+                stream->setTxBwHz(prefs->txBandwidth());
+            });
+            stream->setTxBwHz(prefs->txBandwidth());
         }
 
         // Radio memory: auto-connect to the last radio so the operator

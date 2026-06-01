@@ -51,6 +51,11 @@ constexpr auto kCursorRdt = "panadapter/cursorReadout";
 constexpr auto kZoom   = "panadapter/zoom";
 constexpr auto kRxMode = "modefilter/mode";
 constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
+// TX Component 8c — per-mode TX bandwidth + the lock flag.  Prefix
+// mirrors kBwPrefix so a future Settings sweep can read both with
+// one wildcard.
+constexpr auto kTxBwPrefix = "modefilter/tx_bw/";   // + <MODE>
+constexpr auto kBwLocked   = "modefilter/bw_locked";
 constexpr auto kWfCollapse = "panadapter/waterfallCollapsed";
 constexpr auto kSampRate = "radio/sampleRate";
 constexpr auto kOpCall  = "operator/callsign";
@@ -136,6 +141,15 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
             bwByMode_.insert(m, v.toInt());
         }
     }
+    // TX Component 8c — per-mode TX bandwidth + the RX↔TX lock flag.
+    // Same fallback policy as RX BW (defaultBandwidthFor on miss).
+    for (const QString &m : kModes) {
+        const QVariant v = s.value(QString(kTxBwPrefix) + m);
+        if (v.isValid()) {
+            txBwByMode_.insert(m, v.toInt());
+        }
+    }
+    bwLocked_ = s.value(kBwLocked, false).toBool();
     waterfallCollapsed_ = s.value(kWfCollapse, false).toBool();
     callsign_   = s.value(kOpCall, QString()).toString();
     gridSquare_ = lyra::ham::normalizeGrid(s.value(kOpGrid).toString());
@@ -481,6 +495,9 @@ void Prefs::setMode(const QString &m) {
     emit modeChanged();
     // The effective bandwidth is per-mode, so it changes with the mode.
     emit rxBandwidthChanged();
+    // TX Component 8c — TX BW is ALSO per-mode (separate dict); mode
+    // flip changes the effective TX BW too.
+    emit txBandwidthChanged();
 }
 
 void Prefs::setRxBandwidth(int hz) {
@@ -490,6 +507,58 @@ void Prefs::setRxBandwidth(int hz) {
     bwByMode_.insert(mode_, hz);
     QSettings().setValue(QString(kBwPrefix) + mode_, hz);
     emit rxBandwidthChanged();
+    // TX Component 8c — when the RX↔TX lock is on, mirror this change
+    // to TX without recursing into setTxBandwidth (we update the dict
+    // + persist + emit directly, then exit).  Same pattern in
+    // setTxBandwidth() for the reverse direction.
+    if (bwLocked_ &&
+        txBwByMode_.value(mode_, defaultBandwidthFor(mode_)) != hz) {
+        txBwByMode_.insert(mode_, hz);
+        QSettings().setValue(QString(kTxBwPrefix) + mode_, hz);
+        emit txBandwidthChanged();
+    }
+}
+
+// TX Component 8c — per-mode TX bandwidth.  Reader mirrors rxBandwidth().
+int Prefs::txBandwidth() const {
+    return txBwByMode_.value(mode_, defaultBandwidthFor(mode_));
+}
+
+void Prefs::setTxBandwidth(int hz) {
+    if (hz <= 0 || hz == txBandwidth()) {
+        return;
+    }
+    txBwByMode_.insert(mode_, hz);
+    QSettings().setValue(QString(kTxBwPrefix) + mode_, hz);
+    emit txBandwidthChanged();
+    // Mirror to RX when locked.  Direct dict update — no recursion.
+    if (bwLocked_ &&
+        bwByMode_.value(mode_, defaultBandwidthFor(mode_)) != hz) {
+        bwByMode_.insert(mode_, hz);
+        QSettings().setValue(QString(kBwPrefix) + mode_, hz);
+        emit rxBandwidthChanged();
+    }
+}
+
+void Prefs::setBwLocked(bool v) {
+    if (v == bwLocked_) {
+        return;
+    }
+    bwLocked_ = v;
+    QSettings().setValue(kBwLocked, v);
+    emit bwLockedChanged();
+    // Toggling ON pulls RX into TX for the current mode (matches old
+    // Lyra's lock-on direction).  Toggling OFF just flips the flag —
+    // the per-mode dicts retain their independent values so the
+    // operator's pre-lock TX BW is preserved on un-lock.
+    if (v) {
+        const int rx = rxBandwidth();
+        if (rx != txBandwidth()) {
+            txBwByMode_.insert(mode_, rx);
+            QSettings().setValue(QString(kTxBwPrefix) + mode_, rx);
+            emit txBandwidthChanged();
+        }
+    }
 }
 
 void Prefs::setSampleRate(int hz) {
