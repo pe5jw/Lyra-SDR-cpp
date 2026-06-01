@@ -110,6 +110,97 @@ Missing for the MSHV first-light path (this is what Task #33 adds):
   dropdown (Mic In ✓ / TCI ✓ / Line In disabled / VAC1 disabled /
   VAC2 disabled).
 
+## Thetis TCI TX architecture — validated 2026-06-01
+
+Operator-directed "DO as Thetis does, Lyra-Native style" verification
+of the Task #33 plan against Thetis's working MSHV-paired TCI server.
+Read the actual sources (`Console/TCIServer.cs:3459-3550, 5515-5703`
++ `ChannelMaster/cmaster.c:377-398, 440-444`) so the Lyra plan
+matches the empirically-proven working reference.
+
+### The 5 Thetis nuances absorbed into Task #33
+
+1. **Single-active-listener guard.**  Only ONE TCI client owns TX
+   audio at a time.  `TryAcquireActiveTxAudioListener(this)` /
+   `ReleaseActiveTxAudioListener(this)` are the Thetis primitives
+   (TCIServer.cs:3503/3510).  A second client requesting TX
+   ownership while another holds it gets denied — prevents two
+   clients fighting over the TX chain.  Lyra adds the same
+   pattern to TciServer.
+2. **Inbound sanitization** (TCIServer.cs:5661-5673).  Before
+   queueing the decoded float audio, Thetis runs every sample
+   through:
+   ```
+   if (NaN || ±Inf)         sample = 0.0
+   else if (sample >  4.0f) sample = 4.0f
+   else if (sample < -4.0f) sample = -4.0f
+   ```
+   Protects WDSP TXA from a malformed client.  Lyra adopts the
+   same clamp.
+3. **Pump-model CHRONO** (cmaster.cs:1289-1359).  Thetis is the
+   PULLER — sends `TX_CHRONO` requests when its TX buffer drops
+   below target.  Target = `max(4 × TX block, (bufferingMs +
+   TCI_TX_EXTRA_BUFFER_MS) × sampleRate / 1000)`.  Request count =
+   `ceil((target - future) / predictedBlockSize)` if future <
+   target, else 0.  Bounded by `TCI_TX_MAX_OUTSTANDING` (~4-8).
+   If no audio block received within `max(250, bufferingMs × 4)`
+   ms while outstanding requests exist, reset outstanding to 0
+   (client may have died).  Lyra adopts the exact formula.
+4. **`clearQueuedTxAudio` on TRX:0,false** (TCIServer.cs:3480,
+   3520, 5578-5585).  When TX-audio ownership is released or PTT
+   goes false, the pending TX-audio queue is FLUSHED.  Prevents
+   stale audio from a previous session bleeding into the next
+   TX cycle's first frames.  Lyra drains the TciMicSource ring
+   on the same hook.
+5. **`SyncTciPttToMox`** (TCIServer.cs:5560-5577, called from
+   ~:6884/6899).  If MOX drops false externally (operator click,
+   FSM keyup, foot-switch release, §15.20 TX-timeout fire) and we
+   were the active TCI listener, release ownership + clear queued
+   audio.  Keeps the TCI-side state consistent with the real wire
+   MOX bit.  Lyra hooks `moxActiveChanged` to fire the same
+   release.
+
+### The Thetis pattern Lyra deliberately diverges from
+
+* **TCIPTT vs mic-PTT separation** (TCIServer.cs:3537).  Thetis
+  routes the TCI-source MOX through a special `TCIPTT` property
+  that bypasses some mic-related sequencing.  Lyra unifies to a
+  single `Radio::requestMox()` path because the §15.14 auto-mute-
+  RX-on-TX gate already handles the operator-ears concern that
+  justifies Thetis's separation.  No regression — the MSHV-into-
+  dummy-load bench will validate.
+
+### Buffer-overwrite vs drop-at-front-door (same end-effect)
+
+Thetis's TX-audio path is a buffer OVERWRITE at the TX-DSP-input
+boundary (cmaster.c:380-386):
+```c
+case 1:  // TX
+    asioIN(pcm->in[stream]);                // pull regular mic
+    if (use_tci_audio) {
+        InboundTCITxAudio(...);             // OVERWRITE with TCI
+    }
+    fexchange0(...);                        // run TXA on the buffer
+```
+Lyra's path is drop-at-the-front-door instead: both sources
+submit to TxDspWorker tagged with their srcId, and submissions
+whose srcId ≠ activeMicSource_ get dropped before the ring.
+Equivalent end-effect (only ONE source's samples reach
+fexchange0/TXA), slightly cleaner data flow.  No change to
+Task #33 commit 1's architecture — validated as a sibling pattern
+of Thetis's.
+
+### Deferred from Lyra first-light (NOT in scope for Task #33)
+
+* **CW Break-In gating** (TCIServer.cs:3470 `shouldIgnoreTrxFor
+  CurrentCwBreakIn`).  When Thetis is in CW + Break-In, TCI TRX
+  commands are ignored (operator's key controls TX).  Not relevant
+  for FT8/DIGU first-light; lands with future CW-via-TCI work.
+* **Per-RX TX_CHRONO** (TCIServer.cs:5515 `SendTxChrono(receiver)`).
+  Thetis supports per-channel TCI TX audio for RX1 + RX2 setups.
+  Lyra advertises `channel_count:1` today; same single-channel
+  path serves Task #33.  RX2-via-TCI follows the v0.4 RX2 work.
+
 ## Safety posture
 
 * Default `mic_source = mic1` (HL2 codec mic — current behavior).
