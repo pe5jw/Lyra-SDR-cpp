@@ -22,16 +22,30 @@ namespace lyra::dsp {
 
 TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     : tx_(/*channelId=*/1, wdsp)
-    // Ring stays at 8× kBlockSize (= 512 samples ≈ 10.7 ms).  An
-    // earlier Task #46 attempt bumped to 32× as a "headroom for
-    // EP2 lockstep stalls" patch — operator-flagged correctly as
-    // band-aid masking a symptom instead of fixing the cause.
-    // Reverted; the high-water instrument added in the same Task
-    // #46 commit (TxRing::highWaterSamples) is the honest tell —
-    // if the next bench shows high-water chronically near 512,
-    // we chase the underlying stall (EP2 timer-paced writer? Qt
-    // main thread? something else?) instead of papering it.
-    , ring_(/*capacitySamples=*/8 * kBlockSize, kBlockSize)
+    // Ring sized for the LARGEST per-push block any registered mic
+    // source emits.  Pre-Task-#33 the only producer was
+    // Hl2Ep6MicSource (~10 decimated samples per EP6 datagram, ~5
+    // ms apart — 512-sample / 8× ring was comfortable).  Task #33
+    // adds TciMicSource, which receives 2400-sample mono blocks
+    // every 50 ms from a TCI client (MSHV / JTDX / etc., per the
+    // working reference's TX_AUDIO_STREAM cadence — 50 ms ×
+    // 48 kHz = 2400 samples per push).  A single 2400-sample push
+    // into a 512-sample ring overflows by 4.7× at the front door,
+    // silently dropping 80 % of the FT8 modem audio — operator
+    // bench 2026-06-01: MOX engaged, no power, no audio on the
+    // Palstar.
+    //
+    // 64× kBlockSize = 4096 samples ≈ 85 ms holds an MSHV block
+    // plus jitter cushion without changing steady-state latency
+    // (the worker drains at the wire's 48 kHz cadence regardless
+    // of capacity — bigger ring just absorbs bursts).  The
+    // operator-flagged Task #46 concern was a band-aid 32× bump
+    // to mask an EP2-stall symptom on the consumer side; THIS
+    // bump is structurally required by the producer block size,
+    // not symptom-masking on the consumer.  highWater telemetry
+    // stays — if it ever sustains near 4096, that's a real wire-
+    // path stall, not ring-size mis-tuning.
+    , ring_(/*capacitySamples=*/64 * kBlockSize, kBlockSize)
     , mic_(micSource)
     , txIqBuf_(static_cast<std::size_t>(kEp2BlockSize),
                std::complex<float>(0.0f, 0.0f))
