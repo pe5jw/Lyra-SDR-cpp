@@ -610,10 +610,23 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
 }
 
 void TciServer::onChronoTick() {
-    // Task #33 — TX_CHRONO outbound pump (TCI v2 §3.4 + working
-    // reference at cmaster.cs:1289-1359).  Only emits when MOX is
-    // ON AND we have an active TX-audio owner.  Asks the owner to
-    // send N samples next; bounded outstanding so we don't flood.
+    // Task #64 — TX_CHRONO outbound pump implementing the reference
+    // dynamic-pull formula (cmaster.cs:1289-1359).  Only runs when
+    // MOX is ON AND we have an active TX-audio owner.  Per tick:
+    // compute predictedPacketSamples (the size of one inbound TX
+    // audio frame after resampling to the TXA input rate), compute
+    // targetQueuedSamples (the buffer depth we want to hold based
+    // on the client's bufferingMs hint), compare against the
+    // current queue depth + outstanding-requests * predicted size,
+    // and emit requestsNeeded CHRONO requests this tick (bounded
+    // by kTciTxMaxOutstanding).
+    //
+    // Replaces the earlier fixed "one request every 50 ms asking
+    // for 2400 samples" pump which produced mis-paced TX audio on
+    // the wire — MSHV's FT8 symbol cadence ended up wrong because
+    // it was delivering audio at our cadence rather than its own
+    // (the operator-bench-confirmed FT8 zero-spots symptom
+    // 2026-06-01).
     if (!txAudioOwner_ || !stream_ || !stream_->moxActive()) return;
     if (txAudioOwner_->state() != QAbstractSocket::ConnectedState) {
         // Owner dropped without disconnect signal yet — release now.
@@ -622,30 +635,79 @@ void TciServer::onChronoTick() {
         if (stream_) stream_->requestMoxFromTci(false);
         return;
     }
+
+    // Timeout reset (cmaster.cs:1329-1330): if no audio inbound for
+    // max(kChronoTimeoutMs, bufferingMs*4) ms while we have
+    // outstanding requests, assume the client died on the audio
+    // side and clear the counter so we resume pumping fresh
+    // requests.
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     const qint64 timeoutMs = std::max<qint64>(kChronoTimeoutMs,
-                                              kChronoIntervalMs * 4);
-    // Timeout reset: if no audio inbound for max(250, interval×4) ms
-    // while we have outstanding CHRONO requests, assume the client
-    // died on the audio side and clear the counter so we resume
-    // pumping fresh requests.  Working reference parallel:
-    // cmaster.cs:1329-1330.
-    if (chronoOutstanding_ > 0 && (nowMs - chronoLastInboundMs_) > timeoutMs) {
+                                              qint64(bufferingMs_) * 4);
+    if (chronoOutstanding_ > 0
+        && (nowMs - chronoLastInboundMs_) > timeoutMs) {
         chronoOutstanding_ = 0;
     }
-    if (chronoOutstanding_ >= kChronoMaxOutstanding) return;
 
-    // Emit one CHRONO request per tick (50 ms cadence + bounded
-    // outstanding gives us a steady "ask for 50 ms of audio every
-    // 50 ms" pull, with up to ~200 ms of look-ahead under load).
-    QByteArray hdr = streamHeader(0,
-                                  /*rate=*/48000,
-                                  /*fmt=*/FMT_FLOAT32,
-                                  /*length=*/quint32(kChronoBlockSamples),
-                                  /*type=*/STREAM_TX_CHRONO,
-                                  /*channels=*/1);
-    txAudioOwner_->sendBinaryMessage(hdr);
-    ++chronoOutstanding_;
+    // Pull the live client-negotiated values + Lyra constants.
+    const int requestRate    = requestRate_    > 0 ? requestRate_
+                                                   : kTciTxTargetRate;
+    const int requestSamples = requestSamples_ > 0 ? requestSamples_
+                                                   : kChronoFallbackRequestSamples;
+    const int bufferingMs    = bufferingMs_    >= 50 ? bufferingMs_
+                                                     : kChronoFallbackBufferingMs;
+    const int targetRate     = kTciTxTargetRate;
+    const int txBlock        = kTciTxBlockSamples;
+
+    // predictedPacketSamples = the resampled size of one inbound
+    // frame: ceil(requestSamples * targetRate / requestRate), with
+    // a floor at txBlock so we never under-shoot the DSP block size.
+    const int predictedPacketSamples = std::max(
+        txBlock,
+        int((qint64(requestSamples) * targetRate
+             + qint64(requestRate) - 1) / std::max(1, requestRate)));
+
+    // targetQueuedSamples = how many samples we want held in the
+    // queue at all times: ceil((bufferingMs + extra) * targetRate /
+    // 1000), floored at txBlock*4 so we never under-buffer.
+    const int targetQueuedSamples = std::max(
+        txBlock * 4,
+        int((qint64(bufferingMs + kTciTxExtraBufferMs) * targetRate
+             + 999) / 1000));
+
+    // queuedSamples = current TciMicSource inbound depth.
+    const int queuedSamples = tciMicSource_
+        ? tciMicSource_->currentQueueSize() : 0;
+
+    // futureSamples = what we'll have after all outstanding requests
+    // get answered with predictedPacketSamples each.
+    const qint64 futureSamples =
+        qint64(queuedSamples)
+        + qint64(chronoOutstanding_) * qint64(predictedPacketSamples);
+
+    // requestsNeeded = the gap, rounded up by predictedPacketSamples.
+    int requestsNeeded = 0;
+    if (futureSamples < targetQueuedSamples) {
+        const qint64 gap = qint64(targetQueuedSamples) - futureSamples;
+        requestsNeeded = int((gap + predictedPacketSamples - 1)
+                             / predictedPacketSamples);
+    }
+
+    // Emit up to requestsNeeded CHRONO requests this tick, bounded
+    // by kTciTxMaxOutstanding (reference TCI_TX_MAX_OUTSTANDING).
+    while (requestsNeeded > 0
+           && chronoOutstanding_ < kTciTxMaxOutstanding) {
+        QByteArray hdr = streamHeader(0,
+                                      /*rate=*/quint32(targetRate),
+                                      /*fmt=*/FMT_FLOAT32,
+                                      /*length=*/quint32(predictedPacketSamples),
+                                      /*type=*/STREAM_TX_CHRONO,
+                                      /*channels=*/1);
+        txAudioOwner_->sendBinaryMessage(hdr);
+        ++chronoOutstanding_;
+        chronoLastInboundMs_ = nowMs;
+        --requestsNeeded;
+    }
 }
 
 void TciServer::onMoxActiveChanged(bool on) {
@@ -981,13 +1043,27 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
         return;
     }
     // Audio-stream config — echo back the operator-set value so MSHV
-    // confirms the streaming parameters took effect.  Working
-    // reference at TCIServer.cs:5019-5050.
+    // confirms the streaming parameters took effect AND capture the
+    // value into the live state the CHRONO formula consumes (matches
+    // the reference's TCIServer.cs:5019-5050 + the consuming side at
+    // cmaster.cs:1289-1359 which reads requestRate / requestSamples
+    // / bufferingMs every tick).  Without this, the formula sat on
+    // stale defaults and Lyra's CHRONO pump asked MSHV for a wrong
+    // number of TX-audio samples per tick.
     if (cmd == QStringLiteral("AUDIO_SAMPLERATE")
         || cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")
         || cmd == QStringLiteral("TX_STREAM_AUDIO_BUFFERING")) {
-        const QString val = args.isEmpty() ? QStringLiteral("48000")
-                                           : args[0];
+        const QString val = args.isEmpty() ? QStringLiteral("0") : args[0];
+        bool okv = false;
+        const int n = val.trimmed().toInt(&okv);
+        if (okv && n > 0) {
+            if (cmd == QStringLiteral("AUDIO_SAMPLERATE"))
+                requestRate_ = n;
+            else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLES"))
+                requestSamples_ = n;
+            else // TX_STREAM_AUDIO_BUFFERING
+                bufferingMs_ = std::max(n, 50);   // reference floor
+        }
         softSet(cmd, val);
         sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(val));
         return;

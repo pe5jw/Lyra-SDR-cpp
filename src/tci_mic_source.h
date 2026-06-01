@@ -138,6 +138,14 @@ public:
     int       queueHighWater() const noexcept {
         return queueHighWater_.load(std::memory_order_relaxed);
     }
+    // Current inbound-queue depth in samples — read by TciServer's
+    // CHRONO formula to compute how far behind the target buffer
+    // depth we are.  Safe to call from the Qt main thread (same
+    // thread that owns the inbound_ deque per the architecture
+    // contract above); not safe from any other thread.
+    int       currentQueueSize() const noexcept {
+        return int(inbound_.size());
+    }
 
     // Fixed 48 kHz — must match the canonical TxDspWorker mic-ring
     // input rate.  TciServer's binary handler resamples if a TCI

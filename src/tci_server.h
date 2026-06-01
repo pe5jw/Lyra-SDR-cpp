@@ -190,17 +190,41 @@ private:
     // (all WebSocket signals queue here) — no mutex needed.
     QWebSocket            *txAudioOwner_      = nullptr;
     // TX_CHRONO outbound pump (TCI v2 §3.4) — fires when txAudioOwner_
-    // is set AND wire MOX is active.  Asks the owning client to send
-    // N samples (matches MSHV's 50 ms buffering hint by default).
-    // Bounded outstanding via chronoOutstanding_ — see the working
-    // reference at cmaster.cs:1289-1359.
+    // is set AND wire MOX is active.  Implements the reference's
+    // dynamic-pull formula (cmaster.cs:1289-1359) — at each tick,
+    // compute how many samples we will have once outstanding requests
+    // come in, compare against the target buffer depth (a function
+    // of the client's bufferingMs hint + the TXA input rate), and
+    // emit `requestsNeeded` CHRONO requests this tick (bounded by
+    // kTciTxMaxOutstanding).  Replaces the earlier fixed "one
+    // request every 50 ms" pump which produced mis-paced TX audio
+    // on the wire (the operator-bench-confirmed FT8 zero-spots
+    // symptom 2026-06-01).
     QTimer                *chronoTimer_       = nullptr;
     int                    chronoOutstanding_ = 0;
-    static constexpr int   kChronoMaxOutstanding   = 4;
-    static constexpr int   kChronoIntervalMs       = 50;   // ≈MSHV buffering
-    static constexpr int   kChronoBlockSamples     = 2400; // 50 ms @ 48 kHz
-    static constexpr int   kChronoTimeoutMs        = 250;  // see reference
     qint64                 chronoLastInboundMs_    = 0;    // monotonic ms
+    // Dynamic client-negotiated parameters (default to MSHV values).
+    // Updated when the client sends AUDIO_SAMPLERATE / AUDIO_STREAM_
+    // SAMPLES / TX_STREAM_AUDIO_BUFFERING; consumed every CHRONO tick.
+    int                    requestRate_      = 48000;
+    int                    requestSamples_   = 2048;
+    int                    bufferingMs_      = 50;
+    // Lyra-side TXA input constants — txa input rate matches Lyra's
+    // open-TX-channel in-rate (48 kHz) and block size matches
+    // TxChannel::kInSize (64 samples / ~1.33 ms).  See the reference's
+    // GetInputRate + GetBuffSize (cmaster.cs:1267 + :1313).  For the
+    // typical MSHV cadence (requestSamples=2048, requestRate=48000),
+    // predictedPacketSamples=2048 and targetQueuedSamples=4800 — the
+    // small Lyra txBlock vs the reference's 720 does not affect the
+    // formula at this client cadence.
+    static constexpr int   kTciTxTargetRate   = 48000;
+    static constexpr int   kTciTxBlockSamples = 64;
+    static constexpr int   kTciTxMaxOutstanding = 64;   // ref TCI_TX_MAX_OUTSTANDING
+    static constexpr int   kTciTxExtraBufferMs = 50;    // ref TCI_TX_EXTRA_BUFFER_MS
+    static constexpr int   kChronoIntervalMs   = 50;    // tick cadence
+    static constexpr int   kChronoTimeoutMs    = 250;   // outstanding clear
+    static constexpr int   kChronoFallbackRequestSamples = 480;
+    static constexpr int   kChronoFallbackBufferingMs    = 50;
 
     // settings
     bool     enabled_          = false;
