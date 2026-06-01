@@ -703,7 +703,55 @@ public slots:
     // a transition just updates the intent and the sequencer reads it
     // at each step (standard HF-rig re-key collapse, cancel mid-
     // keydown, etc., all work).
-    void requestMox(bool on);
+    //
+    void requestMox(bool on);                       // PttSource::Manual
+
+public:
+    // Task #33 — PTT source tracking (Thetis-faithful TCIPTT-vs-MOX
+    // pattern, see docs/refs/mshv_tci/README.md §"Thetis TCI TX
+    // architecture").  The 2-arg overload records which subsystem
+    // initiated the press; the 1-arg overload (the public slot above:
+    // legacy callers — mic-PTT, FSM keyup, operator MOX button,
+    // TX-timeout, CAT) is a wrapper that records PttSource::Manual.
+    // Wire behaviour is IDENTICAL across sources — same TR-delay
+    // chain, same wire MOX bit, same ATT-on-TX safety raise; the
+    // source is metadata that pttSource() exposes for subsystems that
+    // need it (e.g. the TCI server's clearQueuedTxAudio on TCI-PTT
+    // release vs operator-PTT release, the future panadapter TX-state
+    // badge styling).
+    //
+    // The 2-arg overload + the PttSource enum + the pttSource()
+    // getter live in this PUBLIC (not public-slots) section because
+    // moc cannot parse a non-method declaration (enum class, return-
+    // type-with-namespace) inside a `slots:` block.  The Q_INVOKABLE
+    // wrappers below stay reachable from QueuedConnection dispatches.
+    enum class PttSource : std::uint8_t {
+        Manual = 0,   // operator MOX button, CAT, TX-timeout, FSM cancel
+        HwPtt  = 1,   // EP6 ptt_in foot-switch / hand-mic / mic button
+        Tci    = 2,   // TCI client (MSHV TX_AUDIO_STREAM workflow)
+        // Forward-compat: Cw / Vox land with their respective
+        // subsystems and follow the same pattern.
+    };
+    void requestMox(bool on, PttSource source);     // explicit
+
+    // Read the source of the currently-active (or most-recently-active)
+    // PTT request.  Stable across the keydown/keyup transitions; gets
+    // reset to PttSource::Manual after the FSM fully settles back to
+    // RX (the "no active TX" state).  Subscribers can read this in
+    // their moxActiveChanged slot to branch on source.
+    PttSource pttSource() const noexcept {
+        return pttSource_.load(std::memory_order_acquire);
+    }
+
+public slots:
+    // Q_INVOKABLE thin wrappers used by cross-thread QueuedConnection
+    // dispatches (the rx-worker thread's HW-PTT forwarder; the TCI
+    // server's binaryMessageReceived TRX handler) so the source is
+    // recorded without needing the PttSource enum to be a registered
+    // Qt metatype.  Wire behaviour is IDENTICAL to requestMox(bool,
+    // PttSource) — pure source-tagging convenience.
+    Q_INVOKABLE void requestMoxFromHwPtt(bool on);
+    Q_INVOKABLE void requestMoxFromTci(bool on);
 
     // ---- TX-0c-pa-debug: host-side safety timeout ----------------
     // setTxTimeoutSec clamps to kTxTimeoutMinSec..kTxTimeoutMaxSec
@@ -1133,6 +1181,12 @@ private:
     // 0 on RX, but forward-compat for a future operator-tunable RX
     // step-att).  Touched only by the FSM on this thread.
     int                  savedTxStepAttn_ = 0;
+    // Task #33: source of the active (or most-recently-active) PTT.
+    // Atomic because subscribers (e.g. TciServer) may read it from
+    // any thread in a moxActiveChanged slot.  Set on the rising edge
+    // of a keydown intent; reset to Manual when the FSM fully settles
+    // back to RX.  See requestMox(on, PttSource) docstring above.
+    std::atomic<PttSource> pttSource_{PttSource::Manual};
     // Wire-level MOX truth — true once the post-keydown rf_delay has
     // settled, cleared at the end of the keyup ptt_out_delay.  Drives
     // the UI red-on-air indicator (NOT the toggle button's checked

@@ -160,15 +160,38 @@ matches the empirically-proven working reference.
    MOX bit.  Lyra hooks `moxActiveChanged` to fire the same
    release.
 
-### The Thetis pattern Lyra deliberately diverges from
+### Thetis-faithful PTT-source tracking (operator-locked 2026-06-01)
 
 * **TCIPTT vs mic-PTT separation** (TCIServer.cs:3537).  Thetis
   routes the TCI-source MOX through a special `TCIPTT` property
-  that bypasses some mic-related sequencing.  Lyra unifies to a
-  single `Radio::requestMox()` path because the §15.14 auto-mute-
-  RX-on-TX gate already handles the operator-ears concern that
-  justifies Thetis's separation.  No regression — the MSHV-into-
-  dummy-load bench will validate.
+  separate from the mic-PTT path.  Earlier draft of this README
+  proposed Lyra unify to a single `Radio::requestMox()` path
+  arguing §15.14 auto-mute-RX-on-TX serves the same end.  Operator
+  overruled 2026-06-01: **"DO as Thetis does"** — adopt the
+  source-separation pattern.
+* Implementation: `HL2Stream::PttSource` enum (Manual / HwPtt /
+  Tci, forward-compat for Cw / Vox) + `requestMox(bool, PttSource)`
+  2-arg overload that records the source on the rising edge +
+  `pttSource_` atomic + `pttSource()` getter for subscribers.
+  Wire behaviour is IDENTICAL across sources — same FSM, same TR
+  delays (mox_delay / rf_delay / ptt_out_delay), same ATT-on-TX
+  raise, same wire MOX bit — the source is metadata, NOT a
+  different wire path.
+* Q_INVOKABLE convenience wrappers `requestMoxFromHwPtt(bool)` /
+  `requestMoxFromTci(bool)` exist so cross-thread QueuedConnection
+  dispatches (the rx-worker thread's HW-PTT forwarder; the TCI
+  server's binary handler in commit 3) record the right source
+  without needing the PttSource enum to be a Qt metatype.
+* The HW PTT forwarder at `hl2_stream.cpp:1131-1137` was switched
+  to call `requestMoxFromHwPtt(bool)` — every HW-PTT keydown now
+  records `PttSource::HwPtt`.  Subscribers (e.g. the future TX
+  visuals; the TCI server's `clearQueuedTxAudio` on PTT release)
+  can branch on `pttSource()` to do the source-specific behaviour.
+* Lifecycle matches Thetis's TCIPTT lifecycle: source set on the
+  rising edge of the keydown intent; reset to `Manual` when the
+  FSM fully settles back to RX (`fsmKeyupSettled`).  Equivalent
+  to Thetis's `m_tciPttActive` clearing in `SyncTciPttToMox` /
+  `TRX:0,false`.
 
 ### Buffer-overwrite vs drop-at-front-door (same end-effect)
 

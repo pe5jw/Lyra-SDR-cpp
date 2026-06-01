@@ -1127,8 +1127,13 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                     // std::jthread spawned in open()).  Qt routes
                     // the call to the FSM's thread; no race with
                     // the FSM's single-thread state mutations.
+                    // Task #33 — Thetis-faithful PTT-source tagging:
+                    // route HW PTT through the source-tagged wrapper
+                    // so subscribers know "this MOX edge came from
+                    // the foot switch / hand mic / mic button" vs
+                    // the operator's software MOX button.
                     QMetaObject::invokeMethod(
-                        this, "requestMox",
+                        this, "requestMoxFromHwPtt",
                         Qt::QueuedConnection,
                         Q_ARG(bool, pttNow));
                 }
@@ -1396,7 +1401,34 @@ void HL2Stream::setTuneEnabled(bool on) {
 // PTT-FSM pattern).
 
 void HL2Stream::requestMox(bool on) {
+    requestMox(on, PttSource::Manual);
+}
+
+void HL2Stream::requestMoxFromHwPtt(bool on) {
+    requestMox(on, PttSource::HwPtt);
+}
+
+void HL2Stream::requestMoxFromTci(bool on) {
+    requestMox(on, PttSource::Tci);
+}
+
+void HL2Stream::requestMox(bool on, PttSource source) {
     requestedMox_ = on;
+    // Task #33 — Thetis-faithful PTT-source tracking (working
+    // reference at TCIServer.cs:3537 routes TCI MOX through a
+    // separate TCIPTT property; Lyra records the source as metadata
+    // on the SAME FSM funnel, wire-identical, so subscribers like
+    // TciServer can branch on it in their moxActiveChanged handler
+    // — e.g. clearQueuedTxAudio only when PttSource::Tci releases).
+    //
+    // Record the source on the rising edge AND on a re-key (source
+    // change mid-TX = operator handed off, e.g. operator MOX during
+    // a TCI session); cleared back to Manual when the FSM fully
+    // settles to RX (fsmKeyupSettled → resetPttSource()).  This
+    // matches the working reference's TCIPTT lifecycle.
+    if (on) {
+        pttSource_.store(source, std::memory_order_release);
+    }
     // Fire the press-intent pulse on EVERY keydown intent — even when
     // the FSM is already running (re-key during ptt_out_delay), and
     // even when the press is shorter than the TR delay (FSM cancels
@@ -1619,6 +1651,13 @@ void HL2Stream::fsmKeyupSettled() {
     safetyLog(QStringLiteral(
         "TX: RX (wire MOX cleared, ATT-on-TX restored to %1 dB)")
         .arg(savedTxStepAttn_));
+    // Task #33 — release PTT-source tracking back to Manual now that
+    // the FSM has fully settled to RX.  Order matters: AFTER emitting
+    // moxActiveChanged(false) so subscribers reading pttSource() in
+    // their slot see the source that just released, not the default
+    // post-release state.  Equivalent to the working reference's
+    // m_tciPttActive clearing in SyncTciPttToMox / TRX:0,false.
+    pttSource_.store(PttSource::Manual, std::memory_order_release);
     fsmRunning_ = false;
 }
 
