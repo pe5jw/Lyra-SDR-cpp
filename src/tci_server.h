@@ -30,7 +30,7 @@ class QWebSocket;
 class QTimer;
 
 namespace lyra::ipc { class HL2Stream; }
-namespace lyra::dsp { class WdspEngine; }
+namespace lyra::dsp { class WdspEngine; class TciMicSource; }
 
 namespace lyra::ui {
 
@@ -72,6 +72,16 @@ public:
     bool start();
     void stop();
 
+    // Task #33: register the inbound TCI TX_AUDIO_STREAM sink.  May
+    // be called late (after WDSP loads + TxDspWorker constructs) —
+    // the binary handler tolerates a null sink (frames silently
+    // dropped until set, plus a single rate-limited diagnostic line
+    // so a misconfigured launch doesn't go silent forever).  Pass
+    // {nullptr} to clear (e.g. on TciMicSource teardown).
+    void setTciMicSource(lyra::dsp::TciMicSource *src) {
+        tciMicSource_ = src;
+    }
+
 signals:
     void runningChanged();
     void clientCountChanged(int n);
@@ -90,6 +100,11 @@ private slots:
     // TCI v2.0 binary streams (from the DSP worker, queued onto this thread).
     void onTciAudioBlock(const QByteArray &monoFloat, int rateHz);
     void onTciIqBlock(const QByteArray &iqFloat, int rateHz);
+    // Task #33: inbound TCI v2 binary frame from any connected client.
+    // Parses the 64-byte Stream header (TCI Protocol §3.4) and
+    // dispatches per type — TX_AUDIO_STREAM goes to the TciMicSource
+    // (with sanitization), other types are ignored.
+    void onBinaryMessage(const QByteArray &frame);
 
 private:
     void sendInit(QWebSocket *ws);                 // handshake burst
@@ -116,11 +131,16 @@ private:
     static int     parseChannel(const QString &s, bool *ok);
     static bool    parseBool(const QString &s);
 
-    Prefs                 *prefs_  = nullptr;
-    lyra::ipc::HL2Stream  *stream_ = nullptr;
-    lyra::dsp::WdspEngine *engine_ = nullptr;
-    SpotStore             *spots_  = nullptr;
-    QWebSocketServer      *server_ = nullptr;
+    Prefs                 *prefs_         = nullptr;
+    lyra::ipc::HL2Stream  *stream_        = nullptr;
+    lyra::dsp::WdspEngine *engine_        = nullptr;
+    SpotStore             *spots_         = nullptr;
+    // Task #33: registered at runtime by main() once TxDspWorker /
+    // TciMicSource exist (post WDSP-load); null until then, which
+    // the binary handler tolerates by dropping frames + rate-limited
+    // diagnostic.
+    lyra::dsp::TciMicSource *tciMicSource_ = nullptr;
+    QWebSocketServer      *server_        = nullptr;
     QList<QWebSocket *>    clients_;
     // Per-client binary-stream subscription state (TCI v2.0 §3.4).
     struct StreamCfg {

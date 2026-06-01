@@ -5,6 +5,7 @@
 #include "hl2_stream.h"
 #include "prefs.h"
 #include "spotstore.h"
+#include "tci_mic_source.h"
 #include "wdsp_engine.h"
 
 #include <QHostAddress>
@@ -15,6 +16,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <vector>
 
 namespace lyra::ui {
 
@@ -40,12 +43,111 @@ double dbToLinear(double db) {
 // followed by samples.  Header fields: [0]receiver [1]sample_rate
 // [2]format [3]codec=0 [4]crc=0 [5]length(scalar count) [6]type
 // [7]channels [8..15]reserved.
-enum StreamType { STREAM_IQ = 0, STREAM_RX_AUDIO = 1 };
+enum StreamType {
+    STREAM_IQ        = 0,
+    STREAM_RX_AUDIO  = 1,
+    STREAM_TX_AUDIO  = 2,   // client → server, TX audio payload (Task #33)
+    STREAM_TX_CHRONO = 3,   // server → client, "send me N samples" pull
+    STREAM_LINEOUT   = 4
+};
 enum SampleFmt  { FMT_INT16 = 0, FMT_INT24 = 1, FMT_INT32 = 2, FMT_FLOAT32 = 3 };
 
 void putU32(char *p, quint32 v) {            // little-endian store
     p[0] = char(v & 0xFF); p[1] = char((v >> 8) & 0xFF);
     p[2] = char((v >> 16) & 0xFF); p[3] = char((v >> 24) & 0xFF);
+}
+quint32 getU32(const char *p) noexcept {     // little-endian load
+    return  quint32(quint8(p[0]))
+         | (quint32(quint8(p[1])) <<  8)
+         | (quint32(quint8(p[2])) << 16)
+         | (quint32(quint8(p[3])) << 24);
+}
+
+// Task #33: bytes-per-sample for the four TCI sample formats.  Used to
+// validate payload size against the header's `length` field before
+// decoding.
+int bytesPerSample(int fmt) {
+    switch (fmt) {
+        case FMT_INT16:   return 2;
+        case FMT_INT24:   return 3;
+        case FMT_INT32:   return 4;
+        case FMT_FLOAT32: return 4;
+        default:          return 0;
+    }
+}
+
+// Task #33: decode an inbound TX_AUDIO_STREAM payload into mono
+// float32 @ the source rate.  Handles all four sample formats, mono
+// vs 2-channel (DIGU/DIGL complex IQ → real part = mono audio for
+// the WDSP TXA chain, matching the working reference's behaviour for
+// SSB/DIGU TX), and sanitizes NaN / ±Inf → 0 + clamps to ±4.0 per the
+// working reference's `handleBinaryFrame` clamp at TCIServer.cs:
+// 5661-5673.
+//
+// Returns the decoded mono samples (one float per frame, regardless
+// of input channel count).  Returns empty if the input is malformed.
+std::vector<float> decodeTciTxAudio(const char *data, int dataBytes,
+                                    int fmt, int channels) {
+    const int bps = bytesPerSample(fmt);
+    if (bps == 0 || dataBytes < bps) return {};
+    if (channels < 1) channels = 1;
+    if (channels > 2) channels = 2;          // TCI v2 spec: 1 or 2
+    const int scalarCount = dataBytes / bps;
+    const int frames = scalarCount / channels;
+    if (frames <= 0) return {};
+
+    std::vector<float> mono;
+    mono.reserve(static_cast<std::size_t>(frames));
+
+    auto decodeScalar = [&](int idx) -> float {
+        const char *p = data + idx * bps;
+        switch (fmt) {
+            case FMT_INT16: {
+                qint16 s = qint16(quint16(quint8(p[0])) | (quint16(quint8(p[1])) << 8));
+                return float(s) / 32768.0f;
+            }
+            case FMT_INT24: {
+                qint32 s = qint32(quint32(quint8(p[0]))
+                                | (quint32(quint8(p[1])) << 8)
+                                | (quint32(quint8(p[2])) << 16));
+                if (s & 0x800000) s |= int(0xFF000000U); // sign-extend 24→32
+                return float(s) / 8388608.0f;
+            }
+            case FMT_INT32: {
+                qint32 s = qint32(getU32(p));
+                return float(double(s) / 2147483648.0);
+            }
+            case FMT_FLOAT32: {
+                float v;
+                std::memcpy(&v, p, 4);
+                return v;
+            }
+        }
+        return 0.0f;
+    };
+
+    auto sanitize = [](float s) -> float {
+        if (std::isnan(s) || std::isinf(s)) return 0.0f;
+        if (s >  4.0f) return  4.0f;
+        if (s < -4.0f) return -4.0f;
+        return s;
+    };
+
+    if (channels == 1) {
+        for (int f = 0; f < frames; ++f)
+            mono.push_back(sanitize(decodeScalar(f)));
+    } else {
+        // 2-channel: DIGU/DIGL convention per TCI spec §3.4 — "complex
+        // signal will be transmitted if the number of channels is 2".
+        // The working reference (cmaster.c:380 path) feeds this through
+        // the regular TXA mic input; Lyra's TXA also expects real mono
+        // audio for SSB/DIGU.  Take the L (real) channel; if a client
+        // ever needs true complex IQ injection, that's a future TCI
+        // mode (separate dispatch).
+        for (int f = 0; f < frames; ++f)
+            mono.push_back(sanitize(decodeScalar(f * 2)));
+    }
+    return mono;
 }
 QByteArray streamHeader(quint32 receiver, quint32 rate, quint32 fmt,
                         quint32 length, quint32 type, quint32 channels) {
@@ -245,6 +347,11 @@ void TciServer::onNewConnection() {
         QWebSocket *ws = server_->nextPendingConnection();
         connect(ws, &QWebSocket::textMessageReceived,
                 this, &TciServer::onTextMessage);
+        // Task #33: TCI v2 binary frames (TX_AUDIO_STREAM in, RX/IQ
+        // streams out).  Inbound parsing handles only TX_AUDIO_STREAM
+        // (Task #33); other types arrive harmlessly + ignored.
+        connect(ws, &QWebSocket::binaryMessageReceived,
+                this, &TciServer::onBinaryMessage);
         connect(ws, &QWebSocket::disconnected,
                 this, &TciServer::onClientDisconnected);
         clients_.append(ws);
@@ -323,6 +430,80 @@ void TciServer::onTciIqBlock(const QByteArray &iqFloat, int rateHz) {
         if (!ws || ws->state() != QAbstractSocket::ConnectedState) continue;
         ws->sendBinaryMessage(frame);
     }
+}
+
+void TciServer::onBinaryMessage(const QByteArray &frame) {
+    // Task #33: inbound TCI v2 binary frame.  Only TX_AUDIO_STREAM is
+    // dispatched on the server side today; other types arrive
+    // harmlessly + are ignored (the working reference returns early
+    // on streamType != TX_AUDIO_STREAM at TCIServer.cs:5614).  See
+    // docs/refs/mshv_tci/README.md for the architectural derivation.
+    if (frame.size() < 64) return;
+    const char *p = frame.constData();
+    const quint32 sampleRate = getU32(p + 4);
+    const quint32 fmt        = getU32(p + 8);
+    const quint32 length     = getU32(p + 20);  // scalar count requested
+    const quint32 type       = getU32(p + 24);
+    const quint32 headerChan = getU32(p + 28);
+    if (type != STREAM_TX_AUDIO || length == 0) return;
+
+    const int dataOffset = 64;
+    const int dataBytes  = frame.size() - dataOffset;
+    const int bps        = bytesPerSample(int(fmt));
+    if (bps == 0 || dataBytes < bps) return;
+
+    // Channel inference — modern (1 or 2) per the working reference's
+    // header convention.  Legacy clients send channels=0 in the
+    // header and rely on payload size to disambiguate (TCIServer.cs:
+    // 5630-5652): if payload has 2× length scalars, it's stereo
+    // interleaved; otherwise mono.  Preserve that compatibility so
+    // older JTDX-style clients also work.
+    int channels = int(headerChan);
+    if (channels != 1 && channels != 2) {
+        const int actualScalars = dataBytes / bps;
+        channels = (actualScalars >= int(length) * 2) ? 2 : 1;
+    }
+
+    // Cap decode to whatever the header advertised in `length`, but
+    // never read past the actual payload.  `length` is in scalars
+    // (samples × channels) per the working reference's convention.
+    int decodeScalars = std::min<int>(int(length), dataBytes / bps);
+    if (channels == 2) decodeScalars -= decodeScalars % 2;  // pair-align
+    if (decodeScalars <= 0) return;
+
+    std::vector<float> mono = decodeTciTxAudio(p + dataOffset,
+                                               decodeScalars * bps,
+                                               int(fmt), channels);
+    if (mono.empty()) return;
+
+    // For Task #33 first-light (MSHV @ 48 kHz):  sample rate matches
+    // the TX-ring canonical rate, no resampling needed.  Other rates
+    // get logged once + dropped — adding a resampler is a v0.2.x
+    // follow-on if a non-48k TCI client ever shows up.
+    if (sampleRate != 48000) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            qWarning("[tci] TX_AUDIO_STREAM rate %u Hz (expected 48000) — "
+                     "dropping; resampler is a v0.2.x follow-on",
+                     unsigned(sampleRate));
+        }
+        return;
+    }
+
+    if (!tciMicSource_) {
+        // TciMicSource isn't constructed yet (WDSP still loading) OR
+        // construction failed — drop silently after one diagnostic so
+        // a misconfigured launch doesn't go silent forever.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            qWarning("[tci] TX_AUDIO_STREAM dropped — TciMicSource not "
+                     "registered yet (commit 4 wires it via main.cpp)");
+        }
+        return;
+    }
+    tciMicSource_->submitFromTci(mono.data(), int(mono.size()));
 }
 
 void TciServer::onMaintenanceTick() {
