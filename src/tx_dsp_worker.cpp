@@ -22,30 +22,34 @@ namespace lyra::dsp {
 
 TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     : tx_(/*channelId=*/1, wdsp)
-    // Ring sized for the LARGEST per-push block any registered mic
-    // source emits.  Pre-Task-#33 the only producer was
-    // Hl2Ep6MicSource (~10 decimated samples per EP6 datagram, ~5
-    // ms apart — 512-sample / 8× ring was comfortable).  Task #33
-    // adds TciMicSource, which receives 2400-sample mono blocks
-    // every 50 ms from a TCI client (MSHV / JTDX / etc., per the
-    // working reference's TX_AUDIO_STREAM cadence — 50 ms ×
-    // 48 kHz = 2400 samples per push).  A single 2400-sample push
-    // into a 512-sample ring overflows by 4.7× at the front door,
-    // silently dropping 80 % of the FT8 modem audio — operator
-    // bench 2026-06-01: MOX engaged, no power, no audio on the
-    // Palstar.
+    // Ring sized for the WORKER'S drain cadence, NOT the producer's
+    // burst pattern.  Producer-side burst absorption lives upstream
+    // in each MicSource subclass (Hl2Ep6MicSource pushes tiny ~10-
+    // sample bursts that fit a small ring trivially; TciMicSource
+    // pushes 2400-sample MSHV bursts but holds them in its own
+    // inbound queue ≈ 2 sec and drains them in 480-sample chunks
+    // every 10 ms — see tci_mic_source.h for the two-stage
+    // architecture rationale).
     //
-    // 64× kBlockSize = 4096 samples ≈ 85 ms holds an MSHV block
-    // plus jitter cushion without changing steady-state latency
-    // (the worker drains at the wire's 48 kHz cadence regardless
-    // of capacity — bigger ring just absorbs bursts).  The
-    // operator-flagged Task #46 concern was a band-aid 32× bump
-    // to mask an EP2-stall symptom on the consumer side; THIS
-    // bump is structurally required by the producer block size,
-    // not symptom-masking on the consumer.  highWater telemetry
-    // stays — if it ever sustains near 4096, that's a real wire-
-    // path stall, not ring-size mis-tuning.
-    , ring_(/*capacitySamples=*/64 * kBlockSize, kBlockSize)
+    // 8 × kBlockSize = 512 samples ≈ 10 ms is exactly enough to
+    // smooth out wire-side jitter (one drain-timer fire + one
+    // worker-pop latency).  Operator-locked 2026-06-01 with the
+    // two-stage refactor: "Yo ubeeter make like Thetis because I
+    // am pretty sure that this is going to bite are ass when it
+    // comes to full duplex and PureSignal!"  Thetis's two-stage
+    // TX-audio queue (TCIServer.cs:763-764 inbound queue + small
+    // downstream cmaster ring into WDSP TXA) is the pattern Lyra
+    // mirrors now — large inbound queue per-source where bursts
+    // need absorbing, small final-stage SPSC into the worker.
+    //
+    // highWater telemetry (TxRing::highWaterSamples) stays — if it
+    // ever sustains near 512, that's a real downstream wire-path
+    // stall (EP2 timer-paced writer, Qt main thread, etc.), not
+    // ring-size mis-tuning.  Producer-burst overruns are now
+    // accounted at each MicSource's own dropped-samples counter
+    // (TciMicSource::droppedSamples — see tci_mic_source.h
+    // diagnostics).
+    , ring_(/*capacitySamples=*/8 * kBlockSize, kBlockSize)
     , mic_(micSource)
     , txIqBuf_(static_cast<std::size_t>(kEp2BlockSize),
                std::complex<float>(0.0f, 0.0f))
