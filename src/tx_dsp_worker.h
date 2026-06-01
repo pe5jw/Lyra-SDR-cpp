@@ -124,6 +124,51 @@ public:
     }
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
+    // ── Task #33: tagged mic-source dispatch ────────────────────
+    //
+    // The TX mic ring is fed by exactly ONE source at a time —
+    // operator picks via Settings → TX → Mic Source.  Each candidate
+    // source (Hl2Ep6MicSource = codec mic, TciMicSource = inbound
+    // TCI TX audio stream, future: Line In via I2C2, VAC1/VAC2 via
+    // host audio capture) submits via submitMicSamples() tagged with
+    // its source ID.  Samples whose ID ≠ activeMicSource_ get dropped
+    // at the front door — sources don't need to know about each
+    // other or coordinate the swap.
+    //
+    // Mic1 (codec mic) is the default to match the v0.2.0..v0.2.2
+    // ship behaviour.  The atomic swap is operator-driven (Qt main
+    // thread) — between-blocks discipline; a few ms of audio MAY
+    // drop on the mode-change frame, which the ALC absorbs.
+    //
+    // SPSC ring discipline preserved: only ONE source is producing
+    // into ring_ at any instant because only one is "active"; the
+    // other source's submissions return at the early-out check
+    // without touching ring_.
+    enum class MicSource : std::uint8_t {
+        Mic1   = 0,   // HL2/HL2+ codec mic (current Hl2Ep6MicSource)
+        Mic2   = 1,   // HL2+ codec Line In (future — I2C2 side-chan)
+        MicPc1 = 2,   // host PC audio capture (future — VAC1)
+        MicPc2 = 3,   // host PC audio capture (future — VAC2)
+        Tci    = 4    // inbound TCI TX_AUDIO_STREAM (Task #33)
+    };
+
+    void setActiveMicSource(MicSource s) noexcept {
+        activeMicSource_.store(s, std::memory_order_release);
+    }
+    MicSource activeMicSource() const noexcept {
+        return activeMicSource_.load(std::memory_order_acquire);
+    }
+
+    // Tagged push entry.  Each MicSource class calls this with its
+    // own ID; samples are admitted IFF the operator has selected
+    // that source.  Other sources' submissions are silently dropped
+    // (no counter — operator-state, not an error).  Lock-free under
+    // the strict-SPSC contract (one active source at a time).
+    void submitMicSamples(MicSource src, const float *samples, int n) noexcept {
+        if (src != activeMicSource_.load(std::memory_order_acquire)) return;
+        ring_.push(samples, n);
+    }
+
     // ── Component 6: TX I/Q output (wire side) ──────────────────
     //
     // Datagram-sized handshake to the EP2 wire writer.  Matches the
@@ -248,6 +293,12 @@ private:
     TxChannel        tx_;
     TxRing           ring_;
     Hl2Ep6MicSource &mic_;   // caller-owned; outlives this
+
+    // Task #33 — operator-selected mic source.  Default Mic1 (codec
+    // mic, the existing v0.2.0..v0.2.2 path).  Set via the operator
+    // picker; consulted by submitMicSamples() to drop submissions
+    // from inactive sources.
+    std::atomic<MicSource> activeMicSource_{MicSource::Mic1};
 
     std::thread       worker_;
     std::atomic<bool> stopRequested_{false};

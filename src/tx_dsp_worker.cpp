@@ -55,14 +55,16 @@ TxDspWorker::TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource)
     // hot path).
     accum_.reserve(static_cast<std::size_t>(2 * kBlockSize));
 
-    // Hook mic samples into the SPSC ring.  Capturing `this` is
-    // safe — the destructor clears the mic consumer before this
-    // object goes away.  The lambda runs SYNCHRONOUSLY on the rx
-    // worker thread once per EP6 datagram with ~10 decimated 48k
-    // samples; ring_.push is lock-free under the strict-SPSC
-    // contract.
+    // Hook mic samples into the SPSC ring via the tagged-source
+    // dispatch (Task #33).  Capturing `this` is safe — the
+    // destructor clears the mic consumer before this object goes
+    // away.  The lambda runs SYNCHRONOUSLY on the rx worker thread
+    // once per EP6 datagram with ~10 decimated 48k samples;
+    // submitMicSamples is lock-free + drops the submission early
+    // if the operator has picked a different mic source — preserves
+    // the SPSC ring's single-producer contract at the swap.
     mic_.setConsumer([this](const float *samples, int n) {
-        ring_.push(samples, n);
+        submitMicSamples(MicSource::Mic1, samples, n);
     });
 
     // Spawn the worker thread.  RAII via std::thread; the dtor
