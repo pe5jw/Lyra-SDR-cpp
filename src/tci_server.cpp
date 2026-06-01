@@ -3,6 +3,7 @@
 #include "tci_server.h"
 
 #include "hl2_stream.h"
+#include "logbuffer.h"
 #include "prefs.h"
 #include "spotstore.h"
 #include "tci_mic_source.h"
@@ -472,6 +473,17 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
     // ownership drops in-flight frames at the door without ever
     // reaching the decode / sanitize / push path.
     auto *ws = qobject_cast<QWebSocket *>(sender());
+    // Task #33 commit 3.2 — verbose binary-frame arrival diagnostic
+    // (gated on the Diagnostics verbose toggle).  Counts frames
+    // received from the active TX-audio owner vs others — helps the
+    // bench distinguish "MSHV not sending anything" from "MSHV
+    // sending but Lyra not owner-acquired."
+    if (LogBuffer::instance().verbose()) {
+        qInfo("[tci-rx-bin] frame %d bytes (owner=%s sender=%s)",
+              int(frame.size()),
+              txAudioOwner_ ? "set" : "null",
+              ws == txAudioOwner_ ? "owner" : "other");
+    }
     if (txAudioOwner_ == nullptr || ws != txAudioOwner_) return;
     // Note arrival of an inbound TX_AUDIO_STREAM block for the
     // CHRONO outstanding-counter timeout reset (working reference:
@@ -726,6 +738,15 @@ void TciServer::onTextMessage(const QString &raw) {
     while (msg.endsWith(QLatin1Char(';'))) msg.chop(1);
     msg = msg.trimmed();
     if (msg.isEmpty()) return;
+    // Task #33 commit 3.2 — verbose dump of EVERY inbound TCI text
+    // command (gated on the Settings → Hardware → Diagnostics verbose
+    // logging toggle).  Lets the bench diagnose "MSHV TX TUNE / FT8
+    // cycle does nothing" without having to add ad-hoc logging:
+    // operator turns verbose on, hits the test, the log shows every
+    // command line MSHV emitted (or none, if MSHV's PTT path is gated
+    // off on its side).
+    if (LogBuffer::instance().verbose())
+        qInfo("[tci-rx-text] %s", qPrintable(msg));
     QString cmd;
     QStringList args;
     const int colon = msg.indexOf(QLatin1Char(':'));
