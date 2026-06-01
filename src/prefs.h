@@ -188,6 +188,17 @@ class Prefs : public QObject {
     // captures Debug/Info for when we need the full picture.
     Q_PROPERTY(bool debugLogging READ debugLogging WRITE setDebugLogging
                NOTIFY debugLoggingChanged)
+    // Task #36 — Hardware PTT input (foot switch / hand mic / mic button)
+    // forwarder.  Default OFF — per the project-memory §10 Q#1 finding,
+    // N8SDR's HL2+/AK4951 carries a non-zero EP6 C0 bit 0 (ptt_in) at
+    // RX rest, so an always-on forwarder mis-reads it as a foot-switch
+    // press → spurious MOX → phantom-TX surge.  Operator opts in via
+    // Settings → TX → Advanced AFTER bench-verifying that ptt_in is a
+    // clean 0 at RX rest on their specific unit (or after confirming
+    // they have a real foot-switch / mic-button wired to the HL2 PTT
+    // input).  Persisted: tx/hw_ptt_enabled.
+    Q_PROPERTY(bool hwPttEnabled READ hwPttEnabled WRITE setHwPttEnabled
+               NOTIFY hwPttEnabledChanged)
 
 public:
     explicit Prefs(QObject *parent = nullptr);
@@ -322,6 +333,10 @@ public:
     static QString defaultBandPlanColor(const QString &kind);
     bool debugLogging() const { return debugLogging_; }
     void setDebugLogging(bool on);
+    // Task #36 — Hardware PTT input opt-in.  Default false (the §10 Q#1
+    // safety-first posture).  Setter persists + emits.
+    bool hwPttEnabled() const { return hwPttEnabled_; }
+    void setHwPttEnabled(bool on);
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
 
@@ -382,6 +397,7 @@ signals:
     void panScrollStepHzChanged();
     void panRound100Changed();
     void debugLoggingChanged();
+    void hwPttEnabledChanged();
 
 private:
     int     gridLevel_;
@@ -445,6 +461,9 @@ private:
     int     panScrollStepHz_ = 1000;
     bool    panRound100_ = false;
     bool    debugLogging_ = false;
+    // Task #36 — HW PTT opt-in.  Default false; gated forwarder in
+    // HL2Stream's RX loop reads the mirrored atomic.
+    bool    hwPttEnabled_ = false;
 };
 
 } // namespace lyra::ui

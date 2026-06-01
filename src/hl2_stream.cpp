@@ -1092,6 +1092,49 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
             }
         }
 
+        // ---- Task #36: Hardware PTT input forwarder ---------------
+        // EP6 status C0 bit 0 = `ptt_in` (the HL2's HW PTT pin
+        // state — foot switch / hand-mic PTT / etc.).  Decoded
+        // every datagram from frame-0 C0 (the address rotation in
+        // bits[7:3] doesn't affect bit 0; the I2C-readback flag
+        // bit 7 leaves bit 0 still meaningful per the verified
+        // HL2 read-loop semantics).
+        //
+        // The forwarder is GATED on the operator opt-in atomic.
+        // When disabled (default), we pure-decode the level into
+        // `lastPttIn_` (so the edge detector is hot for an instant
+        // enable) but never emit — wire-identical to a pre-Task-#36
+        // build with respect to MOX state changes.
+        //
+        // When enabled, an edge (low→high or high→low) on ptt_in
+        // dispatches `requestMox(bool)` via QueuedConnection so
+        // the FSM runs on its owning thread (this QObject's),
+        // exactly like the QML MOX button.  Level-driven semantics
+        // match the verified HL2 reference + every working host
+        // app — debounce is the C&C cadence (~5 kHz EP6 frames at
+        // 192 k/nddc=4) + the set_source idempotency in the FSM,
+        // NOT a host-side timer; if a real chatter problem shows
+        // up on a specific foot-switch the fix lands at the Radio
+        // adapter layer, never inside the FSM.
+        {
+            const std::uint8_t c0_f0 = u[11];  // frame 0 C0
+            const bool pttNow = (c0_f0 & 0x01) != 0;
+            if (pttNow != lastPttIn_) {
+                lastPttIn_ = pttNow;
+                if (hwPttEnabled_.load(std::memory_order_acquire)) {
+                    // QueuedConnection: the rx-loop thread is NOT
+                    // this QObject's owning thread (rx worker is a
+                    // std::jthread spawned in open()).  Qt routes
+                    // the call to the FSM's thread; no race with
+                    // the FSM's single-thread state mutations.
+                    QMetaObject::invokeMethod(
+                        this, "requestMox",
+                        Qt::QueuedConnection,
+                        Q_ARG(bool, pttNow));
+                }
+            }
+        }
+
         // ---- Step 2c/3d: parse DDC0 IQ -----------------------
         // Two USB frames per datagram at offsets 8 and 520; each
         // carries 19 sample slots starting at frame-offset 8 = 38
@@ -1619,6 +1662,43 @@ void HL2Stream::setTxTimeoutBypass(bool on) {
         else     armTxSafetyTimer();       // safety just turned ON;
                                            // fresh full duration
     }
+}
+
+// ---- Task #36: Hardware PTT input forwarder opt-in ----------------
+//
+// Per project-memory §10 Q#1 + §15.25 RESOLVED-CORRECTION, the EP6
+// C0 bit 0 (`ptt_in`) is NOT guaranteed to be a clean 0 at RX rest
+// across HL2 gateware revs — N8SDR's HL2+/AK4951 unit empirically
+// shows a non-zero level, which means an always-on forwarder would
+// mis-read it as a foot-switch press → spurious requestMox(true) →
+// phantom-TX surge.  The forwarder in rxWorkerLoop is therefore
+// HARD-GATED on this atomic; default OFF; operator opts in via
+// Settings → TX → Advanced AFTER bench-verifying ptt_in on their
+// own unit (or after wiring a real foot-switch / mic-button).
+//
+// Persistence lives in Prefs (tx/hw_ptt_enabled); main.cpp mirrors
+// Prefs.hwPttEnabled into this setter so the in-flight wire path
+// always sees the operator's current intent without a stream
+// restart.
+//
+// Turning OFF clears lastPttIn_ so the next ON-edge after a
+// re-enable doesn't fire on whatever stale level the wire happened
+// to be reading.  This is wire-thread state mutated from the Qt
+// main thread — safe because the RX worker only READS lastPttIn_
+// when hwPttEnabled_ is true (and we clear it under hwPttEnabled_=
+// false, so the worker can't be reading it at the same moment).
+void HL2Stream::setHwPttEnabled(bool on) {
+    const bool prev = hwPttEnabled_.exchange(on, std::memory_order_release);
+    if (prev == on) return;
+    if (!on) {
+        // Reset the edge-detect memory so a future re-enable
+        // doesn't trip on a wire level that drifted while gated off.
+        lastPttIn_ = false;
+    }
+    safetyLog(QStringLiteral("HW PTT input forwarder -> %1")
+              .arg(on ? QStringLiteral("ENABLED (foot-switch will key)")
+                      : QStringLiteral("disabled (default-safe)")));
+    emit hwPttEnabledChanged(on);
 }
 
 // ---- TX-1 component 5a: TR-sequencing + cos² envelope setters ----

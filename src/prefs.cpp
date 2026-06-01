@@ -73,6 +73,8 @@ constexpr auto kCbBand     = "bands/cb_enabled";
 constexpr auto kPanStep    = "panadapter/scroll_step_hz";
 constexpr auto kPanRound   = "panadapter/round_100hz";
 constexpr auto kDebugLog   = "debug/logging";
+// Task #36 — Hardware PTT input opt-in (default OFF per §10 Q#1).
+constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -179,6 +181,10 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     panScrollStepHz_ = s.value(kPanStep, 1000).toInt();
     panRound100_ = s.value(kPanRound, false).toBool();
     debugLogging_ = s.value(kDebugLog, false).toBool();
+    // Task #36 — HW PTT opt-in.  Default false (operator must explicitly
+    // enable AFTER bench-verifying ptt_in is clean at RX rest on their
+    // HL2 unit; see Settings → TX → Advanced tooltip).
+    hwPttEnabled_ = s.value(kHwPttEnabled, false).toBool();
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -753,6 +759,14 @@ void Prefs::setDebugLogging(bool on) {
         debugLogging_ = on;
         QSettings().setValue(kDebugLog, on);
         emit debugLoggingChanged();
+    }
+}
+
+void Prefs::setHwPttEnabled(bool on) {
+    if (on != hwPttEnabled_) {
+        hwPttEnabled_ = on;
+        QSettings().setValue(kHwPttEnabled, on);
+        emit hwPttEnabledChanged();
     }
 }
 

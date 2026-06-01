@@ -566,6 +566,18 @@ int main(int argc, char *argv[])
                 wdspEngine->setFilterLowHz(prefs->filterLow());
             });
             wdspEngine->setFilterLowHz(prefs->filterLow());
+
+            // Task #36 — Hardware PTT input forwarder.  Mirror the
+            // operator-facing Prefs.hwPttEnabled into HL2Stream's
+            // gating atomic so the EP6 RX worker sees the live
+            // intent without any stream restart.  Initial push:
+            // honour the persisted opt-in (default false per §10
+            // Q#1 phantom-TX safety).
+            QObject::connect(prefs, &lyra::ui::Prefs::hwPttEnabledChanged,
+                             stream, [stream, prefs]() {
+                stream->setHwPttEnabled(prefs->hwPttEnabled());
+            });
+            stream->setHwPttEnabled(prefs->hwPttEnabled());
         }
 
         // Radio memory: auto-connect to the last radio so the operator

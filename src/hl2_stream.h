@@ -166,6 +166,20 @@ class HL2Stream : public QObject {
                WRITE setTxTimeoutSec NOTIFY txTimeoutSecChanged)
     Q_PROPERTY(bool txTimeoutBypass READ txTimeoutBypass
                WRITE setTxTimeoutBypass NOTIFY txTimeoutBypassChanged)
+    // Task #36 — Hardware PTT input forwarder enable.  When TRUE, an
+    // edge in EP6 status C0 bit 0 (`ptt_in`, the HL2's hardware PTT-
+    // input pin) is forwarded to requestMox() so a foot-switch / hand-
+    // mic PTT keys the rig.  Default FALSE — per project-memory §10
+    // Q#1, the N8SDR HL2+/AK4951 unit carries a non-zero ptt_in at
+    // RX rest, so an always-on forwarder mis-reads it as a press and
+    // produces a phantom-TX surge.  Operator MUST bench-verify ptt_in
+    // is a clean 0 at RX rest on their specific unit BEFORE enabling.
+    // The forwarder is gated entirely on this atomic — when false the
+    // EP6 RX worker just decodes the bit into a local + discards it,
+    // wire-identical to the pre-Task-#36 build.  Setter is thread-safe
+    // (atomic store); Settings UI persists via Prefs.hwPttEnabled.
+    Q_PROPERTY(bool hwPttEnabled READ hwPttEnabled
+               WRITE setHwPttEnabled NOTIFY hwPttEnabledChanged)
     // TX-0c-pa-debug — operator-gated PA-enable.  When true, frame-10
     // C2 bit 3 (0x08) goes on the wire — gateware PA-enable, active-
     // high.  Combined with the wire MOX bit + non-zero TX I/Q drive,
@@ -486,6 +500,11 @@ public:
     // keydown/keyup hooks arm/cancel the QTimer.
     int     txTimeoutSec()    const { return txTimeoutSec_; }
     bool    txTimeoutBypass() const { return txTimeoutBypass_; }
+    // Task #36 — HW PTT forwarder opt-in (Q_PROPERTY getter).  Reads
+    // the atomic the RX worker thread polls each EP6 datagram.
+    bool    hwPttEnabled()    const {
+        return hwPttEnabled_.load(std::memory_order_relaxed);
+    }
     // TX-0c-pa-debug — operator-gated PA-enable mirror (Q_PROPERTY
     // getter).  Reads the wire atomic.
     bool    paEnabled() const { return paOn_.load(std::memory_order_relaxed); }
@@ -700,6 +719,13 @@ public slots:
     void setTxTimeoutSec(int sec);
     void setTxTimeoutBypass(bool on);
 
+    // Task #36 — Hardware PTT forwarder opt-in (default OFF).  See
+    // Q_PROPERTY decl above for the §10 Q#1 safety rationale.  Thread-
+    // safe (atomic store + signal emit); turning OFF resets the
+    // internal edge-detect so the next ON-edge doesn't fire on a
+    // stale "was already pressed" mismatch.
+    void setHwPttEnabled(bool on);
+
     // TX-1 component 5a — TR-sequencing + cos² envelope tuning.
     // Each setter clamps to a sane operator range, persists to
     // QSettings (tx/trSeq/<key>), and emits the matching changed
@@ -796,6 +822,9 @@ signals:
     // lives in the setter.
     void txTimeoutSecChanged(int sec);
     void txTimeoutBypassChanged(bool on);
+    // Task #36 — HW PTT forwarder opt-in changed (Settings checkbox,
+    // persistence reload, or stop()-safety reset).
+    void hwPttEnabledChanged(bool on);
     // TX-0c-pa-debug — operator-gated PA-enable changed (via Settings
     // checkbox, persistence reload, or stream open/close safety clear).
     void paEnabledChanged(bool on);
@@ -1050,6 +1079,21 @@ private:
     // phase below is owned single-thread by that writer (no atomic
     // needed since only that thread mutates it).
     std::atomic<bool>    tuneEnabled_{false};
+
+    // Task #36 — Hardware PTT input forwarder.
+    //
+    // hwPttEnabled_ is the operator opt-in gate.  Default false (see
+    // Q_PROPERTY for the §10 Q#1 phantom-TX rationale).  Written from
+    // Qt main thread via setHwPttEnabled() (atomic store), read from
+    // the RX worker thread each datagram (atomic load).
+    //
+    // lastPttIn_ is the edge-detect memory, owned by the RX worker
+    // thread (single-thread access, no atomic needed).  Reset to
+    // false when the gate is turned off so the next enable doesn't
+    // fire a spurious release-edge on whatever the wire happens to
+    // be reading at the moment.
+    std::atomic<bool>    hwPttEnabled_{false};
+    bool                 lastPttIn_  = false;
 
     // ── TX-1 component 6: SSB I/Q injection (wire-inert default) ──
     // Gate atomic — see Q_PROPERTY decl + setInjectTxIq() doc for
