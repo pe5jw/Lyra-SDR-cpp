@@ -353,15 +353,27 @@ Sets how RX1 demodulates and how wide the receive filter is.
   more CPU/network.
 - **Mode** — **LSB, USB, CWL, CWU, DSB, AM, FM, DIGU, DIGL**.
 - **RX BW** — the receive filter bandwidth. The list is **per-mode**
-  (sensible presets for SSB, CW, AM, FM, digital), and Lyra remembers the
-  width you last used for each mode. If you **drag a passband edge** on the
-  panadapter to a width that isn't a preset, the combo shows it as
-  **"(custom)"** at the top of the list so the readout always matches what
-  you're actually hearing; pick a preset to snap back.
+  (sensible presets for SSB, CW, AM, FM, digital, with SSB running up to
+  10 kHz and AM up to 12 kHz for ESSB-style wide audio), and Lyra
+  remembers the width you last used for each mode. If you **drag a
+  passband edge** on the panadapter to a width that isn't a preset, the
+  combo shows it as **"(custom)"** at the top of the list so the readout
+  always matches what you're actually hearing; pick a preset to snap back.
+- **🔗 (Lock)** — links RX and TX bandwidths so changes to either side
+  mirror the other for the current mode. Click to toggle. Toggling it
+  ON pulls the RX bandwidth into TX. With the lock OFF, RX and TX BW
+  are independent per-mode.
+- **TX BW** — the transmit filter bandwidth (high edge for SSB).
+  Per-mode just like RX BW. The actual TX passband is the **Filter
+  Low edge** (set in Settings → Audio, shared with RX) up to this
+  high edge — e.g. with Filter Low = 70 Hz and TX BW = 4 kHz, your
+  TX runs a 70-4000 Hz bandpass. Sign-codes correctly per mode (USB
+  positive, LSB negative-and-swapped) inside the WDSP TXA chain.
 
-SSB and digital filters open right at the carrier (no low-cut gap); CW
-filters are centered on your **CW Pitch**; AM/DSB/FM are symmetric around
-the carrier.
+SSB and digital filters open at the **Filter Low edge** (Settings → Audio
+→ Filter Low edge, shared RX+TX, default 100 Hz); CW filters are
+centered on your **CW Pitch**; AM/DSB/FM are symmetric around the
+carrier (the Filter Low edge doesn't apply to those modes).
 
 ---
 
@@ -1166,6 +1178,32 @@ Where Lyra sends received audio:
 
 Pick your output device here; everyday **Mute** and **Vol** stay on the
 [Audio panel](#audio-panel).
+
+**Filter Low edge (RX + TX)** — single shared low cutoff for the
+SSB / DIG audio bandpass on both receive and transmit. Range
+**0–500 Hz**, default **100 Hz**.
+
+- **100–200 Hz** suppresses 50/60 Hz mains coupling on the mic path
+  and reduces low-end rumble on receive — safe choice for narrow
+  comms.
+- **50–70 Hz** preserves chest-resonance / low-end body for
+  ESSB-style wide audio — verify your station isn't picking up
+  mains hum at very low cuts.
+- **0 Hz** opens the filter all the way down to the carrier (no
+  low cut) — some operators want this for ultra-wide ESSB into a
+  clean RF environment.
+
+Applies to **SSB and DIG modes only** (USB / LSB / DIGU / DIGL —
+the asymmetric passband case). CW is pitch-centred and AM / DSB /
+FM are symmetric around DC; those modes ignore this setting.
+
+You can also **drag the low edge of the passband rectangle** on the
+panadapter (left edge on USB / right edge on LSB) to set this value
+in real time. Dragging below 0 just pins at 0.
+
+> **Interim setting** until the TX Profile Manager ships — once
+> profiles arrive, each named profile will carry its own RX + TX
+> (low, high) pair that overrides this default on profile load.
 
 ---
 

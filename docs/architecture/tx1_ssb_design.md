@@ -8,7 +8,25 @@ mic gain UI).  Pre-Component-8 Thetis TX audio-path study landed
 2026-05-31 EVE (`docs/architecture/tx_audio_path_reference.md`, 807
 lines) — Component 8 ship order locked: 8a-0 (ALC init fix) → 8a
 (mic gain UI) → 8a+ (HW mic boost) → 8b (mic source) → 8c (TX BW)
-→ 8d (TX multimeter ALC/MIC/COMP values) → 8e (HW PTT).**
+→ 8d (TX multimeter ALC/MIC/COMP values) → 8e (HW PTT).
+**2026-05-31 NIGHT EOD:** Components 8a-0 / 8a / 8a-tx-mode / 8c
+all SHIPPED + operator-bench-confirmed.  Plus Task #46 (TX worker
+error/skip accounting + ring high-water instrument), Task #48
+(GetUdpStatisticsEx EP6-drop diagnostic), Task #53 (shared RX+TX
+Filter Low edge — Settings → Audio spinbox, default 100 Hz,
+operator-tunable 0..500 Hz; replaces the previously-hardcoded
+RX SSB-low=0 + TX SSB-low=200 with one shared knob until the TX
+Profile Manager #49 lands), and Task #54 (panadapter lo-edge
+drag now writes Prefs.filterLow for SSB/DIG modes and reaches
+all the way to 0 Hz, was previously pinned at 0).  Post-
+Component-8 advanced-chain architecture LOCKED in the section
+below (EQ → Combinator → Plate → ALC → BW LPF order; operator-
+supplied DSP2024P Plate presets W5UDX + N8SDR captured; pending
+operator X-Air Combinator + EQ screenshots before those arcs
+start).  TX Profile Manager (#49) is next major arc — schema
+will absorb the Filter Low + Filter High + Mode + everything-
+else into named profile bundles, per-profile (lo, hi) pairs
+override the interim default on load.**
 Date: 2026-05-29 (v2 lock) / 2026-05-30 (v2.1 + v2.1.1 + reference-reconciliation) / 2026-05-31 (components 5 + 6 + 7 ship + Thetis TX audio-path study + Component 8 ship order locked).
 Scope: SSB-only (USB/LSB).  CW/AM/FM/digital-modulator are later slices.
 Reference: **Thetis 2.10.3.13 only** — operator directive 2026-05-29.  Old
@@ -288,15 +306,20 @@ study landed (pre-Component-8 design):**
 
 **Component 8 ship order (locked 2026-05-31 EVE):**
 
-| Slice | What | Why first |
+| Slice | What | Status |
 |---|---|---|
-| **8a-0** | `SetTXAALCMaxGain(channel, 3.0)` at TX channel open | Smoking gun for 0.2 W; ~5 LOC; should ~triple peak before mic gain even moves |
-| **8a** | Mic Gain UI: HL2Stream Q_PROPERTY `micGainDb` + TxControl callback + TX panel slider (dB-to-linear via `SetTXAPanelGain1`). Range −20..+40 dB, default 0 dB (Thetis-construction-equivalent unity at the WDSP layer; operator slider can dial to typical +10 dB ESSB starting point). Hot-tunable during keydown. QSettings persistence. USER_GUIDE TX panel update. | First operator-visible knob |
-| **8a+** | 20 dB Mic Boost checkbox → HL2 C&C MicBoost bit (NOT software) | If 8a-0 + 8a alone don't deliver typical-mic headroom on operator's bench |
-| **8b** | Mic Source: Mic In / Line In codec mux via C&C. VAC1/VAC2 anchor only (placeholder tooltip "available in v2") — no inert UI | Codec-input change; small surface |
-| **8c** | TX Bandwidth: 2 spin boxes (High/Low) + `UpdateTXLowHighFilterForMode` transform. SSB-only for beta (USB pass-through, LSB negate-and-swap) | Operator-tunable filter |
-| **8d** | TX multimeter: Mic / Comp / ALC / PO / SWR / VDD / ID source selector via MeterModel (existing picker per v2.1.1 §9.3.1); fills the ALC / MIC / COMP values pending from C7 | Operator-visible drive levels |
-| **8e** | Hardware PTT input (foot switch / hand mic) — opt-in default OFF per ff5f128 regression class | After audio chain is fully tunable |
+| **8a-0** | `SetTXAALCMaxGain(channel, 3.0)` at TX channel open | ✅ shipped 2026-05-31 |
+| **8a** | Mic Gain UI: HL2Stream Q_PROPERTY `micGainDb` + TxControl callback + TX panel slider (dB-to-linear via `SetTXAPanelGain1`). Range −90..+40 dB. Hot-tunable during keydown. QSettings persistence. | ✅ shipped 2026-05-31 |
+| **8a-tx-mode** | USB-stuck-LSB bug fix — push TX mode at registerTxControl + on operator mode change; designated-initializer call-site discipline | ✅ shipped 2026-05-31 |
+| **8a+** | 20 dB Mic Boost checkbox → HL2 C&C MicBoost bit (NOT software) | ⏸ operator confirmed not needed for N8SDR's station; ship later if a tester needs it |
+| **8b** | Mic Source: Mic In / Line In codec mux via C&C. VAC1/VAC2 anchor only (placeholder tooltip "available in v2") — no inert UI | 🟡 pending |
+| **8c** | **RX BW + 🔗 lock + TX BW** combo row in ModeFilterPanel (mirrors old-Lyra's MODE+FILTER pattern). Per-mode persistence. SSB preset list 1500..10000 Hz. Lock toggle ON pulls RX→TX, both directions mirror after. `TxChannel::setBandpass` (USB pass-through, LSB negate-and-swap) wires through. | ✅ shipped 2026-05-31 (commit `2a949e2`) |
+| **+#53** | **Shared RX+TX Filter Low edge** — single Settings → Audio spinbox (0..500 Hz, default 100 Hz, 10 Hz step). Operator-tunable interim until TX Profile Manager #49 ships per-profile (lo, hi) pairs. WdspEngine SSB/DIG asymmetric edge + HL2Stream TX bandpass low both read this. Tooltip carries mains-coupling warning. | ✅ shipped 2026-05-31 (commit `02bb7ea`) |
+| **+#54** | **Panadapter lo-edge drag to 0** — SSB/DIG lo-edge handle now writes Prefs.filterLow (was always writing rxBandwidth and pinned at carrier). Drag below 0 pins at 0; hi-edge unchanged. CW (pitch-centred) and AM/DSB/FM (symmetric) lo-edge drag still writes rxBandwidth. | ✅ shipped 2026-05-31 (commit `02bb7ea`) |
+| **8d** | TX multimeter: Mic / Comp / ALC / PO / SWR / VDD / ID source selector via MeterModel (picker exists per v2.1.1 §9.3.1); fills the ALC / MIC / COMP values pending from C7 | 🟡 pending |
+| **8e** | Hardware PTT input (foot switch / hand mic) — opt-in default OFF per ff5f128 regression class | 🟡 pending |
+| **+#49** | **TX Profile Manager** — named profile bundle (Mode + RX/TX BW + lock + filterLow + mic gain + ALC + Leveler + PHROT + future EQ/Combinator/Plate state). Save/Load/Delete/Set-as-Default. Manual select only — NO auto-detect by call. QSettings JSON. Ships W5UDX (Greg) + N8SDR personal Plate presets when Plate arc lands. Forward-compat schema absorbs the EQ/Combinator/Plate fields as those arcs land — no inert UI; only fields with backing setters appear. | 🟡 next major arc |
+| **+#55** | Profile Manager quick-preset chip panel (operator-named profile chips for one-click recall, e.g. "4K" / "8K" / "Narrow DX" / "Wide ESSB"). Bundled with #49. | 🟡 pending, bundles with #49 |
 
 ---
 
