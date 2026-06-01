@@ -900,6 +900,16 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
                 chronoTimer_->start();
                 emit statusMessage(QStringLiteral("TCI: TX-audio ownership ACQUIRED"));
             }
+            // Task #33 commit 4 — auto-flip the operator mic source
+            // to "tci" so submitMicSamples(Tci, ...) is admitted to
+            // the TX ring.  Matches the working reference's auto-
+            // switch behaviour: MSHV / JTDX / any TCI client that
+            // sends `trx:0,true,tci` expects the radio to take its
+            // audio path automatically.  Operator sees the Settings
+            // → TX → Mic Source dropdown move to "TCI" — visible
+            // and reversible via Settings if surprised.  Idempotent:
+            // setMicSource only emits if the value actually changed.
+            if (prefs_) prefs_->setMicSource(QStringLiteral("tci"));
             stream_->requestMoxFromTci(true);
             sendTo(ws, QStringLiteral("trx:0,true,tci"));
             return;

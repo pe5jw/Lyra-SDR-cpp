@@ -12,6 +12,7 @@
 #include "memorystore.h"
 #include "eibistore.h"
 #include "spotstore.h"
+#include "tci_mic_source.h"
 #include "tci_server.h"
 #include "metermodel.h"
 #include "wdsp_engine.h"
@@ -1332,6 +1333,10 @@ void MainWindow::applyDefaultLayout() {
     if (prefs_) {
         prefs_->setPanadapterSplit(QVariant());
     }
+}
+
+void MainWindow::setTciMicSource(lyra::dsp::TciMicSource *src) {
+    if (tci_) tci_->setTciMicSource(src);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

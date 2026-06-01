@@ -27,6 +27,7 @@ class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
+namespace lyra::dsp { class TciMicSource; }
 
 namespace lyra::ui {
 
@@ -62,6 +63,13 @@ public:
                QObject *wdsp, QObject *wdspEngine,
                Prefs *prefs, lyra::wx::WxService *wx,
                QWidget *parent = nullptr);
+
+    // Task #33 — pass-through to TciServer so main.cpp can hand the
+    // TciMicSource (constructed late, after WDSP loads) into the
+    // server's binary-frame handler.  Null-safe (clears the wire on
+    // teardown).  See main.cpp's WDSP-loaded singleShot block + the
+    // aboutToQuit chain.
+    void setTciMicSource(lyra::dsp::TciMicSource *src);
 
 protected:
     void closeEvent(QCloseEvent *event) override;

@@ -75,6 +75,7 @@ constexpr auto kPanRound   = "panadapter/round_100hz";
 constexpr auto kDebugLog   = "debug/logging";
 // Task #36 — Hardware PTT input opt-in (default OFF per §10 Q#1).
 constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
+constexpr auto kMicSource    = "tx/mic_source";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -185,6 +186,15 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // enable AFTER bench-verifying ptt_in is clean at RX rest on their
     // HL2 unit; see Settings → TX → Advanced tooltip).
     hwPttEnabled_ = s.value(kHwPttEnabled, false).toBool();
+    // Task #33 — TX mic source token.  Validate against the known
+    // token list; an unknown value (older Lyra, mistyped QSettings)
+    // falls back to "mic1" so we never autoload into an inactive
+    // source path.
+    {
+        const QString tok = s.value(kMicSource, QStringLiteral("mic1")).toString();
+        micSource_ = micSourceTokens().contains(tok) ? tok
+                                                     : QStringLiteral("mic1");
+    }
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -768,6 +778,75 @@ void Prefs::setHwPttEnabled(bool on) {
         QSettings().setValue(kHwPttEnabled, on);
         emit hwPttEnabledChanged();
     }
+}
+
+// Task #33 — TX mic source.  Validates token against the known set
+// (silently falls back to "mic1" on unknown), persists, emits the
+// change signal.  main.cpp wires the signal to dispatch into
+// TxDspWorker::setActiveMicSource (and TciServer if needed).
+void Prefs::setMicSource(const QString &token) {
+    QString t = micSourceTokens().contains(token) ? token
+                                                  : QStringLiteral("mic1");
+    if (t != micSource_) {
+        micSource_ = t;
+        QSettings().setValue(kMicSource, t);
+        emit micSourceChanged();
+    }
+}
+
+// The known TX mic-source tokens, in operator-picker order.  Matches
+// the TCI v2 §3.3 TRX source-token enum (mic1 / mic2 / micpc / micpc2
+// / tci) — so when a TCI client sends `trx:0,true,<tok>` the picker
+// can adopt the same string directly.
+QStringList Prefs::micSourceTokens() {
+    return { QStringLiteral("mic1"),
+             QStringLiteral("tci"),
+             QStringLiteral("mic2"),
+             QStringLiteral("micpc"),
+             QStringLiteral("micpc2") };
+}
+
+// Operator-visible label for the Settings → TX → Mic Source dropdown.
+QString Prefs::micSourceLabel(const QString &token) {
+    if (token == QLatin1String("mic1"))   return QStringLiteral("Mic In");
+    if (token == QLatin1String("tci"))    return QStringLiteral("TCI (digital modes)");
+    if (token == QLatin1String("mic2"))   return QStringLiteral("Line In");
+    if (token == QLatin1String("micpc"))  return QStringLiteral("VAC1");
+    if (token == QLatin1String("micpc2")) return QStringLiteral("VAC2");
+    return token;
+}
+
+// Which entries are operator-selectable in v0.2.x.  Disabled entries
+// still render in the dropdown but with their tooltip explaining the
+// future-version status — same no-inert-UI precedent as the v0.2.0
+// Mode+Filter picker's COMP/ALC/MIC disabled-but-visible items.
+bool Prefs::micSourceEnabled(const QString &token) {
+    if (token == QLatin1String("mic1")) return true;
+    if (token == QLatin1String("tci"))  return true;
+    return false;   // mic2 / micpc / micpc2 — future v0.2.x
+}
+
+QString Prefs::micSourceTooltip(const QString &token) {
+    if (token == QLatin1String("mic1"))
+        return QStringLiteral("HL2/HL2+ codec mic input — the default operator path.");
+    if (token == QLatin1String("tci"))
+        return QStringLiteral(
+            "Inbound TCI v2 TX_AUDIO_STREAM from a digital-modes client "
+            "(MSHV, JTDX, FlDigi, etc.).  Pick this when running an FT8 / "
+            "FT4 / Q65 / MSK144 / WSPR session — Lyra acts as the radio, "
+            "the digital app sends audio over TCI, your mic is bypassed.");
+    if (token == QLatin1String("mic2"))
+        return QStringLiteral(
+            "HL2+ codec Line In — pending v0.2.x (requires the HL2 I²C2 "
+            "codec side-channel which Lyra doesn't yet emit).");
+    if (token == QLatin1String("micpc"))
+        return QStringLiteral(
+            "Host PC audio capture (Virtual Audio Cable 1) — pending "
+            "v0.2.x (requires the host audio-capture subsystem).");
+    if (token == QLatin1String("micpc2"))
+        return QStringLiteral(
+            "Second host PC audio capture device (VAC2) — pending v0.2.x.");
+    return QString();
 }
 
 bool Prefs::operatorLocation(double *lat, double *lon) const {

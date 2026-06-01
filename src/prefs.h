@@ -200,6 +200,25 @@ class Prefs : public QObject {
     Q_PROPERTY(bool hwPttEnabled READ hwPttEnabled WRITE setHwPttEnabled
                NOTIFY hwPttEnabledChanged)
 
+    // Task #33 — TX mic source.  Operator-selected via Settings → TX
+    // → Mic Source.  Token strings match the TCI v2 TRX source-token
+    // convention (TCI spec §3.3) so a TCI client that sends
+    // `trx:0,true,tci` selects the TCI source automatically (commit
+    // 3's TRX handler auto-flips this).  Persisted: tx/mic_source
+    // (default "mic1" = current v0.2.0..v0.2.2 codec-mic path).
+    //
+    // Recognised tokens:
+    //   "mic1"    — HL2/HL2+ codec mic input (Hl2Ep6MicSource)
+    //   "tci"     — inbound TCI v2 TX_AUDIO_STREAM (TciMicSource)
+    //   "mic2"    — HL2+ codec Line In (HL2 I²C2 — future v0.2.x)
+    //   "micpc"   — host PC audio capture (future v0.2.x VAC1)
+    //   "micpc2"  — second host PC capture device (future VAC2)
+    //
+    // Unknown tokens fall back to "mic1" (safety: never end up
+    // routing to an inactive source).
+    Q_PROPERTY(QString micSource READ micSource WRITE setMicSource
+               NOTIFY micSourceChanged)
+
 public:
     explicit Prefs(QObject *parent = nullptr);
 
@@ -337,6 +356,17 @@ public:
     // safety-first posture).  Setter persists + emits.
     bool hwPttEnabled() const { return hwPttEnabled_; }
     void setHwPttEnabled(bool on);
+
+    QString micSource() const { return micSource_; }
+    void    setMicSource(const QString &token);
+    // Task #33 — operator-facing token list with display labels.  Used
+    // by the Settings → TX → Mic Source dropdown.  Order matches the
+    // dropdown order (Mic In default first).  Disabled entries get a
+    // tooltip from micSourceTooltip() below.
+    static QStringList micSourceTokens();
+    static QString     micSourceLabel(const QString &token);
+    static bool        micSourceEnabled(const QString &token);
+    static QString     micSourceTooltip(const QString &token);
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
 
@@ -398,6 +428,7 @@ signals:
     void panRound100Changed();
     void debugLoggingChanged();
     void hwPttEnabledChanged();
+    void micSourceChanged();
 
 private:
     int     gridLevel_;
@@ -464,6 +495,9 @@ private:
     // Task #36 — HW PTT opt-in.  Default false; gated forwarder in
     // HL2Stream's RX loop reads the mirrored atomic.
     bool    hwPttEnabled_ = false;
+    // Task #33 — TX mic source token.  Default "mic1" matches the
+    // v0.2.0..v0.2.2 ship behaviour.  Persisted: tx/mic_source.
+    QString micSource_   = QStringLiteral("mic1");
 };
 
 } // namespace lyra::ui

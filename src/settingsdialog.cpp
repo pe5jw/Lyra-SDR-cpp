@@ -1525,6 +1525,69 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(hwBox, 6, 0, 1, 2);
         }
 
+        // --- Task #33: TX Mic Source picker ---
+        //
+        // Operator picks the audio source driving the TX chain:
+        //   Mic In  — HL2/HL2+ codec mic (the v0.2.0..v0.2.2 default)
+        //   TCI     — inbound TX_AUDIO_STREAM from a digital-modes
+        //             TCI client (MSHV / JTDX / FlDigi / etc.)
+        //   Line In / VAC1 / VAC2 — pending v0.2.x (disabled but
+        //             visible so the dropdown layout is final;
+        //             tooltip explains each).
+        //
+        // Token strings match the TCI v2 §3.3 TRX source-token enum
+        // so a TCI client that sends `trx:0,true,tci` automatically
+        // selects the TCI source (the dropdown moves to match — the
+        // operator sees the change and can revert via Settings if
+        // surprised).  See docs/refs/mshv_tci/README.md for the
+        // MSHV first-light workflow.
+        if (prefs_) {
+            auto *lbl = new QLabel(tr("Mic source:"), grp);
+            auto *combo = new QComboBox(grp);
+            const QStringList toks = lyra::ui::Prefs::micSourceTokens();
+            for (int i = 0; i < toks.size(); ++i) {
+                const QString &t = toks.at(i);
+                combo->addItem(lyra::ui::Prefs::micSourceLabel(t), t);
+                combo->setItemData(i,
+                    lyra::ui::Prefs::micSourceTooltip(t), Qt::ToolTipRole);
+                if (!lyra::ui::Prefs::micSourceEnabled(t)) {
+                    // Render the disabled items grey + non-selectable.
+                    auto *model = qobject_cast<QStandardItemModel *>(combo->model());
+                    if (model) {
+                        QStandardItem *it = model->item(i);
+                        if (it) it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+                    }
+                }
+            }
+            // Set current.
+            {
+                const int idx = toks.indexOf(prefs_->micSource());
+                if (idx >= 0) combo->setCurrentIndex(idx);
+            }
+            combo->setToolTip(tr(
+                "TX audio source.  Pick TCI for digital modes — your TCI "
+                "client (MSHV / JTDX / FlDigi) streams audio over the TCI "
+                "WebSocket and bypasses the mic.  Line In / VAC1 / VAC2 "
+                "are spec'd in v0.2.x; hover any entry for its status."));
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                    grp, [this, combo](int) {
+                if (!prefs_) return;
+                const QString tok = combo->currentData().toString();
+                prefs_->setMicSource(tok);
+            });
+            connect(prefs_, &lyra::ui::Prefs::micSourceChanged,
+                    combo, [this, combo, toks]() {
+                if (!prefs_) return;
+                const int idx = toks.indexOf(prefs_->micSource());
+                if (idx >= 0 && combo->currentIndex() != idx) {
+                    QSignalBlocker b(combo);
+                    combo->setCurrentIndex(idx);
+                }
+            });
+            g->addWidget(lbl,   7, 0);
+            g->addWidget(combo, 7, 1);
+        }
+
         form->addRow(grp);
     }
 

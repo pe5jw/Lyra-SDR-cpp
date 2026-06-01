@@ -14,6 +14,8 @@
 #include "freqdisplay.h"
 #include "wdsp_engine.h"
 #include "mic_source.h"
+#include "mainwindow.h"
+#include "tci_mic_source.h"
 #include "tx_dsp_worker.h"
 #include "wdsp_native.h"
 
@@ -288,6 +290,14 @@ int main(int argc, char *argv[])
     //   4. stream->close() -> joins the rx-loop thread.
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
     lyra::dsp::TxDspWorker     *txWorker  = nullptr;
+    // Task #33 — TCI inbound TX-audio source.  Constructed in the
+    // post-WDSP singleShot block (parallel to micSource/txWorker);
+    // handed to MainWindow → TciServer there.  Teardown ordering in
+    // the aboutToQuit chain below: clear from TciServer (so the
+    // binary handler sees null instead of a dangling pointer), then
+    // delete BEFORE txWorker (whose submitMicSamples is the only
+    // thing TciMicSource forwards to).
+    lyra::dsp::TciMicSource    *tciMicSource = nullptr;
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -310,8 +320,13 @@ int main(int argc, char *argv[])
         }).detach();
     });
 
+    // Note: `win` is declared further down — capture by reference so
+    // the lambda sees the populated pointer at fire time (aboutToQuit
+    // runs during app.exec(), well before main() returns).  Same
+    // pattern as &txWorker/&micSource above.
+    lyra::ui::MainWindow *winRef = nullptr;
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [stream, &txWorker, &micSource]() {
+                     [stream, &winRef, &txWorker, &micSource, &tciMicSource]() {
         qWarning("[shutdown] handler-1 ENTRY");
         if (stream) {
             qWarning("[shutdown] handler-1 step a: registerTxIqSource({}) - start");
@@ -321,6 +336,18 @@ int main(int argc, char *argv[])
             stream->registerTxControl({});
             qWarning("[shutdown] handler-1 step b: done");
         }
+        // Task #33 — clear TciMicSource from TciServer BEFORE deleting
+        // so the binary handler sees null instead of a dangling
+        // pointer on any in-flight TX_AUDIO_STREAM frame that races
+        // teardown.  Then delete TciMicSource BEFORE txWorker
+        // (TciMicSource's submitFromTci forwards to txWorker; reverse
+        // would dangle for a tick).
+        qWarning("[shutdown] handler-1 step c0: tciServer.setTciMicSource(nullptr) - start");
+        if (winRef) winRef->setTciMicSource(nullptr);
+        qWarning("[shutdown] handler-1 step c0: done");
+        qWarning("[shutdown] handler-1 step c1: delete tciMicSource - start");
+        delete tciMicSource; tciMicSource = nullptr;
+        qWarning("[shutdown] handler-1 step c1: done");
         qWarning("[shutdown] handler-1 step c: delete txWorker - start (~TxDspWorker runs now)");
         delete txWorker;  txWorker  = nullptr;
         qWarning("[shutdown] handler-1 step c: done");
@@ -385,6 +412,7 @@ int main(int argc, char *argv[])
                      wx, &lyra::wx::WxService::reloadConfig);
     auto *win = new lyra::ui::MainWindow(discovery, stream, wdsp,
                                          wdspEngine, prefs, wx);
+    winRef = win;   // populate the aboutToQuit teardown handler's reference
     win->show();
 
     // Defer the WDSP load / wisdom / channel-open to the FIRST
@@ -395,8 +423,8 @@ int main(int argc, char *argv[])
     // observed — only [disc]/[strm], which fire after exec, showed).
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
-    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs,
-                                  &micSource, &txWorker]() {
+    QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
+                                  &micSource, &txWorker, &tciMicSource]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
@@ -428,6 +456,41 @@ int main(int argc, char *argv[])
             // earlier) sees them populated at teardown.
             micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
             txWorker  = new lyra::dsp::TxDspWorker(wdsp, *micSource);
+
+            // Task #33 — TCI inbound TX audio source.  Parented to
+            // app so QObject lifecycle is correct; back-pointer to
+            // txWorker is the only wire (submitFromTci forwards there
+            // tagged MicSource::Tci).  Registered with MainWindow →
+            // TciServer so the server's binaryMessageReceived path
+            // can dispatch into us.  Initial activeMicSource set from
+            // the autoloaded Prefs::micSource() token below.
+            tciMicSource = new lyra::dsp::TciMicSource(txWorker);
+            if (win) win->setTciMicSource(tciMicSource);
+
+            // Task #33 — apply the autoloaded mic source + wire
+            // Prefs::micSourceChanged so Settings → TX → Mic Source
+            // (and the TRX:0,true,tci auto-flip in TciServer) drive
+            // the dispatch.  Map the string token to the enum here;
+            // unknown values silently fall back to Mic1 (matches
+            // Prefs::setMicSource validation — defence in depth).
+            auto applyMicSource = [txWorker](const QString &tok) {
+                using MS = lyra::dsp::TxDspWorker::MicSource;
+                MS s = MS::Mic1;
+                if      (tok == QLatin1String("tci"))    s = MS::Tci;
+                else if (tok == QLatin1String("mic2"))   s = MS::Mic2;
+                else if (tok == QLatin1String("micpc"))  s = MS::MicPc1;
+                else if (tok == QLatin1String("micpc2")) s = MS::MicPc2;
+                if (txWorker) txWorker->setActiveMicSource(s);
+            };
+            applyMicSource(prefs->micSource());
+            // Connection context = prefs (a QObject — txWorker isn't);
+            // captures the local &txWorker reference so a teardown
+            // that nulls txWorker leaves applyMicSource as a safe
+            // no-op (its `if (txWorker)` guard).
+            QObject::connect(prefs, &lyra::ui::Prefs::micSourceChanged,
+                             prefs, [prefs, applyMicSource]() {
+                applyMicSource(prefs->micSource());
+            });
 
             // TX-1 component 6: register TxDspWorker as the HL2Stream
             // EP2 packer's TX I/Q source.  The packer pulls 126
