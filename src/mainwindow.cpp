@@ -1336,6 +1336,39 @@ void MainWindow::applyDefaultLayout() {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();
+
+    // Task #47 — QML null-safety on shutdown teardown.
+    //
+    // Every QML panel binds against the C++ service-object context
+    // properties exposed by makeQuick() (Stream, Wdsp, WdspEngine,
+    // Prefs, Bands, BandPlan, Status, BandMemory, Gen, Time, Memory,
+    // Eibi, Spots, Meter, Help, Discovery).  Those services are
+    // parented to QCoreApplication and are destroyed by Qt's child
+    // cleanup AFTER aboutToQuit returns — i.e. AFTER this MainWindow
+    // is gone but possibly BEFORE every QQuickWidget has finished
+    // tearing its scene-graph down on a deferred event.  Any binding
+    // that re-evaluates in that window (e.g. a deleteLater on a
+    // ListView delegate touching Stream.rx1FreqHz) reads a dangling
+    // pointer.  No crash — Qt's qmlEngine warns ("Cannot read
+    // property ... of null") and the noise drowns out real warnings.
+    //
+    // Fix: drop every QQuickWidget's QML scene synchronously HERE,
+    // while every service is still alive and reachable.  setSource()
+    // with an empty URL unloads the root component, releases all
+    // bindings, and disconnects the scene graph — by the time this
+    // returns no QML expression can fire against any service object,
+    // regardless of teardown order downstream.
+    //
+    // Cheap (a handful of widgets), idempotent (a re-shown window
+    // would have to call setSource() again anyway), and contained to
+    // one path — the eventual feature owner (Profile Manager v0.2.x
+    // dialog, etc.) gets the same protection for free since every
+    // QQuickWidget is reached via findChildren<>.
+    const auto qws = findChildren<QQuickWidget *>();
+    for (auto *qw : qws) {
+        if (qw) qw->setSource(QUrl());
+    }
+
     QMainWindow::closeEvent(event);
 }
 
