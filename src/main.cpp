@@ -537,19 +537,35 @@ int main(int argc, char *argv[])
             // was never previously pushed.
             stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
 
-            // TX-1 component 8c — operator TX bandwidth wiring.  Same
-            // pattern as setTxMode above: a live signal connection
-            // pushes every Prefs.txBandwidth change (operator combo
-            // moves AND mode-change-triggered per-mode-dict swaps) to
-            // the TX channel, plus one initial push right now so the
-            // freshly-opened channel uses the operator's persisted
-            // per-mode TX BW rather than TxChannel's create-time
+            // TX-1 component 8c + Task #53 — operator TX bandpass
+            // wiring.  Same pattern as setTxMode above: a live signal
+            // connection pushes (Prefs.filterLow, Prefs.txBandwidth)
+            // to the TX channel on every change of EITHER edge, plus
+            // one initial push right now so the freshly-opened
+            // channel uses the operator's persisted per-mode TX BW +
+            // shared filterLow rather than TxChannel's create-time
             // (200, 3100) default.
+            auto pushTxBandpass = [stream, prefs]() {
+                stream->setTxBandpass(prefs->filterLow(),
+                                      prefs->txBandwidth());
+            };
             QObject::connect(prefs, &lyra::ui::Prefs::txBandwidthChanged,
-                             stream, [stream, prefs]() {
-                stream->setTxBwHz(prefs->txBandwidth());
+                             stream, pushTxBandpass);
+            QObject::connect(prefs, &lyra::ui::Prefs::filterLowChanged,
+                             stream, pushTxBandpass);
+            pushTxBandpass();
+
+            // Task #53 — shared filterLow also drives the RX bandpass.
+            // WdspEngine.setFilterLowHz triggers an internal
+            // recomputePassband + applyModeFilter (live, no channel
+            // restart).  Initial push: pull the persisted Prefs value
+            // ONCE so the freshly-opened RX channel uses it instead of
+            // WdspEngine::filterLow_'s create-time 100 Hz default.
+            QObject::connect(prefs, &lyra::ui::Prefs::filterLowChanged,
+                             wdspEngine, [wdspEngine, prefs]() {
+                wdspEngine->setFilterLowHz(prefs->filterLow());
             });
-            stream->setTxBwHz(prefs->txBandwidth());
+            wdspEngine->setFilterLowHz(prefs->filterLow());
         }
 
         // Radio memory: auto-connect to the last radio so the operator

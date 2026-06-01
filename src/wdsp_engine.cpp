@@ -614,12 +614,22 @@ void WdspEngine::computePassband(double *lo, double *hi) const
     // Per-mode passband edges (offsets from the tuned centre), matching
     // old Lyra's _wdsp_filter_for.  These map onto the HL2 mirrored
     // baseband so the sideband comes out correct (§14.2).
+    //
+    // Task #53 — the asymmetric SSB/DIG low edge is now operator-
+    // tunable via filterLow_ (was hardcoded 0).  USB/DIGU get the
+    // low cut at +filterLow_ (positive baseband side); LSB/DIGL
+    // mirror to -filterLow_.  filterLow_=0 reproduces the
+    // pre-Task-#53 behaviour exactly (low cut at the carrier
+    // centre).  CW filters are pitch-centred, low edge doesn't
+    // apply meaningfully — left unchanged.  AM/DSB/FM are
+    // symmetric around DC — also left unchanged.
     const double bw   = static_cast<double>(bw_);
     const double half = bw / 2.0;
+    const double flo  = filterLow_;   // 0..500 Hz operator-tunable
     if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
-        *lo = 0.0;                *hi = bw;     // low cut at centre (op req)
+        *lo = flo;                *hi = bw;
     } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
-        *lo = -bw;                *hi = 0.0;
+        *lo = -bw;                *hi = -flo;
     } else if (mode_ == QLatin1String("CWU")) {
         *lo = cwPitchHz_ - half;  *hi = cwPitchHz_ + half;
     } else if (mode_ == QLatin1String("CWL")) {
@@ -701,6 +711,23 @@ void WdspEngine::setCwPitchHz(int hz)
     pushApfState();        // APF peak tracks the CW pitch
     emit cwPitchChanged();
     emit markerOffsetChanged();   // VFO↔DDS offset changed (CW modes)
+}
+
+// Task #53 — shared RX+TX filter low edge.  RX-side application:
+// triggers recomputePassband() + applyModeFilter() so the WDSP
+// RXASetPassband picks up the new low edge live.  TX-side is
+// driven separately via HL2Stream::setTxBandpass (the C++-side
+// Prefs.filterLow signal connect lives in main.cpp).  Clamp
+// 0..500 Hz matches Prefs::setFilterLow.
+void WdspEngine::setFilterLowHz(int hz)
+{
+    hz = std::clamp(hz, 0, 500);
+    if (hz == static_cast<int>(filterLow_ + 0.5)) {
+        return;
+    }
+    filterLow_ = static_cast<double>(hz);
+    recomputePassband();   // SSB/DIG passband shifts; CW/AM/DSB/FM unaffected
+    applyModeFilter();
 }
 
 void WdspEngine::setMode(const QString &m)

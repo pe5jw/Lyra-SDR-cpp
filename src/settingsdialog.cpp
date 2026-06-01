@@ -145,6 +145,45 @@ QWidget *SettingsDialog::buildAudioTab() {
     note->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
     form->addRow(note);
 
+    // ── Task #53 — Shared RX+TX Filter Low edge ─────────────────
+    // Single global filter-low setting applied to BOTH the WDSP RX
+    // bandpass (replaces the previously-hardcoded 0 Hz low cut for
+    // SSB/DIG modes) AND the HL2Stream TX bandpass (replaces the
+    // previously-hardcoded 200 Hz low cut).  Interim until the TX
+    // Profile Manager (Task #49) ships per-profile (lo, hi) pairs
+    // that override this default on profile load.  Tooltip carries
+    // the 50/60 Hz mains-coupling warning.
+    {
+        auto *flSpin = new QSpinBox(page);
+        flSpin->setRange(0, 500);
+        flSpin->setSingleStep(10);
+        flSpin->setSuffix(tr(" Hz"));
+        flSpin->setValue(prefs_->filterLow());
+        flSpin->setToolTip(
+            tr("Low cutoff frequency for the RX and TX audio bandpass "
+               "(shared).  Higher values (100-200 Hz) suppress 50 / 60 Hz "
+               "mains coupling on the microphone path and reduce low-end "
+               "rumble on receive.  Lower values (50-70 Hz) preserve "
+               "chest-resonance / low-end body for ESSB-style wide "
+               "audio — verify your station isn't picking up mains hum "
+               "at very low cuts.\n\n"
+               "Applies to SSB / DIG modes only (asymmetric passband, "
+               "low edge offset from carrier).  CW is pitch-centred and "
+               "AM / DSB / FM are symmetric around DC — those modes "
+               "ignore this setting.\n\n"
+               "Interim setting: when the TX Profile Manager ships, "
+               "each named profile will carry its own RX + TX (low, "
+               "high) pair that overrides this default on load."));
+        connect(flSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { prefs_->setFilterLow(v); });
+        connect(prefs_, &Prefs::filterLowChanged, flSpin, [this, flSpin]() {
+            if (flSpin->value() != prefs_->filterLow()) {
+                flSpin->setValue(prefs_->filterLow());
+            }
+        });
+        form->addRow(tr("Filter Low edge (RX + TX):"), flSpin);
+    }
+
     return page;
 }
 

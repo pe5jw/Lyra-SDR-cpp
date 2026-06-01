@@ -434,6 +434,13 @@ public:
     double passbandHighHz() const { return passbandHighHz_; }
     int  cwPitchHz() const { return static_cast<int>(cwPitchHz_ + 0.5); }
     Q_INVOKABLE void setCwPitchHz(int hz);
+    // Task #53 — shared RX+TX filter low edge.  Affects only the
+    // ASYMMETRIC SSB / DIG modes (USB/LSB/DIGU/DIGL).  CW filter
+    // is centred on the pitch (low edge isn't a meaningful axis);
+    // AM/DSB/FM are symmetric around DC.  Live-applied via
+    // applyModeFilter() — no channel restart needed.
+    int  filterLowHz() const { return static_cast<int>(filterLow_ + 0.5); }
+    Q_INVOKABLE void setFilterLowHz(int hz);
     int  markerOffsetHz() const;     // VFO − DDS (CW carrier convention)
     // Same VFO−DDS offset for an ARBITRARY mode — used when tuning to a CW
     // spot/VFO whose freq is the carrier (DDS = carrier − this).
@@ -620,6 +627,9 @@ private:
     QString mode_       = QStringLiteral("USB");
     int     bw_         = 2400;
     double  cwPitchHz_  = 600.0;
+    // Task #53 — shared RX+TX filter low edge (operator-tunable).
+    // Default 100 Hz; setFilterLowHz clamps to [0, 500].
+    double  filterLow_  = 100.0;
     double  passbandLowHz_  = 200.0;    // edges for the panadapter overlay
     double  passbandHighHz_ = 2400.0;
     // RX DSP operator state (main-thread only; restored from QSettings

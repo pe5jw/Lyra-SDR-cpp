@@ -1772,28 +1772,28 @@ void HL2Stream::setTxMode(int wdspMode) {
     if (fwd) fwd(clamped);
 }
 
-// TX-1 component 8c — operator TX bandwidth (high edge in Hz) forwarded
-// as a (low=200, high=hz) bandpass to the registered TxControl.setBandpass
-// callback.  TxChannel internally sign-codes per the current WDSP mode
-// (USB pass-through, LSB negate-and-swap), so we always pass positive
-// edges.  Low fixed at 200 Hz (the TxChannel SSB default) until a
-// separate operator Low spinbox lands per design doc §9.2.  Same lock
-// + diagnostic-log pattern as setTxMode.
-void HL2Stream::setTxBwHz(int hz) {
-    if (hz <= 0) return;
-    constexpr double kSsbLowHz = 200.0;
-    const double low  = kSsbLowHz;
-    const double high = static_cast<double>(hz);
+// TX-1 component 8c + Task #53 — operator TX bandpass.  Forwards
+// (low, high) Hz to the registered TxControl.setBandpass callback.
+// TxChannel internally sign-codes per the current WDSP mode (USB
+// pass-through, LSB negate-and-swap), so we always pass positive
+// edges.  Both edges are pulled from Prefs at the call site:
+//   low  = Prefs.filterLow   (shared with the RX bandpass; Task #53)
+//   high = Prefs.txBandwidth (per-mode TX BW combo; component 8c)
+// No-op if high<=0 or low<0 or low>=high (defence — Prefs clamps
+// both sides into sane ranges but the safety check is cheap).
+void HL2Stream::setTxBandpass(int lowHz, int highHz) {
+    if (highHz <= 0 || lowHz < 0 || lowHz >= highHz) return;
+    const double low  = static_cast<double>(lowHz);
+    const double high = static_cast<double>(highHz);
     std::function<void(double, double)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         fwd = txControl_.setBandpass;
     }
-    qInfo("[tx] setTxBwHz(%d) -> %s (low=%.0f high=%.0f)",
-          hz,
+    qInfo("[tx] setTxBandpass(low=%d, high=%d) -> %s",
+          lowHz, highHz,
           fwd ? "forwarded to TxControl.setBandpass"
-              : "NO-OP (TxControl.setBandpass not registered)",
-          low, high);
+              : "NO-OP (TxControl.setBandpass not registered)");
     if (fwd) fwd(low, high);
 }
 

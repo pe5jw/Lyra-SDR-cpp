@@ -835,6 +835,23 @@ Item {
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
                             property double lastMs: 0
+                            // Task #54 — distinguish lo-edge vs hi-edge
+                            // drag.  Pre-fix: BOTH edges wrote
+                            // Prefs.rxBandwidth via bandwidthForEdge(),
+                            // which meant the lo edge was pinned at
+                            // the carrier (0 Hz for SSB) and the
+                            // operator could only widen by dragging the
+                            // hi edge.  Now: hi-edge drag → Prefs
+                            // .rxBandwidth (the high cutoff, what
+                            // bandwidthForEdge has always computed);
+                            // lo-edge drag → Prefs.filterLow (the
+                            // shared RX+TX low cut, Task #53).
+                            //
+                            // For symmetric modes (AM/DSB/FM) and CW
+                            // (pitch-centred), the lo-edge drag still
+                            // writes rxBandwidth — the asymmetric SSB/
+                            // DIG case is the only one where the lo
+                            // edge is independently meaningful.
                             onPositionChanged: (m) => {
                                 var nowMs = Date.now()
                                 if (nowMs - lastMs < 33) return
@@ -842,8 +859,21 @@ Item {
                                 var px = mapToItem(spectrumArea, m.x, m.y).x
                                 var off = (px / Math.max(1, spectrumArea.width)
                                            - 0.5) * passband.spanHz
-                                Prefs.rxBandwidth =
-                                    WdspEngine.bandwidthForEdge(off)
+                                var mode = Prefs.mode
+                                var isSsbOrDig = (mode === "USB" || mode === "LSB"
+                                               || mode === "DIGU" || mode === "DIGL")
+                                if (isLo && isSsbOrDig) {
+                                    // |off| at the lo edge IS the low cutoff
+                                    // for SSB/DIG (USB lo edge sits at +flo,
+                                    // LSB at -flo).  Clamp to Prefs's 0..500
+                                    // range; drag-below-0 just pins at 0.
+                                    var flo = Math.abs(off)
+                                    Prefs.filterLow =
+                                        Math.max(0, Math.min(500, Math.round(flo)))
+                                } else {
+                                    Prefs.rxBandwidth =
+                                        WdspEngine.bandwidthForEdge(off)
+                                }
                             }
                         }
                     }

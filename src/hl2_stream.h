@@ -728,12 +728,14 @@ public slots:
     // or if the callback is null.
     void setTxMode(int wdspMode);
 
-    // TX-1 component 8c — operator TX bandwidth in Hz (high edge).
-    // Forwarded to the registered TxControl.setBandpass callback as
-    // (200.0, hz) for SSB (USB/LSB).  Low edge is the TxChannel SSB
-    // default until a separate operator Low spinbox is added per
-    // design doc §9.2.  No-op if hz<=0 or no TxControl registered.
-    void setTxBwHz(int hz);
+    // TX-1 component 8c / Task #53 — operator TX bandpass.  Forwards
+    // (low, high) Hz straight to TxControl.setBandpass.  Pulled
+    // through from Prefs.filterLow (shared with the RX bandpass) +
+    // Prefs.txBandwidth — see the QObject::connect block in
+    // main.cpp.  TxChannel internally sign-codes per WDSP mode
+    // (USB pass-through, LSB negate-and-swap), so we always pass
+    // positive edges.  No-op if hz<=0 or no TxControl registered.
+    void setTxBandpass(int lowHz, int highHz);
     void setFadeInMs(int ms);
     void setFadeOutMs(int ms);
     void setTxStopDelayMs(int ms);

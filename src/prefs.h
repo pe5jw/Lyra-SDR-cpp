@@ -125,6 +125,15 @@ class Prefs : public QObject {
     // touches the CURRENT mode's pair.
     Q_PROPERTY(bool bwLocked READ bwLocked WRITE setBwLocked
                NOTIFY bwLockedChanged)
+    // Task #53 — shared RX+TX filter low edge (Hz, single global
+    // value).  Replaces the previously-hardcoded 0 (RX SSB low)
+    // and 200 (TX SSB low).  Operator-tunable for ESSB-profile
+    // low-end body (50-70 Hz) vs narrow-comms mains rejection
+    // (100-200 Hz).  Interim — when TX Profile Manager (#49) lands,
+    // each named profile carries its own (rx_lo, rx_hi, tx_lo,
+    // tx_hi) tuple that overrides this default on profile load.
+    Q_PROPERTY(int filterLow READ filterLow WRITE setFilterLow
+               NOTIFY filterLowChanged)
     // IQ sample rate (Hz): 96000 / 192000 / 384000.  Drives the HL2 wire
     // speed bits + the WDSP channel rate (panadapter span follows).
     Q_PROPERTY(int sampleRate READ sampleRate WRITE setSampleRate
@@ -271,6 +280,9 @@ public:
     void setTxBandwidth(int hz);
     bool bwLocked() const { return bwLocked_; }
     void setBwLocked(bool v);
+    // Task #53 — shared RX+TX filter low edge.
+    int  filterLow() const { return filterLow_; }
+    void setFilterLow(int hz);
     int  sampleRate() const { return sampleRate_; }
     void setSampleRate(int hz);
     bool waterfallCollapsed() const { return waterfallCollapsed_; }
@@ -354,6 +366,7 @@ signals:
     void rxBandwidthChanged();
     void txBandwidthChanged();
     void bwLockedChanged();
+    void filterLowChanged();
     void sampleRateChanged();
     void waterfallCollapsedChanged();
     void callsignChanged();
@@ -413,6 +426,9 @@ private:
     // operator hasn't picked a per-mode TX BW yet (fresh install).
     QHash<QString, int> txBwByMode_;
     bool                bwLocked_ = false;
+    // Task #53 — shared RX+TX filter low edge.  Default 100 Hz
+    // (safe mains-rejection middle ground).
+    int                 filterLow_ = 100;
     int     sampleRate_;
     bool    waterfallCollapsed_;
     QString callsign_;

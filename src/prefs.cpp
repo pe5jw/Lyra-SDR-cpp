@@ -56,6 +56,7 @@ constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
 // one wildcard.
 constexpr auto kTxBwPrefix = "modefilter/tx_bw/";   // + <MODE>
 constexpr auto kBwLocked   = "modefilter/bw_locked";
+constexpr auto kFilterLow  = "modefilter/filter_low_hz";   // Task #53
 constexpr auto kWfCollapse = "panadapter/waterfallCollapsed";
 constexpr auto kSampRate = "radio/sampleRate";
 constexpr auto kOpCall  = "operator/callsign";
@@ -150,6 +151,10 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         }
     }
     bwLocked_ = s.value(kBwLocked, false).toBool();
+    // Task #53 — shared RX+TX filter low edge.  Clamp on load
+    // matches the setter's clamp so a manually-edited QSettings
+    // value can't break later setter equality checks.
+    filterLow_ = std::clamp(s.value(kFilterLow, 100).toInt(), 0, 500);
     waterfallCollapsed_ = s.value(kWfCollapse, false).toBool();
     callsign_   = s.value(kOpCall, QString()).toString();
     gridSquare_ = lyra::ham::normalizeGrid(s.value(kOpGrid).toString());
@@ -538,6 +543,24 @@ void Prefs::setTxBandwidth(int hz) {
         QSettings().setValue(QString(kBwPrefix) + mode_, hz);
         emit rxBandwidthChanged();
     }
+}
+
+// Task #53 — shared RX+TX filter low edge.  Single global value
+// applied to BOTH the WDSP RX bandpass (replaces hardcoded 0 in
+// WdspEngine::computePassband for SSB modes) AND the HL2Stream
+// TX bandpass (replaces hardcoded 200 in setTxBwHz).  Interim
+// until TX Profile Manager (#49) ships per-profile (lo, hi)
+// pairs.  Clamp 0..500 Hz — 0 = no low cut (some operators
+// want it for ultra-wide ESSB into a clean RF environment);
+// 500 = upper-bound sanity (above this would clip voice body).
+void Prefs::setFilterLow(int hz) {
+    hz = std::clamp(hz, 0, 500);
+    if (hz == filterLow_) {
+        return;
+    }
+    filterLow_ = hz;
+    QSettings().setValue(kFilterLow, hz);
+    emit filterLowChanged();
 }
 
 void Prefs::setBwLocked(bool v) {
