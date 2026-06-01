@@ -300,6 +300,177 @@ study landed (pre-Component-8 design):**
 
 ---
 
+## ⚓ POST-COMPONENT-8 TX ADVANCED-CHAIN ARCHITECTURE (LOCKED 2026-05-31 NIGHT)
+
+Operator-locked locks captured in a research conversation 2026-05-31
+(operator did the homework, brought concrete decisions back, asked me
+to record them for circle-back at implementation time).  This block
+is **architectural locks only — NOT design-blocking 8c**.  When the
+EQ / Combinator / Plate implementation arcs begin, each will get its
+own grounded-design → red-team → bench cycle per the locked
+methodology; this block is the operator-locked starting posture, not
+the full spec.
+
+### Locked chain order (supersedes CLAUDE.md §15.19 ordering)
+
+```
+Mic → [WDSP EQ]──→ [5-band Combinator]──→ [Plate Reverb]──→ ALC/Limiter → TX BW Brickwall LPF → I/Q → EP2 → (PureSignal later)
+       toggle        toggle                  toggle              ALWAYS ON      ALWAYS ON
+```
+
+Three operator-toggleable stages (EQ / Combinator / Plate); the
+final ALC + brickwall LPF always run regardless to enforce 0 dBFS
+strict + the operator's TX BW selection.
+
+Rationale (operator-research-locked):
+- **EQ before Combinator** — industry-standard; prevents EQ boost
+  from clipping the limiter; lets the Combinator compress on the
+  final-shaped tonal balance.
+- **Plate INSIDE the chain, BEFORE the final limiter** — a plate
+  AFTER the limiter lets reverb-tail peaks re-clip the DAC and
+  confuses PureSignal's adaptive predistortion.  Combinator tames
+  voice dynamics, Plate adds the ESSB "air," limiter catches any
+  combined peak.
+- **WDSP EQ, NOT biquads** — WDSP TXA already uses frequency-
+  domain continuous-gain EQ via FFT bin interpolation (`eqp.c`,
+  spline curve across bins, zero band-edge phase artifacts).
+  A 5-band parametric UI maps to `SetTXAEQRun` + WDSP setters,
+  NOT a separate IIR cascade.  Matches Thetis's posture; keeps
+  the chain Thetis-faithful at the EQ stage.
+- **Linkwitz-Riley IIR 24 dB/oct crossovers for the Combinator,
+  NOT linear-phase FIR** — what X-Air uses; few-sample group
+  delay, perfect summing.  PureSignal does NOT require linear-
+  phase audio (Thetis itself ships non-linear-phase IIR
+  `compress.c` / `cfcomp.c` / `wcpagc.c` and PS works there;
+  PS cares about steady commanded-TX-IQ ↔ PA-feedback delay,
+  not zero audio group delay).  Linear-phase FIR adds ms-scale
+  latency for marginal benefit — skip it.
+- **Reuse WDSP ALC (xwcpagc mode 5, the always-on splatter
+  protection from §4.4) as the always-on final limiter** —
+  1 ms attack / 10 ms decay / 3 dB max gain by default.
+  Combined with the int16 saturation at EP2 packing, this is
+  adequate 0 dBFS strict for PureSignal.  A separate look-
+  ahead limiter is a polish item ONLY if bench testing shows
+  ALC overshoots into the DAC; not load-bearing.
+- **Default-bypass posture**: every toggleable stage starts
+  OFF on first run (so a fresh-install operator hears their
+  raw mic through ALC + BW LPF only, exactly as TX-1 ships
+  today).  Operator opts in per-stage via Settings → TX
+  and the Profile Manager.
+
+### DSP2024P Plate Reverb — operator-supplied presets (LOCKED)
+
+Behringer DSP2024P "PLAT" Schroeder-Moorer plate-reverb
+algorithm.  Built native in C++23, NOT external hardware.
+Two presets ship at first-light:
+
+| Param | W5UDX preset (Greg) | N8SDR personal | Maps to |
+|---|---|---|---|
+| **PRE.D** (Pre-Delay) | 0.010 s | 0.010 s | Circular delay line before reverb |
+| **DECA** (Decay time) | 2.358 s | 1.542 s | Comb-filter feedback coefficients |
+| **DAMP** (HF Damping) | 10 | 15 | LPF inside the feedback loop |
+| **SIZE** (Room Size) | 33 | 10 | Scales internal delay lengths |
+| **SHV.D** (Shelf/Density) | 32 | 20 | All-pass coefficients |
+| **DIFF** (Diffusion) | 20 | 20 | All-pass diffusion |
+| **BASS** (wet low shelf) | −16 | −16 | Wet-tail low shelf cut |
+| **TREB** (wet high shelf) | +16 | +16 | Wet-tail high shelf boost |
+
+UI slider ranges to mirror the DSP2024P front panel:
+- SIZE 1..100, DECA 0.1..5.0 s, DAMP 1..100, DIFF 1..100,
+  PRE.D 0..0.100 s (1 ms steps), BASS / TREB ±18 dB.
+
+Reverb on SSB transmit is unusual but is exactly what ESSB
+operators do for the "broadcast-air" quality.  Bandplan-
+constrained operators (DX contest etc.) just bypass it —
+that's the toggle.
+
+### Parked-awaiting-operator-screenshots (don't design yet)
+
+When the EQ + Combinator arcs reach the implementation stage,
+operator will provide:
+- **Behringer X-Air XR12 Combinator** — screenshots + settings
+  values (crossover frequencies, per-band threshold / ratio /
+  attack / release / makeup, top-band exciter "polish" param,
+  any preset names operator uses).  We'll mirror the param
+  surface in the 5-band Combinator UI rather than guess.
+- **X-Air parametric EQ** — screenshots + settings (band freqs,
+  Q values, gain ranges).  We'll mirror the param surface for
+  the WDSP-EQ-driving 5-band UI rather than invent.
+
+Until those screenshots land, do NOT pick crossover defaults /
+EQ band defaults by guesswork — the operator-curated values are
+the spec.
+
+### Open questions parked for the implementation arcs
+
+These are NOT blocking 8c; they're flagged so a future Claude
+session reading this block knows to RAISE them at the start of
+each advanced-chain implementation arc instead of deciding
+unilaterally:
+
+1. **Combinator crossover frequencies fixed-default vs operator-
+   tunable?**  Hardware compressors typically lock crossover
+   freqs; X-Air does too.  Operator screenshots will answer
+   when they arrive.
+2. **EQ band count — 3 or 5?**  Lean to 5 to match Combinator
+   visual count; operator confirms when EQ UI arc starts.
+3. **Plate preset bank scope** — ship just W5UDX + N8SDR, or
+   add factory "short room / long hall / dense ring" presets
+   for testers?  Operator picks when Plate arc starts.
+4. **TX Profile Manager schema** — full chain bundle (Mode +
+   BW + lock + mic gain + mic source + ALC + Leveler + PHROT
+   + EQ enable + EQ bands + Combinator enable + Combinator
+   bands + Plate enable + Plate params + mute-on-TX policy).
+   Manual select only (NO auto-detect by call, per §15.19
+   operator standing rule).  Save / Load / Delete / Set-as-
+   Default.  QSettings JSON serialization.
+5. **What other AI advice to ignore** — the operator-research
+   conversation suggested AVX-512 SIMD, `std::jthread` for
+   the audio thread, and Vulkan-compute for DSP.  All
+   over-engineering for a 48 kHz mono 5-band workload.  Stay
+   with the existing TxDspWorker (`std::thread` + MMCSS Pro
+   Audio).  Vulkan stays panadapter-only.
+
+### Sub-release ordering (LOCKED — implementation arcs come AFTER 8c–8e)
+
+1. **8c — TX Bandwidth row** (lock-button + RX/TX combo, mirrors
+   old-Lyra `ModeFilterPanel` pattern; DSP wiring already done
+   via `TxChannel::setBandpass()`).  **NEXT**, ~2-3 hr.
+2. **TX Profile Manager** (schema lock + Save/Load/Delete/
+   Set-as-Default + QSettings JSON).  Lands AFTER 8c so the
+   schema's first non-mic field (TX BW) is real.  Subsequent
+   advanced-chain features add fields to the profile schema as
+   they land — no inert UI; only fields with backing setters
+   appear in the profile.  ~1 day.
+3. **5-band parametric EQ UI** driving WDSP `SetTXAEQRun` +
+   band setters.  Pending operator X-Air EQ screenshots.
+   ~1 day after screenshots.
+4. **5-band Combinator** — brand-new C++ class.  Linkwitz-
+   Riley IIR 24 dB/oct crossovers + 5 parallel compressor
+   blocks + summation + WDSP ALC at output (reused as the
+   always-on limiter).  Pending operator X-Air Combinator
+   screenshots.  ~1 week after screenshots.
+5. **Plate Reverb (DSP2024P-faithful)** — Schroeder-Moorer
+   class with the 8 mapped params + W5UDX + N8SDR presets
+   shipped.  Settings already operator-supplied; no
+   screenshot wait.  ~4-5 days.
+6. **8b Mic Source / 8e HW PTT / 8d meter fillers / #44
+   panadapter rescale / #47 cosmetic polish** — small
+   slices, can interleave with the advanced-chain arcs as
+   the operator wants.
+
+### Capture-it-for-next-session
+
+If a future Claude session reads this block before the
+operator does another in-session brief, treat the locks here
+as **operator-curated standing decisions** that supersede
+older §15.19-era plans.  Raise the parked questions at the
+start of each implementation arc rather than guessing.  The
+operator-empirical authority outranks plan inference, every
+time (§3.9 / §15.28 lessons codified throughout CLAUDE.md).
+
+---
+
 ## 1. Operator-visible acceptance metric (defined BEFORE design)
 
 Per §15.28 lesson #4: a change without a falsifiable operator-visible
