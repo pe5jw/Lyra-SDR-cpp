@@ -228,6 +228,12 @@ public:
     ~WdspEngine() override;
 
     bool isRunning() const { return running_; }
+    // TciServer Task #68 needs the WdspApi to call the polyphase
+    // float-vector resampler (create_resampleFV / xresampleFV /
+    // destroy_resampleFV).  Read-only access; engine retains
+    // ownership.  May be null when the engine is constructed
+    // before WdspNative has finished loading — callers must check.
+    WdspNative *wdspNative() const { return wdsp_; }
 
     double audioDbFs() const {
         return audioDbFs_.load(std::memory_order_relaxed);

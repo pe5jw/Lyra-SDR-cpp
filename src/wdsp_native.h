@@ -278,6 +278,15 @@ using fn_SetTXAPanelGain1_t     = void (*)(int channel, double gain);
 // concrete enum (TxaMeterType) lives in wdsp_engine; the
 // cdef stays untyped because WDSP exposes it as `int`.
 using fn_GetTXAMeter_t          = double (*)(int channel, int meter_type);
+// WDSP polyphase float-vector resampler (resample.c).  Opaque void*
+// handle returned by create_resampleFV; xresampleFV consumes
+// `numsamps` input samples and writes the resulting count into
+// `*outsamps` (≤ ceil(numsamps * out_rate / in_rate) + slack).
+using fn_create_resampleFV_t   = void* (*)(int in_rate, int out_rate);
+using fn_xresampleFV_t         = void  (*)(float *input, float *output,
+                                           int numsamps, int *outsamps,
+                                           void *ptr);
+using fn_destroy_resampleFV_t  = void  (*)(void *ptr);
 } // extern "C"
 
 // Resolved function pointers.  Step 3b populates these via
@@ -364,6 +373,15 @@ struct WdspApi {
     fn_SetTXALevelerSt_t      SetTXALevelerSt      = nullptr;
     fn_SetTXAPanelGain1_t     SetTXAPanelGain1     = nullptr;
     fn_GetTXAMeter_t          GetTXAMeter          = nullptr;
+    // WDSP polyphase float-vector resampler (resample.c PORT block
+    // 342-361).  Used by TciServer to resample inbound non-48 kHz
+    // TX_AUDIO_STREAM frames to the TXA input rate (48 kHz) — the
+    // reference (cmaster.cs:1431-1473 resampleTCITxSamples) uses
+    // the exact same three entry points, lazy-created/destroyed
+    // on rate changes.
+    fn_create_resampleFV_t    create_resampleFV    = nullptr;
+    fn_xresampleFV_t          xresampleFV          = nullptr;
+    fn_destroy_resampleFV_t   destroy_resampleFV   = nullptr;
 };
 
 class WdspNative : public QObject {

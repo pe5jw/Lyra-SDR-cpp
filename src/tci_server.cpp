@@ -347,6 +347,7 @@ void TciServer::stop() {
     sensorsEnabled_ = false;
     streams_.clear();
     recomputeStreaming();    // turn the engine taps back off
+    destroyTxResampler();    // Task #68 — free WDSP resampler if any
     if (!server_) return;
     for (QWebSocket *ws : std::as_const(clients_)) ws->deleteLater();
     clients_.clear();
@@ -412,6 +413,60 @@ void TciServer::pruneDeadClients() {
         recomputeStreaming();
         emit clientCountChanged(clients_.size());
     }
+}
+
+std::vector<float> TciServer::resampleTxIn(const std::vector<float> &in,
+                                           int inRate, int outRate) {
+    // Reference: cmaster.cs:1431-1473 resampleTCITxSamples.
+    if (in.empty() || inRate <= 0 || outRate <= 0) return {};
+    if (inRate == outRate) return in;
+    if (!engine_ || !engine_->wdspNative()) return {};
+    const lyra::dsp::WdspApi &api = engine_->wdspNative()->api();
+    if (!api.create_resampleFV || !api.xresampleFV
+        || !api.destroy_resampleFV)
+        return {};
+
+    // Lazy create / recreate on rate change.
+    if (!txResampler_
+        || txResamplerInRate_  != inRate
+        || txResamplerOutRate_ != outRate) {
+        if (txResampler_) {
+            api.destroy_resampleFV(txResampler_);
+            txResampler_ = nullptr;
+        }
+        txResampler_       = api.create_resampleFV(inRate, outRate);
+        txResamplerInRate_ = inRate;
+        txResamplerOutRate_ = outRate;
+        if (!txResampler_) return {};
+    }
+
+    // Output sizing: reference uses
+    //   max(in.size + 64, ceil(in.size * outRate / inRate) + 64)
+    // — generous slack so xresampleFV never overruns.
+    const int inN = int(in.size());
+    const int upperOut =
+        int((qint64(inN) * outRate + inRate - 1) / inRate);
+    const int maxOut = std::max(inN, upperOut) + 64;
+    std::vector<float> out(size_t(maxOut), 0.0f);
+    int outSamps = 0;
+    // create_resampleFV takes a const input but the C signature is
+    // non-const — safe to cast away since the resampler doesn't mutate.
+    api.xresampleFV(const_cast<float *>(in.data()),
+                    out.data(), inN, &outSamps, txResampler_);
+    if (outSamps <= 0) return {};
+    out.resize(size_t(outSamps));
+    return out;
+}
+
+void TciServer::destroyTxResampler() {
+    if (!txResampler_) return;
+    if (engine_ && engine_->wdspNative()) {
+        const lyra::dsp::WdspApi &api = engine_->wdspNative()->api();
+        if (api.destroy_resampleFV) api.destroy_resampleFV(txResampler_);
+    }
+    txResampler_        = nullptr;
+    txResamplerInRate_  = 0;
+    txResamplerOutRate_ = 0;
 }
 
 void TciServer::recomputeStreaming() {
@@ -579,19 +634,27 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
                                                int(fmt), channels);
     if (mono.empty()) return;
 
-    // For Task #33 first-light (MSHV @ 48 kHz):  sample rate matches
-    // the TX-ring canonical rate, no resampling needed.  Other rates
-    // get logged once + dropped — adding a resampler is a v0.2.x
-    // follow-on if a non-48k TCI client ever shows up.
-    if (sampleRate != 48000) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            qWarning("[tci] TX_AUDIO_STREAM rate %u Hz (expected 48000) — "
-                     "dropping; resampler is a v0.2.x follow-on",
-                     unsigned(sampleRate));
+    // Match the reference (cmaster.cs:1431-1473 resampleTCITxSamples)
+    // — accept any sample rate, resample to the TXA input rate
+    // (kTciTxTargetRate = 48 kHz) via the WDSP polyphase
+    // float-vector resampler.  Fast-path when rate matches.
+    // Earlier hard-drop on non-48 kHz was a Lyra divergence that
+    // would have silently broken any TCI client streaming at a
+    // non-48 kHz native rate (uncommon for digital-modes clients
+    // — MSHV / JTDX / WSJT-X all use 48 kHz — but a divergence
+    // from the reference for zero benefit).
+    if (sampleRate != kTciTxTargetRate) {
+        mono = resampleTxIn(mono, int(sampleRate), kTciTxTargetRate);
+        if (mono.empty()) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                qWarning("[tci] TX_AUDIO_STREAM rate %u → %d resample "
+                         "failed (WDSP resampler unavailable?)",
+                         unsigned(sampleRate), kTciTxTargetRate);
+            }
+            return;
         }
-        return;
     }
 
     if (!tciMicSource_) {

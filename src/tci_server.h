@@ -119,6 +119,14 @@ private slots:
 
 private:
     void sendInit(QWebSocket *ws);                 // handshake burst
+    // Task #68 — resample inbound TX_AUDIO_STREAM audio from any
+    // client-side sample rate to the TXA input rate (typ 48 kHz).
+    // Lazy-creates the WDSP resampler on first non-48k frame and
+    // on rate change; returns the resampled vector (or `in` by
+    // value if rate matches / WDSP missing — fast-path).
+    std::vector<float> resampleTxIn(const std::vector<float> &in,
+                                    int inRate, int outRate);
+    void               destroyTxResampler();
     void dispatch(QWebSocket *ws, const QString &cmd, const QStringList &args);
     void sendTo(QWebSocket *ws, const QString &line);
     void broadcast(const QString &key, const QString &line); // rate-limited
@@ -178,6 +186,18 @@ private:
     std::vector<float>     audioPending_;
     int                    audioPendingRate_  = 48000;
     static constexpr int   kAudioPacketSamples = 2048;
+
+    // TX-in resampler (Task #68) — lazy-created when an inbound
+    // TX_AUDIO_STREAM frame arrives at a rate other than the TXA
+    // input rate (kTciTxTargetRate=48000); destroyed + recreated
+    // on rate change.  Matches the reference (cmaster.cs:1431-1473
+    // resampleTCITxSamples) using the same WDSP polyphase
+    // float-vector resampler.  Held opaque void* per WDSP's PORT
+    // signature.  Owned by the TciServer (Qt main thread); the
+    // inbound binary handler also runs on Qt main, so no mutex.
+    void                  *txResampler_           = nullptr;
+    int                    txResamplerInRate_     = 0;
+    int                    txResamplerOutRate_    = 0;
     // Drop-oldest cap so a stuck/idle client can't grow the
     // accumulator unbounded (recomputeStreaming turns the engine
     // tap off when no clients subscribed; cap is belt-and-braces).

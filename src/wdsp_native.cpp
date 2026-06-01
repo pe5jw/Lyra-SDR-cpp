@@ -259,6 +259,9 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.SetTXALevelerSt,      "SetTXALevelerSt");
     resolve(api_.SetTXAPanelGain1,     "SetTXAPanelGain1");
     resolve(api_.GetTXAMeter,          "GetTXAMeter");
+    resolve(api_.create_resampleFV,    "create_resampleFV");
+    resolve(api_.xresampleFV,          "xresampleFV");
+    resolve(api_.destroy_resampleFV,   "destroy_resampleFV");
 
     if (!missing.isEmpty()) {
         loadError_ = QStringLiteral(
