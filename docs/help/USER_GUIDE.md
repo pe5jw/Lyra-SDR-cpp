@@ -45,11 +45,11 @@ not programmers — if you can click a menu, you can use this.
   - [Band plan (Region)](#band-plan-region)
   - [Diagnostics (debug log)](#diagnostics-debug-log)
   - [Radio](#radio)
-  - [Transmit (PA enable + safety timeout)](#transmit-pa-enable--safety-timeout)
+  - [Transmit (PA enable + safety timeout + hardware PTT)](#transmit-pa-enable--safety-timeout--hardware-ptt)
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
-- [Settings → TX (TR sequencing + cos² fade)](#settings--tx-tr-sequencing--cos-fade)
+- [Settings → TX (TR sequencing + cos² fade)](#settings--tx-mic--alc-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [DX-cluster spots](#dx-cluster-spots)
 - [Settings → Visuals](#settings--visuals)
@@ -67,6 +67,7 @@ not programmers — if you can click a menu, you can use this.
   - [Meteors](#meteors)
   - [Graphics backend](#graphics-backend)
 - [Settings → Weather](#settings--weather)
+- [Credits and References](#credits-and-references)
 
 ---
 
@@ -664,7 +665,7 @@ Both styles also carry an optional **max-peak marker** — a second, **red**
 yellow peak pip has dropped. The fast pip tracks recent activity; the red
 max marker remembers the loudest moment.
 
-In **[Settings → Meter](#settings--audio)** you can tune both timings:
+In **[Meter panel](#meter-panel)** you can tune both timings:
 **peak-hold** (how long the fast pip hangs before falling, default 800 ms)
 and the **max-peak marker** (on/off + its own hold time, default 3 s)
 before its gentle decay.
@@ -688,7 +689,7 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > the standard in-passband signal-strength point — and maps it through
 > the HF/VHF S-unit scale (S9 = −73 dBm below 30 MHz, −93 dBm above). To make the
 > *absolute* dBm/S reading exact, trim it once in
-> **[Settings → Meter](#settings--audio)**: tune to a known reference
+> **[Meter panel](#meter-panel)**: tune to a known reference
 > (WWV, or a signal generator at a known level) and adjust the **S-meter
 > calibration** offset until it matches. With this tap the trim is only a
 > few dB. The meter compensates for the **LNA gain** automatically, so the
@@ -700,7 +701,7 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > exist today: **PWR** (forward power, watts) and **SWR** (antenna
 > match). On every MOX edge, the panel auto-swaps from your RX
 > source to your TX source and back — set both pickers in
-> **[Settings → Meter](#settings--audio)**. Three more TX
+> **[Meter panel](#meter-panel)**. Three more TX
 > sources — **ALC**, **MIC**, **COMP** — appear in the picker
 > when their computes land (they depend on the TX DSP chain
 > being driven by a live modulator; today only the **TUN
@@ -766,9 +767,9 @@ external watt-meter / bias-tune an external amp.
 
 > **Both buttons honour the safety knobs.** They route through the
 > same FSM that respects the **TR-sequencing delays** (see
-> [Settings → TX](#settings--tx-tr-sequencing--cos-fade)) and the
+> [Settings → TX](#settings--tx-mic--alc-tr-sequencing--cos-fade)) and the
 > **PA Enable** safety gate (see
-> [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout)).
+> [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout--hardware-ptt)).
 > Carrier amplitude follows the **cos² fade envelope** on every
 > keydown and keyup — no hard step, no click.
 
@@ -777,6 +778,12 @@ external watt-meter / bias-tune an external amp.
 > RF** (the gateware PA bias never engages). This is the safe state
 > for first-time bench work — leave PA off until you're confident
 > in your Drive setting, fade defaults, and amp configuration.
+
+> **Foot switch / hand-mic PTT** — the HL2's hardware PTT-input pin
+> is supported via an opt-in checkbox in
+> [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout--hardware-ptt).
+> Default OFF for safety; tick it after a quick bench check on your
+> specific HL2 unit.
 
 ---
 
@@ -915,7 +922,7 @@ load-bearing, not cosmetic, and the defaults are chosen for typical
 | 1. **Scheduling** | RF Delay (default 50 ms) | After the wire-MOX bit goes hot, Lyra waits 50 ms before allowing any RF onto the antenna. Gives the external amp's T/R relay time to fully close. |
 | 2. **Amplitude shape** | Fade-In Duration (default 50 ms) | Even WITHIN the RF Delay window, the host-side I/Q amplitude rises smoothly from zero via a cos² envelope. Redundant protection against any residual MOX-bit / relay timing skew. |
 
-Both knobs live on **[Settings → TX](#settings--tx-tr-sequencing--cos-fade)**.
+Both knobs live on **[Settings → TX](#settings--tx-mic--alc-tr-sequencing--cos-fade)**.
 
 ### Workflow before the first on-air keying
 
@@ -929,7 +936,7 @@ The discipline that's saved more amps than anyone wants to admit:
    straight from the HL2's on-board PA (a few watts). Confirm
    wattmeter behaviour, panadapter trace, and that TUN / MOX both
    ramp cleanly.
-3. **PA Enable OFF in [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout).**
+3. **PA Enable OFF in [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout--hardware-ptt).**
    Run through your keying ergonomics first — TUN button, MOX
    button, space-bar, drive-slider movement — with **no actual RF**.
    You should hear the HL2 relays click and see the wire-MOX state
@@ -937,7 +944,7 @@ The discipline that's saved more amps than anyone wants to admit:
 4. **PA Enable ON, Drive low (5–10 %).** Key TUN once. Watch the
    wattmeter trace ramp up smoothly over ~50 ms, hold steady, then
    ramp down smoothly. **No clicks, no spikes** at either edge.
-5. **Verify your [Settings → TX](#settings--tx-tr-sequencing--cos-fade) values match your amp.**
+5. **Verify your [Settings → TX](#settings--tx-mic--alc-tr-sequencing--cos-fade) values match your amp.**
    The defaults are bench-safe for typical 1 kW SS linears.
    If your amp's documentation specifies a T/R relay settle time
    greater than 30 ms, **leave RF Delay and Fade-In Duration at
@@ -1081,7 +1088,7 @@ connects to the selected radio, **Close** disconnects, and the status line
 shows what you're connected to. Lyra remembers the last radio and shows it
 here on launch. (The toolbar **▶ Start / ■ Stop** does the same thing.)
 
-### Transmit (PA enable + safety timeout)
+### Transmit (PA enable + safety timeout + hardware PTT)
 
 The deliberate-arm safety gates for getting on the air. Both are
 intentionally OUT of the operating-time TX panel — they're set-and-
@@ -1108,6 +1115,21 @@ you touch between QSOs.
   with intent** — a stuck PTT or a software fault now has no host-
   side rescue (the HL2 gateware watchdog is still in play, but
   treats EP2 keepalive as the only liveness signal).
+- **Enable hardware PTT input (foot switch / hand mic)** (checkbox,
+  **default OFF**) — when ticked, the HL2's hardware PTT-input pin
+  is read on every status frame and an edge (press / release) is
+  forwarded to MOX, so a foot switch, hand-mic PTT, or external
+  mic-button keys Lyra just like the on-screen MOX button.
+  **⚠ Bench-verify before enabling.** Some HL2 units (notably most
+  observed HL2+ / AK4951 units) carry a non-zero PTT-input level at
+  RX rest, so an always-on forwarder would mis-read it as a press
+  and produce a phantom-TX surge the moment you launch Lyra.
+  Default OFF lets you control when the read goes live: confirm
+  with a scope or with the foot-switch unplugged that the pin
+  reads stable 0 at rest, then tick this box. If your foot-switch
+  press doesn't key after enabling, the issue is upstream of Lyra
+  (HL2 connector / switch / cable / wiring) — Lyra can't paper
+  over a dirty level at rest.
 
 > **Why these are in Hardware, not in TX:** Settings → TX is for
 > *timing* knobs you might tune to match an external amp's switching
@@ -1506,6 +1528,97 @@ you accept the disclaimer and tick **Enable**.
 Remember to set your location in
 [Settings → Hardware → Operator / Station](#operator--station) — without
 it, the location-based sources can't tell what's nearby.
+
+---
+
+## Credits and References
+
+Lyra is a native C++23 / Qt 6 / Vulkan rebuild written from scratch by
+**Rick Langford (N8SDR)**. The projects, documents, and conventions below
+were studied for *ideas, ballistics, and protocol structure* while
+building it. **No source code was copied** — each is referenced as
+"how the standard idiom works," and Lyra implements each idea natively
+in C++.
+
+### Inspiration and references (studied, not copied)
+
+- **Thetis SDR** (openHPSDR) — primary reference for HPSDR Protocol 1
+  wire format, TX-chain ordering, meter ballistics, ATT-on-TX policy,
+  TR-sequencing conventions, AAmixer routing.
+- **openHPSDR project** — HPSDR Protocol 1 / 2 specifications, the
+  authoritative wire-protocol documents.
+- **PowerSDR** — Thetis's predecessor; convention provenance for many
+  UI idioms (per-mode bandwidth memory, AGC profiles, etc.).
+- **HermesLite 2 wiki + ak4951v4 gateware (RTL)** — the gateware-
+  designer's authoritative register documentation, plus the Verilog
+  source of the operator's specific HL2+ variant. The RTL is the
+  ground-truth source for EP6 telemetry slot decoding, PA-enable
+  mechanism, and TX-I/Q wire gating on the AK4951 gateware revision.
+- **pihpsdr** — cross-reference for HL2 PA-enable bit, TX-drive
+  nibble, and the generic Protocol-1 HL2 wire path.
+- **Quisk** — cross-reference for HermesLite hardware register
+  conventions (`hermes/quisk_hardware.py`).
+- **linHPSDR** — additional cross-reference for the Protocol-1
+  HL2 wire path (`protocol1.c`).
+- **EESDR V3** — UI convention reference and the public **TCI**
+  (Transceiver Control Interface) protocol specification that Lyra
+  implements against.
+- **Behringer X-Air mixer series** — operator-supplied screenshots
+  drive the upcoming Lyra-native **Combinator** + 5-band parametric
+  EQ design (lands in v0.2.1). The X-Air's multiband compressor +
+  EQ behaviour is the reference for Lyra's TX dynamics chain.
+- **SparkSDR** (binaries only — no source) — referenced for the HL2
+  push-pull PA bias procedure documentation.
+- **Lyra (Python predecessor)** — the author's earlier PySide6 SDR
+  application. Several Lyra-cpp modules (band table, band-plan data,
+  open-collector pin tables, grid-square math, frequency-display
+  widget) are explicit ports from the Python predecessor — same
+  author, same project lineage, internal port.
+
+Lyra's source tree intentionally keeps these names out of code,
+comments, commits, and operator-visible UI strings (the
+"no-attribution rule"): the references inform the design, but every
+line of Lyra is Lyra-native C++. This Credits section is the single
+operator-facing place that names them, openly and once.
+
+### Licensed components (GPL v3+)
+
+Lyra is **GPL v3 or later** and is therefore license-compatible with
+the GPL-licensed components it depends on:
+
+- **WDSP** — DSP engine by **Warren Pratt (NR0V)**. GPL v3+. Lyra
+  links to the WDSP shared library (`wdsp.dll` + FFTW companions)
+  and calls its public C API through C++ wrappers. **No source
+  modifications.** WDSP powers the RXA chain (noise reduction,
+  AGC, bandpass, demod) and the TXA chain (modulator, ALC, leveler,
+  bandpass, future EQ/compressor).
+- **TCI protocol** (Transceiver Control Interface) — public
+  specification from **Expert Electronics** (EESDR). Lyra
+  implements a TCI server compatible with the v1.9 / v2.0 spec so
+  external logging / cluster / digital-modes software (SDRLogger+,
+  any TCI-aware client) can drive Lyra.
+- **WDSP FFTW** (Fastest Fourier Transform in the West) — GPL.
+  Used by WDSP internally; bundled as `libfftw3-3.dll` /
+  `libfftw3f-3.dll`. Lyra's first-launch FFTW WISDOM build optimises
+  FFT plans for the host CPU and caches them under
+  `%APPDATA%\Lyra\fftw\`.
+
+### Contributors
+
+- **Rick Langford (N8SDR)** — project lead, architecture, all code.
+- **Brent Crier (N9BC)** — co-contributor (joined during v0.0.9.1
+  testing on the Python predecessor; continues into the C++ rebuild).
+- **Timmy Davis (KC8TYK)** — tester (v0.1 tester flight).
+- **W5UDX** — DSP2024P Plate Reverb presets and verification (lands
+  with the Plate Reverb in v0.2.1).
+
+### License
+
+**GPL v3 or later.** Source repository:
+[github.com/N8SDR1/Lyra-SDR-cpp](https://github.com/N8SDR1/Lyra-SDR-cpp).
+Full license text: `LICENSE` / `NOTICE.md` in the source tree. See
+the **About Lyra** dialog (**Help → About Lyra…**) for the version
++ build date of the running binary.
 
 ---
 
