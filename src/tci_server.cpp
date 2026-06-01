@@ -473,16 +473,24 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
     // ownership drops in-flight frames at the door without ever
     // reaching the decode / sanitize / push path.
     auto *ws = qobject_cast<QWebSocket *>(sender());
-    // Task #33 commit 3.2 — verbose binary-frame arrival diagnostic
-    // (gated on the Diagnostics verbose toggle).  Counts frames
-    // received from the active TX-audio owner vs others — helps the
-    // bench distinguish "MSHV not sending anything" from "MSHV
-    // sending but Lyra not owner-acquired."
-    if (LogBuffer::instance().verbose()) {
-        qInfo("[tci-rx-bin] frame %d bytes (owner=%s sender=%s)",
-              int(frame.size()),
-              txAudioOwner_ ? "set" : "null",
-              ws == txAudioOwner_ ? "owner" : "other");
+    // Task #33 commit 3.3 — ALWAYS-on binary-frame arrival diagnostic
+    // (NOT verbose-gated).  Rate-limited to one line every ~250 ms so
+    // the log doesn't drown if MSHV starts streaming continuously
+    // (~20 TX_AUDIO_STREAM frames per second at 50 ms / 2400-sample
+    // block cadence).  Counts frames received from the active TX-
+    // audio owner vs others — helps the bench distinguish "MSHV not
+    // sending anything" from "MSHV sending but Lyra not owner-
+    // acquired."
+    {
+        static qint64 lastLogMs = 0;
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs - lastLogMs > 250) {
+            lastLogMs = nowMs;
+            qInfo("[tci-rx-bin] frame %d bytes (owner=%s sender=%s)",
+                  int(frame.size()),
+                  txAudioOwner_ ? "set" : "null",
+                  ws == txAudioOwner_ ? "owner" : "other");
+        }
     }
     if (txAudioOwner_ == nullptr || ws != txAudioOwner_) return;
     // Note arrival of an inbound TX_AUDIO_STREAM block for the
@@ -738,15 +746,16 @@ void TciServer::onTextMessage(const QString &raw) {
     while (msg.endsWith(QLatin1Char(';'))) msg.chop(1);
     msg = msg.trimmed();
     if (msg.isEmpty()) return;
-    // Task #33 commit 3.2 — verbose dump of EVERY inbound TCI text
-    // command (gated on the Settings → Hardware → Diagnostics verbose
-    // logging toggle).  Lets the bench diagnose "MSHV TX TUNE / FT8
-    // cycle does nothing" without having to add ad-hoc logging:
-    // operator turns verbose on, hits the test, the log shows every
-    // command line MSHV emitted (or none, if MSHV's PTT path is gated
-    // off on its side).
-    if (LogBuffer::instance().verbose())
-        qInfo("[tci-rx-text] %s", qPrintable(msg));
+    // Task #33 commit 3.3 — ALWAYS-on dump of every inbound TCI text
+    // command (NOT verbose-gated).  Operator-bench-feedback 2026-06-01:
+    // the bench needs to know exactly what MSHV is emitting on TX TUNE
+    // / FT8 cycle attempts WITHOUT the operator having to remember to
+    // flip the verbose toggle first.  TCI text traffic is sparse (a
+    // few commands per second at most during a TX cycle), so the
+    // always-on cost is negligible and the diagnostic value is high.
+    // Once the first-light bench is closed and the audio path is
+    // working, this can move under the verbose gate.
+    qInfo("[tci-rx-text] %s", qPrintable(msg));
     QString cmd;
     QStringList args;
     const int colon = msg.indexOf(QLatin1Char(':'));
@@ -886,6 +895,102 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
     }
     if (cmd == QStringLiteral("TX_SENSORS_ENABLE")) return;  // RX-only
 
+    // ── Task #33 commit 3.4: TCI handshake-config commands MUST be
+    //    echoed back so the client knows the SET took effect.  MSHV
+    //    bench-discovered 2026-06-01: without `tx_enable:0,true`
+    //    echo, MSHV considers TX-on-channel-0 not permitted and
+    //    refuses to fire `trx:` for any operator press.  Working
+    //    reference TCIServer.cs:5028-5050 has dedicated handlers for
+    //    each of these — all echo the SET back to the client.
+    //
+    //    These commands are CONFIG (one-shot at handshake, sometimes
+    //    re-queried later) — they don't trigger MOX or any wire
+    //    activity.  Accept + echo + store the soft value.
+    if (cmd == QStringLiteral("TX_ENABLE")
+        || cmd == QStringLiteral("RX_ENABLE")) {
+        bool okc = false;
+        const int ch = args.size() >= 1 ? parseChannel(args[0], &okc) : -1;
+        if (!okc || ch != 0) return;
+        const bool on = args.size() >= 2 ? parseBool(args[1])
+                                         : true;   // 1-arg query → default true
+        softSet(cmd, on ? QStringLiteral("true") : QStringLiteral("false"));
+        sendTo(ws, cmd.toLower()
+            + QStringLiteral(":0,%1").arg(on ? QStringLiteral("true")
+                                             : QStringLiteral("false")));
+        return;
+    }
+    // Audio-stream config — echo back the operator-set value so MSHV
+    // confirms the streaming parameters took effect.  Working
+    // reference at TCIServer.cs:5019-5050.
+    if (cmd == QStringLiteral("AUDIO_SAMPLERATE")
+        || cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")
+        || cmd == QStringLiteral("TX_STREAM_AUDIO_BUFFERING")) {
+        const QString val = args.isEmpty() ? QStringLiteral("48000")
+                                           : args[0];
+        softSet(cmd, val);
+        sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(val));
+        return;
+    }
+    // TUNE — TCI v1.9/v2 separate TX path for tune-carrier (operator
+    // hits a "TUNE" button in the client).  Working reference's
+    // handleTune (TCIServer.cs:4343-4364) sets a TUN flag distinct
+    // from MOX, but Lyra doesn't yet have a separate tune-carrier
+    // mode — treat tune like trx for MOX engagement so MSHV's TUNE
+    // button keys the rig.  Future v0.2.x: wire a real tune-carrier
+    // generator (Task #50/#52 chain) for proper TUN behaviour.
+    if (cmd == QStringLiteral("TUNE")) {
+        bool okc = false;
+        const int ch = args.size() >= 1 ? parseChannel(args[0], &okc) : -1;
+        if (!okc || ch != 0 || !stream_) {
+            sendTo(ws, QStringLiteral("tune:0,false"));
+            return;
+        }
+        if (args.size() < 2) {
+            // 1-arg query — report current state (we don't track a
+            // separate TUN flag yet; report based on wire MOX).
+            sendTo(ws, QStringLiteral("tune:0,%1").arg(
+                stream_->moxActive() ? QStringLiteral("true")
+                                     : QStringLiteral("false")));
+            return;
+        }
+        const bool wantsTune = parseBool(args[1]);
+        if (wantsTune) {
+            // Acquire TCI audio ownership IF operator has Mic source =
+            // tci (so the client's audio reaches the WDSP TXA chain;
+            // matches the trx:0,true behaviour below).
+            const bool wantTciAudio =
+                prefs_ && prefs_->micSource() == QStringLiteral("tci");
+            if (wantTciAudio) {
+                if (txAudioOwner_ != nullptr && txAudioOwner_ != ws) {
+                    sendTo(ws, QStringLiteral("tune:0,false"));
+                    return;
+                }
+                if (txAudioOwner_ == nullptr) {
+                    txAudioOwner_ = ws;
+                    chronoOutstanding_ = 0;
+                    chronoLastInboundMs_ =
+                        QDateTime::currentMSecsSinceEpoch();
+                    chronoTimer_->start();
+                    emit statusMessage(QStringLiteral(
+                        "TCI: TX-audio ownership ACQUIRED (tune)"));
+                }
+            }
+            stream_->requestMoxFromTci(true);
+            sendTo(ws, QStringLiteral("tune:0,true"));
+        } else {
+            if (txAudioOwner_ == ws) {
+                txAudioOwner_ = nullptr;
+                chronoOutstanding_ = 0;
+                chronoTimer_->stop();
+                emit statusMessage(QStringLiteral(
+                    "TCI: TX-audio ownership RELEASED (tune)"));
+            }
+            stream_->requestMoxFromTci(false);
+            sendTo(ws, QStringLiteral("tune:0,false"));
+        }
+        return;
+    }
+
     // ── Task #33: TRX — TCI keying funnel (working reference's
     //    handleTrxMessage at TCIServer.cs:3459-3550).  Wired ONLY when
     //    the request comes with the "tci" source token (per TCI v2
@@ -974,23 +1079,25 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
         sendTo(ws, QStringLiteral("trx:0,false"));
         return;
     }
-    // ── RX-only: acknowledge other TX-side queries as inactive ───
-    if (cmd == QStringLiteral("TUNE")
-        || cmd == QStringLiteral("RIT_ENABLE") || cmd == QStringLiteral("XIT_ENABLE")
+    // ── Acknowledge other TX-side queries as inactive (TUNE moved
+    //    above into commit 3.4's real handler).
+    if (cmd == QStringLiteral("RIT_ENABLE") || cmd == QStringLiteral("XIT_ENABLE")
         || cmd == QStringLiteral("SPLIT_ENABLE")) {
         const QString idx = args.isEmpty() ? QStringLiteral("0") : args[0];
         sendTo(ws, cmd.toLower() + QStringLiteral(":%1,false").arg(idx));
         return;
     }
     // TX-only setters with no read-back of interest — silently accept.
+    // (TX_STREAM_AUDIO_BUFFERING moved to commit 3.4's echo path so
+    // MSHV / Thetis-client gets confirmation the buffering value
+    // applied.)
     if (cmd == QStringLiteral("DRIVE") || cmd == QStringLiteral("TUNE_DRIVE")
         || cmd == QStringLiteral("MON_ENABLE") || cmd == QStringLiteral("MON_VOLUME")
         || cmd == QStringLiteral("RIT_OFFSET") || cmd == QStringLiteral("XIT_OFFSET")
         || cmd == QStringLiteral("KEYER")
         || cmd.startsWith(QStringLiteral("CW_MACROS"))
         || cmd == QStringLiteral("CW_MSG") || cmd == QStringLiteral("CW_TERMINAL")
-        || cmd == QStringLiteral("CW_KEYER_SPEED")
-        || cmd == QStringLiteral("TX_STREAM_AUDIO_BUFFERING"))
+        || cmd == QStringLiteral("CW_KEYER_SPEED"))
         return;
 
     // ── DX-cluster spots ─────────────────────────────────────────
