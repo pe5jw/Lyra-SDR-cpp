@@ -18,24 +18,28 @@ authoritative locked spec lives in
 
 ## Combinator layout reference (Task #51)
 
-The six Reaper FX3 "Dual Combinator" screenshots
-(`Screenshot 2026-06-01 0603[06/30/46]_…04[07/19/56].jpg`) show the same
-panel with one of the band-radio-buttons selected per shot (HIGH /
-HI-MID / MID / LO-MID / LOW + bypass) — useful for understanding the
-band-selector UX.  Locked Lyra spec uses the same 5-band L→R role
-order with color-matched per-band meters at the bottom.
+The six Behringer X-Air "FX 3 – Dual Combinator" screenshots
+(`Screenshot 2026-06-01 0603[06/30/46]_…04[07/19/56].jpg`) show the
+operator's X-Air FX-slot-3 Dual Combinator panel with one of the
+band-radio-buttons selected per shot (HIGH / HI-MID / MID / LO-MID /
+LOW + bypass) — useful for understanding the band-selector UX.  These
+ARE the long-pending "operator X-Air Combinator screenshots" Task #51
+was waiting on; the UI shape is now reference-locked.  The locked Lyra
+spec uses the same 5-band L→R role order with color-matched per-band
+meters at the bottom and the same global-Mix / Att / Rel / SBC-Speed /
+X-Over / Global-Ratio control set.
 
-## Other panels in the same folder (NOT EQ — informational only)
+## Other X-Air panels in the same folder (NOT EQ — informational only)
 
-* `Screenshot 2026-06-01 060607.jpg` — Behringer X-Air mixer EQ
+* `Screenshot 2026-06-01 060607.jpg` — X-Air channel-strip EQ
   (4-band PEQ).  Operator considered this earlier; superseded by the
-  EESDR3 8-band layout for the EQ work.  Retained for the channel-strip
+  EESDR3 8-band layout for the EQ work.  Retained for channel-strip
   surround context.
-* `Screenshot 2026-06-01 060732.jpg` — Behringer X-Air Compressor
-  panel.  Not the locked Lyra compressor reference (Lyra TX compressor
-  comes from WDSP `compress.c`), retained for future side-chain UX
-  ideas (the Side Chain Filter + KeySrc/Self idiom may inform Lyra's
-  later TX side-chain controls).
+* `Screenshot 2026-06-01 060732.jpg` — X-Air channel-strip Compressor.
+  Not the locked Lyra compressor reference (Lyra TX compressor comes
+  from WDSP `compress.c`), retained for future side-chain UX ideas
+  (the Side Chain Filter + KeySrc/Self idiom may inform Lyra's later
+  TX side-chain controls).
 
 ## Provenance note
 

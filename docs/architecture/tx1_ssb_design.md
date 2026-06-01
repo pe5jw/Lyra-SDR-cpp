@@ -1922,9 +1922,12 @@ even though imperceptible on a modern CPU.
 
 ### §11.5 Combinator note (Task #51)
 
-The 6 Reaper "FX 3 - Dual Combinator" screenshots
-(`Screenshot 2026-06-01 06030[6/30/46]…0419/56`) confirm
-Task #51's locked spec:
+The 6 Behringer X-Air "FX 3 – Dual Combinator" screenshots
+(`Screenshot 2026-06-01 06030[6/30/46]…0419/56`) are the operator's
+own X-Air FX-slot-3 Dual Combinator panel — the long-pending
+"operator X-Air Combinator screenshots" Task #51 was waiting on.
+Operator-clarified 2026-06-01: these are X-Air, not a third-party
+DAW combinator.  The screenshots confirm Task #51's locked spec:
 
 * 5 bands: LOW / LO-MID / MID / HI-MID / HIGH (color-coded:
   red / orange / pink / purple / teal) with per-band level
