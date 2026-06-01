@@ -44,6 +44,7 @@ constexpr auto kKeyStyle    = "meter/style";
 constexpr auto kKeyCal      = "meter/calDb";
 constexpr auto kKeyPeakHold    = "meter/peakHoldMs";
 constexpr auto kKeyPwrPeakHold = "meter/pwrPeakHoldMs";
+constexpr auto kKeyPwrBallistic = "meter/pwrBallistic";   // PEP/PEAK/AVG
 constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
 constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
 constexpr auto kKeyRxSource  = "meter/rxSource"; // operator's RX-state preference
@@ -115,24 +116,56 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
         100, 10000);
     pwrWinSamples_ = std::clamp(pwrPeakHoldMs_ / kTickMs,
                                  1, kPwrWindowSamplesMax);
+    // PWR ballistic mode autoload — default PWR_PEAK (existing
+    // shipped behavior).  Clamped to the valid enum range so a
+    // stale/corrupted QSettings value can't surface as an
+    // unhandled compute branch.
+    {
+        const int raw = s.value(QString::fromLatin1(kKeyPwrBallistic),
+                                 int(PWR_PEAK)).toInt();
+        switch (raw) {
+        case PWR_PEP:  pwrBallistic_ = PWR_PEP;  break;
+        case PWR_AVG:  pwrBallistic_ = PWR_AVG;  break;
+        case PWR_PEAK:
+        default:       pwrBallistic_ = PWR_PEAK; break;
+        }
+    }
     maxPeakEnabled_ = s.value(QString::fromLatin1(kKeyMaxOn), true).toBool();
     maxHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyMaxHold), 3000).toInt(), 500, 60000);
     maxHoldTicks_ = std::max(1, maxHoldMs_ / kTickMs);
-    // RX-state and TX-state source preferences.  Defaults RX_SMETER and
-    // PWR respectively on first-ever launch — the obvious sane choices.
-    // Clamped to the valid enum range so a stale or corrupted setting
-    // can't surface as an unhandled compute branch.  Active source is
-    // derived: rxSource at rest, txSource when the wire MOX bit is set.
-    auto clampSrc = [](int raw, Source fallback) {
-        return (raw >= RX_SMETER && raw <= COMP) ? Source(raw) : fallback;
+    // RX-state and TX-state source preferences.  Per the reference-
+    // faithful split: RX dropdown is RX-signal-only (currently just
+    // RX_SMETER); TX dropdown is the TX-chain / forward-power /
+    // HL2-telemetry set.  Stale legacy values (e.g. PWR persisted for
+    // the RX side before the split) get normalized to RX_SMETER /
+    // PWR — those defaults match the picker's first-option fallback
+    // in settingsdialog.cpp so the UI + model converge cleanly.
+    auto clampRx = [](int raw) -> Source {
+        switch (raw) {
+        case RX_SMETER: return RX_SMETER;
+        default:        return RX_SMETER;
+        }
     };
-    rxSource_ = clampSrc(s.value(QString::fromLatin1(kKeyRxSource),
-                                  int(RX_SMETER)).toInt(),
-                          RX_SMETER);
-    txSource_ = clampSrc(s.value(QString::fromLatin1(kKeyTxSource),
-                                  int(PWR)).toInt(),
-                          PWR);
+    auto clampTx = [](int raw) -> Source {
+        switch (raw) {
+        case PWR:
+        case SWR:
+        case PA_CURRENT:
+        case PA_VOLTS:
+        case TEMP:
+        case ALC:
+        case MIC:
+        case COMP:
+            return Source(raw);
+        default:
+            return PWR;
+        }
+    };
+    rxSource_ = clampRx(s.value(QString::fromLatin1(kKeyRxSource),
+                                 int(RX_SMETER)).toInt());
+    txSource_ = clampTx(s.value(QString::fromLatin1(kKeyTxSource),
+                                 int(PWR)).toInt());
     // Initialize the active source from the live MOX state if we already
     // have a stream (we do — passed via the ctor arg).  moxActive is
     // false at construction time (the stream isn't open yet), so this
@@ -293,6 +326,33 @@ void MeterModel::setPwrPeakHoldMs(int ms) {
     emit pwrPeakHoldMsChanged();
 }
 
+void MeterModel::setPwrBallistic(int m) {
+    // Validate against the enum — out-of-range falls back to PEAK
+    // (current shipped default).  Switching modes resets the
+    // detector state so a stale window-MAX or IIR value doesn't
+    // bleed into the new ballistic's first sample.
+    PwrBallistic ns;
+    switch (m) {
+    case PWR_PEP:  ns = PWR_PEP;  break;
+    case PWR_AVG:  ns = PWR_AVG;  break;
+    case PWR_PEAK:
+    default:       ns = PWR_PEAK; break;
+    }
+    if (ns == pwrBallistic_) return;
+    pwrBallistic_ = ns;
+    // Reset the per-mode state so the first tick after a swap starts
+    // clean — otherwise a 4 W AVG-mode value would persist into a
+    // PEP ring-buffer reset and read as 4 W for one tick before
+    // falling.  pwrWinHist_ is the MAX-detector ring; dispDbm_ is
+    // the shared smoothed/MAX value the text readout reads.
+    for (int i = 0; i < kPwrWindowSamplesMax; ++i) pwrWinHist_[i] = 0.0;
+    pwrWinIdx_ = 0;
+    dispDbm_ = 0.0;
+    QSettings().setValue(QString::fromLatin1(kKeyPwrBallistic), int(ns));
+    emit pwrBallisticChanged();
+    if (source_ == PWR) emit updated();
+}
+
 void MeterModel::setMaxPeakEnabled(bool on) {
     if (on == maxPeakEnabled_) return;
     maxPeakEnabled_ = on;
@@ -356,26 +416,50 @@ void MeterModel::setSource(int s) {
 }
 
 void MeterModel::setRxSource(int s) {
-    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
-    const Source ns = Source(s);
+    // Per the reference-faithful split (task #35 follow-up): the RX
+    // dropdown is RX-signal-only.  PWR/SWR/ALC/MIC/COMP are
+    // TX-chain values that have no meaning at rest; PA telemetry
+    // already surfaces on the dedicated HL2 banner chip + the
+    // Vertical Ladder style.  Out-of-set values fall back to
+    // RX_SMETER so a stale persisted setting from before the split
+    // can't lock the picker on an unselectable option.
+    Source ns;
+    switch (s) {
+    case RX_SMETER: ns = RX_SMETER; break;
+    default:        ns = RX_SMETER; break;
+    }
     if (ns == rxSource_) return;
     rxSource_ = ns;
     QSettings().setValue(QString::fromLatin1(kKeyRxSource), int(ns));
     emit rxSourceChanged();
-    // If currently at rest, the new RX pref takes effect immediately —
-    // route through setSource so the per-source state reset happens.
     if (stream_ && !stream_->moxActive() && source_ != ns)
         setSource(int(ns));
 }
 
 void MeterModel::setTxSource(int s) {
-    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
-    const Source ns = Source(s);
+    // TX dropdown set: PWR/SWR/PA Current/PA Volts/Temp (live now)
+    // plus ALC/MIC/COMP (placeholders for v0.2.1).  Out-of-set
+    // values fall back to PWR (the obvious sane TX-side default).
+    Source ns;
+    switch (s) {
+    case PWR:
+    case SWR:
+    case PA_CURRENT:
+    case PA_VOLTS:
+    case TEMP:
+    case ALC:
+    case MIC:
+    case COMP:
+        ns = Source(s);
+        break;
+    default:
+        ns = PWR;
+        break;
+    }
     if (ns == txSource_) return;
     txSource_ = ns;
     QSettings().setValue(QString::fromLatin1(kKeyTxSource), int(ns));
     emit txSourceChanged();
-    // If currently in MOX, the new TX pref takes effect immediately.
     if (stream_ && stream_->moxActive() && source_ != ns)
         setSource(int(ns));
 }
@@ -558,7 +642,58 @@ QVariantList MeterModel::tickMarks() const {
         addAt(pos(3.0), QStringLiteral("3.0"), true);
         return out;
     }
-    // PA_CURRENT / PA_VOLTS / TEMP / ALC / MIC / COMP: later commits.
+    if (source_ == PA_CURRENT) {
+        // PA bias current scale: 0 .. 3.0 A (matches kPaScaleMaxA in
+        // computePaCurrent's anonymous namespace).  Operator-relevant
+        // landmarks: 0.2 A idle bias on a typical HL2+, 1.8 A full
+        // tune anchor (verified-reference bench reading),
+        // 2.5 A danger threshold.
+        const double m = 3.0;
+        const auto pos = [&](double a) { return std::clamp(a / m, 0.0, 1.0); };
+        addAt(0.0,        QStringLiteral("0"),    true);
+        addAt(pos(0.5),   QStringLiteral("0.5"),  false);
+        addAt(pos(1.0),   QStringLiteral("1.0"),  false);
+        addAt(pos(1.5),   QStringLiteral("1.5"),  false);
+        addAt(pos(1.8),   QStringLiteral("1.8"),  true);   // full-tune anchor
+        addAt(pos(2.0),   QStringLiteral("2.0"),  false);
+        addAt(pos(2.5),   QStringLiteral("2.5"),  true);   // danger
+        addAt(1.0,        QStringLiteral("3"),    true);
+        return out;
+    }
+    if (source_ == PA_VOLTS) {
+        // PA supply / VDD scale: 0 .. 16 V (matches kVScaleMaxV).
+        // Operator landmarks: 12 V nominal HL2 supply, 13.8 V typical
+        // 13.8 V bench supply, 14 V danger threshold.
+        const double m = 16.0;
+        const auto pos = [&](double v) { return std::clamp(v / m, 0.0, 1.0); };
+        addAt(0.0,        QStringLiteral("0"),    true);
+        addAt(pos(6.0),   QStringLiteral("6"),    false);
+        addAt(pos(10.0),  QStringLiteral("10"),   false);
+        addAt(pos(12.0),  QStringLiteral("12"),   true);   // nominal HL2 supply
+        addAt(pos(13.8),  QStringLiteral("13.8"), false);
+        addAt(pos(14.0),  QStringLiteral("14"),   true);   // danger
+        addAt(pos(15.0),  QStringLiteral("15"),   false);
+        addAt(1.0,        QStringLiteral("16"),   true);
+        return out;
+    }
+    if (source_ == TEMP) {
+        // HL2 board temperature: 0 .. 80 °C (matches kTempScaleMaxC).
+        // Operator landmarks: 25 °C ambient/idle, 30 °C full-tune
+        // typical, 60 °C danger threshold.
+        const double m = 80.0;
+        const auto pos = [&](double c) { return std::clamp(c / m, 0.0, 1.0); };
+        addAt(0.0,        QStringLiteral("0"),   true);
+        addAt(pos(20.0),  QStringLiteral("20"),  false);
+        addAt(pos(25.0),  QStringLiteral("25"),  true);    // typical idle
+        addAt(pos(30.0),  QStringLiteral("30"),  false);
+        addAt(pos(40.0),  QStringLiteral("40"),  false);
+        addAt(pos(50.0),  QStringLiteral("50"),  false);
+        addAt(pos(60.0),  QStringLiteral("60"),  true);    // danger
+        addAt(pos(70.0),  QStringLiteral("70"),  false);
+        addAt(1.0,        QStringLiteral("80"),  true);
+        return out;
+    }
+    // ALC / MIC / COMP: deferred (need WDSP TXA chain, v0.2.1 + comp).
     return out;
 }
 
@@ -711,13 +846,13 @@ void MeterModel::tick() {
     // commit) — this keeps the foundation commit visually unchanged
     // for the default RX_SMETER case while leaving the dispatch ready.
     switch (source_) {
-    case RX_SMETER:   computeSMeter(); return;
-    case PWR:         computePwr();    return;
-    case SWR:         computeSwr();    return;
-    case PA_CURRENT:  // future HL2-telemetry source
-    case PA_VOLTS:
-    case TEMP:
-    case ALC:         // task — needs WDSP TXA chain (deferred)
+    case RX_SMETER:   computeSMeter();    return;
+    case PWR:         computePwr();       return;
+    case SWR:         computeSwr();       return;
+    case PA_CURRENT:  computePaCurrent(); return;
+    case PA_VOLTS:    computePaVolts();   return;
+    case TEMP:        computeTemp();      return;
+    case ALC:         // needs WDSP TXA chain (v0.2.1, with compressor)
     case MIC:
     case COMP:
         return;
@@ -813,43 +948,59 @@ void MeterModel::computePwr() {
                           ? 0.0
                           : raw * pwrCalScale_;
 
-    // Sliding-window MAX detector — the verified reference's PWR
-    // meter ballistic (max over the last multimeter_peak_hold_samples
-    // = 10 ticks = 500 ms at the 50 ms tick rate; see
-    // hl2_stream.cpp / consoles.cs metering path).  This is the
-    // 2026-05-31 operator-bench-identified fix for the "brief
-    // whistles read low" symptom: an IIR-smoother averages brief
-    // peaks AWAY (the needle barely twitches because the average
-    // over the smoothing window stays low), while a MAX detector
-    // HOLDS them for the full window duration so the operator can
-    // actually read peak power off the needle.  Sustained tones
-    // converge identically under either ballistic — which is why
-    // continuous-whistle bench readings matched the Palstar before
-    // this fix.  TUN mode, being a steady carrier, also read
-    // correctly pre-fix for the same reason.  After the fix the
-    // needle behaves like every HF rig's "PEP" reading: jumps to
-    // peak on each speech burst and holds 500 ms; in operator-keyed
-    // CW or sustained voice the held peak matches the actual carrier
-    // level.
+    // PWR ballistic — one of three modes the operator picks in
+    // Settings → Meter:
     //
-    // Note: the existing peak_ / maxPeak_ glow / max-hold indicators
-    // (rendered separately as ticks above the needle for longer-decay
-    // "what was the highest reading recently" markers) STAY in place
-    // — they're operating-time references the operator can use to
-    // see prior peaks fading off.  Only the NEEDLE-driving value
-    // (level_) changes from IIR-smoothed to MAX-of-window.
-    pwrWinHist_[pwrWinIdx_] = w;
-    pwrWinIdx_ = (pwrWinIdx_ + 1) % pwrWinSamples_;
-    double windowMax = 0.0;
-    for (int i = 0; i < pwrWinSamples_; ++i) {
-        if (pwrWinHist_[i] > windowMax) windowMax = pwrWinHist_[i];
+    //   PWR_PEAK (default) — sliding-window MAX over the last
+    //     pwrWinSamples_ ticks (operator-tunable hold via the PWR
+    //     Peak Hold spin box; default 60 samples × 50 ms = 3000 ms).
+    //     The 2026-05-31 bench-fix ballistic: brief voice peaks are
+    //     captured and held for the full window duration so the
+    //     digital bar parks at the peak long enough to read
+    //     (compensates for the lack of analog-needle damping in a
+    //     digital renderer).
+    //
+    //   PWR_PEP — sliding-window MAX over a FIXED 10 ticks (= 500 ms
+    //     at the 50 ms tick rate).  Tight, snappy "PEP" ballistic —
+    //     each speech burst kicks the bar up and it drops back
+    //     between syllables.  Ignores the PWR Peak Hold spin box.
+    //
+    //   PWR_AVG — IIR smoother with pwrAvgAlpha_ ≈ 200 ms τ.  Does
+    //     NOT track speech peaks — tracks the running average of
+    //     forward power.  Calm, slow needle for sustained-tone
+    //     gain-structure work and ragchew.
+    //
+    // Note: the existing peak_ / maxPeak_ peak-pip / max-hold
+    // indicators (rendered separately as marks above the needle for
+    // longer-decay "what was the highest reading recently") STAY in
+    // place regardless of mode — they're operating-time references
+    // driven off level_ that always show recent peaks, even when the
+    // primary needle is in AVG mode.
+    double newLevelW = 0.0;
+    if (pwrBallistic_ == PWR_AVG) {
+        // IIR low-pass on the raw watts.  α ≈ 0.22 at 50 ms tick
+        // ≈ 200 ms time constant.  dispDbm_ is the smoothed value
+        // shared with the text-readout path.
+        dispDbm_ += pwrAvgAlpha_ * (w - dispDbm_);
+        newLevelW = std::max(0.0, dispDbm_);
+    } else {
+        // Sliding-window MAX path — covers both PEP (fixed 10-sample
+        // window) and PEAK (operator-tunable window).  Window length
+        // resolved per-tick from the mode so a runtime switch takes
+        // effect immediately.
+        const int samples = (pwrBallistic_ == PWR_PEP)
+                                ? kPwrPepSamples
+                                : pwrWinSamples_;
+        pwrWinHist_[pwrWinIdx_] = w;
+        pwrWinIdx_ = (pwrWinIdx_ + 1) % std::max(1, samples);
+        double windowMax = 0.0;
+        for (int i = 0; i < samples; ++i) {
+            if (pwrWinHist_[i] > windowMax) windowMax = pwrWinHist_[i];
+        }
+        dispDbm_ = windowMax;
+        newLevelW = windowMax;
     }
-    // Keep dispDbm_ updated for the dbmText_/secondary-readout path
-    // so any caller that reads the smoothed value (e.g. text-format
-    // output) doesn't suddenly see step changes.  The needle itself
-    // uses windowMax via level_ below.
-    dispDbm_ = windowMax;
-    const double n = std::clamp(windowMax / pwrScaleMaxW_, 0.0, 1.0);
+    const double n = std::clamp(newLevelW / pwrScaleMaxW_, 0.0, 1.0);
     level_ = n;
 
     if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
@@ -1016,6 +1167,174 @@ void MeterModel::computeSwr() {
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
 
+    if (style_ == 2) buildLadderRows();
+    emit updated();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Task #35 fillers — HL2-telemetry compute paths.
+// ─────────────────────────────────────────────────────────────────────
+//
+// Shared design: each reads ONE EP6-decoded value (paCurrentA() /
+// hl2SupplyV() / hl2TempC()), maps it onto a 0..1 scale tuned for the
+// HL2+'s typical operating range, smooths with the same IIR family
+// used by the SWR compute (these are slowly-changing physical
+// quantities — a snappy ballistic would just chase ADC noise), and
+// writes the full Q_PROPERTY set (level/peak/maxPeak/glow/text/
+// noiseLevel/snrText/secondary*/normDanger).  NaN sentinels → blank
+// text + zero level so a not-yet-arrived telemetry slot doesn't draw
+// a phantom needle.  No noise-floor / SNR concept (those are S-meter
+// exclusives) — the snrText_ slot doubles as the operator-chosen
+// secondary readout when txSecondary_ is set.
+
+namespace {
+// PA current — HL2+ idle ~0.2 A, full-tune anchor ~1.8 A.  3 A
+// full-scale gives headroom for external-PA telemetry (some companion
+// boards route through here); 2.5 A danger threshold sits above the
+// operator's normal full-drive draw, so the red zone only lights up
+// when something's actually wrong.
+constexpr double kPaScaleMaxA = 3.0;
+constexpr double kPaDangerA   = 2.5;
+// PA supply / VDD — HL2 nominal supply is 12-13 V.  16 V full-scale
+// covers higher-VDD external supplies; 14 V danger flags an over-
+// voltage condition (the HL2's input regulator can take 12-15 V).
+constexpr double kVScaleMaxV  = 16.0;
+constexpr double kVDangerV    = 14.0;
+// HL2 board temperature.  Idle ~25 °C, full-tune climbs to ~31 °C;
+// 80 °C full-scale (well above the gateware thermal-cutoff floor);
+// 60 °C danger gives the operator a clear "back off" margin before
+// the chip-protect kicks in.
+constexpr double kTempScaleMaxC = 80.0;
+constexpr double kTempDangerC   = 60.0;
+// Slow IIR matching the SWR ballistic — these readings are physical
+// integrals (PA current via the bias-sense resistor + filter caps,
+// board temp via the on-board thermistor), so a fast smoother would
+// just chase the sensor noise floor.  Operators want a calm needle
+// they can read at a glance.
+constexpr double kTelSmooth    = 0.30;
+constexpr double kTelPeakDecay = 0.05;
+constexpr double kTelGlowDecay = 0.10;
+} // namespace
+
+void MeterModel::computePaCurrent() {
+    const double raw = stream_ ? stream_->paCurrentA()
+                               : std::numeric_limits<double>::quiet_NaN();
+    const bool valid = !std::isnan(raw);
+    const double a = valid ? std::max(0.0, raw) : 0.0;
+
+    if (dispDbm_ < -100.0 || dispDbm_ > 1000.0) dispDbm_ = a;
+    dispDbm_ += kTelSmooth * (a - dispDbm_);
+    const double n = std::clamp(dispDbm_ / kPaScaleMaxA, 0.0, 1.0);
+    level_ = n;
+    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
+    else if (holdCtr_ > 0) { --holdCtr_; }
+    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+    } else { maxPeak_ = 0.0; }
+    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
+    noiseLevel_ = 0.0;
+    normDanger_ = kPaDangerA / kPaScaleMaxA;
+    text_ = valid ? QStringLiteral("%1 A").arg(dispDbm_, 0, 'f', 2)
+                  : QStringLiteral("—");
+    dbmText_.clear();
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
+    hist_.push_back(n);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
+    if (style_ == 2) buildLadderRows();
+    emit updated();
+}
+
+void MeterModel::computePaVolts() {
+    const double raw = stream_ ? stream_->hl2SupplyV()
+                               : std::numeric_limits<double>::quiet_NaN();
+    const bool valid = !std::isnan(raw);
+    const double v = valid ? std::max(0.0, raw) : 0.0;
+
+    if (dispDbm_ < -100.0 || dispDbm_ > 1000.0) dispDbm_ = v;
+    dispDbm_ += kTelSmooth * (v - dispDbm_);
+    const double n = std::clamp(dispDbm_ / kVScaleMaxV, 0.0, 1.0);
+    level_ = n;
+    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
+    else if (holdCtr_ > 0) { --holdCtr_; }
+    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+    } else { maxPeak_ = 0.0; }
+    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
+    noiseLevel_ = 0.0;
+    normDanger_ = kVDangerV / kVScaleMaxV;
+    text_ = valid ? QStringLiteral("%1 V").arg(dispDbm_, 0, 'f', 1)
+                  : QStringLiteral("—");
+    dbmText_.clear();
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
+    hist_.push_back(n);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
+    if (style_ == 2) buildLadderRows();
+    emit updated();
+}
+
+void MeterModel::computeTemp() {
+    const double raw = stream_ ? stream_->hl2TempC()
+                               : std::numeric_limits<double>::quiet_NaN();
+    const bool valid = !std::isnan(raw);
+    const double c = valid ? raw : 0.0;
+
+    if (dispDbm_ < -100.0 || dispDbm_ > 1000.0) dispDbm_ = c;
+    dispDbm_ += kTelSmooth * (c - dispDbm_);
+    const double n = std::clamp(dispDbm_ / kTempScaleMaxC, 0.0, 1.0);
+    level_ = n;
+    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
+    else if (holdCtr_ > 0) { --holdCtr_; }
+    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+    } else { maxPeak_ = 0.0; }
+    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
+    noiseLevel_ = 0.0;
+    normDanger_ = kTempDangerC / kTempScaleMaxC;
+    text_ = valid ? QStringLiteral("%1 °C").arg(dispDbm_, 0, 'f', 1)
+                  : QStringLiteral("—");
+    dbmText_.clear();
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
+    hist_.push_back(n);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
     if (style_ == 2) buildLadderRows();
     emit updated();
 }

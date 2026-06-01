@@ -30,6 +30,7 @@
 #include <QHash>
 #include <QHBoxLayout>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
@@ -56,6 +57,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace lyra::ui {
 
@@ -1474,6 +1476,55 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(amBox, 5, 0, 1, 2);
         }
 
+        // --- Task #36: Hardware PTT input forwarder (default OFF) ---
+        // Foot switch / hand-mic PTT / mic-button keying.  The HL2's
+        // hardware PTT pin state is decoded from every EP6 status frame
+        // (C0 bit 0); when this opt-in is checked, an edge dispatches
+        // through requestMox() exactly like the on-screen MOX button.
+        //
+        // SAFETY: this is DEFAULT-OFF per the project's §10 Q#1 finding
+        // — N8SDR's HL2+/AK4951 unit empirically reads a non-zero
+        // ptt_in at RX rest, so an always-on forwarder would fire a
+        // spurious press → phantom-TX surge.  Other HL2 revs may be
+        // clean; operator MUST bench-verify on their specific unit
+        // BEFORE enabling.  Per-unit: hook a scope (or read the live
+        // banner under LYRA_TX_DEBUG) and confirm ptt_in is a stable
+        // 0 with NO foot-switch plugged in, NO mic on, before checking
+        // this box.  If a real foot-switch is wired in and the unit
+        // reads dirty at rest, this defect lives upstream of Lyra
+        // (HL2 board / connector / wiring) and Lyra's forwarder can't
+        // safely paper over it.
+        if (prefs_) {
+            auto *hwBox = new QCheckBox(
+                tr("Enable hardware PTT input (foot switch / hand mic)"), grp);
+            hwBox->setChecked(prefs_->hwPttEnabled());
+            hwBox->setToolTip(tr(
+                "Forwards the HL2's hardware PTT-input pin (EP6 C0 bit 0) "
+                "to MOX, so a foot switch or hand-mic PTT keys the rig.\n\n"
+                "⚠ DEFAULT-OFF SAFETY:  some HL2 units (and most known "
+                "HL2+/AK4951 units) read a non-zero ptt_in at RX rest, so "
+                "enabling this WITHOUT bench-verifying clean rest behaviour "
+                "produces spurious MOX → phantom TX (loud-surge symptom). "
+                "Verify your specific unit reads stable 0 at rest with NO "
+                "foot-switch plugged in before enabling.\n\n"
+                "If your foot-switch press isn't keying after enabling, the "
+                "wire-side ptt_in needs scope verification (HL2 connector / "
+                "switch / cable) — Lyra can't safely paper over a dirty "
+                "level at rest."));
+            connect(hwBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (prefs_) prefs_->setHwPttEnabled(on);
+            });
+            connect(prefs_, &lyra::ui::Prefs::hwPttEnabledChanged,
+                    hwBox, [this, hwBox]() {
+                const bool on = prefs_->hwPttEnabled();
+                if (hwBox->isChecked() != on) {
+                    QSignalBlocker b(hwBox);
+                    hwBox->setChecked(on);
+                }
+            });
+            g->addWidget(hwBox, 6, 0, 1, 2);
+        }
+
         form->addRow(grp);
     }
 
@@ -1494,27 +1545,89 @@ QWidget *SettingsDialog::buildMeterTab() {
     // setups may genuinely want e.g. PA Current at rest (idle bias
     // visible) and PWR while keyed.
     if (meter_) {
+        // Per-MOX-state option lists — mirrors the verified
+        // reference's split:
+        //
+        //   RX meter modes (reference): Signal, Signal Avg, ADC L+R,
+        //     ADC2, Off.  All RX-side signals; no TXA chain values
+        //     (the chain isn't running at rest, so ALC/MIC/COMP would
+        //     read garbage and PWR/SWR have nothing real to measure
+        //     with the PTT clear).
+        //
+        //   TX meter modes (reference): Mic, EQ, Leveler, Lev Gain,
+        //     CFC, COMP, COMP+CFC, ALC, ALC Comp, ALC Group, PWR, SWR,
+        //     Reverse Power.  Full TX gain-structure chain + on-air
+        //     power + match.  Operator picks one to watch during TX —
+        //     typical workflow is to sweep through them while setting
+        //     gain structure (mic gain to peak ~0 dBFS on MIC, then
+        //     ALC pulling no more than -3 dB on voice peaks, etc.).
+        //
+        // Lyra mapping:
+        //   * RX picker: RX S-meter only for now.  HL2 telemetry
+        //     (PA Current / PA Volts / Temp) already lives on the
+        //     dedicated HL2 banner chip at the top of the window —
+        //     operators who want idle-bias-at-rest read it there, the
+        //     main meter stays an RX-signal instrument while
+        //     listening.  Vertical Ladder style still shows the
+        //     telemetry rows alongside the S-meter for the
+        //     multi-source-at-a-glance use case.
+        //   * TX picker: PWR / SWR / ID / VDD / Temp (HL2 telemetry
+        //     stays available here because those quantities are
+        //     ACTIVELY changing during TX — PA bias rising, supply
+        //     sagging on a hard key, board heating up under sustained
+        //     TX — so they belong on the operator's TX-watch list)
+        //     plus ALC / MIC / COMP placeholders for v0.2.1 (each
+        //     greyed with a "coming v0.2.1" caveat so the menu stays
+        //     honest about the TX-chain gain-structure meters that
+        //     unlock when the WDSP TXA-meter readout lands).
+        struct Opt { int v; const char *label; bool enabled; };
+        static const Opt kRxOpts[] = {
+            {0, "RX S-meter (signal strength)", true},
+        };
+        static const Opt kTxOpts[] = {
+            {1, "PWR (forward power, watts)",           true},
+            {2, "SWR (antenna match)",                  true},
+            {3, "ID — PA Current (HL2 bias)",           true},
+            {4, "VDD — PA Volts (HL2 supply)",          true},
+            {5, "Temp (HL2 board)",                     true},
+            {6, "ALC (gain reduction) — coming v0.2.1", false},
+            {7, "MIC (mic peak dBFS) — coming v0.2.1",  false},
+            {8, "COMP (compressor) — coming v0.2.1",    false},
+        };
+
         auto buildSourceCombo = [this](MeterModel *m, bool isTx) {
             auto *cb = new QComboBox(this);
-            // Source enum values — see metermodel.h.  Sources whose
-            // computes aren't wired yet (ALC/MIC/COMP — need TX DSP)
-            // are intentionally omitted from the picker; they'll
-            // appear when those computes land.
-            const struct { int v; const char *label; } opts[] = {
-                {0, "RX S-meter (signal strength)"},
-                {1, "PWR (forward power, watts)"},
-                {2, "SWR (antenna match)"},
-                // 3..5 = PA_CURRENT/PA_VOLTS/TEMP — added when their
-                // computes land in a follow-on commit
-            };
-            for (const auto &o : opts)
-                cb->addItem(tr(o.label), o.v);
-            const int sel = isTx ? m->txSource() : m->rxSource();
-            for (int i = 0; i < cb->count(); ++i)
-                if (cb->itemData(i).toInt() == sel) {
-                    cb->setCurrentIndex(i);
-                    break;
+            const Opt *opts = isTx ? kTxOpts : kRxOpts;
+            const int  n    = isTx ? int(std::size(kTxOpts))
+                                   : int(std::size(kRxOpts));
+            for (int i = 0; i < n; ++i) {
+                cb->addItem(tr(opts[i].label), opts[i].v);
+                if (!opts[i].enabled) {
+                    auto *mdl = qobject_cast<QStandardItemModel*>(cb->model());
+                    if (mdl) {
+                        QStandardItem *it = mdl->item(cb->count() - 1);
+                        if (it) it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+                    }
                 }
+            }
+            // If the persisted selection lives in the OTHER picker's
+            // option set (legacy state from before the per-MOX split
+            // — e.g. an operator who had picked PWR for the RX side),
+            // fall back to the first option in this picker's list so
+            // the combo doesn't render with a blank selection.
+            const int sel = isTx ? m->txSource() : m->rxSource();
+            int matchIdx = -1;
+            for (int i = 0; i < cb->count(); ++i)
+                if (cb->itemData(i).toInt() == sel) { matchIdx = i; break; }
+            if (matchIdx >= 0) {
+                cb->setCurrentIndex(matchIdx);
+            } else if (cb->count() > 0) {
+                cb->setCurrentIndex(0);
+                if (m) {
+                    const int v = cb->itemData(0).toInt();
+                    if (isTx) m->setTxSource(v); else m->setRxSource(v);
+                }
+            }
             connect(cb, &QComboBox::currentIndexChanged, this,
                     [this, cb, isTx](int) {
                 if (!meter_) return;
@@ -1577,17 +1690,36 @@ QWidget *SettingsDialog::buildMeterTab() {
         // Lets the operator watch e.g. SWR at a glance while the main
         // needle shows PWR, without taking up another dock slot.
         // Hidden automatically when the secondary == current primary.
+        // TX-only option set (mirrors the verified reference's TX
+        // meter-mode list + HL2 telemetry that's meaningful during
+        // TX).  ALC/MIC/COMP shown but disabled until v0.2.1 — keeps
+        // the picker honest.
         auto *txSec = new QComboBox(this);
-        const struct { int v; const char *label; } secOpts[] = {
-            {-1, "None (hide line)"},
-            {1,  "PWR (forward power)"},
-            {2,  "SWR (antenna match)"},
-            {3,  "PA Current (HL2 bias)"},
-            {4,  "PA Volts (HL2 supply)"},
-            {5,  "Temp (HL2 board)"},
+        const struct { int v; const char *label; bool enabled; } secOpts[] = {
+            {-1, "None (hide line)",                            true},
+            {1,  "PWR (forward power)",                         true},
+            {2,  "SWR (antenna match)",                         true},
+            {3,  "ID — PA Current (HL2 bias)",                  true},
+            {4,  "VDD — PA Volts (HL2 supply)",                 true},
+            {5,  "Temp (HL2 board)",                            true},
+            {6,  "ALC (gain reduction) — coming v0.2.1",        false},
+            {7,  "MIC (mic peak dBFS) — coming v0.2.1",         false},
+            {8,  "COMP (compressor) — coming v0.2.1",           false},
         };
-        for (const auto &o : secOpts)
-            txSec->addItem(tr(o.label), o.v);
+        auto fillSecondaryCombo = [](QComboBox *cb,
+            const decltype(secOpts) &opts) {
+            for (const auto &o : opts) {
+                cb->addItem(QObject::tr(o.label), o.v);
+                if (!o.enabled) {
+                    auto *mdl = qobject_cast<QStandardItemModel*>(cb->model());
+                    if (mdl) {
+                        QStandardItem *it = mdl->item(cb->count() - 1);
+                        if (it) it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+                    }
+                }
+            }
+        };
+        fillSecondaryCombo(txSec, secOpts);
         {
             const int sel = meter_->txSecondary();
             for (int i = 0; i < txSec->count(); ++i)
@@ -1613,8 +1745,7 @@ QWidget *SettingsDialog::buildMeterTab() {
         // model hides this slot when its selection equals the primary OR
         // duplicates secondary #1, so the operator sees nothing surprising.
         auto *txSec2 = new QComboBox(this);
-        for (const auto &o : secOpts)
-            txSec2->addItem(tr(o.label), o.v);
+        fillSecondaryCombo(txSec2, secOpts);
         {
             const int sel = meter_->txSecondary2();
             for (int i = 0; i < txSec2->count(); ++i)
@@ -1690,16 +1821,52 @@ QWidget *SettingsDialog::buildMeterTab() {
             [this](int v) { if (meter_) meter_->setPeakHoldMs(v); });
     form->addRow(tr("Meter peak-hold:"), hold);
 
+    // PWR meter ballistic — three named modes the operator picks
+    // (task #57).  PEP = sliding-window MAX, fixed 500 ms hold;
+    // Peak = sliding-window MAX, operator-tunable hold (the PWR
+    // peak-hold spin box below); Avg = IIR smoother (the spin box
+    // is irrelevant in this mode and greys out).
+    auto *pwrBallistic = new QComboBox(this);
+    pwrBallistic->addItem(tr("PEP — fast peak (500 ms hold)"),
+                          int(MeterModel::PWR_PEP));
+    pwrBallistic->addItem(tr("Peak — held peak (operator-tunable hold)"),
+                          int(MeterModel::PWR_PEAK));
+    pwrBallistic->addItem(tr("Avg — running average (calm needle)"),
+                          int(MeterModel::PWR_AVG));
+    pwrBallistic->setToolTip(tr(
+        "Choose the PWR meter's inner needle ballistic.\n\n"
+        "• PEP — sliding-window MAX with a fixed 500 ms hold.  Each "
+        "voice burst kicks the bar up and it drops back between "
+        "syllables.  Best for contest peak watching or any time you "
+        "want each peak to read as a distinct event.  Ignores the "
+        "PWR peak-hold spin box below.\n\n"
+        "• Peak — sliding-window MAX with operator-tunable hold "
+        "(default 3000 ms).  Peaks park long enough to read off "
+        "the digital face at leisure; matches the typical Bird/"
+        "Palstar PEAK ballistic.  General-purpose default.\n\n"
+        "• Avg — IIR smoother (~200 ms time constant).  Tracks the "
+        "running average of forward power, NOT peaks.  Calm needle "
+        "for sustained-tone gain-structure work and ragchew.  The "
+        "outside peak pip + max-hold marker still show recent peaks "
+        "even in this mode."));
+    {
+        const int sel = meter_ ? meter_->pwrBallistic()
+                               : int(MeterModel::PWR_PEAK);
+        for (int i = 0; i < pwrBallistic->count(); ++i)
+            if (pwrBallistic->itemData(i).toInt() == sel) {
+                pwrBallistic->setCurrentIndex(i);
+                break;
+            }
+    }
+    form->addRow(tr("PWR ballistic:"), pwrBallistic);
+
     // PWR meter sliding-window MAX hold time — operator-tunable per
     // the 2026-05-31 PM bench feedback ("still seems SLOW to react" /
     // "noticed hang time" after the initial 500 ms -> 3 s bump).
     // Distinct from the peak-hold spin box above: that controls the
     // small peak-cap indicator's hang/decay; THIS controls the MAIN
     // needle / fill-bar hold via the MAX detector's window length.
-    // The HW attack characteristic (HL2 directional coupler + ADC
-    // integrator) is what it is — this knob ONLY changes how long
-    // the captured peak holds before decaying, not how fast it
-    // climbs to peak in the first place.
+    // Only applies in PWR_PEAK mode (greyed in PEP and Avg below).
     auto *pwrHold = new QSpinBox(page);
     pwrHold->setRange(100, 10000);
     pwrHold->setSingleStep(100);
@@ -1711,9 +1878,11 @@ QWidget *SettingsDialog::buildMeterTab() {
         "needle jumps to peak instantly and holds at that value for "
         "this duration before the slot wraps and the next-highest "
         "sample takes over.  Default 3000 ms (3 sec, Bird/Palstar-"
-        "PEAK-style ballistic).  Lower for snappier decay (e.g. 500 "
-        "ms matches verified-reference default); higher for analog-"
-        "needle-style long park.\n\n"
+        "PEAK-style ballistic).  Lower for snappier decay; higher "
+        "for analog-needle-style long park.\n\n"
+        "ONLY APPLIES IN \"Peak\" BALLISTIC MODE — PEP uses a fixed "
+        "500 ms hold and Avg uses an IIR smoother (this knob greys "
+        "out for those two modes).\n\n"
         "Note: this does NOT change how fast the needle CLIMBS to "
         "peak — that's limited by the HL2 forward-power ADC's "
         "hardware response time (directional coupler analog "
@@ -1721,6 +1890,37 @@ QWidget *SettingsDialog::buildMeterTab() {
     connect(pwrHold, &QSpinBox::valueChanged, this,
             [this](int v) { if (meter_) meter_->setPwrPeakHoldMs(v); });
     form->addRow(tr("PWR peak-hold:"), pwrHold);
+
+    // Grey-out the peak-hold spin box when the active ballistic
+    // doesn't use it (PEP / Avg) so the operator immediately sees
+    // which knob applies to the current mode.
+    auto syncHoldEnable = [pwrHold](int mode) {
+        pwrHold->setEnabled(mode == int(MeterModel::PWR_PEAK));
+    };
+    syncHoldEnable(meter_ ? meter_->pwrBallistic()
+                          : int(MeterModel::PWR_PEAK));
+    connect(pwrBallistic, &QComboBox::currentIndexChanged, this,
+            [this, pwrBallistic, syncHoldEnable](int) {
+        const int m = pwrBallistic->currentData().toInt();
+        if (meter_) meter_->setPwrBallistic(m);
+        syncHoldEnable(m);
+    });
+    // Also follow programmatic changes (e.g. a future profile-
+    // manager preset that flips the ballistic) so the spin box
+    // grey-out stays in sync with the model's actual state.
+    if (meter_) {
+        connect(meter_, &MeterModel::pwrBallisticChanged, this,
+                [this, pwrBallistic, syncHoldEnable]() {
+            const int m = meter_->pwrBallistic();
+            for (int i = 0; i < pwrBallistic->count(); ++i)
+                if (pwrBallistic->itemData(i).toInt() == m) {
+                    QSignalBlocker b(pwrBallistic);
+                    pwrBallistic->setCurrentIndex(i);
+                    break;
+                }
+            syncHoldEnable(m);
+        });
+    }
 
     // Max-hold "high-water mark" — a second, slower marker that latches
     // the highest level seen and eases down gently (distinct red marker

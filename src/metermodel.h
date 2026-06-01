@@ -55,6 +55,42 @@ public:
     };
     Q_ENUM(Source)
 
+    // PWR meter ballistic — three named modes the operator picks
+    // from Settings → Meter.  All three share the same underlying
+    // fwd_power → watts conversion (and the operator's pwrCalScale_
+    // trim); they differ in the post-conversion smoothing /
+    // peak-detection wired into level_:
+    //
+    //   PEP   — sliding-window MAX, FIXED 500 ms hold (10 samples ×
+    //           50 ms tick).  Tight, snappy ballistic — each voice
+    //           burst kicks the bar up and it drops back between
+    //           syllables.  Best for contest-style peak watching
+    //           where every burst should be readable; ignores the
+    //           PWR Peak Hold spin box.
+    //   PEAK  — sliding-window MAX, hold = pwrPeakHoldMs_ (operator-
+    //           tunable in Settings, default 3000 ms = 60 samples).
+    //           Compensates for the digital bar's lack of inherent
+    //           damping — peaks park long enough to read at leisure.
+    //           General-purpose default.  This is the existing
+    //           shipped behaviour; default for backward compatibility.
+    //   AVG   — IIR smoother (single time constant ~200 ms τ).  Calm,
+    //           slow-moving needle — does NOT track speech peaks,
+    //           tracks the running average of forward power.  Best
+    //           for sustained-tone gain-structure work and ragchew
+    //           where a steady reading beats peak-chasing.
+    //
+    // All three use the same peak_ / maxPeak_ secondary indicators
+    // on the renderer (the outside-the-needle peak pip + max-hold
+    // marker), driven off level_ — so even AVG mode still shows the
+    // recent fast peaks via those auxiliary markers.  The MODE only
+    // controls the inner needle / bar fill ballistic.
+    enum PwrBallistic {
+        PWR_PEP  = 0,        // fast: 500 ms window
+        PWR_PEAK = 1,        // slow: operator-tunable window (default)
+        PWR_AVG  = 2,        // IIR smoothed
+    };
+    Q_ENUM(PwrBallistic)
+
 private:
     // One NOTIFY for the fast-changing values — QML repaints on `updated`.
     Q_PROPERTY(double level    READ level    NOTIFY updated)
@@ -107,6 +143,12 @@ private:
     // climbs to peak in the first place.
     Q_PROPERTY(int pwrPeakHoldMs READ pwrPeakHoldMs WRITE setPwrPeakHoldMs
                NOTIFY pwrPeakHoldMsChanged)
+    // PWR meter ballistic mode (PEP / PEAK / AVG).  See PwrBallistic
+    // enum decl for the per-mode semantics.  Default PWR_PEAK = current
+    // shipped behavior (no regression).  Live-apply: a mode change
+    // takes effect on the next computePwr() tick (≤50 ms).  Persisted.
+    Q_PROPERTY(int pwrBallistic READ pwrBallistic WRITE setPwrBallistic
+               NOTIFY pwrBallisticChanged)
     // PWR calibration knobs (task #34).  pwrRatedMaxW sets where the
     // red zone starts on the meter face (== operator's expected max
     // forward power: ~5 W for a bare HL2+ on-board PA, ~100 W or more
@@ -199,6 +241,8 @@ public:
     void setPeakHoldMs(int ms);
     int  pwrPeakHoldMs() const { return pwrPeakHoldMs_; }
     void setPwrPeakHoldMs(int ms);
+    int  pwrBallistic() const { return int(pwrBallistic_); }
+    void setPwrBallistic(int m);
     int  source() const { return int(source_); }
     void setSource(int s);
     int  rxSource() const { return int(rxSource_); }
@@ -225,6 +269,7 @@ signals:
     void calChanged();
     void peakHoldChanged();
     void pwrPeakHoldMsChanged();
+    void pwrBallisticChanged();
     void maxPeakCfgChanged();
     void sourceChanged();
     void rxSourceChanged();
@@ -244,6 +289,17 @@ private:
     void computeSMeter();
     void computePwr();
     void computeSwr();
+    // Task #35 fillers — HL2 telemetry trio.  Pure read of the
+    // already-decoded EP6 status slots (paCurrentA / hl2SupplyV /
+    // hl2TempC); no new wire surface, no new DSP.  ID = PA bias
+    // current; VDD = PA supply volts; TEMP = HL2 board temperature.
+    // Each is meaningful regardless of MOX state (the HL2 emits the
+    // ADCs whether keyed or not), so operators can pick any of them
+    // for the RX-side default if they want — e.g. PA Current at rest
+    // surfaces the idle bias draw without keying.
+    void computePaCurrent();
+    void computePaVolts();
+    void computeTemp();
     // Format a small "PWR 4.2 W" / "SWR 1.3:1" / "PA 1.8 A" / etc.
     // text snapshot for the given source, suitable for the secondary
     // digital readout under a TX primary.  Reads raw values from
@@ -342,6 +398,18 @@ private:
                                   // pwrPeakHoldMs_ / kTickMs.  Default
                                   // 60 = 3 sec; updated by the setter.
     int    pwrPeakHoldMs_ = 3000;
+    // PWR ballistic mode selector.  Default PWR_PEAK = current
+    // shipped behavior (sliding-window MAX, operator-tunable hold).
+    // PEP shortens the window to a fixed 500 ms; AVG swaps the
+    // detector for an IIR smoother (pwrAvgSmooth_ controls τ).
+    PwrBallistic pwrBallistic_ = PWR_PEAK;
+    // AVG-mode IIR smoothing coefficient.  α in level += α·(in − level).
+    // At 50 ms tick rate, α = 0.22 gives ~200 ms time constant
+    // (calm needle, tracks running average of forward power without
+    // chasing speech peaks).
+    double pwrAvgAlpha_ = 0.22;
+    // PEP-mode fixed sample count = 500 ms / 50 ms tick = 10.
+    static constexpr int kPwrPepSamples = 10;
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
     double noiseLevel_ = 0.0;  // floor position on the scale (0..1)
     QString snrText_ = QStringLiteral("—");
