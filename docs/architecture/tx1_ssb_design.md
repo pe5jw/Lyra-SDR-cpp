@@ -1774,6 +1774,169 @@ Tasks #35, #36, #57, #58 + the helpdialog 2-column refactor.
 Pending v0.2.x: #33 (Mic Source selector), #44 (Panadapter
 TX-state rescale), #45 (PWR per-band cal), #47 (QML null-safety
 on shutdown), #49 (TX Profile Manager), #52 (Plate Reverb —
-ready, W5UDX + N8SDR presets locked).  Blocked on operator
-screenshots: #50 (5-band parametric EQ), #51 (5-band
-Combinator).
+ready, W5UDX + N8SDR presets locked).  Combinator screenshots
+landed 2026-06-01 (the Reaper FX3 "Dual Combinator" set — see
+§11.3); EQ topology decision landed same day per §11
+(EESDR3-faithful 8-band).
+
+
+## §11. EQ topology decision — locked 2026-06-01
+
+Operator-locked after screenshot review + the EESDR3 manual
+walk-through.  Supersedes the v0.0.x-era "5-band parametric EQ
+pending X-Air screenshots" placeholder on Task #50 (X-Air's
+4-band PEQ is the wrong shape; X-Air screenshots feed #51
+Combinator instead, see §11.3).
+
+### §11.1 Reference materials consulted
+
+* `Y:/Claude local/Audio pics/EQ Parametric Layout Ideas/
+  sparkle-boost-eq-2048x811.jpg` — the visual reference image
+  the operator selected as the locked Lyra EQ layout.  8 bands
+  L→R with role-typed filter icons on top, big interactive
+  log-frequency curve in the middle, per-band Hz/dB/Q tiles
+  below, master gain on the right, drag-the-marker editing.
+* `D:/sdrprojects/ExpertSDR3_User_Manual_ENG_DX.pdf`,
+  TX Processing → Equalizer (p.89-90), and Receiver audio →
+  Equalizer (p.92-93).  Confirms the Sparkle-Boost layout IS
+  the EESDR3 parametric EQ topology verbatim:
+    > "There are eight filters (left to right): High Pass,
+    > Low Shelf, Peaking or Bell (4 units in between), High
+    > Shelf, Low Pass (on the right)."
+    > "An equalizer tile parameters from top to bottom:
+    > frequency, gain, quality."
+    > "Right mouse click on a band sign to set default
+    > settings to any EQ band."
+* `Y:/Claude local/Audio pics/Screenshot 2026-06-01 060607.jpg`,
+  `…060732.jpg` — the Behringer X-Air mixer EQ + Compressor
+  panels.  Provenance: NOT used for EQ topology (only 4 bands);
+  reserved for later compressor / channel-strip reference.
+
+### §11.2 Locked EQ specification (TX = Task #50, RX = #59)
+
+**Topology (fixed L→R role order, both TX and RX):**
+
+| # | Role        | Edits         | Color (suggested) |
+|---|-------------|---------------|-------------------|
+| 1 | HPF         | freq, slope   | red               |
+| 2 | Low Shelf   | freq, dB, Q   | orange            |
+| 3 | Bell        | freq, dB, Q   | yellow            |
+| 4 | Bell        | freq, dB, Q   | green             |
+| 5 | Bell        | freq, dB, Q   | cyan              |
+| 6 | Bell        | freq, dB, Q   | blue              |
+| 7 | High Shelf  | freq, dB, Q   | purple            |
+| 8 | LPF         | freq, slope   | magenta           |
+
+**Curve display:**
+* Log frequency axis (TX: 20 Hz - 20 kHz; RX: 20 Hz - 12 kHz).
+* Vertical gain axis ±15 dB on the right; left scale dB
+  attenuation (the analyzer's amplitude scale, 0..-60).
+* Big interactive area; drag the colored handle at a band
+  center to move freq+gain; mouse wheel over a handle changes
+  Q; click a band's filter-type icon at the top to cycle through
+  its allowed types (HPF stays HPF; LPF stays LPF; the 4 bells
+  can flip to Notch/Bandpass per operator preference — see
+  EESDR3 manual filter type list).
+* Right-click a band's sign-icon → reset that band to its
+  default (per EESDR3 idiom).
+* Selected band highlights with a translucent vertical Q-width
+  band overlay (sparkle-boost reference image clearly shows
+  this on band #7).
+
+**Per-band tile readout (below the curve, color-matched):**
+* Row 1: Frequency (Hz).
+* Row 2: Gain (dB) for bells/shelves; dB/Oct slope for HPF/LPF.
+* Row 3: Q (quality factor) — for HPF/LPF this drives the
+  filter sharpness; for shelves/bells, classic biquad Q.
+
+**Bottom control strip:**
+* Analyzer toggle: OFF / PRE / POST (POST shipped per Sparkle-
+  Boost reference; PRE = before the band gains; per EESDR3
+  Spectrum-mode pre/post-modulator selector).
+* Q-Couple toggle: when ON, dragging Q on any bell drives the
+  matched Q on all bells (operator convenience for ESSB shaping).
+* HQ toggle: 2x-oversampled biquads on the bell stages (clean
+  high-frequency response near Nyquist).
+* Master Gain trim (right side, ±15 dB).
+* Processing: Stereo dropdown reserved — currently mono-only on
+  the TX mic path; goes live with RX2 stereo EQ.
+
+**Integrated TX Spectrum Analyzer overlay (TX EQ ONLY — RX EQ
+omits, the panadapter already serves that role):**
+* Spectrum mode: live TX mic FFT overlaid on the EQ curve, with
+  a pink-noise reference line per EESDR3 p.90.
+* Signal mode: time-domain waveform of the TX signal — visually
+  inspect rotator/compressor/clipper effects.
+* Tap selector: Before Modulator / After Modulator.
+* Accumulate button: peak hold (grey = average spectral density,
+  yellow = peak — EESDR3 convention).
+* Per the manual, the analyzer does NOT process — it observes.
+
+### §11.3 DSP implementation decision
+
+**Cascaded biquads in native C++23, NOT WDSP TXEQ.**
+
+The Task #50 placeholder said "drive WDSP TXEQ (not biquads)"
+which was a hold-over from the v0.0.x-era pure-Python project's
+graphic-EQ-mode-0 thinking.  Wrong for this topology: WDSP TXEQ
+mode-0 is a 10-band graphic with fixed band centers — it cannot
+represent an operator-dragged parametric where bands move on
+the freq axis.  Rolling our own 8-stage biquad cascade is the
+only correct fit, and it is trivially cheap:
+
+* 48 kHz audio rate × 8 biquads × ~5 multiply-adds each ≈ 2 MFLOPS.
+* No allocation in the audio block; pre-computed coefficients
+  recomputed only on parameter change.
+* Audio EQ Cookbook formulas (Robert Bristow-Johnson, the
+  industry-canonical reference) for all 8 filter types — bench-
+  proven for 25 years.
+* Sits in the TxChannel chain BEFORE the WDSP TXA modulator entry
+  (between MicGain + the WDSP `fexchange0` call); on RX, sits
+  AFTER the WDSP RXA `fexchange0` returns audio, BEFORE the
+  PanelPan/Volume final stage.
+* Lyra-native shared header `Lyra::Dsp::Parametric8` used by
+  both TX and RX instances.
+
+**HQ toggle implementation:** when ON, the bell stages run at 96
+kHz (2x oversampled with a half-band Hann-windowed FIR for the
+up/down conversion).  HPF/LPF/shelves stay at native rate.
+Operator-selectable because the 2x cost is real (~3 MFLOPS extra)
+even though imperceptible on a modern CPU.
+
+### §11.4 Persistence + presets
+
+* QSettings JSON tree:
+  - `eq/tx/bands` → array of 8 objects `{type, freq, gain, q,
+    enabled}`.
+  - `eq/tx/master_gain_db`, `eq/tx/q_couple`, `eq/tx/hq`,
+    `eq/tx/analyzer_mode` (off/pre/post), `eq/tx/tap`
+    (before/after).
+  - `eq/rx/...` mirror, plus `eq/rx/use_for_monitor`.
+* Preset bundling via the Profile Manager (Task #49) — TX EQ
+  presets travel with the full TX profile bundle (Mic + ALC +
+  Leveler + PHROT + EQ + Combinator + Plate + mute-on-TX).
+* Ship-with-app preset starter set: empty in v0.2.1 (operator
+  records their own); v0.2.2 polish may ship 2-3 named defaults
+  (Voice / DX / Ragchew) once N8SDR's bench-recorded values are
+  locked.
+
+### §11.5 Combinator note (Task #51)
+
+The 6 Reaper "FX 3 - Dual Combinator" screenshots
+(`Screenshot 2026-06-01 06030[6/30/46]…0419/56`) confirm
+Task #51's locked spec:
+
+* 5 bands: LOW / LO-MID / MID / HI-MID / HIGH (color-coded:
+  red / orange / pink / purple / teal) with per-band level
+  meters and per-band Threshold + Gain (selected via the radio-
+  button column).
+* Global: MIX, ATT, REL, SPEED (SBC), X-OVER, GLOBAL RATIO.
+* SBC (Spectrum Balance Control) operator mode + SOLO / BYP per
+  band + 48 dB headroom display.
+* Save / Load / A/B Link side rail.
+
+Architecture per CLAUDE.md §51: Linkwitz-Riley 24 dB/oct
+crossovers + 5 parallel compressors + sum + WDSP ALC at output
+as always-on limiter (NOT linear-phase FIR, NOT AVX-512).  The
+Reaper screenshots refine the UI layout but do not change the
+locked DSP architecture.
