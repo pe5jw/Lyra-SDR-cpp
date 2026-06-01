@@ -1636,3 +1636,144 @@ knows the layout slot they belong in:
 
 The §5.4.1 VAC1 panel ships under Settings → Audio → VAC1 (separate
 tab from Settings → TX), per Thetis layout convention.
+
+
+## §10. v0.2.2 cycle — Meter / Help / Credits polish (2026-06-01)
+
+Today's session shipped five distinct items.  Architectural pieces
+worth recording for future readers below.
+
+### §10.1 Task #36 — Hardware PTT input forwarder (default-OFF)
+
+**Locked posture:** operator opt-in, default OFF.  Per the §10
+Q#1 finding from the Python predecessor (`ff5f128` lineage), EP6
+status C0 bit 0 (`ptt_in`) is NOT a clean 0 at RX rest on every
+HL2 gateware revision — N8SDR's HL2+/AK4951 unit empirically
+carries a non-zero level at rest, so an always-on forwarder
+mis-reads it as a foot-switch press and produces a phantom-TX
+surge the moment Lyra opens.
+
+Implementation surfaces:
+- `Prefs.hwPttEnabled` (`tx/hw_ptt_enabled`, default false).
+- `HL2Stream::hwPttEnabled_` atomic mirror + `lastPttIn_`
+  edge-detect memory (RX-worker-thread owned).
+- `rxWorkerLoop` decodes `ptt_in = u[11] & 0x01` per datagram
+  (frame-0 C0 bit 0 — gateware-pure regardless of address
+  rotation / I²C-readback bit).  Pure-decode when gated off
+  (still updates `lastPttIn_` so a future enable doesn't fire
+  on stale state); edge-driven `QueuedConnection` dispatch to
+  `requestMox()` when gated on.
+- Settings → Hardware → Transmit checkbox with the
+  bench-verify-first safety tooltip.
+
+Operator-validated working on N8SDR's bench foot switch.
+
+### §10.2 Task #35 — TX Multimeter fillers + RX/TX picker split
+
+**Three new meter sources** wired off the EP6-decoded HL2
+telemetry slots (no new wire surface, no new DSP):
+
+- **ID — PA Current** — 0..3 A, 1.8 A verified-reference
+  full-tune anchor tick, 2.5 A danger.
+- **VDD — PA Volts** — 0..16 V, 12 V nominal HL2-supply tick,
+  14 V danger.
+- **TEMP** — 0..80 °C, 25 °C idle tick, 60 °C danger.
+
+Slow IIR ballistic (`kTelSmooth=0.30`) — physical-quantity
+readings shouldn't chase sensor noise.
+
+**Per-MOX-state source-type enforcement (the picker-split
+correction):** the RX dropdown is RX-signal-only (`RX_SMETER`
+for now; PA telemetry available via the HL2 banner chip + the
+Vertical Ladder style).  The TX dropdown is the TX-chain /
+forward-power / HL2-telemetry set.  Enforced at the model
+layer in `setRxSource()` / `setTxSource()` with explicit
+switch statements — no future code path can assign a TX-chain
+source to the RX-state slot.  Stale legacy QSettings values
+normalize via ctor autoload clamps.
+
+ALC / MIC / COMP show in the TX picker but are disabled with
+"coming v0.2.1" caveats — they unlock when the WDSP TXA-meter
+readout wires in alongside the compressor (Tasks #50 / #51).
+
+### §10.3 Task #57 — PWR meter ballistic picker (PEP / Peak / Avg)
+
+Three named ballistics, operator picks per use-case:
+
+| Mode | Mechanism | Default hold | Use case |
+|---|---|---|---|
+| **PEP** | Sliding-window MAX, fixed 10 samples × 50 ms | 500 ms | Contest peak-watching; each speech burst kicks the bar up and drops between syllables |
+| **Peak** *(default)* | Sliding-window MAX, operator-tunable hold | 3000 ms (60 samples) | General-purpose; peaks park long enough to read off the digital face |
+| **Avg** | IIR smoother | ~200 ms τ | Sustained-tone gain-structure work / ragchew; calm needle that doesn't chase peaks |
+
+**Architectural decision — why Peak default is 3000 ms vs the
+verified reference's 500 ms:** the reference's analog-style
+needle widget has rendered spring + inertia damping, so a
+500 ms hold + the needle's settling animation reads as
+continuous flowing motion.  Lyra's digital bar / Plasma arc
+renderers have no inherent damping — a digital bar held at
+4.6 W for 500 ms then dropping reads as a *flash*
+(operator bench 2026-05-31 PM).  The 3000 ms default matches
+the typical Bird/Daiwa PEAK ballistic where a peak parks for
+several seconds so the operator can read it at leisure.
+Same underlying MAX-detector math, same sub-50-ms attack —
+only the post-attack hold is tuned for the digital renderer's
+visual character.  Operators who want the reference's tighter
+feel can pick PEP (fixed 500 ms) or dial *Peak* down via the
+spin box.
+
+The outer peak pip + max-hold marker remain driven off
+`level_` in ALL modes — Avg still surfaces recent peaks via
+those auxiliary indicators while the inner needle tracks
+the running average.
+
+### §10.4 Help dialog 2-column redesign
+
+`QSplitter(QTreeWidget TOC, QTextBrowser content)` replacing
+the prior single-pane layout.  TOC tree built at load time
+from parsed markdown headings (26 H2 + 38 H3 in the current
+doc).  Click → `QTextBrowser::find(<heading-text>)` — the
+proven mechanism (`showTopic` for per-panel `?` badges already
+used it).  Bypasses Qt's `setMarkdown()` → `QTextDocument`
+anchor-name path which doesn't generate slug-named anchors
+from headings (operator-reported defect after the first
+`<a name>` injection attempt was silently swallowed by the
+conversion).
+
+In-document body cross-reference links resolve via a
+`slugToHeading_` map populated alongside the tree.  Window
+geometry + splitter state persisted to QSettings.
+Min/max/close in the title bar (`Qt::WindowMinMaxButtonsHint`
+— `QDialog` defaults to fixed-frame on Windows, this was the
+missing piece).  TOC items styled as hyperlinks (Lyra-cyan
+text, hover brighten, pointing-hand cursor) so the
+click-affordance is obvious.
+
+### §10.5 Task #58 — Credits and References
+
+`Help → About Lyra…` dialog gains an "Inspiration and
+references" + "Licensed components" block listing every
+project consulted during the Lyra build (Thetis SDR, openHPSDR
+Protocol 1 spec, PowerSDR, HermesLite 2 wiki + ak4951v4
+gateware RTL, pihpsdr, Quisk, linHPSDR, EESDR V3, Behringer
+X-Air mixer series, SparkSDR) plus WDSP / TCI / FFTW
+licensed-components attributions.  Full long-form version
+lands in `USER_GUIDE.md` as a new `## Credits and References`
+section.
+
+**No-attribution rule re-affirmed:** shipped code, comments,
+commits, and operator-visible UI strings keep reference names
+out.  This Credits section is the single operator-facing place
+that names them, openly and once.  Provenance details (file,
+line, decision) continue to live in `docs/architecture/` and
+the project memory.
+
+### §10.6 Closed for v0.2.2
+
+Tasks #35, #36, #57, #58 + the helpdialog 2-column refactor.
+Pending v0.2.x: #33 (Mic Source selector), #44 (Panadapter
+TX-state rescale), #45 (PWR per-band cal), #47 (QML null-safety
+on shutdown), #49 (TX Profile Manager), #52 (Plate Reverb —
+ready, W5UDX + N8SDR presets locked).  Blocked on operator
+screenshots: #50 (5-band parametric EQ), #51 (5-band
+Combinator).
