@@ -19,9 +19,12 @@
 #include "tx_dsp_worker.h"
 #include "wdsp_native.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 #ifdef _WIN32
 // WIN32_LEAN_AND_MEAN prevents windows.h pulling in winsock1, which
@@ -441,6 +444,36 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      prefs,  &lyra::ui::Prefs::setMoxActive);
     prefs->setMoxActive(stream->moxActive());   // seed initial state
+
+    // Task #74 — TUN separate-drive orchestrator.  When the operator
+    // arms TUN and Prefs.useTuneDrive is on, stash the current wire
+    // drive level and push the tune-drive % (0..100 → 0..255 wire DAC);
+    // on TUN-off, restore the stashed value.  When useTuneDrive is
+    // off this is a no-op — TUN keys at the operator's TX Drive %
+    // (byte-identical to pre-#74 behaviour).
+    //
+    // shared_ptr so the captured saved-level survives connect/
+    // disconnect cycles for the app lifetime.  Lambda runs on the
+    // emitter thread (DirectConnection by default; HL2Stream lives
+    // on the main thread same as prefs) so the drive push completes
+    // BEFORE the QML's subsequent Stream.requestMox(true) call sees
+    // the wire — first TX frame post-MOX-rise already carries the
+    // tune-drive level.
+    {
+        auto savedDrive = std::make_shared<int>(0);
+        QObject::connect(stream, &lyra::ipc::HL2Stream::tuneEnabledChanged,
+                         prefs, [stream, prefs, savedDrive](bool on) {
+            if (!prefs->useTuneDrive()) return;
+            if (on) {
+                *savedDrive = stream->txDriveLevel();
+                const int raw = std::clamp(int(std::lround(
+                    prefs->tuneDrivePct() * 255.0 / 100.0)), 0, 255);
+                stream->setTxDriveLevel(raw);
+            } else {
+                stream->setTxDriveLevel(*savedDrive);
+            }
+        });
+    }
     // Weather-alert service — polls the operator's enabled sources and
     // feeds the header badges + toasts.  Reads its location from Prefs,
     // so a station-location change re-arms it.

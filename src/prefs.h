@@ -39,6 +39,19 @@ class Prefs : public QObject {
                NOTIFY txDbMinChanged)
     Q_PROPERTY(double txDbMax READ txDbMax WRITE setTxDbMax
                NOTIFY txDbMaxChanged)
+    // Task #74 — TUN separate-drive toggle + value.  When useTuneDrive
+    // is on, the TUN button swaps the wire drive to tuneDrivePct for
+    // the duration of the tune (orchestrated in main.cpp on
+    // Stream::tuneEnabledChanged); the prior drive % is restored on
+    // tune-off.  When useTuneDrive is off, TUN keys at the operator's
+    // current TX Drive % (legacy behaviour, byte-identical to today).
+    // Defaults: useTuneDrive=false, tuneDrivePct=25 — sane "tune at
+    // a quarter power into a dummy load" starting point that the
+    // operator can re-tune once and forget.
+    Q_PROPERTY(bool useTuneDrive READ useTuneDrive WRITE setUseTuneDrive
+               NOTIFY useTuneDriveChanged)
+    Q_PROPERTY(int  tuneDrivePct READ tuneDrivePct WRITE setTuneDrivePct
+               NOTIFY tuneDrivePctChanged)
     // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
     Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
@@ -266,6 +279,10 @@ public:
     double txDbMax() const { return txDbMax_; }
     void   setTxDbMax(double v);
     bool   moxActive() const { return moxActive_; }
+    bool   useTuneDrive() const { return useTuneDrive_; }
+    void   setUseTuneDrive(bool v);
+    int    tuneDrivePct() const { return tuneDrivePct_; }
+    void   setTuneDrivePct(int v);
 public slots:
     void   setMoxActive(bool on);
 public:
@@ -407,6 +424,8 @@ signals:
     void dbMaxChanged();
     void txDbMinChanged();
     void txDbMaxChanged();
+    void useTuneDriveChanged();
+    void tuneDrivePctChanged();
     void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
@@ -474,6 +493,9 @@ private:
     double  txDbMin_;
     double  txDbMax_;
     bool    moxActive_ = false;
+    // Task #74 — TUN separate-drive state (defaults applied in ctor).
+    bool    useTuneDrive_ = false;
+    int     tuneDrivePct_ = 25;
     bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;

@@ -178,6 +178,43 @@ Rectangle {
 
         Item { Layout.fillWidth: true }   // pushes TUN + MOX to the right
 
+        // ── Tune-drive % (Task #74) — inline operator-tuned drive
+        //    level applied only while TUN is armed; visible only when
+        //    Settings → TX → "Use separate tune drive" is on so the
+        //    panel stays uncluttered for operators who tune at their
+        //    main TX drive (the legacy behaviour).  Persists to
+        //    QSettings via Prefs.tuneDrivePct.
+        Label {
+            text: qsTr("Tune")
+            color: root.cMuted
+            visible: Prefs.useTuneDrive
+        }
+        SpinBox {
+            id: tuneDriveSpin
+            visible: Prefs.useTuneDrive
+            from: 0; to: 100; stepSize: 1
+            value: Prefs.tuneDrivePct
+            onValueModified: Prefs.tuneDrivePct = value
+            // Keep widget in sync if value changes elsewhere (Settings
+            // dialog spinbox, persistence reload).
+            Connections {
+                target: Prefs
+                function onTuneDrivePctChanged() {
+                    if (tuneDriveSpin.value !== Prefs.tuneDrivePct)
+                        tuneDriveSpin.value = Prefs.tuneDrivePct
+                }
+            }
+            textFromValue: function(v) { return v + " %" }
+            valueFromText: function(t) { return parseInt(t) || 0 }
+            ToolTip.text: qsTr("Drive %% applied while TUN is armed. "
+                + "Lyra swaps to this value on tune-arm and restores "
+                + "your main TX Drive %% on tune-release.  Set once and "
+                + "forget — typically lower than voice TX so you tune "
+                + "into the antenna/tuner at safe power.")
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered
+        }
+
         // ── TUN — armed-tune button (carrier @ TX freq + 1 kHz) ─────
         // Clicking arms the host-streamed 1 kHz tone AND requests MOX
         // in a single gesture (the operator's "press to tune" pattern).

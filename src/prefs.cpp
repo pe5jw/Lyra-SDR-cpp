@@ -81,6 +81,10 @@ constexpr auto kDebugLog   = "debug/logging";
 // Task #36 — Hardware PTT input opt-in (default OFF per §10 Q#1).
 constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 constexpr auto kMicSource    = "tx/mic_source";
+// Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
+// Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
+constexpr auto kUseTuneDrive = "tx/use_tune_drive";
+constexpr auto kTuneDrivePct = "tx/tune_drive_pct";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -112,6 +116,9 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     rxDbMax_      = s.value(kDbMax, -20.0).toDouble();
     txDbMin_    = s.value(kTxDbMin, -80.0).toDouble();
     txDbMax_    = s.value(kTxDbMax, 20.0).toDouble();
+    useTuneDrive_ = s.value(kUseTuneDrive, false).toBool();
+    tuneDrivePct_ = std::clamp(
+        s.value(kTuneDrivePct, 25).toInt(), 0, 100);
     dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
@@ -296,6 +303,21 @@ void Prefs::setRxDbMax(double v) {
         QSettings().setValue(kDbMax, v);
         if (!moxActive_) emit dbMaxChanged();
     }
+}
+
+void Prefs::setUseTuneDrive(bool v) {
+    if (v == useTuneDrive_) return;
+    useTuneDrive_ = v;
+    QSettings().setValue(kUseTuneDrive, v);
+    emit useTuneDriveChanged();
+}
+
+void Prefs::setTuneDrivePct(int v) {
+    v = std::clamp(v, 0, 100);
+    if (v == tuneDrivePct_) return;
+    tuneDrivePct_ = v;
+    QSettings().setValue(kTuneDrivePct, v);
+    emit tuneDrivePctChanged();
 }
 
 void Prefs::setMoxActive(bool on) {

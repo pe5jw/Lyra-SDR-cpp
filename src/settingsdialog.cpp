@@ -2172,6 +2172,73 @@ QWidget *SettingsDialog::buildTxTab() {
         root->addWidget(grp);
     }
 
+    // ── Tune (separate TUN drive, Task #74) ─────────────────────
+    // Operator-toggled: when on, the TUN button swaps the wire drive
+    // to the Tune Drive % value for the duration of the tune, then
+    // restores the prior TX Drive % on tune-release.  Default OFF —
+    // TUN uses the operator's current TX Drive % (legacy behaviour).
+    // Toggle this on for the "tune at safe-low into the tuner/dummy,
+    // talk at higher drive" workflow.  Live: changing either control
+    // takes effect on the very next TUN arm.
+    if (prefs_) {
+        auto *grp = new QGroupBox(tr("Tune  (TUN button)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *useBox = new QCheckBox(tr("Use separate tune drive"), grp);
+        useBox->setChecked(prefs_->useTuneDrive());
+        useBox->setToolTip(tr(
+            "When ON, the TUN button keys at the Tune Drive %% set "
+            "below — independent of your TX Drive %% slider.  TUN-"
+            "release restores your TX Drive %%.  Use this so you can "
+            "tune at a safe low power (e.g. 25 %%) without giving up "
+            "your voice-TX drive setting between tune sessions.\n\n"
+            "When OFF, TUN keys at your current TX Drive %% (legacy)."));
+        form->addRow(QString(), useBox);
+
+        auto *spin = new QSpinBox(grp);
+        spin->setRange(0, 100);
+        spin->setSuffix(tr(" %"));
+        spin->setValue(prefs_->tuneDrivePct());
+        spin->setEnabled(prefs_->useTuneDrive());
+        spin->setToolTip(tr(
+            "Drive %% applied while TUN is armed.  Bench-safe default "
+            "is 25 %% into a dummy load; raise as you trust the tuner/"
+            "antenna/amp setup.  Only takes effect when 'Use separate "
+            "tune drive' is on."));
+        form->addRow(tr("Tune Drive:"), spin);
+
+        connect(useBox, &QCheckBox::toggled, grp,
+                [this, spin](bool on) {
+            if (prefs_) prefs_->setUseTuneDrive(on);
+            spin->setEnabled(on);
+        });
+        connect(spin, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { if (prefs_) prefs_->setTuneDrivePct(v); });
+
+        // External-update mirrors so the TxPanel.qml inline stepper
+        // and this spin box stay in lockstep through QSettings reloads
+        // / RestoreDefaults / TX Profile recall (future #49).
+        connect(prefs_, &lyra::ui::Prefs::useTuneDriveChanged,
+                useBox, [this, useBox, spin]() {
+            const bool on = prefs_->useTuneDrive();
+            if (useBox->isChecked() != on) {
+                QSignalBlocker b(useBox);
+                useBox->setChecked(on);
+            }
+            spin->setEnabled(on);
+        });
+        connect(prefs_, &lyra::ui::Prefs::tuneDrivePctChanged,
+                spin, [this, spin]() {
+            const int v = prefs_->tuneDrivePct();
+            if (spin->value() != v) {
+                QSignalBlocker b(spin);
+                spin->setValue(v);
+            }
+        });
+
+        root->addWidget(grp);
+    }
+
     // ── Mic + ALC (TXA input/output gain stages) group ───────────
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     //
