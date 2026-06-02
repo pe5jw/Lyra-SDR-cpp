@@ -139,6 +139,23 @@ public:
     double opHighHz()   const { return opHigh_; }
     int    channelId()  const { return channel_; }
 
+    // Task #69 — live WDSP TXA meter taps for the operator-facing
+    // MIC / COMP / ALC multimeter sources.  Read the values WDSP
+    // computes inside the running TXA chain — safe to poll from
+    // the Qt main thread per the reference's GetTXAMeter contract
+    // (read the latest stored value, no locking).  Return dB
+    // values pre-converted from WDSP's raw outputs:
+    //   * micPeakDbFs   — TXA_MIC_PK    (linear peak → dBFS)
+    //   * levelerGainDb — TXA_LVLR_GAIN (linear gain → dB; 0 =
+    //                     no leveler action, negative = reduction)
+    //   * alcGainDb     — TXA_ALC_GAIN  (linear gain → dB; 0 =
+    //                     no ALC action,    negative = reduction)
+    // When the channel isn't open / WDSP not loaded these return
+    // a sentinel floor (-200 dB / 0 dB) so callers can show "—".
+    double micPeakDbFs() const;
+    double levelerGainDb() const;
+    double alcGainDb() const;
+
 private:
     // Apply the current (mode, opLow_, opHigh_) to the WDSP
     // bandpass + mode setters in the locked freqs-before-mode

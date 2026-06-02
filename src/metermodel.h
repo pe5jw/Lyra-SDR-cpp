@@ -25,7 +25,7 @@
 #include <deque>
 
 namespace lyra::ipc { class HL2Stream; }
-namespace lyra::dsp { class WdspEngine; }
+namespace lyra::dsp { class WdspEngine; class TxDspWorker; }
 
 namespace lyra::ui {
 
@@ -218,6 +218,15 @@ public:
                         lyra::dsp::WdspEngine *wdsp,
                         QObject *parent = nullptr);
 
+    // Task #69 — late-bound TX DSP worker for the WDSP TXA meter
+    // taps (MIC / COMP / ALC sources).  Null at construction
+    // because TxDspWorker is built post-WDSP-load (main.cpp
+    // singleShot); main.cpp calls this after construction.  Held
+    // by raw pointer (caller owns lifetime; teardown order makes
+    // TxDspWorker destruct AFTER MeterModel goes silent — same
+    // pattern as setTciMicSource above).
+    void setTxDspWorker(lyra::dsp::TxDspWorker *w) { txWorker_ = w; }
+
     double  level()    const { return level_; }
     double  peak()     const { return peak_; }
     double  maxPeak()  const { return maxPeak_; }
@@ -300,6 +309,10 @@ private:
     void computePaCurrent();
     void computePaVolts();
     void computeTemp();
+    // Task #69 — TX-side TXA meter computes.
+    void computeMic();
+    void computeComp();
+    void computeAlc();
     // Format a small "PWR 4.2 W" / "SWR 1.3:1" / "PA 1.8 A" / etc.
     // text snapshot for the given source, suitable for the secondary
     // digital readout under a TX primary.  Reads raw values from
@@ -340,8 +353,9 @@ private:
     // sources — only the threshold's meaning differs per source).
     double normDanger_ = 0.0;
 
-    lyra::ipc::HL2Stream  *stream_ = nullptr;
-    lyra::dsp::WdspEngine *wdsp_   = nullptr;
+    lyra::ipc::HL2Stream   *stream_   = nullptr;
+    lyra::dsp::WdspEngine  *wdsp_     = nullptr;
+    lyra::dsp::TxDspWorker *txWorker_ = nullptr;   // Task #69 (late-bound)
     QTimer timer_;
 
     // Active scale endpoints (recomputed each tick from the VFO freq;

@@ -124,6 +124,14 @@ public:
     }
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
+    // Task #69 — live TXA meter accessors for the operator-facing
+    // multimeter MIC / COMP / ALC sources.  Pass-through to the
+    // owned TxChannel.  Polled from the Qt main thread by
+    // MeterModel::tick on MOX; safe per the read-only contract.
+    double micPeakDbFs()   const { return tx_.micPeakDbFs(); }
+    double levelerGainDb() const { return tx_.levelerGainDb(); }
+    double alcGainDb()     const { return tx_.alcGainDb(); }
+
     // ── Task #33: tagged mic-source dispatch ────────────────────
     //
     // The TX mic ring is fed by exactly ONE source at a time —

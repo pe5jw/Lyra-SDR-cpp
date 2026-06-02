@@ -1588,6 +1588,45 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(combo, 7, 1);
         }
 
+        // --- Task #39: HL2 hardware +20 dB Mic Boost ---
+        // Lives next to the Mic Source picker because it's part of
+        // the same operator question ("what's feeding the TX
+        // chain?").  Single bit on the wire (C0 0x12 C2 bit 0)
+        // engaging the HL2 codec's analog mic PGA at +20 dB — pure
+        // hardware boost ahead of the digital chain.  Useful when
+        // your hand mic is genuinely weak; for fine trim use the
+        // Mic Gain slider on the TX panel (it stacks on top of the
+        // hardware boost).  No safety implication, no MOX gating;
+        // persisted.  Only affects the codec-mic source — PC mic /
+        // TCI inputs bypass the codec entirely.
+        if (stream_) {
+            auto *mbBox = new QCheckBox(
+                tr("Mic Boost (+20 dB hardware, codec mic only)"), grp);
+            mbBox->setChecked(stream_->micBoost());
+            mbBox->setToolTip(tr(
+                "Enables the HL2 codec's hardware +20 dB mic preamp "
+                "(C0 0x12 C2 bit 0).  Use this when your hand mic or "
+                "headset mic is too quiet to hit the WDSP TXA chain "
+                "at a reasonable level even with the Mic Gain slider "
+                "near max.  Only affects the codec mic input — PC "
+                "mic / TCI audio sources bypass the codec PGA "
+                "entirely, so this checkbox has no effect on them. "
+                "Hardware is 2-state (off / +20 dB); intermediate "
+                "trim comes from the Mic Gain slider stacked on "
+                "top.  Persistent across launches."));
+            connect(mbBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (stream_) stream_->setMicBoost(on);
+            });
+            connect(stream_, &lyra::ipc::HL2Stream::micBoostChanged, mbBox,
+                    [mbBox](bool on) {
+                if (mbBox->isChecked() != on) {
+                    QSignalBlocker b(mbBox);
+                    mbBox->setChecked(on);
+                }
+            });
+            g->addWidget(mbBox, 8, 0, 1, 2);
+        }
+
         form->addRow(grp);
     }
 

@@ -275,6 +275,12 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     paOn_.store(
         QSettings().value(QStringLiteral("tx/paEnabled"), false).toBool(),
         std::memory_order_relaxed);
+    // Task #39 — HL2 +20 dB hardware Mic Boost (codec analog PGA).
+    // Persisted across launches; NOT defensively cleared on
+    // open/close (it's voice-chain calibration, not a safety gate).
+    micBoost_.store(
+        QSettings().value(QStringLiteral("tx/micBoost"), false).toBool(),
+        std::memory_order_relaxed);
     // TX-0c-pa-drive — operator-tunable drive DAC level (raw 0..255,
     // UI exposes 0..100 %).  Persisted across launches; NOT cleared on
     // stream open/close — the "volume" knob carries the operator's
@@ -1362,6 +1368,29 @@ void HL2Stream::setPaEnabled(bool on) {
                       : QStringLiteral("off (PA bias disarmed)")));
 }
 
+void HL2Stream::setMicBoost(bool on) {
+    // Task #39 — HL2 +20 dB hardware Mic Boost via the codec PGA.
+    // Per the reference's SetMicBoost (netInterface.c:536-544 +
+    // network.h:220-221 mic_boost : 1) the wire is a single bit
+    // at C0 0x12 C2 bit 0: hardware is 2-state Off / +20 dB only.
+    // Intermediate boost levels come from the operator Mic Gain
+    // slider (Task #32) applied AFTER this hardware boost stage
+    // — the two compose: HW +20 dB boost feeds the WDSP TXA
+    // mic-input panel where the operator's Mic Gain slider
+    // applies digital trim.
+    //
+    // No safety implication (purely audio-level), no MOX gating
+    // (the bit can flip on RX without affecting any wire RF).
+    // Persisted to QSettings; recalled on stream open.
+    const bool prev = micBoost_.exchange(on, std::memory_order_relaxed);
+    if (prev == on) return;
+    QSettings().setValue(QStringLiteral("tx/micBoost"), on);
+    emit micBoostChanged(on);
+    safetyLog(QStringLiteral("TX: Mic Boost -> %1")
+              .arg(on ? QStringLiteral("ON  (+20 dB HW)")
+                      : QStringLiteral("off (0 dB HW)")));
+}
+
 void HL2Stream::setTuneEnabled(bool on) {
     // Arms / disarms the host-streamed tune-carrier generator.  When
     // ON and the wire-MOX bit is high, the EP2 writer fills each LRIQ
@@ -2169,7 +2198,15 @@ void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
         out[1] = static_cast<std::uint8_t>(
             txDriveLevel_.load(std::memory_order_relaxed) & 0xFF);
         const bool pa = paOn_.load(std::memory_order_relaxed);
-        out[2] = static_cast<std::uint8_t>(pa ? 0x08 : 0x00);
+        const bool mb = micBoost_.load(std::memory_order_relaxed);
+        // Task #39 — Mic Boost bit (C2 bit 0 / 0x01) per the
+        // reference's standard SetMicBoost (networkproto1.c:748-751
+        // + network.h:220-221 mic_boost : 1).  +20 dB analog PGA
+        // gain in the codec's mic preamp.  Independent of PA — the
+        // bits compose freely.  bit 7 (VNA) must remain clear for
+        // PA keying (control.v:359).
+        out[2] = static_cast<std::uint8_t>((pa ? 0x08 : 0x00)
+                                           | (mb ? 0x01 : 0x00));
         out[3] = 0x00;
         out[4] = 0x00;
         break;

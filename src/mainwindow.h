@@ -27,7 +27,7 @@ class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
-namespace lyra::dsp { class TciMicSource; }
+namespace lyra::dsp { class TciMicSource; class TxDspWorker; }
 
 namespace lyra::ui {
 
@@ -70,6 +70,11 @@ public:
     // teardown).  See main.cpp's WDSP-loaded singleShot block + the
     // aboutToQuit chain.
     void setTciMicSource(lyra::dsp::TciMicSource *src);
+    // Task #69 — late-bound forwarder so main.cpp's WDSP-loaded
+    // singleShot block (where TxDspWorker is constructed) can
+    // wire the worker into the MeterModel for live MIC/COMP/ALC
+    // taps.  Same pattern as setTciMicSource above.
+    void setTxDspWorker(lyra::dsp::TxDspWorker *w);
 
 protected:
     void closeEvent(QCloseEvent *event) override;

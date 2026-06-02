@@ -424,4 +424,48 @@ int TxChannel::process(const float *mic_block, int n,
     return fexErr_;
 }
 
+// Task #69 — live WDSP TXA meter taps for the operator-facing
+// multimeter MIC / COMP / ALC sources.  Index constants per
+// `wdsp/TXA.h:51-65` `enum txaMeterType`:
+//   TXA_MIC_PK    = 0   linear peak amplitude (0..~1+ full-scale)
+//   TXA_LVLR_GAIN = 6   linear gain factor (1.0 = no action,
+//                       <1 = gain reduction)
+//   TXA_ALC_GAIN  = 14  linear gain factor (1.0 = no action,
+//                       <1 = gain reduction)
+// All three are read-only loads of WDSP's per-channel internal
+// state — no lock needed (the reference reads them the same way
+// from the UI thread).  We hold channelMtx_ briefly anyway to
+// guard against a torn-down channel between the opened_ check
+// and the GetTXAMeter call (mirrors the open/close lifecycle
+// discipline the setters use).
+
+double TxChannel::micPeakDbFs() const {
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return -200.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return -200.0;
+    const double pk = api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);
+    // Floor at 1e-10 so a true-zero or negative-eps reading lands
+    // at the -200 dB sentinel instead of NaN/-inf.
+    return 20.0 * std::log10(std::max(pk, 1e-10));
+}
+
+double TxChannel::levelerGainDb() const {
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return 0.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return 0.0;
+    const double g = api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6);
+    return 20.0 * std::log10(std::max(g, 1e-10));
+}
+
+double TxChannel::alcGainDb() const {
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return 0.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return 0.0;
+    const double g = api.GetTXAMeter(channel_, /*TXA_ALC_GAIN=*/14);
+    return 20.0 * std::log10(std::max(g, 1e-10));
+}
+
 } // namespace lyra::dsp

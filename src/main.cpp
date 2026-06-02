@@ -348,6 +348,12 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-1 step c1: delete tciMicSource - start");
         delete tciMicSource; tciMicSource = nullptr;
         qWarning("[shutdown] handler-1 step c1: done");
+        // Task #69 — clear MeterModel's TxDspWorker pointer BEFORE
+        // deleting txWorker so a stray tick on the way out can't
+        // dereference a deleted worker.  Null-safe in MainWindow.
+        qWarning("[shutdown] handler-1 step c1b: meter.setTxDspWorker(nullptr) - start");
+        if (winRef) winRef->setTxDspWorker(nullptr);
+        qWarning("[shutdown] handler-1 step c1b: done");
         qWarning("[shutdown] handler-1 step c: delete txWorker - start (~TxDspWorker runs now)");
         delete txWorker;  txWorker  = nullptr;
         qWarning("[shutdown] handler-1 step c: done");
@@ -466,6 +472,15 @@ int main(int argc, char *argv[])
             // the autoloaded Prefs::micSource() token below.
             tciMicSource = new lyra::dsp::TciMicSource(txWorker);
             if (win) win->setTciMicSource(tciMicSource);
+
+            // Task #69 — wire the just-constructed TxDspWorker into
+            // MeterModel so the multimeter's MIC / COMP / ALC
+            // sources can poll live WDSP TXA meter taps.  Matches
+            // the setTciMicSource pattern immediately above
+            // (late-bound, post-WDSP-load).  Cleared in the
+            // aboutToQuit teardown chain so MeterModel never
+            // dereferences a deleted txWorker.
+            if (win) win->setTxDspWorker(txWorker);
 
             // Task #33 — apply the autoloaded mic source + wire
             // Prefs::micSourceChanged so Settings → TX → Mic Source

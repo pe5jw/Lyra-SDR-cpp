@@ -190,6 +190,19 @@ class HL2Stream : public QObject {
     // Persisted: tx/paEnabled.  Defensive cleared on stream open/close.
     Q_PROPERTY(bool paEnabled READ paEnabled WRITE setPaEnabled
                NOTIFY paEnabledChanged)
+    // Task #39 — HL2 hardware +20 dB Mic Boost via the codec's
+    // analog PGA.  Lands C0 0x12 C2 bit 0 (the reference's
+    // standard SetMicBoost bit, networkproto1.c:748-751 +
+    // network.h:220-221 mic_boost : 1).  Single bit on the
+    // wire — hardware is 2-state (off / +20 dB); intermediate
+    // levels come from the operator Mic Gain slider
+    // (Task #32) on top of this hardware boost.  Persisted:
+    // tx/micBoost.  Not defensively cleared on open/close —
+    // this is the operator's voice-chain calibration, not a
+    // safety gate.  No RF behavior; takes effect only while
+    // the codec mic is the active TX source.
+    Q_PROPERTY(bool micBoost READ micBoost WRITE setMicBoost
+               NOTIFY micBoostChanged)
     // TX-0c-pa-drive — operator-tunable drive DAC level.  Maps to
     // frame-10 C1; the gateware uses the top 4 bits → 16 coarse steps,
     // so wire values 0/16/32/.../255 are the meaningful endpoints (the
@@ -508,6 +521,7 @@ public:
     // TX-0c-pa-debug — operator-gated PA-enable mirror (Q_PROPERTY
     // getter).  Reads the wire atomic.
     bool    paEnabled() const { return paOn_.load(std::memory_order_relaxed); }
+    bool    micBoost()  const { return micBoost_.load(std::memory_order_relaxed); }
     // TX-0c-pa-drive — drive DAC level (Q_PROPERTY getter).  Raw 0..255
     // wire value; UI converts to/from 0..100 %.  Reads the wire atomic.
     int     txDriveLevel() const { return txDriveLevel_.load(std::memory_order_relaxed); }
@@ -664,6 +678,7 @@ public slots:
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
+    void setMicBoost(bool on);
     // TX-0c-tune — arm/disarm the tune-tone generator.  The EP2 writer
     // fills TX-I/TX-Q with a 1 kHz complex tone @ 0.95 full scale only
     // when (mox_ on the wire) AND (this flag set).  Auto-cleared on
@@ -876,6 +891,7 @@ signals:
     // TX-0c-pa-debug — operator-gated PA-enable changed (via Settings
     // checkbox, persistence reload, or stream open/close safety clear).
     void paEnabledChanged(bool on);
+    void micBoostChanged(bool on);
     // TX-0c-pa-drive — operator-tunable drive DAC level changed (via
     // Settings SpinBox or persistence reload).  Raw 0..255 wire value.
     void txDriveLevelChanged(int level);
@@ -1122,6 +1138,7 @@ private:
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
+    std::atomic<bool>    micBoost_{false};      // 0x12 C2 bit 0 (+20 dB HW boost)
     // TX-0c-tune — operator-armed tune-tone generator.  Atomic so the
     // EP2 writer thread reads it lock-free on every datagram.  The NCO
     // phase below is owned single-thread by that writer (no atomic

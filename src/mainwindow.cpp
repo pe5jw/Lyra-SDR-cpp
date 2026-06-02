@@ -1339,6 +1339,14 @@ void MainWindow::setTciMicSource(lyra::dsp::TciMicSource *src) {
     if (tci_) tci_->setTciMicSource(src);
 }
 
+void MainWindow::setTxDspWorker(lyra::dsp::TxDspWorker *w) {
+    // Task #69 — wire the late-constructed TxDspWorker into
+    // MeterModel so the MIC / COMP / ALC sources have a live
+    // WDSP TXA tap.  Null-safe (caller passes nullptr on
+    // teardown).
+    if (meter_) meter_->setTxDspWorker(w);
+}
+
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();
 
