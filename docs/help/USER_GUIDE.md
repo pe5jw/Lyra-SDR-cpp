@@ -1250,13 +1250,19 @@ persisted across Lyra restarts.
 
 ### Mic + ALC (TXA input + output gain stages)
 
-The two operator-tunable gain stages on the WDSP TXA modulator chain
-— input (mic into the modulator) and output (ALC ceiling before the
-I/Q reaches the wire).
+The full operator-tunable TX-input-to-modulator-output gain chain,
+rendered top-to-bottom in **signal-flow order** — what the audio
+sees first is at the top, what it sees last is at the bottom:
+
+```
+Mic source   →   Mic Boost (+20 dB HW)   →   Mic Gain (SW)   →   ALC ceiling   →   wire
+```
 
 | Knob | Default | What it controls |
 |---|---|---|
-| **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. |
+| **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **Line In / VAC1 / VAC2** anchor entries are visible for layout but disabled until v0.2.x. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
+| **Mic Boost** | OFF | HL2 hardware +20 dB analog mic preamp (codec PGA, single bit on the wire — C0 0x12 C2 bit 0). Pure hardware boost ahead of the digital chain. Enable when your hand mic / headset mic is genuinely too quiet to hit the modulator at a reasonable level even with the Mic Gain slider near max. Hardware is 2-state (off / +20 dB); intermediate trim comes from Mic Gain stacked on top. **Only affects the codec mic input** — PC mic / TCI sources bypass the codec PGA entirely, so this checkbox has no effect on those routes. Persisted across launches. |
+| **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. **Stacks on top of Mic Boost** — if Mic Boost is ON, the modulator sees Mic Boost +20 dB + Mic Gain combined. |
 | **ALC Max Gain** ⚠ | +3 dB | The ALC (Automatic Level Control) max-gain ceiling — the limiter that catches mic-input peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **Load-bearing default**: WDSP's own create-time default for this is 0 dB, which pins the entire TX output chain at a hard 0-dB limiter ceiling regardless of mic level — that was the 2026-05-31 first-SSB-bench 0.2 W root cause (Lyra never called the setter before this slice). +3 dB mirrors the verified reference's profile default and lifts the ceiling enough for normal SSB peaks to pass through to the wire. Operator tuning: lower (e.g. 0 to +1 dB) for tighter splatter protection at the cost of headroom; higher (e.g. +5 to +10 dB) for more program-level headroom at the cost of splatter-protection margin. ±3 dB around the default is the sane range; outside that, ALC stops being a meaningful safety net. |
 
 > **The ALC ceiling is a SAFETY knob, not a daily-use one.** Set it
@@ -1379,11 +1385,11 @@ no host-side sound card needed.
 1. **Settings → Network (TCI)** — make sure the server is running and
    the port matches what your digital-modes client expects (default
    **50001**).
-2. **Settings → Audio → Mic source** — pick **TCI**. This routes the
-   digital-mode client's audio into Lyra's TX chain in place of the
-   hand-mic. (The client can also auto-select TCI by sending a
-   `TRX:0,true,tci` command — supported, but having the picker on TCI
-   means manual TUNE buttons in the client also work.)
+2. **Settings → TX → Mic + ALC → Mic source** — pick **TCI**. This
+   routes the digital-mode client's audio into Lyra's TX chain in
+   place of the hand-mic. (The client can also auto-select TCI by
+   sending a `TRX:0,true,tci` command — supported, but having the
+   picker on TCI means manual TUNE buttons in the client also work.)
 3. In the client (MSHV / WSJT-X / JTDX) configure: TCI server
    `127.0.0.1:50001`, sample rate **48 kHz**, block size **2048**,
    buffering **50 ms**. Most clients set these defaults out of the box;
@@ -1409,8 +1415,9 @@ no host-side sound card needed.
 **Troubleshooting:**
 
 * **MOX engages but the client says "no audio"** — confirm Mic source =
-  TCI; without it Lyra processes audio from the configured hand-mic
-  source while the client's audio gets dropped.
+  TCI on **Settings → TX → Mic + ALC**; without it Lyra processes audio
+  from the configured hand-mic source while the client's audio gets
+  dropped.
 * **Client RX waterfall looks unusably hot** — Lyra advertises the
   format at connect so the client's RX gain slider should land in a
   sensible position. If your client doesn't honour the advertised

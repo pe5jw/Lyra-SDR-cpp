@@ -2266,3 +2266,76 @@ is closed; remaining TX work is genuine feature scope (#49
 Profile Manager, #50 EQ, #51 Combinator, #52 Plate Reverb,
 #55 Profile chips, #59 RX EQ mirror) plus the deferred
 panadapter rescale (#44) and PWR calibration (#45).
+
+### §13.6 Task #72 — Mic Source + Mic Boost relocated to Settings → TX (commit `a805d14`, 2026-06-02)
+
+Locked-layout follow-on to §13.3 / §13.4.  The Mic Source
+picker (Task #33) and the Mic Boost +20 dB checkbox (Task
+#39) were originally rendered on the **Settings → Hardware**
+QGridLayout (rows 7 and 8, added in the §13.3 / §13.4
+commits).  Operator-empirical-2026-06-01-EOD finding +
+2026-06-02-AM go-ahead: they belong on **Settings → TX**
+with the rest of the TX-chain controls, NOT on the Hardware
+tab.  Hardware is for true wire / safety controls (HW PTT
+input, etc.); the operator-tunable signal-chain stages all
+live on the TX tab.
+
+The "Mic + ALC (TXA input + output gain stages)" group on
+the TX tab now renders the full input + boost + gain + ALC
+chain in signal-flow order:
+
+```
+Mic source:    [Mic In (codec) ▾]
+☐ Mic Boost (+20 dB hardware, codec mic only)
+Mic Gain:      [────●─── 32.0 dB]
+ALC Max Gain:  [────●──── 4.0 dB]
+```
+
+i.e. **source → HW boost (+20 dB analog codec PGA) → SW gain
+(WDSP PanelGain1) → ALC ceiling (output limiter)** — every
+operator-tunable stage in the input/output amplitude path is
+in one group, in the order the audio actually traverses
+them.  An operator dialing in a new mic / new voice / new
+profile now adjusts the chain top-to-bottom in one place
+instead of jumping between two tabs.
+
+**Implementation:**
+
+* `src/settingsdialog.cpp` Settings → TX → buildTxTab Mic +
+  ALC `QGroupBox`: two new rows inserted via `QFormLayout`
+  `form->addRow()` BEFORE the existing Mic Gain row — Mic
+  Source as a labeled row (`form->addRow(tr("Mic source:"),
+  combo)`), Mic Boost as a flush full-row checkbox
+  (`form->addRow(mbBox)`).
+* Same widgets, same tooltips, same prefs / stream bindings,
+  same two-way signal sync, same QSettings persistence as
+  the §13.3 Hardware-tab originals — only the parent
+  container changed (`QGridLayout` `g->addWidget(widget,
+  row, col)` → `QFormLayout` `form->addRow(...)`).
+* `src/settingsdialog.cpp` Settings → Hardware: the
+  ~110-line block hosting both widgets at grid rows 7 + 8
+  removed entirely, replaced by a one-line breadcrumb
+  comment pointing at the TX tab.  No two-place-truth —
+  Hardware tab is back to just the HW-PTT-input checkbox
+  and the band/filter/operator/station/PA-safety controls
+  for the wire-level radio configuration.
+
+**Operator-facing fallout:**
+
+* Any operator who had set Mic Source = TCI or enabled Mic
+  Boost on the Hardware tab still has both settings — the
+  underlying QSettings keys (`tci/micSource`, `tx/micBoost`)
+  are unchanged and persist across the relocation; only the
+  surface widget moved.
+* The USER_GUIDE Mic + ALC table extends to cover all four
+  controls in signal-flow order (Mic source / Mic Boost /
+  Mic Gain / ALC Max Gain).
+* The digital-modes-over-TCI section's "Settings → Audio →
+  Mic source" instruction (stale even pre-move — the picker
+  was on Hardware, never Audio) corrected to "Settings →
+  TX → Mic + ALC → Mic source".
+
+This closes the TX-tab UX gap from §13.3 / §13.4: the
+operator's "what's driving the TX chain" question and the
+operator's "at what level" question now resolve on the
+same panel.  No code logic changed; pure container move.
