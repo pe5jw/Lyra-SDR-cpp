@@ -263,9 +263,32 @@ public:
         return hl2Out_ ? 0 : deviceIndex_ + 1;
     }
     double zoom() const { return zoom_.load(std::memory_order_relaxed); }
+    // Span reported to QML's freq-scale binding.  RX state: rate /
+    // zoom (same as before).  TX state (txOwnsAnalyzer_=true, Task
+    // #44 Phase 2 MOX-edge swap): the WDSP TX sip1 dsp_rate
+    // (txSpanHz_), still divided by zoom.  Span change emitted on
+    // every MOX edge via setTxOwnsAnalyzer().
+    //
+    // inRate read is via inRateAtomic_ (mirror of cfg_.inRate
+    // updated under channelMtx_ in setSampleRate) so this getter is
+    // race-free against rate-change without taking the lock — per
+    // amendment A.6 in the reconciled doc.
     int    spanHz() const {
         const double z = zoom_.load(std::memory_order_relaxed);
-        return static_cast<int>(cfg_.inRate / (z > 1.0 ? z : 1.0));
+        const double zClamp = (z > 1.0 ? z : 1.0);
+        if (txOwnsAnalyzer_.load(std::memory_order_acquire)) {
+            const int r = txSpanHz_.load(std::memory_order_relaxed);
+            return static_cast<int>(r / zClamp);
+        }
+        const int r = inRateAtomic_.load(std::memory_order_relaxed);
+        return static_cast<int>(r / zClamp);
+    }
+    // Task #44 Phase 2 — analyzer ownership accessor for TxDspWorker
+    // (called per block-pack tick to decide whether to feed the TX
+    // sip1 samples into Spectrum0).  Wired in step 5; reads as false
+    // until the MOX-edge swap flips it.
+    bool   txOwnsAnalyzer() const {
+        return txOwnsAnalyzer_.load(std::memory_order_acquire);
     }
 
     // Frames fexchange0 writes per process() call (= in_size *
@@ -600,6 +623,28 @@ private:
     bool        opened_  = false;
     bool        running_ = false;
     bool        analyzerOpen_ = false;   // Step 5 panadapter analyzer
+    // ── Task #44 Phase 2 atomics ──────────────────────────────────
+    // txOwnsAnalyzer_ : true while the MOX-edge swap has retuned
+    //   kAnDisp for the TX sip1 feed (per setTxOwnsAnalyzer()).
+    //   Read by RX worker feedIq() (to skip Spectrum0 during MOX)
+    //   and TX worker block-pack site (to gate the feed call).
+    //   memory_order_release on store + acquire on read so the
+    //   SetAnalyzer reconfigure side-effects happen-before any
+    //   observation of the new flag value.
+    // txSpanHz_       : span reported by spanHz() when TX owns the
+    //   analyzer (96 kHz dsp_rate of WDSP TX sip1).  Divided by
+    //   zoom in the getter.
+    // txAnalyzerBfSize_ : current bf_sz the analyzer is configured
+    //   for (set by configureAnalyzerForRx/Tx); read by
+    //   feedTxSpectrumFromSip1() to drop frames during a
+    //   mid-reconfigure transient.
+    // inRateAtomic_   : mirror of cfg_.inRate updated under
+    //   channelMtx_ in setSampleRate.  spanHz() reads it
+    //   atomically without taking the lock (was a latent race).
+    std::atomic<bool> txOwnsAnalyzer_{false};
+    std::atomic<int>  txSpanHz_{96000};
+    std::atomic<int>  txAnalyzerBfSize_{0};
+    std::atomic<int>  inRateAtomic_{192000};
 
     // Step 3d DSP buffers (all sized in the constructor).
     // accum_ : interleaved IQ doubles awaiting a full in_size block.

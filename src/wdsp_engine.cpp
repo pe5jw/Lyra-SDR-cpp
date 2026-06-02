@@ -248,6 +248,10 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     } else {
         outSize_ = cfg_.inSize * (cfg_.outRate / cfg_.inRate);
     }
+    // Mirror cfg_.inRate into the atomic spanHz() reads, so the
+    // getter doesn't race against setSampleRate's mutex-protected
+    // store (Task #44 v2.2 amendment A.6).
+    inRateAtomic_.store(cfg_.inRate, std::memory_order_relaxed);
 
     // fexchange0 output buffer: 2 * outSize_ doubles (interleaved L/R).
     outBuf_.assign(static_cast<size_t>(2 * outSize_), 0.0);
@@ -435,6 +439,9 @@ void WdspEngine::configureAnalyzerForRx() noexcept
         0,                          // calset
         0.0, 0.0,                   // fmin, fmax
         maxW);                      // max_w (history buffer size)
+    // Mirror the configured block size for feedTxSpectrumFromSip1()'s
+    // mid-reconfigure drop-frame check (Task #44 v2.2 amendment A.5).
+    txAnalyzerBfSize_.store(cfg_.inSize, std::memory_order_relaxed);
     if (api.SetDisplayDetectorMode) {
         api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
     }
@@ -483,6 +490,12 @@ void WdspEngine::configureAnalyzerForTx() noexcept
         kAnPixels, 1, 0,
         0.0, 0.0,
         maxW);
+    // Mirror for feedTxSpectrumFromSip1()'s mid-reconfigure
+    // drop-frame check (amendment A.5).  Also update txSpanHz_ so
+    // the QML freq-scale binding picks up the 96 kHz dsp_rate via
+    // spanHz() — caller (setTxOwnsAnalyzer) emits spanChanged().
+    txAnalyzerBfSize_.store(kBlockTx, std::memory_order_relaxed);
+    txSpanHz_.store(kRateTx, std::memory_order_relaxed);
     if (api.SetDisplayDetectorMode) {
         api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
     }
@@ -848,6 +861,7 @@ void WdspEngine::setSampleRate(int hz)
         closeRx1();          // blocking flush + close channel/analyzer/audio
     }
     cfg_.inRate = hz;
+    inRateAtomic_.store(hz, std::memory_order_relaxed);  // mirror for spanHz() race-free read (A.6)
     // Re-size the fexchange0 output + int16 scratch for the new rate
     // (out_size = in_size * out_rate / in_rate).
     if (cfg_.inRate >= cfg_.outRate) {
