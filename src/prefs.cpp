@@ -19,8 +19,8 @@ constexpr auto kFps    = "panadapter/targetFps";
 constexpr auto kDbMin  = "panadapter/dbMin";
 constexpr auto kDbMax  = "panadapter/dbMax";
 // Task #44 Phase 1 — separate TX-state dB range pair so a drag
-// during MOX persists per-state.  Defaults +20 / -80 dBFS match
-// the reference TX SpectrumGridMin/Max.
+// during MOX persists per-state.  Defaults +20 / -80 dBFS frame
+// a clean tune-carrier line at typical HL2 TX drive levels.
 constexpr auto kTxDbMin = "panadapter/txDbMin";
 constexpr auto kTxDbMax = "panadapter/txDbMax";
 constexpr auto kDbAuto = "panadapter/dbAuto";

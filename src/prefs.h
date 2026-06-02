@@ -29,12 +29,12 @@ class Prefs : public QObject {
     Q_PROPERTY(double dbMin READ dbMin WRITE setDbMin NOTIFY dbMinChanged)
     Q_PROPERTY(double dbMax READ dbMax WRITE setDbMax NOTIFY dbMaxChanged)
     // Task #44 Phase 1 — separate TX-side panadapter dB range.
-    // Lyra now swaps in/out on every moxActiveChanged edge: the
+    // Lyra swaps in/out on every moxActiveChanged edge: the
     // operator's drag-the-right-edge muscle memory updates whichever
     // state is currently active; the panadapter saves/restores
     // between (dbMin,dbMax) and (txDbMin,txDbMax) Prefs pairs on
-    // every MOX edge.  Defaults +20 / -80 dBFS — match the
-    // reference's Display.cs:1881/1891 TX SpectrumGrid defaults.
+    // every MOX edge.  Defaults +20 / -80 dBFS — chosen to frame a
+    // clean tune-carrier line at typical HL2 TX drive levels.
     Q_PROPERTY(double txDbMin READ txDbMin WRITE setTxDbMin
                NOTIFY txDbMinChanged)
     Q_PROPERTY(double txDbMax READ txDbMax WRITE setTxDbMax

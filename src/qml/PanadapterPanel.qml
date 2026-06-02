@@ -664,11 +664,11 @@ Item {
                                nMax = startMax + dbDelta }
                         // Task #44 Phase 1 — widened ceiling clamp from
                         // 0 → +30 dBFS so the TX-state pair (which
-                        // defaults to +20 dBFS ceiling per the reference
-                        // TX SpectrumGridMax) is draggable across its
-                        // natural range while keyed.  RX-state drag is
-                        // unaffected in practice (RX traces never reach
-                        // 0 dBFS so the wider cap is dormant on RX).
+                        // defaults to +20 dBFS ceiling) is draggable
+                        // across its natural range while keyed.
+                        // RX-state drag is unaffected in practice
+                        // (RX traces never reach 0 dBFS so the wider
+                        // cap is dormant on RX).
                         nMin = Math.max(-150, Math.min(-3, nMin))
                         nMax = Math.max(nMin + 3, Math.min(30, nMax))
                         Prefs.dbMin = nMin
