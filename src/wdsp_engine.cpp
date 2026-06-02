@@ -530,7 +530,7 @@ void WdspEngine::setTxOwnsAnalyzer(bool on)
         // channelMtx_ — lifecycle-vs-feed serializer (matches the
         // openRx1 / configureAnalyzer caller-holds convention).
         // Inside the block, configureAnalyzerForRx/Tx ALSO take
-        // analyzerMtx_ for the SetAnalyzer-vs-Spectrum0 serializer.
+        // analyzerMtx_ for the SetAnalyzer-vs-feed serializer.
         // Lock-order: channelMtx_ BEFORE analyzerMtx_ (documented
         // in wdsp_engine.h members section, never violated).
         std::lock_guard<std::mutex> lk(channelMtx_);
@@ -540,54 +540,50 @@ void WdspEngine::setTxOwnsAnalyzer(bool on)
             configureAnalyzerForRx();
         }
     }
+    // Reference-faithful TX panadapter feed mechanism (cmaster.cs:
+    // 539-540 + wdsp/siphon.c:130).  TXASetSipMode(1, mode) puts
+    // the WDSP TX sip1 siphon in mode=1 "internally call Spectrum0
+    // every xsiphon" mode (when mode=1) or back to mode=0 idle.
+    // TXASetSipDisplay(1, disp) points the auto-feed at our
+    // panadapter analyzer (kAnDisp).  WDSP then feeds the analyzer
+    // for free every xtxa cycle at dsp_rate (96 kHz) — which only
+    // fires while the TX channel is running (= during MOX).  Zero
+    // per-block CPU cost on Lyra's side; matches reference exactly.
+    //
+    // Pre-iqc tap point (xsiphon at TXA.c:586 is upstream of xiqc
+    // at TXA.c:587), so the panadapter trace stays clean whether
+    // PureSignal is on or off — reference's PS-faithful posture.
+    //
+    // TX channel must be open (txa[1].sip1.p valid) for these
+    // calls to be safe.  setTxOwnsAnalyzer fires from the
+    // moxActiveChanged signal AFTER the TR-settled edge (post
+    // mox_delay + rf_delay on keydown; post ptt_out_delay on
+    // keyup) — by the time we run, the TX channel has been
+    // opened (Lyra opens it at startup and keeps it open across
+    // the session) so the siphon pointer is valid.
+    if (wdsp_) {
+        const WdspApi &api = wdsp_->api();
+        if (api.TXASetSipMode && api.TXASetSipDisplay) {
+            // Defensive ordering: when turning ON, set the target
+            // disp FIRST (so any imminent xsiphon call finds the
+            // right disp), then enable mode=1.  When turning OFF,
+            // disable mode=0 first (so no further auto-feeds), then
+            // leave the disp setting alone (idempotent if we re-arm).
+            if (on) {
+                api.TXASetSipDisplay(/*channel=*/1, kAnDisp);
+                api.TXASetSipMode(/*channel=*/1, 1);
+            } else {
+                api.TXASetSipMode(/*channel=*/1, 0);
+            }
+        }
+    }
     // Release-store so the SetAnalyzer reconfigure side-effects
     // happen-before any reader's acquire-load of the flag (per
-    // amendment A.2).  The mutex provides the synchronization for
-    // happens-before; the explicit release/acquire on the atomic
-    // removes reader-side reordering ambiguity for non-mutex-
-    // protected readers (TX worker's block-pack site, RX worker's
-    // feedIq).
+    // amendment A.2).  Used by RX worker's feedIq to skip its
+    // own Spectrum0 call while TX owns the analyzer (otherwise
+    // both feeds collide on the same disp).
     txOwnsAnalyzer_.store(on, std::memory_order_release);
     emit spanChanged();
-}
-
-bool WdspEngine::feedTxSpectrumFromSip1() noexcept
-{
-    if (!analyzerOpen_ || !wdsp_) return false;
-    const WdspApi &api = wdsp_->api();
-    if (!api.TXAGetaSipF1 || !api.Spectrum0) return false;
-
-    // Block size: 256 samples per call.  At the TX worker's EP2
-    // cadence (~381 Hz) this drains ≈97 k samples/sec from the
-    // 96 kHz sip1 production rate — keeps the ring drained
-    // without back-pressure (suck() returns < requested if short,
-    // pads from last-good).  Matches the bf_sz the analyzer is
-    // configured for after configureAnalyzerForTx() runs.
-    constexpr int kN = 256;
-    float  sipBuf[2 * kN];   // interleaved I,Q,I,Q,… (TXAGetaSipF1 contract)
-    double specBuf[2 * kN];  // interleaved DOUBLE for Spectrum0
-
-    // WDSP drains internally under sip1.update CRITICAL_SECTION
-    // (siphon.c:258-265).  Returns 2*kN floats; safe to call even
-    // when sip1 is short (pads from last-good in ring).
-    api.TXAGetaSipF1(/*channel=*/1, sipBuf, kN);
-
-    for (int i = 0; i < 2 * kN; ++i)
-        specBuf[i] = static_cast<double>(sipBuf[i]);
-
-    // analyzerMtx_ — short-held under the TX worker thread.
-    // Separate from channelMtx_ (RX worker's whole-feedIq scope)
-    // so this never wedges the TX worker behind a long RX block
-    // (amendment A.5).  Drop the frame if SetAnalyzer is mid-
-    // reconfiguring and bf_sz doesn't match our kN (cosmetic:
-    // one missed analyzer feed; next call lands in the resized
-    // analyzer cleanly).
-    std::lock_guard<std::mutex> lk(analyzerMtx_);
-    if (!analyzerOpen_) return false;
-    if (kN != txAnalyzerBfSize_.load(std::memory_order_relaxed))
-        return false;
-    api.Spectrum0(1, kAnDisp, 0, 0, specBuf);
-    return true;
 }
 
 bool WdspEngine::openRx1()

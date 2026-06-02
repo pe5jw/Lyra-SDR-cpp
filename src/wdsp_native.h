@@ -278,14 +278,26 @@ using fn_SetTXAPanelGain1_t     = void (*)(int channel, double gain);
 // concrete enum (TxaMeterType) lives in wdsp_engine; the
 // cdef stays untyped because WDSP exposes it as `int`.
 using fn_GetTXAMeter_t          = double (*)(int channel, int meter_type);
-// WDSP TX sip1 reader (siphon.c:268-282 TXAGetaSipF1).  Drains up to
-// `size` complex samples from txa[channel].sip1 into `out` (writes
-// 2*size floats: interleaved I,Q,I,Q,…).  Internally locked via
-// EnterCriticalSection(&a->update); calls suck(a) to populate sipout.
-// sip1 captures at dsp_rate (96 kHz for our TX channel) BEFORE the
-// iqc stage in TXA.c:586 — pre-PureSignal-correction, so the panadapter
-// trace stays clean whether PS is on or off.  Used by Task #44 Phase 2.
+// WDSP TX sip1 reader (siphon.c:268-282 TXAGetaSipF1).  Reserved for
+// future phase-display or external-pull use; NOT used by Task #44
+// Phase 2 (we use the reference auto-feed mechanism via
+// TXASetSipMode + TXASetSipDisplay instead — see below).  Kept
+// declared+resolved so future code can use it without re-wiring.
 using fn_TXAGetaSipF1_t         = void (*)(int channel, float *out, int size);
+// WDSP TX sip1 auto-feed mode setters (siphon.c:235-251).  This is
+// the REFERENCE-FAITHFUL mechanism for feeding the TX panadapter
+// analyzer: call TXASetSipMode(channel, 1) to put the siphon in
+// "internally call Spectrum0 every xsiphon" mode, and
+// TXASetSipDisplay(channel, disp) to point at the target analyzer
+// disp id.  After that, the WDSP TX channel feeds the analyzer for
+// free every xtxa cycle (which only fires while the TX channel is
+// running = during MOX).  Zero per-block CPU cost on Lyra's side;
+// matches cmaster.cs:539-540 exactly.  Pre-iqc tap point (TXA.c:586
+// xsiphon is upstream of xiqc at TXA.c:587), so the panadapter
+// trace stays clean whether PureSignal is on or off — same posture
+// as the reference's TX panadapter.
+using fn_TXASetSipMode_t        = void (*)(int channel, int mode);
+using fn_TXASetSipDisplay_t     = void (*)(int channel, int disp);
 // WDSP polyphase float-vector resampler (resample.c).  Opaque void*
 // handle returned by create_resampleFV; xresampleFV consumes
 // `numsamps` input samples and writes the resulting count into
@@ -381,7 +393,9 @@ struct WdspApi {
     fn_SetTXALevelerSt_t      SetTXALevelerSt      = nullptr;
     fn_SetTXAPanelGain1_t     SetTXAPanelGain1     = nullptr;
     fn_GetTXAMeter_t          GetTXAMeter          = nullptr;
-    fn_TXAGetaSipF1_t         TXAGetaSipF1         = nullptr;  // Task #44 Phase 2 sip1 reader
+    fn_TXAGetaSipF1_t         TXAGetaSipF1         = nullptr;  // reserved
+    fn_TXASetSipMode_t        TXASetSipMode        = nullptr;  // Task #44 Phase 2 auto-feed (reference mechanism)
+    fn_TXASetSipDisplay_t     TXASetSipDisplay     = nullptr;  // Task #44 Phase 2 auto-feed (reference mechanism)
     // WDSP polyphase float-vector resampler (resample.c PORT block
     // 342-361).  Used by TciServer to resample inbound non-48 kHz
     // TX_AUDIO_STREAM frames to the TXA input rate (48 kHz) — the

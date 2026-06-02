@@ -290,17 +290,6 @@ public:
     bool   txOwnsAnalyzer() const {
         return txOwnsAnalyzer_.load(std::memory_order_acquire);
     }
-    // Task #44 Phase 2 — pull pre-iqc TX I/Q from WDSP TX sip1 ring
-    // (TXAGetaSipF1) and feed it into the analyzer (Spectrum0).
-    // Called by TxDspWorker from its block-pack site every EP2
-    // cadence tick (~381 Hz) when TX owns the analyzer AND
-    // inject_tx_iq is true (FSM gate).  Drops the frame on a
-    // mid-reconfigure transient (bf_sz mismatch).  Takes
-    // analyzerMtx_ briefly; lock-free vs the RX worker's feedIq
-    // path (which holds channelMtx_, a different mutex).
-    // Returns true on success, false on no-op (analyzer closed,
-    // size mismatch, cdef not resolved).
-    bool   feedTxSpectrumFromSip1() noexcept;
     // Task #44 Phase 2 — MOX-edge analyzer source swap.  Called
     // from main.cpp on every moxActiveChanged signal:
     //   on=true  (keydown post-mox_delay+rf_delay): reconfigure
