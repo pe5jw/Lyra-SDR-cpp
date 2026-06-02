@@ -143,17 +143,43 @@ public:
     // MIC / COMP / ALC multimeter sources.  Read the values WDSP
     // computes inside the running TXA chain — safe to poll from
     // the Qt main thread per the reference's GetTXAMeter contract
-    // (read the latest stored value, no locking).  Return dB
-    // values pre-converted from WDSP's raw outputs:
-    //   * micPeakDbFs   — TXA_MIC_PK    (linear peak → dBFS)
-    //   * levelerGainDb — TXA_LVLR_GAIN (linear gain → dB; 0 =
-    //                     no leveler action, negative = reduction)
-    //   * alcGainDb     — TXA_ALC_GAIN  (linear gain → dB; 0 =
-    //                     no ALC action,    negative = reduction)
+    // (read the latest stored value, no locking).  All values are
+    // already in dB — WDSP's meter.c stores 10·log10(magnitude²)
+    // for level meters and 20·log10(linear_gain) for gain meters
+    // BEFORE returning via GetTXAMeter (wdsp/meter.c:96-99 ON
+    // state; -400.0 / 0.0 sentinels for OFF state at lines 69-72,
+    // 103-105).  These accessors are pure pass-throughs — earlier
+    // slices double-applied log10 here and pegged MIC at the
+    // -200 dB sentinel + railed ALC/COMP bars at full red (Task
+    // #71 §1 root cause, fixed 2026-06-02).
+    //
+    // The full reference-parity set (Task #71 §2):
+    //   Level meters (dBFS, post-stage signal level):
+    //     micPeakDbFs        — TXA_MIC_PK  (mic peak into modulator)
+    //     levelerPeakDbFs    — TXA_LVLR_PK (post-leveler output)
+    //     cfcPeakDbFs        — TXA_CFC_PK  (post-CFC 5-band output)
+    //                          off until v0.2.1 enables the block
+    //     compressorPeakDbFs — TXA_COMP_PK (post-compress.c output)
+    //                          off until v0.2.1 enables the block
+    //     alcPeakDbFs        — TXA_ALC_PK  (post-ALC final output)
+    //
+    //   Gain meters (dB; positive for LVL boost, negative for
+    //   CFC/ALC reduction; 0 = no action):
+    //     levelerGainDb      — TXA_LVLR_GAIN (leveler boost / red)
+    //     cfcGainDb          — TXA_CFC_GAIN  (CFC reduction;
+    //                          off until v0.2.1)
+    //     alcGainDb          — TXA_ALC_GAIN  (ALC reduction)
+    //
     // When the channel isn't open / WDSP not loaded these return
-    // a sentinel floor (-200 dB / 0 dB) so callers can show "—".
+    // the WDSP OFF-state sentinel (-400 dB for level meters,
+    // 0 dB for gain meters) so callers can render "—".
     double micPeakDbFs() const;
+    double levelerPeakDbFs() const;
     double levelerGainDb() const;
+    double cfcPeakDbFs() const;
+    double cfcGainDb() const;
+    double compressorPeakDbFs() const;
+    double alcPeakDbFs() const;
     double alcGainDb() const;
 
 private:

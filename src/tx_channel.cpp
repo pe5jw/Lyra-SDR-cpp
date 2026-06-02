@@ -460,7 +460,15 @@ double TxChannel::micPeakDbFs() const {
     if (!opened_ || !wdsp_) return -400.0;
     const WdspApi &api = wdsp_->api();
     if (!api.GetTXAMeter) return -400.0;
-    return api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);  // dBFS
+    return api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);   // dBFS
+}
+
+double TxChannel::levelerPeakDbFs() const {
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return -400.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return -400.0;
+    return api.GetTXAMeter(channel_, /*TXA_LVLR_PK=*/4);  // dBFS
 }
 
 double TxChannel::levelerGainDb() const {
@@ -468,7 +476,49 @@ double TxChannel::levelerGainDb() const {
     if (!opened_ || !wdsp_) return 0.0;
     const WdspApi &api = wdsp_->api();
     if (!api.GetTXAMeter) return 0.0;
-    return api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6);  // dB
+    return api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6); // dB
+}
+
+double TxChannel::cfcPeakDbFs() const {
+    // TXA_CFC_PK = 7.  Reads -400 when the CFC block isn't running
+    // (the 5-band compressor lights up with v0.2.1 Task #51).
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return -400.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return -400.0;
+    return api.GetTXAMeter(channel_, /*TXA_CFC_PK=*/7);   // dBFS
+}
+
+double TxChannel::cfcGainDb() const {
+    // TXA_CFC_GAIN = 9.  Reads 0 dB when the CFC block isn't
+    // running — semantically indistinguishable from "block on, no
+    // current reduction" (reference shares this off/zero ambiguity).
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return 0.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return 0.0;
+    return api.GetTXAMeter(channel_, /*TXA_CFC_GAIN=*/9); // dB
+}
+
+double TxChannel::compressorPeakDbFs() const {
+    // TXA_COMP_PK = 10.  Reads -400 until the compress.c block is
+    // enabled (v0.2.1 territory).  Distinct from CFC: this is the
+    // single-band downstream peak compressor.
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return -400.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return -400.0;
+    return api.GetTXAMeter(channel_, /*TXA_COMP_PK=*/10); // dBFS
+}
+
+double TxChannel::alcPeakDbFs() const {
+    // TXA_ALC_PK = 12.  ALC is always running in our TXA chain so
+    // this always has a meaningful reading during MOX.
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return -400.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return -400.0;
+    return api.GetTXAMeter(channel_, /*TXA_ALC_PK=*/12);  // dBFS
 }
 
 double TxChannel::alcGainDb() const {
@@ -476,7 +526,7 @@ double TxChannel::alcGainDb() const {
     if (!opened_ || !wdsp_) return 0.0;
     const WdspApi &api = wdsp_->api();
     if (!api.GetTXAMeter) return 0.0;
-    return api.GetTXAMeter(channel_, /*TXA_ALC_GAIN=*/14);  // dB
+    return api.GetTXAMeter(channel_, /*TXA_ALC_GAIN=*/14); // dB
 }
 
 } // namespace lyra::dsp

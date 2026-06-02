@@ -155,9 +155,15 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
         case PA_CURRENT:
         case PA_VOLTS:
         case TEMP:
-        case ALC:
+        case ALC_G:        // value 6 — was ALC
         case MIC:
-        case COMP:
+        case LVL_G:        // value 8 — was COMP
+        case LVL_PK:
+        case CFC_PK:
+        case CFC_G:
+        case COMP:         // value 12 (NEW — actual compressor)
+        case ALC_PK:
+        case ALC_GROUP:
             return Source(raw);
         default:
             return PWR;
@@ -183,13 +189,13 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     // as garbage text in the renderer's snrText slot.
     {
         const int raw = s.value(QString::fromLatin1(kKeyTxSecond), -1).toInt();
-        txSecondary_ = (raw == -1 || (raw >= RX_SMETER && raw <= COMP))
+        txSecondary_ = (raw == -1 || (raw >= RX_SMETER && raw <= ALC_GROUP))
                            ? raw
                            : -1;
     }
     {
         const int raw = s.value(QString::fromLatin1(kKeyTxSecond2), -1).toInt();
-        txSecondary2_ = (raw == -1 || (raw >= RX_SMETER && raw <= COMP))
+        txSecondary2_ = (raw == -1 || (raw >= RX_SMETER && raw <= ALC_GROUP))
                             ? raw
                             : -1;
     }
@@ -438,8 +444,12 @@ void MeterModel::setRxSource(int s) {
 }
 
 void MeterModel::setTxSource(int s) {
-    // TX dropdown set: PWR/SWR/PA Current/PA Volts/Temp (live now)
-    // plus ALC/MIC/COMP (placeholders for v0.2.1).  Out-of-set
+    // TX dropdown set: PWR/SWR/PA Current/PA Volts/Temp + the
+    // full reference-faithful TX dynamics-meter set (Task #71 §2):
+    // MIC / LVL_PK / LVL_G / CFC_PK / CFC_G / COMP / ALC_PK /
+    // ALC_G / ALC_GROUP.  CFC and the actual compressor blocks
+    // aren't running in TXA until v0.2.1 lights them up — those
+    // entries report "—" / 0 dB correctly until then.  Out-of-set
     // values fall back to PWR (the obvious sane TX-side default).
     Source ns;
     switch (s) {
@@ -448,9 +458,15 @@ void MeterModel::setTxSource(int s) {
     case PA_CURRENT:
     case PA_VOLTS:
     case TEMP:
-    case ALC:
+    case ALC_G:        // value 6 — was ALC
     case MIC:
-    case COMP:
+    case LVL_G:        // value 8 — was COMP
+    case LVL_PK:
+    case CFC_PK:
+    case CFC_G:
+    case COMP:         // value 12 (NEW — actual compressor)
+    case ALC_PK:
+    case ALC_GROUP:
         ns = Source(s);
         break;
     default:
@@ -487,7 +503,7 @@ void MeterModel::setTxSecondary(int s) {
     // intent for an invalid secondary is "show nothing" — picking
     // RX_SMETER silently would surprise them with an S-meter readout
     // under their PWR meter.
-    if (s != -1 && (s < RX_SMETER || s > COMP)) s = -1;
+    if (s != -1 && (s < RX_SMETER || s > ALC_GROUP)) s = -1;
     if (s == txSecondary_) return;
     txSecondary_ = s;
     QSettings().setValue(QString::fromLatin1(kKeyTxSecond), s);
@@ -501,7 +517,7 @@ void MeterModel::setTxSecondary2(int s) {
     // Sibling of setTxSecondary — second small line under the primary,
     // brings TX into RX-parity 3-line layout.  Same -1-or-Source-enum
     // contract.
-    if (s != -1 && (s < RX_SMETER || s > COMP)) s = -1;
+    if (s != -1 && (s < RX_SMETER || s > ALC_GROUP)) s = -1;
     if (s == txSecondary2_) return;
     txSecondary2_ = s;
     QSettings().setValue(QString::fromLatin1(kKeyTxSecond2), s);
@@ -558,31 +574,86 @@ QString MeterModel::formatSecondaryText(int src) const {
                    ? QStringLiteral("T —")
                    : QStringLiteral("T %1 °C").arg(c, 0, 'f', 1);
     }
+    // ── TX dynamics meter set (Task #71 §2, reference-faithful) ──
+    // Common pattern: each case reads a single dB value via the
+    // late-bound TxDspWorker; gated on MOX (the chain is silent at
+    // rest so readings are meaningless without active TX audio).
+    // Level meters show "—" when raw <= -300 (covers WDSP's -400
+    // off-state sentinel).  Gain meters never show "—" because
+    // their off-state is 0 dB (= no action), indistinguishable
+    // from "block on but not currently acting" — same posture as
+    // the reference.
     case MIC: {
-        // Task #69 — MIC peak in dBFS from TXA_MIC_PK.  Shown
-        // only on MOX (txWorker_ is unconditionally readable but
-        // the meter is meaningless without active TX audio).
         if (!txWorker_ || !stream_ || !stream_->moxActive())
             return QStringLiteral("MIC —");
         const double db = txWorker_->micPeakDbFs();
-        if (db <= -190.0) return QStringLiteral("MIC —");
+        if (db <= -300.0) return QStringLiteral("MIC —");
         return QStringLiteral("MIC %1 dBFS").arg(db, 0, 'f', 1);
     }
+    case LVL_PK: {
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("LEV —");
+        const double db = txWorker_->levelerPeakDbFs();
+        if (db <= -300.0) return QStringLiteral("LEV —");
+        return QStringLiteral("LEV %1 dBFS").arg(db, 0, 'f', 1);
+    }
+    case LVL_G: {
+        // Leveler GAIN — typically positive (boost) since the
+        // leveler brings up weak passages.  "LVL +6 dB" means
+        // "leveler boosting 6 dB right now."
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("LVL —");
+        const double db = txWorker_->levelerGainDb();
+        return QStringLiteral("LVL %1 dB").arg(db, 0, 'f', 1);
+    }
+    case CFC_PK: {
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("CFC —");
+        const double db = txWorker_->cfcPeakDbFs();
+        if (db <= -300.0) return QStringLiteral("CFC —");
+        return QStringLiteral("CFC %1 dBFS").arg(db, 0, 'f', 1);
+    }
+    case CFC_G: {
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("CFC G —");
+        const double db = txWorker_->cfcGainDb();
+        return QStringLiteral("CFC G %1 dB").arg(db, 0, 'f', 1);
+    }
     case COMP: {
-        // Task #69 — leveler gain reduction in dB (negative =
-        // reduction).  Shown only on MOX.
+        // Actual compressor (compress.c) OUTPUT level.  Distinct
+        // from LVL_G (leveler) — this is the downstream peak
+        // limiter post-stage signal, not the upstream boost.
         if (!txWorker_ || !stream_ || !stream_->moxActive())
             return QStringLiteral("CMP —");
-        const double db = txWorker_->levelerGainDb();
-        return QStringLiteral("CMP %1 dB").arg(db, 0, 'f', 1);
+        const double db = txWorker_->compressorPeakDbFs();
+        if (db <= -300.0) return QStringLiteral("CMP —");
+        return QStringLiteral("CMP %1 dBFS").arg(db, 0, 'f', 1);
     }
-    case ALC: {
-        // Task #69 — ALC gain reduction in dB (negative =
-        // reduction).  Shown only on MOX.
+    case ALC_PK: {
         if (!txWorker_ || !stream_ || !stream_->moxActive())
             return QStringLiteral("ALC —");
+        const double db = txWorker_->alcPeakDbFs();
+        if (db <= -300.0) return QStringLiteral("ALC —");
+        return QStringLiteral("ALC %1 dBFS").arg(db, 0, 'f', 1);
+    }
+    case ALC_G: {
+        // ALC gain action.  Reference convention: positive number =
+        // dB of reduction the final limiter is applying.
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("ALC G —");
         const double db = txWorker_->alcGainDb();
-        return QStringLiteral("ALC %1 dB").arg(db, 0, 'f', 1);
+        return QStringLiteral("ALC G %1 dB").arg(db, 0, 'f', 1);
+    }
+    case ALC_GROUP: {
+        // Composite: ALC_PK + ALC_GAIN — what the wire would have
+        // seen if the ALC limiter weren't acting (i.e. pre-ALC peak
+        // estimated from the post-ALC level + the gain reduction).
+        if (!txWorker_ || !stream_ || !stream_->moxActive())
+            return QStringLiteral("ALC Σ —");
+        const double pk = txWorker_->alcPeakDbFs();
+        const double gn = txWorker_->alcGainDb();
+        if (pk <= -300.0) return QStringLiteral("ALC Σ —");
+        return QStringLiteral("ALC Σ %1 dBFS").arg(pk + gn, 0, 'f', 1);
     }
     case RX_SMETER:
     default:
@@ -874,9 +945,18 @@ void MeterModel::tick() {
     case PA_CURRENT:  computePaCurrent(); return;
     case PA_VOLTS:    computePaVolts();   return;
     case TEMP:        computeTemp();      return;
-    case ALC:         computeAlc();       return;
+    // TX dynamics meter set (Task #71 §2 reference-faithful).
+    // All share the level + gain helper bodies; per-source compute
+    // is just "read the right WDSP index, route to the helper."
+    case ALC_G:       computeAlcG();      return;   // value 6
     case MIC:         computeMic();       return;
-    case COMP:        computeComp();      return;
+    case LVL_G:       computeLvlG();      return;   // value 8
+    case LVL_PK:      computeLvlPk();     return;
+    case CFC_PK:      computeCfcPk();     return;
+    case CFC_G:       computeCfcG();      return;
+    case COMP:        computeComp();      return;   // value 12
+    case ALC_PK:      computeAlcPk();     return;
+    case ALC_GROUP:   computeAlcGroup();  return;
     }
 }
 
@@ -1379,151 +1459,235 @@ void MeterModel::computeTemp() {
 // climbs from zero.
 
 namespace {
-constexpr double kMicDbMin    = -60.0;   // bar floor (silent)
+constexpr double kMicDbMin    = -60.0;   // bar floor (silent) for all level meters
 constexpr double kMicDbMax    =   0.0;   // bar full-scale (clipping)
-constexpr double kGainDbMax   = -20.0;   // bar full-scale (heavy reduction)
+constexpr double kGainDbMax   = -20.0;   // bar full-scale (heavy reduction) for gain meters
+// Reference DecayRatio = 0.20 per 50 ms tick (the
+// MeterManager peak-marker decay constant — Task #71 §3).  Per-tick
+// multiplier (1 - 0.20) = 0.80 → ~155 ms 50% fall, ~515 ms 90% fall.
+// Replaces the prior linear `peak_ -= 0.06` decay which produced an
+// inconsistent / divergent ballistic.
+constexpr double kRefPeakDecayRatio = 0.20;
 } // namespace
+
+// ── Reference-faithful dynamics-meter ballistic helpers ──────────
+// Task #71 §3: WDSP's create_meter already applies a 100 ms IIR
+// (tau_average + tau_peak_decay) inside the DLL before storing into
+// the result[] array.  An earlier slice layered ANOTHER 100 ms-ish
+// IIR on top (kTelSmooth = 0.30 per tick), producing ~240 ms total
+// settling time vs the reference's ~100 ms.  Operator-visible
+// effect: laggy needle on voice attack + under-read on transients
+// (problem when gain-staging by watching peaks).
+//
+// These helpers do NO UI-side IIR — use the WDSP-returned value
+// directly.  Peak marker decays exponentially at the reference's
+// DecayRatio = 0.20 per 50 ms tick (no hold-then-decay phase).
+// Max-hold marker stays on its existing 3 s hold + slow decay
+// (Lyra extension, operator-toggleable, no reference equivalent —
+// kept because it's useful for gain-staging review).
+
+void MeterModel::computeLevelMeterFromDb(double rawDb,
+                                          double scaleMin,
+                                          double dangerDb,
+                                          const QString &unitSuffix) {
+    const bool valid = !std::isnan(rawDb) && rawDb > -300.0;
+    const double dbFs = valid ? std::max(rawDb, scaleMin) : scaleMin;
+
+    // No UI-side IIR — WDSP's internal 100 ms tau_av is sufficient.
+    dispDbm_ = dbFs;
+
+    const double n = std::clamp(
+        (dispDbm_ - scaleMin) / (kMicDbMax - scaleMin), 0.0, 1.0);
+    level_ = n;
+
+    // Reference exponential peak decay — no hold phase.
+    if (n >= peak_) peak_ = n;
+    else peak_ = std::max(0.0, peak_ * (1.0 - kRefPeakDecayRatio));
+
+    // Max-hold (Lyra extension; operator-toggleable, kept as-is).
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+    } else { maxPeak_ = 0.0; }
+    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
+    noiseLevel_ = 0.0;
+    normDanger_ = std::clamp((dangerDb - scaleMin) / (kMicDbMax - scaleMin),
+                              0.0, 1.0);
+
+    text_ = valid ? QStringLiteral("%1 %2").arg(dispDbm_, 0, 'f', 1)
+                                            .arg(unitSuffix)
+                  : QStringLiteral("—");
+    dbmText_.clear();
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
+    hist_.push_back(n);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
+    if (style_ == 2) buildLadderRows();
+    emit updated();
+}
+
+void MeterModel::computeGainMeterFromDb(double rawDb,
+                                         double scaleMax,
+                                         double dangerDb) {
+    const bool valid = !std::isnan(rawDb);
+    const double db = valid ? rawDb : 0.0;
+
+    dispDbm_ = db;
+
+    // Bar maps "magnitude of action" to 0..1.  Leveler gain is
+    // typically positive (boost); CFC/ALC gain is typically negative
+    // (reduction).  We take the absolute action magnitude so all
+    // three gain meters share the same bar scale and dangerDb
+    // semantics ("when |action| exceeds X dB you're in the red zone").
+    const double action = std::abs(db);
+    const double scale  = std::abs(scaleMax);
+    const double n = (scale > 1e-9) ? std::clamp(action / scale, 0.0, 1.0)
+                                    : 0.0;
+    level_ = n;
+
+    if (n >= peak_) peak_ = n;
+    else peak_ = std::max(0.0, peak_ * (1.0 - kRefPeakDecayRatio));
+
+    if (maxPeakEnabled_) {
+        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
+        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
+        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
+    } else { maxPeak_ = 0.0; }
+    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
+    noiseLevel_ = 0.0;
+    normDanger_ = (scale > 1e-9) ? std::clamp(std::abs(dangerDb) / scale,
+                                                0.0, 1.0)
+                                 : 0.0;
+
+    text_ = valid ? QStringLiteral("%1 dB").arg(db, 0, 'f', 1)
+                  : QStringLiteral("—");
+    dbmText_.clear();
+    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
+        snrText_ = formatSecondaryText(txSecondary_);
+    else
+        snrText_.clear();
+    if (txSecondary2_ >= 0
+        && Source(txSecondary2_) != source_
+        && txSecondary2_ != txSecondary_)
+        secondary2Text_ = formatSecondaryText(txSecondary2_);
+    else
+        secondary2Text_.clear();
+    hist_.push_back(n);
+    if (int(hist_.size()) > kHistory) hist_.pop_front();
+    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
+    if (style_ == 2) buildLadderRows();
+    emit updated();
+}
 
 void MeterModel::computeMic() {
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->micPeakDbFs()
         : std::numeric_limits<double>::quiet_NaN();
-    // WDSP off-state sentinel is -400 (meter not running); anything
-    // below -300 means "no live reading" → render "—".  Live mic
-    // peak sits in the [-90, 0] dBFS band during normal operation.
-    const bool valid = !std::isnan(raw) && raw > -300.0;
-    const double dbFs = valid ? raw : kMicDbMin;
+    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
+}
 
-    if (dispDbm_ < -100.0 || dispDbm_ > 100.0) dispDbm_ = dbFs;
-    dispDbm_ += kTelSmooth * (dbFs - dispDbm_);
-    const double n = std::clamp(
-        (dispDbm_ - kMicDbMin) / (kMicDbMax - kMicDbMin), 0.0, 1.0);
-    level_ = n;
-    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
-    else if (holdCtr_ > 0) { --holdCtr_; }
-    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
-    if (maxPeakEnabled_) {
-        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
-        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
-        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
-    } else { maxPeak_ = 0.0; }
-    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
-    noiseLevel_ = 0.0;
-    // Danger zone: top 10% (-6 dBFS → end-of-scale).
-    normDanger_ = (-6.0 - kMicDbMin) / (kMicDbMax - kMicDbMin);
-    text_ = valid ? QStringLiteral("%1 dBFS").arg(dispDbm_, 0, 'f', 1)
-                  : QStringLiteral("—");
-    dbmText_.clear();
-    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
-        snrText_ = formatSecondaryText(txSecondary_);
-    else
-        snrText_.clear();
-    if (txSecondary2_ >= 0
-        && Source(txSecondary2_) != source_
-        && txSecondary2_ != txSecondary_)
-        secondary2Text_ = formatSecondaryText(txSecondary2_);
-    else
-        secondary2Text_.clear();
-    hist_.push_back(n);
-    if (int(hist_.size()) > kHistory) hist_.pop_front();
-    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
-    emit updated();
+void MeterModel::computeLvlPk() {
+    const bool mox = stream_ && stream_->moxActive();
+    const double raw = (txWorker_ && mox)
+        ? txWorker_->levelerPeakDbFs()
+        : std::numeric_limits<double>::quiet_NaN();
+    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
+}
+
+void MeterModel::computeCfcPk() {
+    // CFC output level — renders "—" until v0.2.1 enables the
+    // CFC 5-band compressor block (Task #51).  Same scale + danger
+    // as the other level meters.
+    const bool mox = stream_ && stream_->moxActive();
+    const double raw = (txWorker_ && mox)
+        ? txWorker_->cfcPeakDbFs()
+        : std::numeric_limits<double>::quiet_NaN();
+    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
 }
 
 void MeterModel::computeComp() {
+    // Actual compressor (compress.c) OUTPUT level — renders "—"
+    // until v0.2.1 enables the block.  Distinct from LVL_G:
+    // this is the downstream peak limiter post-stage signal,
+    // NOT the upstream leveler boost.
+    const bool mox = stream_ && stream_->moxActive();
+    const double raw = (txWorker_ && mox)
+        ? txWorker_->compressorPeakDbFs()
+        : std::numeric_limits<double>::quiet_NaN();
+    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
+}
+
+void MeterModel::computeAlcPk() {
+    const bool mox = stream_ && stream_->moxActive();
+    const double raw = (txWorker_ && mox)
+        ? txWorker_->alcPeakDbFs()
+        : std::numeric_limits<double>::quiet_NaN();
+    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
+}
+
+void MeterModel::computeAlcGroup() {
+    // Composite per reference's MeterTXMode.ALC_GROUP: ALC_PK +
+    // ALC_GAIN summed.  Renders as a single dBFS level number —
+    // what the wire would have seen if the ALC limiter hadn't
+    // applied its current gain reduction (i.e. pre-ALC peak
+    // estimated from post-ALC level + the reduction added back).
+    const bool mox = stream_ && stream_->moxActive();
+    const double pk = (txWorker_ && mox)
+        ? txWorker_->alcPeakDbFs()
+        : std::numeric_limits<double>::quiet_NaN();
+    const double gn = (txWorker_ && mox)
+        ? txWorker_->alcGainDb()
+        : std::numeric_limits<double>::quiet_NaN();
+    const double sum = (std::isnan(pk) || std::isnan(gn))
+        ? std::numeric_limits<double>::quiet_NaN()
+        : (pk + gn);
+    computeLevelMeterFromDb(sum, kMicDbMin, /*danger=*/-6.0,
+                            QStringLiteral("dBFS"));
+}
+
+void MeterModel::computeLvlG() {
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->levelerGainDb()
         : std::numeric_limits<double>::quiet_NaN();
-    // raw is gain-reduction dB: 0 = no action, negative = reduction.
-    const bool valid = !std::isnan(raw);
-    const double db = valid ? raw : 0.0;
-
-    if (dispDbm_ < -100.0 || dispDbm_ > 100.0) dispDbm_ = db;
-    dispDbm_ += kTelSmooth * (db - dispDbm_);
-    // Map 0..-20 dB reduction → 0..1 bar.
-    const double reduction = -dispDbm_;  // positive number of dB reduced
-    const double n = std::clamp(reduction / -kGainDbMax, 0.0, 1.0);
-    level_ = n;
-    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
-    else if (holdCtr_ > 0) { --holdCtr_; }
-    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
-    if (maxPeakEnabled_) {
-        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
-        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
-        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
-    } else { maxPeak_ = 0.0; }
-    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
-    noiseLevel_ = 0.0;
-    // Danger when reduction exceeds 12 dB (heavy compression).
-    normDanger_ = 12.0 / -kGainDbMax;
-    text_ = valid ? QStringLiteral("%1 dB").arg(dispDbm_, 0, 'f', 1)
-                  : QStringLiteral("—");
-    dbmText_.clear();
-    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
-        snrText_ = formatSecondaryText(txSecondary_);
-    else
-        snrText_.clear();
-    if (txSecondary2_ >= 0
-        && Source(txSecondary2_) != source_
-        && txSecondary2_ != txSecondary_)
-        secondary2Text_ = formatSecondaryText(txSecondary2_);
-    else
-        secondary2Text_.clear();
-    hist_.push_back(n);
-    if (int(hist_.size()) > kHistory) hist_.pop_front();
-    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
-    emit updated();
+    // Leveler is uphill — typical action is boost (positive dB).
+    // Danger when boosting more than 12 dB (signal too weak to be
+    // recovered cleanly without making the noise floor audible).
+    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/12.0);
 }
 
-void MeterModel::computeAlc() {
+void MeterModel::computeCfcG() {
+    const bool mox = stream_ && stream_->moxActive();
+    const double raw = (txWorker_ && mox)
+        ? txWorker_->cfcGainDb()
+        : std::numeric_limits<double>::quiet_NaN();
+    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/12.0);
+}
+
+void MeterModel::computeAlcG() {
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->alcGainDb()
         : std::numeric_limits<double>::quiet_NaN();
-    const bool valid = !std::isnan(raw);
-    const double db = valid ? raw : 0.0;
-
-    if (dispDbm_ < -100.0 || dispDbm_ > 100.0) dispDbm_ = db;
-    dispDbm_ += kTelSmooth * (db - dispDbm_);
-    const double reduction = -dispDbm_;
-    const double n = std::clamp(reduction / -kGainDbMax, 0.0, 1.0);
-    level_ = n;
-    if (n >= peak_) { peak_ = n; holdCtr_ = peakHoldTicks_; }
-    else if (holdCtr_ > 0) { --holdCtr_; }
-    else { peak_ = std::max(0.0, peak_ - kTelPeakDecay); }
-    if (maxPeakEnabled_) {
-        if (n >= maxPeak_) { maxPeak_ = n; maxHoldCtr_ = maxHoldTicks_; }
-        else if (maxHoldCtr_ > 0) { --maxHoldCtr_; }
-        else { maxPeak_ = std::max(0.0, maxPeak_ - kPwrMaxDecay); }
-    } else { maxPeak_ = 0.0; }
-    glow_ = (n >= glow_) ? n : std::max(n, glow_ - kTelGlowDecay);
-    noiseLevel_ = 0.0;
-    // ALC danger when reduction exceeds 6 dB — beyond this the
-    // operator is gain-staging too hot and pumping/splatter risk
-    // is real.  (Reference threshold for the "red zone" hint.)
-    normDanger_ = 6.0 / -kGainDbMax;
-    text_ = valid ? QStringLiteral("%1 dB").arg(dispDbm_, 0, 'f', 1)
-                  : QStringLiteral("—");
-    dbmText_.clear();
-    if (txSecondary_ >= 0 && Source(txSecondary_) != source_)
-        snrText_ = formatSecondaryText(txSecondary_);
-    else
-        snrText_.clear();
-    if (txSecondary2_ >= 0
-        && Source(txSecondary2_) != source_
-        && txSecondary2_ != txSecondary_)
-        secondary2Text_ = formatSecondaryText(txSecondary2_);
-    else
-        secondary2Text_.clear();
-    hist_.push_back(n);
-    if (int(hist_.size()) > kHistory) hist_.pop_front();
-    for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
-    emit updated();
+    // ALC is downhill — reductions over 6 dB mean gain-staging
+    // is too hot (pumping / splatter risk).  Reference threshold.
+    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/6.0);
 }
 
 } // namespace lyra::ui

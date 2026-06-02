@@ -124,13 +124,22 @@ public:
     }
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
-    // Task #69 — live TXA meter accessors for the operator-facing
-    // multimeter MIC / COMP / ALC sources.  Pass-through to the
-    // owned TxChannel.  Polled from the Qt main thread by
-    // MeterModel::tick on MOX; safe per the read-only contract.
-    double micPeakDbFs()   const { return tx_.micPeakDbFs(); }
-    double levelerGainDb() const { return tx_.levelerGainDb(); }
-    double alcGainDb()     const { return tx_.alcGainDb(); }
+    // Task #69 + #71 — live TXA meter accessors for the operator-
+    // facing multimeter dynamics-meter sources (reference-faithful
+    // set: MIC + LEVELER pk/g + CFC pk/g + COMP pk + ALC pk/g).
+    // Pass-through to the owned TxChannel.  Polled from the Qt
+    // main thread by MeterModel::tick on MOX; safe per the
+    // read-only contract.  All values already in dB (WDSP's
+    // meter.c stores 10·log10 / 20·log10 internally — see
+    // tx_channel.cpp comment block).
+    double micPeakDbFs()        const { return tx_.micPeakDbFs(); }
+    double levelerPeakDbFs()    const { return tx_.levelerPeakDbFs(); }
+    double levelerGainDb()      const { return tx_.levelerGainDb(); }
+    double cfcPeakDbFs()        const { return tx_.cfcPeakDbFs(); }
+    double cfcGainDb()          const { return tx_.cfcGainDb(); }
+    double compressorPeakDbFs() const { return tx_.compressorPeakDbFs(); }
+    double alcPeakDbFs()        const { return tx_.alcPeakDbFs(); }
+    double alcGainDb()          const { return tx_.alcGainDb(); }
 
     // ── Task #33: tagged mic-source dispatch ────────────────────
     //

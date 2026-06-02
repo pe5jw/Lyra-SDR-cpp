@@ -1588,15 +1588,30 @@ QWidget *SettingsDialog::buildMeterTab() {
         static const Opt kRxOpts[] = {
             {0, "RX S-meter (signal strength)", true},
         };
+        // Reference-faithful TX dynamics-meter set (Task #71 §2).
+        // Ordered top-to-bottom by the signal-flow stage each one
+        // taps: mic → leveler → CFC → compressor → ALC → wire.
+        // CFC and the actual compressor blocks aren't running in
+        // TXA until v0.2.1 (Tasks #50/#51) — those entries read
+        // "—" / 0 dB correctly until then (reference shares the
+        // same behaviour for an unrun block).
         static const Opt kTxOpts[] = {
-            {1, "PWR (forward power, watts)",           true},
-            {2, "SWR (antenna match)",                  true},
-            {3, "ID — PA Current (HL2 bias)",           true},
-            {4, "VDD — PA Volts (HL2 supply)",          true},
-            {5, "Temp (HL2 board)",                     true},
-            {6, "ALC (gain reduction, dB)",             true},
-            {7, "MIC (mic peak, dBFS)",                 true},
-            {8, "COMP (leveler gain reduction, dB)",    true},
+            // Wire / safety / telemetry (always meaningful):
+            {1,  "PWR (forward power, watts)",              true},
+            {2,  "SWR (antenna match)",                     true},
+            {3,  "ID — PA Current (HL2 bias)",              true},
+            {4,  "VDD — PA Volts (HL2 supply)",             true},
+            {5,  "Temp (HL2 board)",                        true},
+            // TX dynamics chain — input to output:
+            {7,  "MIC (mic peak, dBFS)",                    true},
+            {9,  "LEV (leveler output peak, dBFS)",         true},
+            {8,  "LVL G (leveler gain, dB)",                true},
+            {10, "CFC (CFC output peak, dBFS — v0.2.1)",    true},
+            {11, "CFC G (CFC gain reduction, dB — v0.2.1)", true},
+            {12, "CMP (compressor peak, dBFS — v0.2.1)",    true},
+            {13, "ALC (ALC output peak, dBFS)",             true},
+            {6,  "ALC G (ALC gain reduction, dB)",          true},
+            {14, "ALC Σ (ALC_PK + ALC_GAIN, dBFS)",         true},
         };
 
         auto buildSourceCombo = [this](MeterModel *m, bool isTx) {
@@ -1706,9 +1721,16 @@ QWidget *SettingsDialog::buildMeterTab() {
             {3,  "ID — PA Current (HL2 bias)",                  true},
             {4,  "VDD — PA Volts (HL2 supply)",                 true},
             {5,  "Temp (HL2 board)",                            true},
-            {6,  "ALC (gain reduction, dB)",                    true},
+            // Reference-faithful TX dynamics set (Task #71 §2):
             {7,  "MIC (mic peak, dBFS)",                        true},
-            {8,  "COMP (leveler gain reduction, dB)",           true},
+            {9,  "LEV (leveler output peak, dBFS)",             true},
+            {8,  "LVL G (leveler gain, dB)",                    true},
+            {10, "CFC (CFC output peak, dBFS — v0.2.1)",        true},
+            {11, "CFC G (CFC gain reduction, dB — v0.2.1)",     true},
+            {12, "CMP (compressor peak, dBFS — v0.2.1)",        true},
+            {13, "ALC (ALC output peak, dBFS)",                 true},
+            {6,  "ALC G (ALC gain reduction, dB)",              true},
+            {14, "ALC Σ (ALC_PK + ALC_GAIN, dBFS)",             true},
         };
         auto fillSecondaryCombo = [](QComboBox *cb,
             const decltype(secOpts) &opts) {
