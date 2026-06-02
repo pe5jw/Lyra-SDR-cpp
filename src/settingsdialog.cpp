@@ -1525,109 +1525,10 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(hwBox, 6, 0, 1, 2);
         }
 
-        // --- Task #33: TX Mic Source picker ---
-        //
-        // Operator picks the audio source driving the TX chain:
-        //   Mic In  — HL2/HL2+ codec mic (the v0.2.0..v0.2.2 default)
-        //   TCI     — inbound TX_AUDIO_STREAM from a digital-modes
-        //             TCI client (MSHV / JTDX / FlDigi / etc.)
-        //   Line In / VAC1 / VAC2 — pending v0.2.x (disabled but
-        //             visible so the dropdown layout is final;
-        //             tooltip explains each).
-        //
-        // Token strings match the TCI v2 §3.3 TRX source-token enum
-        // so a TCI client that sends `trx:0,true,tci` automatically
-        // selects the TCI source (the dropdown moves to match — the
-        // operator sees the change and can revert via Settings if
-        // surprised).  See docs/refs/mshv_tci/README.md for the
-        // MSHV first-light workflow.
-        if (prefs_) {
-            auto *lbl = new QLabel(tr("Mic source:"), grp);
-            auto *combo = new QComboBox(grp);
-            const QStringList toks = lyra::ui::Prefs::micSourceTokens();
-            for (int i = 0; i < toks.size(); ++i) {
-                const QString &t = toks.at(i);
-                combo->addItem(lyra::ui::Prefs::micSourceLabel(t), t);
-                combo->setItemData(i,
-                    lyra::ui::Prefs::micSourceTooltip(t), Qt::ToolTipRole);
-                if (!lyra::ui::Prefs::micSourceEnabled(t)) {
-                    // Render the disabled items grey + non-selectable.
-                    auto *model = qobject_cast<QStandardItemModel *>(combo->model());
-                    if (model) {
-                        QStandardItem *it = model->item(i);
-                        if (it) it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
-                    }
-                }
-            }
-            // Set current.
-            {
-                const int idx = toks.indexOf(prefs_->micSource());
-                if (idx >= 0) combo->setCurrentIndex(idx);
-            }
-            combo->setToolTip(tr(
-                "TX audio source.  Pick TCI for digital modes — your TCI "
-                "client (MSHV / JTDX / FlDigi) streams audio over the TCI "
-                "WebSocket and bypasses the mic.  Line In / VAC1 / VAC2 "
-                "are spec'd in v0.2.x; hover any entry for its status."));
-            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
-                    grp, [this, combo](int) {
-                if (!prefs_) return;
-                const QString tok = combo->currentData().toString();
-                prefs_->setMicSource(tok);
-            });
-            connect(prefs_, &lyra::ui::Prefs::micSourceChanged,
-                    combo, [this, combo, toks]() {
-                if (!prefs_) return;
-                const int idx = toks.indexOf(prefs_->micSource());
-                if (idx >= 0 && combo->currentIndex() != idx) {
-                    QSignalBlocker b(combo);
-                    combo->setCurrentIndex(idx);
-                }
-            });
-            g->addWidget(lbl,   7, 0);
-            g->addWidget(combo, 7, 1);
-        }
-
-        // --- Task #39: HL2 hardware +20 dB Mic Boost ---
-        // Settings-side checkbox (operator-confirmed home, 2026-06-01
-        // EOD: "just on the back settings TX panel not front panel
-        // TX").  Lives next to the Mic Source picker because it's
-        // part of the same operator question ("what's feeding the TX
-        // chain?").  Single bit on the wire (C0 0x12 C2 bit 0)
-        // engaging the HL2 codec's analog mic PGA at +20 dB — pure
-        // hardware boost ahead of the digital chain.  Useful when
-        // your hand mic is genuinely weak; for fine trim use the
-        // Mic Gain slider on the TX panel (it stacks on top of the
-        // hardware boost).  No safety implication, no MOX gating;
-        // persisted.  Only affects the codec-mic source — PC mic /
-        // TCI inputs bypass the codec entirely.
-        if (stream_) {
-            auto *mbBox = new QCheckBox(
-                tr("Mic Boost (+20 dB hardware, codec mic only)"), grp);
-            mbBox->setChecked(stream_->micBoost());
-            mbBox->setToolTip(tr(
-                "Enables the HL2 codec's hardware +20 dB mic preamp "
-                "(C0 0x12 C2 bit 0).  Use this when your hand mic or "
-                "headset mic is too quiet to hit the WDSP TXA chain "
-                "at a reasonable level even with the Mic Gain slider "
-                "near max.  Only affects the codec mic input — PC "
-                "mic / TCI audio sources bypass the codec PGA "
-                "entirely, so this checkbox has no effect on them. "
-                "Hardware is 2-state (off / +20 dB); intermediate "
-                "trim comes from the Mic Gain slider stacked on "
-                "top.  Persistent across launches."));
-            connect(mbBox, &QCheckBox::toggled, grp, [this](bool on) {
-                if (stream_) stream_->setMicBoost(on);
-            });
-            connect(stream_, &lyra::ipc::HL2Stream::micBoostChanged, mbBox,
-                    [mbBox](bool on) {
-                if (mbBox->isChecked() != on) {
-                    QSignalBlocker b(mbBox);
-                    mbBox->setChecked(on);
-                }
-            });
-            g->addWidget(mbBox, 8, 0, 1, 2);
-        }
+        // Mic source picker + Mic Boost checkbox MOVED to the TX
+        // tab's "Mic + ALC" group (signal-flow order: source →
+        // HW boost → SW gain → ALC).  Hardware tab now carries
+        // only true wire/safety controls (HW PTT input, etc.).
 
         form->addRow(grp);
     }
@@ -2284,6 +2185,111 @@ QWidget *SettingsDialog::buildTxTab() {
         auto *grp = new QGroupBox(
             tr("Mic + ALC  (TXA input + output gain stages)"), page);
         auto *form = new QFormLayout(grp);
+
+        // Signal-flow order in this group:
+        //   source → HW boost (+20 dB) → SW gain → ALC ceiling
+        // Mic source picker + Mic Boost live here (not on the
+        // Hardware tab) because they are part of the same
+        // operator question as Mic Gain / ALC Max Gain: "what's
+        // driving the TX chain and at what level?"  Co-locating
+        // them under the TX tab matches the audible-signal path.
+
+        // ── Mic source (Task #33: TX Mic Source picker) ──────────
+        //
+        // Operator picks the audio source driving the TX chain:
+        //   Mic In  — HL2/HL2+ codec mic (the v0.2.0..v0.2.2 default)
+        //   TCI     — inbound TX_AUDIO_STREAM from a digital-modes
+        //             TCI client (MSHV / JTDX / FlDigi / etc.)
+        //   Line In / VAC1 / VAC2 — pending v0.2.x (disabled but
+        //             visible so the dropdown layout is final;
+        //             tooltip explains each).
+        //
+        // Token strings match the TCI v2 §3.3 TRX source-token enum
+        // so a TCI client that sends `trx:0,true,tci` automatically
+        // selects the TCI source (the dropdown moves to match — the
+        // operator sees the change and can revert via Settings if
+        // surprised).
+        if (prefs_) {
+            auto *combo = new QComboBox(grp);
+            const QStringList toks = lyra::ui::Prefs::micSourceTokens();
+            for (int i = 0; i < toks.size(); ++i) {
+                const QString &t = toks.at(i);
+                combo->addItem(lyra::ui::Prefs::micSourceLabel(t), t);
+                combo->setItemData(i,
+                    lyra::ui::Prefs::micSourceTooltip(t), Qt::ToolTipRole);
+                if (!lyra::ui::Prefs::micSourceEnabled(t)) {
+                    // Render the disabled items grey + non-selectable.
+                    auto *model = qobject_cast<QStandardItemModel *>(combo->model());
+                    if (model) {
+                        QStandardItem *it = model->item(i);
+                        if (it) it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+                    }
+                }
+            }
+            // Set current.
+            {
+                const int idx = toks.indexOf(prefs_->micSource());
+                if (idx >= 0) combo->setCurrentIndex(idx);
+            }
+            combo->setToolTip(tr(
+                "TX audio source.  Pick TCI for digital modes — your TCI "
+                "client (MSHV / JTDX / FlDigi) streams audio over the TCI "
+                "WebSocket and bypasses the mic.  Line In / VAC1 / VAC2 "
+                "are spec'd in v0.2.x; hover any entry for its status."));
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                    grp, [this, combo](int) {
+                if (!prefs_) return;
+                const QString tok = combo->currentData().toString();
+                prefs_->setMicSource(tok);
+            });
+            connect(prefs_, &lyra::ui::Prefs::micSourceChanged,
+                    combo, [this, combo, toks]() {
+                if (!prefs_) return;
+                const int idx = toks.indexOf(prefs_->micSource());
+                if (idx >= 0 && combo->currentIndex() != idx) {
+                    QSignalBlocker b(combo);
+                    combo->setCurrentIndex(idx);
+                }
+            });
+            form->addRow(tr("Mic source:"), combo);
+        }
+
+        // ── Mic Boost (Task #39: HL2 hardware +20 dB) ────────────
+        // Single bit on the wire (C0 0x12 C2 bit 0) engaging the HL2
+        // codec's analog mic PGA at +20 dB — pure hardware boost
+        // ahead of the digital chain.  Useful when your hand mic is
+        // genuinely weak; for fine trim use the Mic Gain slider
+        // below (it stacks on top of the hardware boost).  No
+        // safety implication, no MOX gating; persisted.  Only
+        // affects the codec-mic source — PC mic / TCI inputs bypass
+        // the codec entirely.
+        if (stream_) {
+            auto *mbBox = new QCheckBox(
+                tr("Mic Boost (+20 dB hardware, codec mic only)"), grp);
+            mbBox->setChecked(stream_->micBoost());
+            mbBox->setToolTip(tr(
+                "Enables the HL2 codec's hardware +20 dB mic preamp "
+                "(C0 0x12 C2 bit 0).  Use this when your hand mic or "
+                "headset mic is too quiet to hit the WDSP TXA chain "
+                "at a reasonable level even with the Mic Gain slider "
+                "near max.  Only affects the codec mic input — PC "
+                "mic / TCI audio sources bypass the codec PGA "
+                "entirely, so this checkbox has no effect on them. "
+                "Hardware is 2-state (off / +20 dB); intermediate "
+                "trim comes from the Mic Gain slider stacked on "
+                "top.  Persistent across launches."));
+            connect(mbBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (stream_) stream_->setMicBoost(on);
+            });
+            connect(stream_, &lyra::ipc::HL2Stream::micBoostChanged, mbBox,
+                    [mbBox](bool on) {
+                if (mbBox->isChecked() != on) {
+                    QSignalBlocker b(mbBox);
+                    mbBox->setChecked(on);
+                }
+            });
+            form->addRow(mbBox);
+        }
 
         // ── Mic Gain (mirrors TxPanel slider) ────────────────────
         auto *micSpin = new QDoubleSpinBox(this);
