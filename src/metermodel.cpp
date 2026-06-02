@@ -1624,13 +1624,40 @@ void MeterModel::computeLvlG() {
 }
 
 void MeterModel::computeAlcG() {
+    // Reference-faithful ALC G display formula (Task #71 §3.2,
+    // operator bench 2026-06-02 PM showed "stuck/hangs" — root
+    // cause was display-formula divergence from reference).
+    //
+    // Reference (Thetis dsp.cs:1019-1056 + console.cs ALC_G case):
+    //   raw       = GetTXAMeter(TXA_ALC_GAIN)  // = 20·log10(current_linear_gain)
+    //   displayed = max(0, raw + alcMaxGainDb)
+    //
+    // WDSP's TXA_ALC_GAIN returns the CURRENT applied gain (not
+    // "dB of reduction").  For wcpagc mode 5 ALC, gain rests at
+    // max_gain when signal is weak (e.g. operator's +3 dB ceiling
+    // → raw = +3), drops below max_gain when ALC actively reduces
+    // (e.g. raw = -3 for 6 dB cut from a +3 dB max).  Reference's
+    // formula "raw + alcMaxGainDb" turns this into a headroom-
+    // oriented number that grows with ALC action — operator-
+    // intuitive: 0 = clamping/heavy-reduce, larger = more headroom.
+    //
+    // alcMaxGainDb is the operator's persistent SetTXAALCMaxGain
+    // setting (default 3.0 dB; HL2Stream::alcMaxGainDb()).
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->alcGainDb()
         : std::numeric_limits<double>::quiet_NaN();
-    // ALC is downhill — reductions over 6 dB mean gain-staging
-    // is too hot (pumping / splatter risk).  Reference threshold.
-    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/6.0);
+    const double maxg = stream_ ? stream_->alcMaxGainDb() : 3.0;
+    // Apply reference formula: max(0, raw + maxg).  NaN raw stays
+    // NaN (validity gate in the helper renders "—").
+    const double display = std::isnan(raw)
+        ? raw
+        : std::max(0.0, raw + maxg);
+    // ALC danger threshold: ≥ 6 dB of displayed action signals
+    // gain-staging too hot (pumping / splatter risk).  Reference
+    // threshold.  Bar scale (kGainDbMax = -20) unchanged so the
+    // visualization is consistent with the LVL G bar.
+    computeGainMeterFromDb(display, kGainDbMax, /*danger=*/6.0);
 }
 
 } // namespace lyra::ui
