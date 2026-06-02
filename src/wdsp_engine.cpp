@@ -384,6 +384,125 @@ void WdspEngine::emitLog(const QString &line)
     emit logLine(line);
 }
 
+// ── Task #44 Phase 2 — analyzer (re)configuration helpers ────────────
+//
+// Factored out of openRx1()'s original inline SetAnalyzer block.  The
+// MOX-edge swap (Phase 2) calls configureAnalyzerForTx() on keydown
+// to retune kAnDisp for the WDSP TX sip1 ring (96 kHz dsp_rate,
+// ~256-sample per-call reads), and configureAnalyzerForRx() on keyup
+// to restore the RX-side config (cfg_.inRate, cfg_.inSize block).
+//
+// PRECONDITION (both helpers): channelMtx_ held by caller.  Matches
+// the openRx1() convention (openRx1 expects setSampleRate or whoever
+// drove the reopen to hold the lock; these helpers run on the same
+// thread under that same lock).  Both helpers are no-ops if
+// analyzerOpen_ is false (XCreateAnalyzer never landed) or the
+// SetAnalyzer cdef isn't resolved.
+
+void WdspEngine::configureAnalyzerForRx() noexcept
+{
+    if (!analyzerOpen_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetAnalyzer) return;
+
+    // overlap + max_w per the frame-rate formula.  max_w sizes an
+    // internal display-history buffer — passing 0 makes WDSP crash on
+    // a zero-size allocation.  overlap clamps to 0 at 192 kHz / 4096
+    // (samples-per-frame >> fft).
+    const int overlap =
+        std::max(0, kAnFftSize - cfg_.inRate / kAnFrameRate);
+    const int maxW = kAnFftSize +
+        std::min(cfg_.inRate / 10, kAnFftSize * kAnFrameRate / 10);
+    // flp = per-FFT high-side-LO flags (int* vector).  One FFT, not
+    // high-side -> {0}.  MUST be a real pointer (passing an int
+    // crashes WDSP — it dereferences flp[i]).
+    int flp[1] = {0};
+    api.SetAnalyzer(
+        kAnDisp,                    // disp
+        1,                          // n_pixout
+        1,                          // n_fft (spur-elim ffts)
+        1,                          // typ = complex IQ
+        flp,                        // flp (int* high-side LO flags)
+        kAnFftSize,                 // sz (fft size)
+        cfg_.inSize,                // bf_sz (RX worker feed block)
+        kAnWindow,                  // win_type
+        kAnKaiserPi,                // pi (kaiser)
+        overlap,                    // ovrlp
+        0,                          // clp (clip bins/side)
+        0.0, 0.0,                   // fsc_lin, fsc_hin (DOUBLE)
+        kAnPixels,                  // n_pix (display points)
+        1,                          // n_stch (stitches)
+        0,                          // calset
+        0.0, 0.0,                   // fmin, fmax
+        maxW);                      // max_w (history buffer size)
+    if (api.SetDisplayDetectorMode) {
+        api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
+    }
+    if (api.SetDisplayAverageMode) {
+        api.SetDisplayAverageMode(kAnDisp, 0, kAnAvgMode);
+    }
+    if (kAnAvgMode != 0) {
+        const double avb =
+            std::exp(-1.0 / (kAnFrameRate * kAnTau));
+        const int numAvg = std::max(2,
+            std::min(60, static_cast<int>(kAnFrameRate * kAnTau)));
+        if (api.SetDisplayAvBackmult) {
+            api.SetDisplayAvBackmult(kAnDisp, 0, avb);
+        }
+        if (api.SetDisplayNumAverage) {
+            api.SetDisplayNumAverage(kAnDisp, 0, numAvg);
+        }
+    }
+}
+
+void WdspEngine::configureAnalyzerForTx() noexcept
+{
+    if (!analyzerOpen_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetAnalyzer) return;
+
+    // TX-state sizing: WDSP sip1 lives at dsp_rate=96 kHz (TXA.c:586
+    // captures pre-iqc + pre-rsmpout); Lyra TX worker pulls ~256
+    // samples per EP2-cadence tick via TXAGetaSipF1 — matches the
+    // sip1 production rate (96000 / 381 Hz ≈ 252).
+    constexpr int kRateTx       = 96000;
+    constexpr int kBlockTx      = 256;
+    const int overlap =
+        std::max(0, kAnFftSize - kRateTx / kAnFrameRate);
+    const int maxW = kAnFftSize +
+        std::min(kRateTx / 10, kAnFftSize * kAnFrameRate / 10);
+    int flp[1] = {0};
+    api.SetAnalyzer(
+        kAnDisp,
+        1, 1, 1, flp,
+        kAnFftSize,
+        kBlockTx,                   // bf_sz (TX worker per-call sip1 read)
+        kAnWindow, kAnKaiserPi,
+        overlap, 0,
+        0.0, 0.0,
+        kAnPixels, 1, 0,
+        0.0, 0.0,
+        maxW);
+    if (api.SetDisplayDetectorMode) {
+        api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
+    }
+    if (api.SetDisplayAverageMode) {
+        api.SetDisplayAverageMode(kAnDisp, 0, kAnAvgMode);
+    }
+    if (kAnAvgMode != 0) {
+        const double avb =
+            std::exp(-1.0 / (kAnFrameRate * kAnTau));
+        const int numAvg = std::max(2,
+            std::min(60, static_cast<int>(kAnFrameRate * kAnTau)));
+        if (api.SetDisplayAvBackmult) {
+            api.SetDisplayAvBackmult(kAnDisp, 0, avb);
+        }
+        if (api.SetDisplayNumAverage) {
+            api.SetDisplayNumAverage(kAnDisp, 0, numAvg);
+        }
+    }
+}
+
 bool WdspEngine::openRx1()
 {
     if (opened_) {
@@ -474,63 +593,18 @@ bool WdspEngine::openRx1()
 
     // Step 5: create + configure the spectral analyzer (panadapter
     // source).  Independent of the DSP channel; fed the same IQ.
+    // XCreateAnalyzer is one-time; SetAnalyzer + detector + average
+    // mode config now factored into configureAnalyzerForRx() so the
+    // Task #44 Phase 2 MOX-edge swap path can call it (or
+    // configureAnalyzerForTx() for the TX-state sizing) under
+    // channelMtx_ without copy-pasting the body.
     if (api.XCreateAnalyzer && api.SetAnalyzer) {
         int success = 0;
         char appDataPath[] = "";   // empty app-data path (no temp files)
         api.XCreateAnalyzer(kAnDisp, &success, kAnMaxFft, 1, 1, appDataPath);
         if (success == 0) {
-            // overlap + max_w per the frame-rate formula.  max_w sizes
-            // an internal display-history buffer — passing 0 makes WDSP
-            // crash on a zero-size allocation.  overlap clamps to 0 at
-            // 192 kHz / 4096 (samples-per-frame >> fft).
-            const int overlap =
-                std::max(0, kAnFftSize - cfg_.inRate / kAnFrameRate);
-            const int maxW = kAnFftSize +
-                std::min(cfg_.inRate / 10, kAnFftSize * kAnFrameRate / 10);
-            // flp = per-FFT high-side-LO flags (int* vector).  One FFT,
-            // not high-side -> {0}.  MUST be a real pointer (passing an
-            // int crashes WDSP — it dereferences flp[i]).
-            int flp[1] = {0};
-            api.SetAnalyzer(
-                kAnDisp,                    // disp
-                1,                          // n_pixout
-                1,                          // n_fft (spur-elim ffts)
-                1,                          // typ = complex IQ
-                flp,                        // flp (int* high-side LO flags)
-                kAnFftSize,                 // sz (fft size)
-                cfg_.inSize,                // bf_sz (our feed block)
-                kAnWindow,                  // win_type
-                kAnKaiserPi,                // pi (kaiser)
-                overlap,                    // ovrlp
-                0,                          // clp (clip bins/side)
-                0.0, 0.0,                   // fsc_lin, fsc_hin (DOUBLE)
-                kAnPixels,                  // n_pix (display points)
-                1,                          // n_stch (stitches)
-                0,                          // calset
-                0.0, 0.0,                   // fmin, fmax
-                maxW);                      // max_w (history buffer size)
-            if (api.SetDisplayDetectorMode) {
-                api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
-            }
-            // Average mode (0 = off = live trace by default).  When
-            // enabled, the back-multiplier + frame count derive from
-            // tau + frame_rate exactly as the reference does.
-            if (api.SetDisplayAverageMode) {
-                api.SetDisplayAverageMode(kAnDisp, 0, kAnAvgMode);
-            }
-            if (kAnAvgMode != 0) {
-                const double avb =
-                    std::exp(-1.0 / (kAnFrameRate * kAnTau));
-                const int numAvg = std::max(2,
-                    std::min(60, static_cast<int>(kAnFrameRate * kAnTau)));
-                if (api.SetDisplayAvBackmult) {
-                    api.SetDisplayAvBackmult(kAnDisp, 0, avb);
-                }
-                if (api.SetDisplayNumAverage) {
-                    api.SetDisplayNumAverage(kAnDisp, 0, numAvg);
-                }
-            }
             analyzerOpen_ = true;
+            configureAnalyzerForRx();
             emitLog(QStringLiteral(
                 "[wdsp] analyzer: %1 pixels, fft %2, window %3 "
                 "(panadapter source)")

@@ -571,6 +571,23 @@ private:
     void computePassband(double *lo, double *hi) const;
     void recomputePassband();   // store + emit passbandChanged
 
+    // ── Task #44 Phase 2 — analyzer (re)config helpers ───────────────
+    // Both factor the SetAnalyzer + detector/average mode setup that
+    // openRx1() originally did inline.  Same body shape; the RX vs TX
+    // variants differ in sample-rate, block size (bf_sz), overlap, and
+    // max_w — sized for the source feeding Spectrum0 in each MOX state.
+    // configureAnalyzerForTx() is sized for the WDSP TX sip1 ring:
+    // 96 kHz dsp_rate, ~256-sample per-call reads, overlap 2496,
+    // max_w 13696.  Both helpers are pure WDSP reconfiguration — the
+    // analyzer ID + lifecycle stay owned by openRx1/closeRx1.
+    //
+    // PRECONDITION (both): channelMtx_ held by caller.  Matches the
+    // openRx1 caller-holds convention (openRx1 expects setSampleRate
+    // or equivalent to hold the lock; these helpers inherit that).
+    // No-op if analyzerOpen_ is false.
+    void configureAnalyzerForRx() noexcept;
+    void configureAnalyzerForTx() noexcept;
+
     WdspNative *wdsp_    = nullptr;
     RxConfig    cfg_;
     // Serialises the WDSP channel lifecycle (open/close on the main
