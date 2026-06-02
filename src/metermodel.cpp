@@ -1624,39 +1624,44 @@ void MeterModel::computeLvlG() {
 }
 
 void MeterModel::computeAlcG() {
-    // Reference-faithful ALC G display formula (Task #71 §3.2,
-    // operator bench 2026-06-02 PM showed "stuck/hangs" — root
-    // cause was display-formula divergence from reference).
+    // ALC G — dB of active gain reduction.  Reference-verified
+    // formula (Task #71, corrected 2026-06-02 PM after f0585ea
+    // port was found to add max_gain instead of negate raw):
     //
-    // Reference (Thetis dsp.cs:1019-1056 + console.cs ALC_G case):
-    //   raw       = GetTXAMeter(TXA_ALC_GAIN)  // = 20·log10(current_linear_gain)
-    //   displayed = max(0, raw + alcMaxGainDb)
+    //   raw      = GetTXAMeter(TXA_ALC_GAIN) = 20·log10(current_gain)
+    //   display  = max(0, -raw)
     //
-    // WDSP's TXA_ALC_GAIN returns the CURRENT applied gain (not
-    // "dB of reduction").  For wcpagc mode 5 ALC, gain rests at
-    // max_gain when signal is weak (e.g. operator's +3 dB ceiling
-    // → raw = +3), drops below max_gain when ALC actively reduces
-    // (e.g. raw = -3 for 6 dB cut from a +3 dB max).  Reference's
-    // formula "raw + alcMaxGainDb" turns this into a headroom-
-    // oriented number that grows with ALC action — operator-
-    // intuitive: 0 = clamping/heavy-reduce, larger = more headroom.
+    // WDSP's TXA_ALC_GAIN reports the CURRENT applied linear gain
+    // in dB.  When ALC is at rest (no reduction), gain sits at
+    // max_gain → raw = max_gain_db → display = 0 (clipped).  When
+    // ALC actively reduces gain by X dB below max, gain drops
+    // below max_gain → raw = (max - X) → display = max(0, X-max).
+    // After the WDSP envelope follower settles into its operating
+    // region, display tracks the AMOUNT OF REDUCTION in dB:
+    //   0       → ALC at rest (no reduction; signal below threshold)
+    //   3 → 5   → properly-driven chain (operator-ideal sweet spot
+    //             where mic / leveler / drive line up so ALC is
+    //             actively limiting peaks by a few dB without
+    //             pumping the body of the signal)
+    //   ≥ 6     → too hot — pumping / splatter risk; danger bar
     //
-    // alcMaxGainDb is the operator's persistent SetTXAALCMaxGain
-    // setting (default 3.0 dB; HL2Stream::alcMaxGainDb()).
+    // Meter swings DYNAMICALLY with voice peaks rather than locking
+    // to a headroom plateau (which is what the old "max(0, raw +
+    // maxg)" formula did — meter pinned near max_gain when chain
+    // was idle, looked "stuck" to operators reading the reference
+    // convention).  Operator's "ALC -3 to -5 under 0" mental model
+    // = "+3 to +5 above 0" on this meter (same physical event,
+    // different sign convention; reference shows positive dB of
+    // reduction, not negative dB of difference from rest).
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->alcGainDb()
         : std::numeric_limits<double>::quiet_NaN();
-    const double maxg = stream_ ? stream_->alcMaxGainDb() : 3.0;
-    // Apply reference formula: max(0, raw + maxg).  NaN raw stays
-    // NaN (validity gate in the helper renders "—").
     const double display = std::isnan(raw)
         ? raw
-        : std::max(0.0, raw + maxg);
-    // ALC danger threshold: ≥ 6 dB of displayed action signals
-    // gain-staging too hot (pumping / splatter risk).  Reference
-    // threshold.  Bar scale (kGainDbMax = -20) unchanged so the
-    // visualization is consistent with the LVL G bar.
+        : std::max(0.0, -raw);
+    // Bar scale (kGainDbMax = -20) unchanged so the visualization
+    // matches the LVL G bar idiom; danger = 6 dB of reduction.
     computeGainMeterFromDb(display, kGainDbMax, /*danger=*/6.0);
 }
 

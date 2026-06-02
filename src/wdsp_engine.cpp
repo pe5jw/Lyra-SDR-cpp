@@ -56,7 +56,20 @@ constexpr double kUsbHighHz  = 3000.0;
 // args.  Do NOT also call SetRXAAGCTop — it writes the same max_gain
 // field SetRXAAGCThresh computes and would clobber it.
 constexpr int    kAgcSlope         = 35;
-constexpr double kAgcThreshDbFs    = -100.0;
+// AGC noise-floor threshold (dBFS).  AGC derives max_gain from
+// (thresh, fft_size, sample_rate) — a lower threshold lets AGC
+// open MORE gain to push the noise floor up to that threshold,
+// which makes post-AGC audio ride hot.  The pre-2026-06-02 value
+// of -100 dBFS was operator-flagged as the root cause of "Volume
+// slider at -39 dB still louder than YouTube" — AGC was opening
+// ~100 dB of max_gain on quiet bands, leaving every downstream
+// stage (AF, Vol, sink) trying to claw the level back.  -90 dBFS
+// trims ~10 dB off max_gain — still very sensitive (the floor for
+// "useful signal" sits well below typical band noise levels) but
+// the post-AGC audio runs at a level a standard operator volume
+// taper can comfortably attenuate to silent.  Operator-tunable
+// in a future commit (Q_PROPERTY needs to flip from CONSTANT).
+constexpr double kAgcThreshDbFs    = -90.0;
 constexpr double kAgcThreshFftSize = 4096.0;
 
 // Step 5: WDSP spectral analyzer (panadapter) config.  Values mirror
@@ -105,11 +118,14 @@ constexpr int    kSinkBufferMs = 40;
 
 // Step 3e: perceptual volume taper.  Slider position (0..1) -> dB gain
 // so comfortable listening sits mid-slider instead of bunched at the
-// bottom (a linear gain made 8% already loud).  pos=1 -> 0 dB (unity),
-// pos=0.5 -> -20 dB, pos->0 -> silence.  Floor -40 dB (was -60) so the
-// whole curve is louder per position (operator: "10 should sound like
-// 20").  Mirrors the Python dB-volume idiom (CLAUDE.md §15.17).
-constexpr double kMinVolDb = -40.0;
+// bottom.  pos=1 -> 0 dB (unity), pos=0.5 -> -30 dB, pos->0 -> silence.
+// Floor -60 dB (was -40, operator-flagged 2026-06-02: "Vol at -39 dB
+// still louder than YouTube") — combined with the AGC-thresh trim to
+// -90 dBFS above, the operator's full slider travel now spans a useful
+// attenuation range without bunching every quiet-listening setting
+// against the floor.  -60 was the pre-#15.17 default we retreated from;
+// reinstated now that the AGC pre-multiplier is sane.
+constexpr double kMinVolDb = -60.0;
 
 double posToDb(double pos) {
     return (pos <= 0.0) ? kMinVolDb : kMinVolDb * (1.0 - pos);
