@@ -255,6 +255,13 @@ private:
     bool     emulateExpertSdr3_= false;
     bool     emulateSunSdr2_   = false;
     bool     cwluBecomesCw_    = true;
+    // Task #75 — TCI RX-out linear-gain multiplier.  Cached from
+    // Prefs.tciRxGainDb on every tciRxGainDbChanged emit so the
+    // hot path in onTciAudioBlock is one std::atomic load (or a
+    // single non-atomic double read on the main thread; tcp
+    // ingress + main-thread Prefs setter never race).  Default
+    // 1.0 = unity = pre-#75 byte-identical wire.
+    double   rxGainLinear_     = 1.0;
 
     // Per-key broadcast rate limiter + soft DSP-parameter store.
     QHash<QString, qint64> lastSent_;

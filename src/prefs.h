@@ -52,6 +52,15 @@ class Prefs : public QObject {
                NOTIFY useTuneDriveChanged)
     Q_PROPERTY(int  tuneDrivePct READ tuneDrivePct WRITE setTuneDrivePct
                NOTIFY tuneDrivePctChanged)
+    // Task #75 — TCI RX-out gain (dB).  Applied in TciServer on the
+    // RX audio path before binary-frame emit, so 3rd-party clients
+    // (digital-mode skimmers like MSHV / JTDX / WSJT-X) can be
+    // attenuated when Lyra's RX runs hotter than what the client
+    // expects.  Range -40..+10 dB; default 0 dB = byte-identical to
+    // pre-#75 behaviour.  Stopgap until #49/#55 land per-mode RX/TX
+    // gain profile bundles.
+    Q_PROPERTY(double tciRxGainDb READ tciRxGainDb WRITE setTciRxGainDb
+               NOTIFY tciRxGainDbChanged)
     // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
     Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
@@ -283,6 +292,8 @@ public:
     void   setUseTuneDrive(bool v);
     int    tuneDrivePct() const { return tuneDrivePct_; }
     void   setTuneDrivePct(int v);
+    double tciRxGainDb() const { return tciRxGainDb_; }
+    void   setTciRxGainDb(double v);
 public slots:
     void   setMoxActive(bool on);
 public:
@@ -426,6 +437,7 @@ signals:
     void txDbMaxChanged();
     void useTuneDriveChanged();
     void tuneDrivePctChanged();
+    void tciRxGainDbChanged();
     void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
@@ -496,6 +508,8 @@ private:
     // Task #74 — TUN separate-drive state (defaults applied in ctor).
     bool    useTuneDrive_ = false;
     int     tuneDrivePct_ = 25;
+    // Task #75 — TCI RX-out gain (dB); default 0 = unity.
+    double  tciRxGainDb_ = 0.0;
     bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;

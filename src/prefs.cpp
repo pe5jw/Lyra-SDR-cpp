@@ -85,6 +85,11 @@ constexpr auto kMicSource    = "tx/mic_source";
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
 constexpr auto kUseTuneDrive = "tx/use_tune_drive";
 constexpr auto kTuneDrivePct = "tx/tune_drive_pct";
+// Task #75 — TCI RX-out gain in dB.  Default 0.0 = unity (byte-
+// identical to pre-#75 behaviour).  Operator-tuned in Settings →
+// TCI server group; clients see the gain change at the next emitted
+// audio packet boundary (~43 ms at 48 kHz / 2048-sample frames).
+constexpr auto kTciRxGainDb  = "tci/rx_gain_db";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -119,6 +124,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     useTuneDrive_ = s.value(kUseTuneDrive, false).toBool();
     tuneDrivePct_ = std::clamp(
         s.value(kTuneDrivePct, 25).toInt(), 0, 100);
+    tciRxGainDb_  = std::clamp(
+        s.value(kTciRxGainDb, 0.0).toDouble(), -40.0, 10.0);
     dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
@@ -318,6 +325,17 @@ void Prefs::setTuneDrivePct(int v) {
     tuneDrivePct_ = v;
     QSettings().setValue(kTuneDrivePct, v);
     emit tuneDrivePctChanged();
+}
+
+void Prefs::setTciRxGainDb(double v) {
+    v = std::clamp(v, -40.0, 10.0);
+    // Avoid spurious change ripples on identical-value sets — the
+    // TciServer caches the linear value on the signal so a no-op
+    // emit would recompute std::pow for nothing.
+    if (v == tciRxGainDb_) return;
+    tciRxGainDb_ = v;
+    QSettings().setValue(kTciRxGainDb, v);
+    emit tciRxGainDbChanged();
 }
 
 void Prefs::setMoxActive(bool on) {

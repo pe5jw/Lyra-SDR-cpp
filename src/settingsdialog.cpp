@@ -487,6 +487,46 @@ QWidget *SettingsDialog::buildNetworkTab() {
             [this](bool on) { tci_->setEmulateSunSdr2(on); });
     form->addRow(QString(), emuDev);
 
+    // ── Task #75 — TCI RX-out gain (stopgap until #49/#55 profiles).
+    //    Negative dB to attenuate (the common case — 3rd-party
+    //    skimmers like MSHV / JTDX often need much less level than
+    //    Lyra's RX hands out at unity); positive dB to boost a
+    //    quiet client.  Applied in TciServer at audio-block ingress
+    //    before binary-frame emit.  Operator drags it live; takes
+    //    effect at the next packet boundary (~43 ms at 48 kHz /
+    //    2048-sample frames).  Range -40..+10 dB, default 0 (unity).
+    if (prefs_) {
+        auto *rxGainSpin = new QDoubleSpinBox(grp);
+        rxGainSpin->setRange(-40.0, 10.0);
+        rxGainSpin->setDecimals(1);
+        rxGainSpin->setSingleStep(1.0);
+        rxGainSpin->setSuffix(tr(" dB"));
+        rxGainSpin->setValue(prefs_->tciRxGainDb());
+        rxGainSpin->setToolTip(tr(
+            "Attenuate (or boost) the audio Lyra sends to TCI "
+            "clients (MSHV, JTDX, WSJT-X, etc.).  Negative dB reduces "
+            "the level if Lyra's RX runs hotter than your client "
+            "expects (e.g. you need to set the client's RX gain very "
+            "low to avoid waterfall overload).  0 dB = byte-identical "
+            "to Lyra's RX level.  Live: takes effect on the next "
+            "emitted audio packet (~43 ms latency).\n\n"
+            "Stopgap until per-mode RX/TX gain profiles ship "
+            "(planned tasks #49 + #55)."));
+        connect(rxGainSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                grp, [this](double v) {
+            if (prefs_) prefs_->setTciRxGainDb(v);
+        });
+        connect(prefs_, &lyra::ui::Prefs::tciRxGainDbChanged, rxGainSpin,
+                [this, rxGainSpin]() {
+            const double v = prefs_->tciRxGainDb();
+            if (rxGainSpin->value() != v) {
+                QSignalBlocker b(rxGainSpin);
+                rxGainSpin->setValue(v);
+            }
+        });
+        form->addRow(tr("RX-out gain:"), rxGainSpin);
+    }
+
     auto *enable = new QCheckBox(tr("TCI server running"), grp);
     enable->setChecked(tci_->running());
     form->addRow(QString(), enable);

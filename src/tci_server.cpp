@@ -246,6 +246,20 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     connect(chronoTimer_, &QTimer::timeout, this, &TciServer::onChronoTick);
     if (prefs_)
         connect(prefs_, &Prefs::modeChanged, this, &TciServer::onModeChanged);
+
+    // Task #75 — cache the RX-out gain as a linear multiplier from
+    // Prefs.tciRxGainDb so the audio hot path doesn't pay std::pow
+    // per packet.  Seeded from the persisted value at ctor; refreshed
+    // on every tciRxGainDbChanged emit (operator drags the Settings
+    // slider, future TX-profile recall, etc.).
+    if (prefs_) {
+        rxGainLinear_ =
+            std::pow(10.0, prefs_->tciRxGainDb() / 20.0);
+        connect(prefs_, &Prefs::tciRxGainDbChanged, this, [this]() {
+            rxGainLinear_ =
+                std::pow(10.0, prefs_->tciRxGainDb() / 20.0);
+        });
+    }
     if (engine_) {
         connect(engine_, &lyra::dsp::WdspEngine::volumeChanged,
                 this, &TciServer::onVolumeChanged);
@@ -503,7 +517,23 @@ void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
     // the wire matches what we advertise at handshake and what
     // the client's decoder expects.
     audioPendingRate_ = rateHz;
-    audioPending_.insert(audioPending_.end(), mono, mono + frames);
+    // Task #75 — apply the operator's TCI RX-out gain ONCE at
+    // ingress.  Unity (1.0) shortcuts the per-sample multiply for
+    // the common default-OFF path so a 0 dB operator pays nothing.
+    // Non-unity multiplies into the accumulator as samples are
+    // copied in — clipping is not enforced here (3rd-party clients
+    // FT8-decode in float; saturating to ±1.0 would clip-distort
+    // strong signals and degrade decode SNR more than a soft float
+    // overshoot would).
+    const double g = rxGainLinear_;
+    if (g == 1.0) {
+        audioPending_.insert(audioPending_.end(), mono, mono + frames);
+    } else {
+        const float gf = float(g);
+        audioPending_.reserve(audioPending_.size() + size_t(frames));
+        for (int i = 0; i < frames; ++i)
+            audioPending_.push_back(mono[i] * gf);
+    }
 
     // Drop-oldest cap: never let the accumulator grow unbounded
     // (recomputeStreaming turns the engine tap off when no client
