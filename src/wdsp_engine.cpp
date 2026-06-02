@@ -105,11 +105,14 @@ constexpr int    kSinkBufferMs = 40;
 
 // Step 3e: perceptual volume taper.  Slider position (0..1) -> dB gain
 // so comfortable listening sits mid-slider instead of bunched at the
-// bottom (a linear gain made 8% already loud).  pos=1 -> 0 dB (unity),
-// pos=0.5 -> -20 dB, pos->0 -> silence.  Floor -40 dB (was -60) so the
-// whole curve is louder per position (operator: "10 should sound like
-// 20").  Mirrors the Python dB-volume idiom (CLAUDE.md §15.17).
-constexpr double kMinVolDb = -40.0;
+// bottom.  pos=1 -> 0 dB (unity), pos=0.5 -> -30 dB, pos->0 -> silence.
+// Floor -60 dB (operator bench 2026-06-02: -40 dB floor was too
+// shallow — Vol slider near the bottom still hotter than other apps).
+// Operator-bench-confirmed louder=quieter feel works in this range;
+// re-applied 2026-06-02 PM after the post-#71 audio commit was reverted
+// for an unrelated MOX-path regression (this taper change was verified
+// safe in that bench).
+constexpr double kMinVolDb = -60.0;
 
 double posToDb(double pos) {
     return (pos <= 0.0) ? kMinVolDb : kMinVolDb * (1.0 - pos);
