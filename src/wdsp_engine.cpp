@@ -71,16 +71,6 @@ constexpr int    kAgcSlope         = 35;
 // in a future commit (Q_PROPERTY needs to flip from CONSTANT).
 constexpr double kAgcThreshDbFs    = -90.0;
 constexpr double kAgcThreshFftSize = 4096.0;
-// AGC fixed gain (dB) — applied when AGC mode = OFF / FIXD.  Without
-// an explicit setter the WDSP create-time default sits far above
-// reference's RXFixedAGC convention of +20 dB (radio.cs:1001-1019),
-// which made operators perceive "AGC OFF louder than FAST/MED/SLOW"
-// — backwards from the reference convention where OFF gives raw
-// modest-gain demod output that the operator brings up via Volume.
-// +20 dB matches the reference default exactly.  Operator-tunable
-// in a future commit (Settings → DSP entry alongside the AGC mode
-// picker; same Q_PROPERTY pattern as #76 AGC threshold).
-constexpr double kAgcFixedGainDb   = 20.0;
 
 // Step 5: WDSP spectral analyzer (panadapter) config.  Values mirror
 // the standard HL2 RX analyzer setup (fft 4096, window 4, kaiser 14).  pixels is
@@ -1274,18 +1264,6 @@ void WdspEngine::pushAgcMode()
     // plus the decay rate.  SetRXAAGCMode sets WDSP internal defaults
     // too, but pushing them ourselves removes any doubt about the values.
     // (Off = FIXD/fixed gain — decay/hang are irrelevant, left alone.)
-    //
-    // Operator bench 2026-06-02 caught a real WDSP quirk: mode FIXD
-    // (= AGC OFF in our UI) uses fixed_gain as a static multiplier
-    // INSTEAD of envelope-tracked gain.  Without an explicit setter,
-    // fixed_gain stays at WDSP's create-time default (well above 0 dB),
-    // which made OFF louder than FAST/MED/SLOW — backwards from the
-    // reference convention.  Pushing kAgcFixedGainDb here (regardless
-    // of current mode) means a subsequent mode-flip to OFF inherits
-    // the reference-matching +20 dB instead of WDSP's hot default.
-    if (api.SetRXAAGCFixedGain) {
-        api.SetRXAAGCFixedGain(channel_, kAgcFixedGainDb);
-    }
     if (mode != kAgcModeOff) {
         int decayMs = 250, hangMs = 0, hangThr = 100;   // med
         if (mode == kAgcModeFast)      { decayMs =  50; hangMs =    0; hangThr = 100; }
