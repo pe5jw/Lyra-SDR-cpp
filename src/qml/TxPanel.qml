@@ -94,7 +94,7 @@ Rectangle {
         Label { text: qsTr("Drive"); color: root.cMuted }
         Slider {
             id: driveSlider
-            Layout.preferredWidth: 200
+            Layout.preferredWidth: 130   // operator-shrunk from 200 — gesture room enough; saves panel width for TUN slider + buttons
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: root.rawToPct(Stream.txDriveLevel)
             onMoved: Stream.setTxDriveLevel(root.pctToRaw(value))
@@ -137,7 +137,7 @@ Rectangle {
         Label { text: qsTr("Mic"); color: root.cMuted }
         Slider {
             id: micGainSlider
-            Layout.preferredWidth: 200
+            Layout.preferredWidth: 130   // matches driveSlider — front-panel sliders kept short
             // Range matches the verified reference's Default TX profile
             // (Max +40, Min -90) so the operator's full reference-style
             // travel is preserved.  Live value bidirectionally binds
@@ -189,30 +189,52 @@ Rectangle {
             color: root.cMuted
             visible: Prefs.useTuneDrive
         }
-        SpinBox {
-            id: tuneDriveSpin
+        // Slider matches the Drive/Mic idiom — drag for fast set,
+        // wheel-tunes (Shift = 5 %) for fine, Settings → TX provides
+        // typed entry.  Per-band persistence per #74 follow-up.
+        Slider {
+            id: tuneDriveSlider
             visible: Prefs.useTuneDrive
-            from: 0; to: 100; stepSize: 1
+            Layout.preferredWidth: 130
+            from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: Prefs.tuneDrivePct
-            onValueModified: Prefs.tuneDrivePct = value
-            // Keep widget in sync if value changes elsewhere (Settings
-            // dialog spinbox, persistence reload).
+            onMoved: Prefs.tuneDrivePct = value
+            WheelHandler {
+                onWheel: (ev) => {
+                    var step = (ev.modifiers & Qt.ShiftModifier) ? 5 : 1
+                    var nv = tuneDriveSlider.value + (ev.angleDelta.y > 0 ? step : -step)
+                    nv = Math.max(0, Math.min(100, nv))
+                    Prefs.tuneDrivePct = nv
+                }
+            }
+            // External-update mirror (Settings dialog spinbox,
+            // persistence reload, per-band recall on band crossing).
             Connections {
                 target: Prefs
                 function onTuneDrivePctChanged() {
-                    if (tuneDriveSpin.value !== Prefs.tuneDrivePct)
-                        tuneDriveSpin.value = Prefs.tuneDrivePct
+                    if (tuneDriveSlider.value !== Prefs.tuneDrivePct)
+                        tuneDriveSlider.value = Prefs.tuneDrivePct
                 }
             }
-            textFromValue: function(v) { return v + " %" }
-            valueFromText: function(t) { return parseInt(t) || 0 }
             ToolTip.text: qsTr("Drive %% applied while TUN is armed. "
-                + "Lyra swaps to this value on tune-arm and restores "
-                + "your main TX Drive %% on tune-release.  Set once and "
-                + "forget — typically lower than voice TX so you tune "
-                + "into the antenna/tuner at safe power.")
+                + "Per-band remembered (tune-into-amp on 80 m vs tune-"
+                + "into-tuner on 10 m get their own settings).  Lyra "
+                + "swaps to this on tune-arm and restores your main "
+                + "TX Drive %% on tune-release.  Wheel adjusts "
+                + "(Shift = 5 %%); Settings → TX → Tune Drive offers "
+                + "typed entry.")
             ToolTip.delay: 1500
-            ToolTip.visible: hovered
+            ToolTip.visible: hovered && !pressed
+        }
+        // Live percent readback next to the slider (matches the
+        // Drive/Mic readback idiom).
+        Label {
+            visible: Prefs.useTuneDrive
+            text: Prefs.tuneDrivePct + qsTr(" %")
+            color: cText
+            font.family: "Consolas"
+            font.bold: true
+            Layout.preferredWidth: 36
         }
 
         // ── TUN — armed-tune button (carrier @ TX freq + 1 kHz) ─────
