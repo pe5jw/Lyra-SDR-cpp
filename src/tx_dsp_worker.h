@@ -75,6 +75,10 @@
 
 namespace lyra::dsp {
 
+class WdspEngine;   // fwd-decl — set via setWdspEngine() for the
+                    // Phase-2 panadapter feed (Task #44).  Lives in
+                    // wdsp_engine.h; included from .cpp.
+
 class TxDspWorker {
 public:
     // Block size the worker drains per popBlock + feeds to
@@ -94,6 +98,15 @@ public:
     // thread is NOT spawned and construction completes in an
     // inert state (the destructor still cleans up cleanly).
     TxDspWorker(WdspNative *wdsp, Hl2Ep6MicSource &micSource);
+
+    // Task #44 Phase 2 — late-bound WdspEngine pointer for the
+    // panadapter feed via TXAGetaSipF1.  Set from main.cpp after
+    // both objects exist; cleared in shutdown teardown BEFORE
+    // ~TxDspWorker (caller arranges the order, same pattern as
+    // MeterModel's setTxDspWorker).  May be null — feed call is
+    // a no-op when nullptr.  Reads txOwnsAnalyzer() to decide
+    // whether to call wdspEngine_->feedTxSpectrumFromSip1().
+    void setWdspEngine(WdspEngine *w) noexcept { wdspEngine_ = w; }
 
     // Tear-down sequence (matches the C reference's
     // destroy_cmbuffs / destroy_xmtr ordering):
@@ -310,7 +323,13 @@ private:
 
     TxChannel        tx_;
     TxRing           ring_;
-    Hl2Ep6MicSource &mic_;   // caller-owned; outlives this
+    Hl2Ep6MicSource &mic_;       // caller-owned; outlives this
+
+    // Task #44 Phase 2 — late-bound; nullptr until main.cpp
+    // wires it post-WDSP-load.  Step 4 calls into it from the
+    // block-pack site to feed pre-iqc TX I/Q to the panadapter
+    // analyzer via TXAGetaSipF1.  No ownership.
+    WdspEngine      *wdspEngine_ = nullptr;
 
     // Task #33 — operator-selected mic source.  Default Mic1 (codec
     // mic, the existing v0.2.0..v0.2.2 path).  Set via the operator

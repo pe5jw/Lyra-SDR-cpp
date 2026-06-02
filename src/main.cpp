@@ -354,6 +354,15 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-1 step c1b: meter.setTxDspWorker(nullptr) - start");
         if (winRef) winRef->setTxDspWorker(nullptr);
         qWarning("[shutdown] handler-1 step c1b: done");
+        // Task #44 Phase 2 — clear TxDspWorker's WdspEngine pointer
+        // BEFORE deleting txWorker.  Same pattern as the c1b
+        // MeterModel clear: a stray TX-worker block-pack tick on the
+        // way out must not dereference a deleted WdspEngine.  Order
+        // matters: wdspEngine itself is destroyed by Qt's QObject
+        // parenting (parent=&app, destroyed during QApp dtor — well
+        // after this aboutToQuit lambda runs), so wdspEngine still
+        // exists here; we just unwire the back-pointer.
+        if (txWorker) txWorker->setWdspEngine(nullptr);
         qWarning("[shutdown] handler-1 step c: delete txWorker - start (~TxDspWorker runs now)");
         delete txWorker;  txWorker  = nullptr;
         qWarning("[shutdown] handler-1 step c: done");
@@ -462,6 +471,14 @@ int main(int argc, char *argv[])
             // earlier) sees them populated at teardown.
             micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
             txWorker  = new lyra::dsp::TxDspWorker(wdsp, *micSource);
+
+            // Task #44 Phase 2 — wire the WdspEngine pointer so the
+            // TX worker can feed pre-iqc sip1 samples into the
+            // panadapter analyzer during MOX (step 4 wires the call;
+            // step 5 wires the MOX-edge swap that gates it).
+            // Cleared in the aboutToQuit teardown chain so the TX
+            // worker never dereferences a deleted WdspEngine.
+            txWorker->setWdspEngine(wdspEngine);
 
             // Task #33 — TCI inbound TX audio source.  Parented to
             // app so QObject lifecycle is correct; back-pointer to
