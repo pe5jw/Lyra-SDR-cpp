@@ -444,8 +444,15 @@ void WdspEngine::configureAnalyzerForRx() noexcept
         0,                          // calset
         0.0, 0.0,                   // fmin, fmax
         maxW);                      // max_w (history buffer size)
-    // Mirror the configured block size for feedTxSpectrumFromSip1()'s
-    // mid-reconfigure drop-frame check (Task #44 v2.2 amendment A.5).
+    // Tell the analyzer its sample rate explicitly (matches the
+    // reference SpecHPSDR.SampleRate setter at specHPSDR.cs:453
+    // which calls SetDisplaySampleRate).  Required so that any
+    // WDSP-internal rate-derived math (freq bin width, etc.) is
+    // correct after a rate change.  (Task #44 Phase 2 v2.3.1 fix —
+    // operator bench showed broken spectrum without this call.)
+    if (api.SetDisplaySampleRate) {
+        api.SetDisplaySampleRate(kAnDisp, cfg_.inRate);
+    }
     txAnalyzerBfSize_.store(cfg_.inSize, std::memory_order_relaxed);
     if (api.SetDisplayDetectorMode) {
         api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
@@ -476,12 +483,22 @@ void WdspEngine::configureAnalyzerForTx() noexcept
     // analyzerMtx_ — symmetric with configureAnalyzerForRx().
     std::lock_guard<std::mutex> lk(analyzerMtx_);
 
-    // TX-state sizing: WDSP sip1 lives at dsp_rate=96 kHz (TXA.c:586
+    // TX-state sizing — REFERENCE MECHANISM (v2.3): the WDSP sip1
+    // siphon auto-feeds Spectrum0 via TXASetSipMode(1)+TXASetSipDisplay
+    // (set in setTxOwnsAnalyzer below).  bf_sz MUST match what xsiphon
+    // delivers per call = a->insize = the TX channel's dsp_size (set
+    // via setSize_siphon at TXA.c:733).  Lyra's TX channel uses
+    // kDspSize=4096 (tx_channel.cpp:57).  v2.3.0 used kBlockTx=256
+    // (leftover from the v2.2 manual-pull mechanism's per-call size)
+    // — wrong by 16x → operator bench showed comb-of-spurs across the
+    // visible band.  v2.3.1 fixes by matching the actual feed size.
+    //
+    // sip1 lives at dsp_rate=96 kHz (TXA.c:586
     // captures pre-iqc + pre-rsmpout); Lyra TX worker pulls ~256
     // samples per EP2-cadence tick via TXAGetaSipF1 — matches the
     // sip1 production rate (96000 / 381 Hz ≈ 252).
     constexpr int kRateTx       = 96000;
-    constexpr int kBlockTx      = 256;
+    constexpr int kBlockTx      = 4096;   // = TX dsp_size; matches xsiphon a->insize feed
     const int overlap =
         std::max(0, kAnFftSize - kRateTx / kAnFrameRate);
     const int maxW = kAnFftSize +
@@ -498,10 +515,13 @@ void WdspEngine::configureAnalyzerForTx() noexcept
         kAnPixels, 1, 0,
         0.0, 0.0,
         maxW);
-    // Mirror for feedTxSpectrumFromSip1()'s mid-reconfigure
-    // drop-frame check (amendment A.5).  Also update txSpanHz_ so
-    // the QML freq-scale binding picks up the 96 kHz dsp_rate via
-    // spanHz() — caller (setTxOwnsAnalyzer) emits spanChanged().
+    // Tell the analyzer the TX-state sample rate (matches reference
+    // SpecHPSDR.SampleRate setter at specHPSDR.cs:453 + the explicit
+    // radio.cs:2618 `.SampleRate = 96000` for the TX disp).  This is
+    // the WDSP-internal rate the analyzer uses for bin-width math.
+    if (api.SetDisplaySampleRate) {
+        api.SetDisplaySampleRate(kAnDisp, kRateTx);
+    }
     txAnalyzerBfSize_.store(kBlockTx, std::memory_order_relaxed);
     txSpanHz_.store(kRateTx, std::memory_order_relaxed);
     if (api.SetDisplayDetectorMode) {

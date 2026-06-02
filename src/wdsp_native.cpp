@@ -262,6 +262,7 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.TXAGetaSipF1,         "TXAGetaSipF1");   // reserved
     resolve(api_.TXASetSipMode,        "TXASetSipMode");  // Task #44 Phase 2 (reference mechanism)
     resolve(api_.TXASetSipDisplay,     "TXASetSipDisplay");
+    resolve(api_.SetDisplaySampleRate, "SetDisplaySampleRate");  // Task #44 Phase 2 (rate setter)
     resolve(api_.create_resampleFV,    "create_resampleFV");
     resolve(api_.xresampleFV,          "xresampleFV");
     resolve(api_.destroy_resampleFV,   "destroy_resampleFV");

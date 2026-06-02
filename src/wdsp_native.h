@@ -298,6 +298,12 @@ using fn_TXAGetaSipF1_t         = void (*)(int channel, float *out, int size);
 // as the reference's TX panadapter.
 using fn_TXASetSipMode_t        = void (*)(int channel, int mode);
 using fn_TXASetSipDisplay_t     = void (*)(int channel, int disp);
+// WDSP per-analyzer sample-rate setter (analyzer.c:1905).  Tells the
+// analyzer what rate to assume for incoming samples — separate from
+// SetAnalyzer (which configures FFT shape).  Thetis calls it in
+// SpecHPSDR.SampleRate setter (specHPSDR.cs:453).  Required when the
+// analyzer's feed rate changes between RX/TX MOX edges.
+using fn_SetDisplaySampleRate_t = void (*)(int disp, int rate);
 // WDSP polyphase float-vector resampler (resample.c).  Opaque void*
 // handle returned by create_resampleFV; xresampleFV consumes
 // `numsamps` input samples and writes the resulting count into
@@ -396,6 +402,7 @@ struct WdspApi {
     fn_TXAGetaSipF1_t         TXAGetaSipF1         = nullptr;  // reserved
     fn_TXASetSipMode_t        TXASetSipMode        = nullptr;  // Task #44 Phase 2 auto-feed (reference mechanism)
     fn_TXASetSipDisplay_t     TXASetSipDisplay     = nullptr;  // Task #44 Phase 2 auto-feed (reference mechanism)
+    fn_SetDisplaySampleRate_t SetDisplaySampleRate = nullptr;  // Task #44 Phase 2 rate setter
     // WDSP polyphase float-vector resampler (resample.c PORT block
     // 342-361).  Used by TciServer to resample inbound non-48 kHz
     // TX_AUDIO_STREAM frames to the TXA input rate (48 kHz) — the
