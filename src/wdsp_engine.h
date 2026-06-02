@@ -290,6 +290,17 @@ public:
     bool   txOwnsAnalyzer() const {
         return txOwnsAnalyzer_.load(std::memory_order_acquire);
     }
+    // Task #44 Phase 2 — pull pre-iqc TX I/Q from WDSP TX sip1 ring
+    // (TXAGetaSipF1) and feed it into the analyzer (Spectrum0).
+    // Called by TxDspWorker from its block-pack site every EP2
+    // cadence tick (~381 Hz) when TX owns the analyzer AND
+    // inject_tx_iq is true (FSM gate).  Drops the frame on a
+    // mid-reconfigure transient (bf_sz mismatch).  Takes
+    // analyzerMtx_ briefly; lock-free vs the RX worker's feedIq
+    // path (which holds channelMtx_, a different mutex).
+    // Returns true on success, false on no-op (analyzer closed,
+    // size mismatch, cdef not resolved).
+    bool   feedTxSpectrumFromSip1() noexcept;
 
     // Frames fexchange0 writes per process() call (= in_size *
     // out_rate / in_rate).  Step 3d sizes its output buffer to this.
@@ -600,14 +611,14 @@ private:
     // variants differ in sample-rate, block size (bf_sz), overlap, and
     // max_w — sized for the source feeding Spectrum0 in each MOX state.
     // configureAnalyzerForTx() is sized for the WDSP TX sip1 ring:
-    // 96 kHz dsp_rate, ~256-sample per-call reads, overlap 2496,
+    // 96 kHz dsp_rate, 256-sample per-call reads, overlap 2496,
     // max_w 13696.  Both helpers are pure WDSP reconfiguration — the
     // analyzer ID + lifecycle stay owned by openRx1/closeRx1.
     //
     // PRECONDITION (both): channelMtx_ held by caller.  Matches the
-    // openRx1 caller-holds convention (openRx1 expects setSampleRate
-    // or equivalent to hold the lock; these helpers inherit that).
-    // No-op if analyzerOpen_ is false.
+    // openRx1 caller-holds convention.  Both ALSO acquire
+    // analyzerMtx_ internally to serialize SetAnalyzer vs Spectrum0
+    // feeds (amendment A.5).  No-op if analyzerOpen_ is false.
     void configureAnalyzerForRx() noexcept;
     void configureAnalyzerForTx() noexcept;
 
@@ -645,6 +656,17 @@ private:
     std::atomic<int>  txSpanHz_{96000};
     std::atomic<int>  txAnalyzerBfSize_{0};
     std::atomic<int>  inRateAtomic_{192000};
+    // ── Task #44 Phase 2 — fine-grained analyzer mutex (amendment
+    // A.5).  Separate from channelMtx_ (which RX worker feedIq()
+    // holds whole-method scope — would wedge the TX worker for
+    // tens of ms if reused here).  Scope: serializes SetAnalyzer
+    // reconfigure (configureAnalyzerForRx/Tx) vs Spectrum0 feeds
+    // (feedTxSpectrumFromSip1).  Held briefly: microseconds for
+    // the Spectrum0 call; small ms for SetAnalyzer (only on MOX
+    // edge).  Order: ALWAYS take channelMtx_ BEFORE analyzerMtx_
+    // when both needed (none of the current call paths need
+    // both, but document the order for future-proofing).
+    mutable std::mutex analyzerMtx_;
 
     // Step 3d DSP buffers (all sized in the constructor).
     // accum_ : interleaved IQ doubles awaiting a full in_size block.

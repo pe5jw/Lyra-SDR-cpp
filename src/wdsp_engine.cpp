@@ -409,6 +409,11 @@ void WdspEngine::configureAnalyzerForRx() noexcept
     const WdspApi &api = wdsp_->api();
     if (!api.SetAnalyzer) return;
 
+    // Take analyzerMtx_ so feedTxSpectrumFromSip1() can't slip a
+    // Spectrum0 between this SetAnalyzer reconfigure and the
+    // txAnalyzerBfSize_ atomic store below (amendment A.5).
+    std::lock_guard<std::mutex> lk(analyzerMtx_);
+
     // overlap + max_w per the frame-rate formula.  max_w sizes an
     // internal display-history buffer — passing 0 makes WDSP crash on
     // a zero-size allocation.  overlap clamps to 0 at 192 kHz / 4096
@@ -468,6 +473,9 @@ void WdspEngine::configureAnalyzerForTx() noexcept
     const WdspApi &api = wdsp_->api();
     if (!api.SetAnalyzer) return;
 
+    // analyzerMtx_ — symmetric with configureAnalyzerForRx().
+    std::lock_guard<std::mutex> lk(analyzerMtx_);
+
     // TX-state sizing: WDSP sip1 lives at dsp_rate=96 kHz (TXA.c:586
     // captures pre-iqc + pre-rsmpout); Lyra TX worker pulls ~256
     // samples per EP2-cadence tick via TXAGetaSipF1 — matches the
@@ -514,6 +522,45 @@ void WdspEngine::configureAnalyzerForTx() noexcept
             api.SetDisplayNumAverage(kAnDisp, 0, numAvg);
         }
     }
+}
+
+bool WdspEngine::feedTxSpectrumFromSip1() noexcept
+{
+    if (!analyzerOpen_ || !wdsp_) return false;
+    const WdspApi &api = wdsp_->api();
+    if (!api.TXAGetaSipF1 || !api.Spectrum0) return false;
+
+    // Block size: 256 samples per call.  At the TX worker's EP2
+    // cadence (~381 Hz) this drains ≈97 k samples/sec from the
+    // 96 kHz sip1 production rate — keeps the ring drained
+    // without back-pressure (suck() returns < requested if short,
+    // pads from last-good).  Matches the bf_sz the analyzer is
+    // configured for after configureAnalyzerForTx() runs.
+    constexpr int kN = 256;
+    float  sipBuf[2 * kN];   // interleaved I,Q,I,Q,… (TXAGetaSipF1 contract)
+    double specBuf[2 * kN];  // interleaved DOUBLE for Spectrum0
+
+    // WDSP drains internally under sip1.update CRITICAL_SECTION
+    // (siphon.c:258-265).  Returns 2*kN floats; safe to call even
+    // when sip1 is short (pads from last-good in ring).
+    api.TXAGetaSipF1(/*channel=*/1, sipBuf, kN);
+
+    for (int i = 0; i < 2 * kN; ++i)
+        specBuf[i] = static_cast<double>(sipBuf[i]);
+
+    // analyzerMtx_ — short-held under the TX worker thread.
+    // Separate from channelMtx_ (RX worker's whole-feedIq scope)
+    // so this never wedges the TX worker behind a long RX block
+    // (amendment A.5).  Drop the frame if SetAnalyzer is mid-
+    // reconfiguring and bf_sz doesn't match our kN (cosmetic:
+    // one missed analyzer feed; next call lands in the resized
+    // analyzer cleanly).
+    std::lock_guard<std::mutex> lk(analyzerMtx_);
+    if (!analyzerOpen_) return false;
+    if (kN != txAnalyzerBfSize_.load(std::memory_order_relaxed))
+        return false;
+    api.Spectrum0(1, kAnDisp, 0, 0, specBuf);
+    return true;
 }
 
 bool WdspEngine::openRx1()

@@ -4,6 +4,8 @@
 
 #include "tx_dsp_worker.h"
 
+#include "wdsp_engine.h"   // Task #44 Phase 2 — feedTxSpectrumFromSip1()
+
 #include <QDebug>
 
 #include <algorithm>
@@ -357,6 +359,30 @@ void TxDspWorker::signalAndWaitForEp2Consumer() noexcept
                             % kSip1RingSamples,
                         std::memory_order_relaxed);
     sip1FillCount_.fetch_add(1, std::memory_order_relaxed);
+
+    // Task #44 Phase 2 — feed the panadapter analyzer with the
+    // pre-iqc TX I/Q from the WDSP sip1 ring (TXAGetaSipF1).
+    // Double-gated: txOwnsAnalyzer() (MOX-edge swap state, flipped
+    // by setTxOwnsAnalyzer in step 5) AND injectTxIq_ (same FSM
+    // gate that guards EP2 emission).  Both gates prevent stale-
+    // buffer feed during FSM mid-keyup transients.
+    //
+    // Why TXAGetaSipF1 (siphon.c:268) and NOT the txIqBuf_ we just
+    // packed: txIqBuf_ is post-iqc post-rsmpout at the wire rate
+    // (48 kHz); sip1 captures pre-iqc at dsp_rate (96 kHz).  v0.3
+    // PureSignal applies its predistortion in iqc — feeding
+    // pre-iqc means the panadapter trace stays clean whether PS
+    // is on or off (operator sees the modulator output, not the
+    // PS-corrected intermediate).  Matches reference posture.
+    //
+    // Call cost is small (memcpy + a Spectrum0 ring increment).
+    // Lives on this thread (TX worker) so it's symmetric with the
+    // RX worker's existing Spectrum0 call from feedIq.
+    if (wdspEngine_
+            && wdspEngine_->txOwnsAnalyzer()
+            && injectTxIq_.load(std::memory_order_acquire)) {
+        wdspEngine_->feedTxSpectrumFromSip1();
+    }
 
     // Signal "data ready".  Matches the verified reference's
     //   ReleaseSemaphore(hsendIQSem, 1, 0)
