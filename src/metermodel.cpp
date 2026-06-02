@@ -159,9 +159,6 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
         case MIC:
         case LVL_G:        // value 8 — was COMP
         case LVL_PK:
-        case CFC_PK:
-        case CFC_G:
-        case COMP:         // value 12 (NEW — actual compressor)
         case ALC_PK:
         case ALC_GROUP:
             return Source(raw);
@@ -383,7 +380,7 @@ void MeterModel::setSource(int s) {
     // — RX or TX based on the live MOX state — so the operator's
     // choice persists into the right per-state pref, then derives the
     // active source.  Falls back to RX_SMETER for out-of-range values.
-    if (s < RX_SMETER || s > COMP) s = RX_SMETER;
+    if (s < RX_SMETER || s > ALC_GROUP) s = RX_SMETER;
     const Source ns = Source(s);
     const bool moxOn = stream_ && stream_->moxActive();
     if (moxOn) {
@@ -445,12 +442,11 @@ void MeterModel::setRxSource(int s) {
 
 void MeterModel::setTxSource(int s) {
     // TX dropdown set: PWR/SWR/PA Current/PA Volts/Temp + the
-    // full reference-faithful TX dynamics-meter set (Task #71 §2):
-    // MIC / LVL_PK / LVL_G / CFC_PK / CFC_G / COMP / ALC_PK /
-    // ALC_G / ALC_GROUP.  CFC and the actual compressor blocks
-    // aren't running in TXA until v0.2.1 lights them up — those
-    // entries report "—" / 0 dB correctly until then.  Out-of-set
-    // values fall back to PWR (the obvious sane TX-side default).
+    // Lyra TX dynamics-meter set (Task #71 §2; CFC + COMP pruned
+    // 2026-06-02 PM — Combinator replaces both per #51 design,
+    // and Combinator meters will be Lyra-native entries not WDSP
+    // TXA indices).  Active set: MIC / LVL_PK / LVL_G / ALC_PK /
+    // ALC_G / ALC_GROUP.  Out-of-set values fall back to PWR.
     Source ns;
     switch (s) {
     case PWR:
@@ -462,9 +458,6 @@ void MeterModel::setTxSource(int s) {
     case MIC:
     case LVL_G:        // value 8 — was COMP
     case LVL_PK:
-    case CFC_PK:
-    case CFC_G:
-    case COMP:         // value 12 (NEW — actual compressor)
     case ALC_PK:
     case ALC_GROUP:
         ns = Source(s);
@@ -606,29 +599,9 @@ QString MeterModel::formatSecondaryText(int src) const {
         const double db = txWorker_->levelerGainDb();
         return QStringLiteral("LVL %1 dB").arg(db, 0, 'f', 1);
     }
-    case CFC_PK: {
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("CFC —");
-        const double db = txWorker_->cfcPeakDbFs();
-        if (db <= -300.0) return QStringLiteral("CFC —");
-        return QStringLiteral("CFC %1 dBFS").arg(db, 0, 'f', 1);
-    }
-    case CFC_G: {
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("CFC G —");
-        const double db = txWorker_->cfcGainDb();
-        return QStringLiteral("CFC G %1 dB").arg(db, 0, 'f', 1);
-    }
-    case COMP: {
-        // Actual compressor (compress.c) OUTPUT level.  Distinct
-        // from LVL_G (leveler) — this is the downstream peak
-        // limiter post-stage signal, not the upstream boost.
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("CMP —");
-        const double db = txWorker_->compressorPeakDbFs();
-        if (db <= -300.0) return QStringLiteral("CMP —");
-        return QStringLiteral("CMP %1 dBFS").arg(db, 0, 'f', 1);
-    }
+    // CFC_PK / CFC_G / COMP intentionally absent — Combinator
+    // (Task #51) replaces both WDSP blocks as a Lyra-native pre-
+    // processor with its own (future) Lyra-native meter sources.
     case ALC_PK: {
         if (!txWorker_ || !stream_ || !stream_->moxActive())
             return QStringLiteral("ALC —");
@@ -945,16 +918,14 @@ void MeterModel::tick() {
     case PA_CURRENT:  computePaCurrent(); return;
     case PA_VOLTS:    computePaVolts();   return;
     case TEMP:        computeTemp();      return;
-    // TX dynamics meter set (Task #71 §2 reference-faithful).
-    // All share the level + gain helper bodies; per-source compute
+    // Lyra TX dynamics meter set (Task #71 §2; CFC + COMP pruned
+    // 2026-06-02 PM — Combinator replaces both per #51).  All
+    // share the level + gain helper bodies; per-source compute
     // is just "read the right WDSP index, route to the helper."
     case ALC_G:       computeAlcG();      return;   // value 6
     case MIC:         computeMic();       return;
     case LVL_G:       computeLvlG();      return;   // value 8
     case LVL_PK:      computeLvlPk();     return;
-    case CFC_PK:      computeCfcPk();     return;
-    case CFC_G:       computeCfcG();      return;
-    case COMP:        computeComp();      return;   // value 12
     case ALC_PK:      computeAlcPk();     return;
     case ALC_GROUP:   computeAlcGroup();  return;
     }
@@ -1607,30 +1578,10 @@ void MeterModel::computeLvlPk() {
                             QStringLiteral("dBFS"));
 }
 
-void MeterModel::computeCfcPk() {
-    // CFC output level — renders "—" until v0.2.1 enables the
-    // CFC 5-band compressor block (Task #51).  Same scale + danger
-    // as the other level meters.
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->cfcPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
-}
-
-void MeterModel::computeComp() {
-    // Actual compressor (compress.c) OUTPUT level — renders "—"
-    // until v0.2.1 enables the block.  Distinct from LVL_G:
-    // this is the downstream peak limiter post-stage signal,
-    // NOT the upstream leveler boost.
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->compressorPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
-}
+// computeCfcPk / computeCfcG / computeComp intentionally absent —
+// Combinator (Task #51, v0.2.1) replaces both WDSP CFC and
+// compress.c blocks as a Lyra-native pre-processor; its meters
+// will land on Lyra-native Source entries, not WDSP TXA indices.
 
 void MeterModel::computeAlcPk() {
     const bool mox = stream_ && stream_->moxActive();
@@ -1669,14 +1620,6 @@ void MeterModel::computeLvlG() {
     // Leveler is uphill — typical action is boost (positive dB).
     // Danger when boosting more than 12 dB (signal too weak to be
     // recovered cleanly without making the noise floor audible).
-    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/12.0);
-}
-
-void MeterModel::computeCfcG() {
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->cfcGainDb()
-        : std::numeric_limits<double>::quiet_NaN();
     computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/12.0);
 }
 

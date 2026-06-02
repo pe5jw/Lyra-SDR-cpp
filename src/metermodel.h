@@ -42,28 +42,36 @@ public:
     // context property regardless of source — only the per-tick value
     // computation, scale ticks, text formatting, and zone-threshold
     // semantics change per source.
-    // Reference-faithful TX dynamics-meter set (Task #71 §2,
-    // 2026-06-02).  The reference TX chain has FOUR distinct
-    // dynamics blocks in series — leveler (uphill boost) → CFC
-    // (5-band shaping) → compressor (peak limit) → ALC (final
-    // safety limiter) — each with its own level meter (dBFS
-    // post-block) and most with a gain meter (dB action).
+    // TX dynamics-meter set (Task #71 §2, 2026-06-02; CFC/COMP
+    // pruned 2026-06-02 PM per operator §15.19 reminder).
     //
-    // Lyra's TXA chain currently runs leveler + ALC; CFC and
-    // compress.c blocks light up with v0.2.1 Tasks #50 + #51.
-    // The picker exposes every reference mode regardless — the
-    // unrun-block entries render "—" (level meters via -400
-    // off-state) or 0 dB (gain meters) just like the reference
-    // does when its blocks are off.  No inert-UI rule violation:
-    // those entries are correctly reporting "the block isn't
-    // running yet" rather than promising nothing.
+    // Lyra's TXA chain runs leveler + ALC; the multiband-shaping
+    // role the reference's CFC block fills is taken by the Lyra-
+    // native Combinator (Task #51, v0.2.1) which sits as a pre-
+    // processor BEFORE the WDSP TXA chain — NOT a WDSP block,
+    // hence not addressed by any TXA_* meter index.  Same for
+    // the single-band downstream compressor: Lyra doesn't enable
+    // WDSP's compress.c block (#51's design feeds Combinator
+    // output straight to the WDSP ALC).  So the reference's
+    // CFC_PK / CFC_GAIN / COMP_PK meters would read off-state
+    // FOREVER in Lyra — those would be inert-UI entries
+    // (operator §15.19 / Task #51 directive: no-inert-UI rule
+    // applies, and a "Combinator placeholder" must wait for
+    // Combinator-native meter sources that don't exist yet).
+    //
+    // The Lyra-native Combinator's per-band + total meters will
+    // attach to NEW Source enum entries (COMBINATOR_PK / _G or
+    // similar) when #51 ships in v0.2.1.  Until then, the set
+    // exposes exactly what's actively running.
+    //
+    // Values 10 / 11 / 12 are LEFT UNUSED to reserve room for the
+    // future Combinator meter sources (no renumber required).
     //
     // ⚠ Value 6 (was Source::ALC) and value 8 (was Source::COMP)
     // are RENAMED — same numeric values for QSettings stability,
     // honest labels for what they actually read.  Old refs at
     // the enum-identifier level (case ALC: / case COMP:) MUST
-    // be updated to the new names; the old short names now
-    // belong to NEW entries with DIFFERENT semantic meaning.
+    // be updated to the new names.
     enum Source {
         RX_SMETER    = 0,    // WDSP RXA_S_PK — the existing RX behavior
         PWR          = 1,    // forward power (W) — fwd_power ADC + cal
@@ -74,13 +82,12 @@ public:
         ALC_G        = 6,    // WDSP TXA_ALC_GAIN  (ALC gain reduction, dB)
         MIC          = 7,    // WDSP TXA_MIC_PK    (mic peak, dBFS)
         LVL_G        = 8,    // WDSP TXA_LVLR_GAIN (leveler boost, dB)
-        // New v2 entries — Task #71 §2 reference-fidelity expansion:
         LVL_PK       = 9,    // WDSP TXA_LVLR_PK   (leveler output, dBFS)
-        CFC_PK       = 10,   // WDSP TXA_CFC_PK    (CFC output, dBFS — off until v0.2.1)
-        CFC_G        = 11,   // WDSP TXA_CFC_GAIN  (CFC reduction, dB — off until v0.2.1)
-        COMP         = 12,   // WDSP TXA_COMP_PK   (compressor output, dBFS — off until v0.2.1)
+        // 10, 11, 12 reserved for the future Lyra-native
+        // Combinator meter sources (#51, v0.2.1).  No CFC/COMP
+        // WDSP meters in Lyra — Combinator replaces both roles.
         ALC_PK       = 13,   // WDSP TXA_ALC_PK    (ALC output, dBFS)
-        ALC_GROUP    = 14,   // ALC_PK + ALC_GAIN composite (reference's "ALC Group")
+        ALC_GROUP    = 14,   // ALC_PK + ALC_GAIN composite
     };
     Q_ENUM(Source)
 
@@ -338,20 +345,21 @@ private:
     void computePaCurrent();
     void computePaVolts();
     void computeTemp();
-    // Task #69 + #71 — TX-side TXA meter computes.
+    // Task #69 + #71 — TX-side TXA meter computes (CFC/COMP pruned
+    // 2026-06-02 PM — Combinator replaces both per #51 design).
     //
-    // The five LEVEL meters (MIC, LVL_PK, CFC_PK, COMP, ALC_PK)
-    // all share computeLevelMeterFromDb(): take a WDSP-returned
-    // dBFS reading, normalize to bar 0..1 over [-60 dB, 0 dB],
-    // apply reference-faithful exponential peak decay (DecayRatio
-    // 0.20 per 50 ms tick), no UI-side IIR (WDSP's internal
-    // 100 ms τ_av is sufficient).
+    // The three LEVEL meters (MIC, LVL_PK, ALC_PK) share
+    // computeLevelMeterFromDb(): take a WDSP-returned dBFS reading,
+    // normalize to bar 0..1 over [-60 dB, 0 dB], apply reference-
+    // faithful exponential peak decay (DecayRatio 0.20 per 50 ms
+    // tick), no UI-side IIR (WDSP's internal 100 ms τ_av is
+    // sufficient).
     //
-    // The three GAIN meters (LVL_G, CFC_G, ALC_G) all share
-    // computeGainMeterFromDb(): take a dB reading (signed; LVL_G
-    // typically positive for boost, CFC_G / ALC_G typically
-    // negative for reduction), normalize to bar 0..1 over the
-    // reduction magnitude [0..20 dB], same decay model.
+    // The two GAIN meters (LVL_G, ALC_G) share
+    // computeGainMeterFromDb(): take a dB reading (LVL_G typically
+    // positive for boost, ALC_G typically negative for reduction),
+    // normalize to bar 0..1 over the action magnitude [0..20 dB],
+    // same decay model.
     //
     // ALC_GROUP is a composite (ALC_PK + ALC_GAIN) — the level
     // meter post-stage WITH the gain action added back, showing
@@ -359,9 +367,6 @@ private:
     void computeMic();
     void computeLvlPk();
     void computeLvlG();         // formerly computeComp() — value 8
-    void computeCfcPk();
-    void computeCfcG();
-    void computeComp();         // NEW — TXA_COMP_PK at value 12
     void computeAlcPk();
     void computeAlcG();         // formerly computeAlc() — value 6
     void computeAlcGroup();

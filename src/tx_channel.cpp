@@ -479,37 +479,13 @@ double TxChannel::levelerGainDb() const {
     return api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6); // dB
 }
 
-double TxChannel::cfcPeakDbFs() const {
-    // TXA_CFC_PK = 7.  Reads -400 when the CFC block isn't running
-    // (the 5-band compressor lights up with v0.2.1 Task #51).
-    std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !wdsp_) return -400.0;
-    const WdspApi &api = wdsp_->api();
-    if (!api.GetTXAMeter) return -400.0;
-    return api.GetTXAMeter(channel_, /*TXA_CFC_PK=*/7);   // dBFS
-}
-
-double TxChannel::cfcGainDb() const {
-    // TXA_CFC_GAIN = 9.  Reads 0 dB when the CFC block isn't
-    // running — semantically indistinguishable from "block on, no
-    // current reduction" (reference shares this off/zero ambiguity).
-    std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !wdsp_) return 0.0;
-    const WdspApi &api = wdsp_->api();
-    if (!api.GetTXAMeter) return 0.0;
-    return api.GetTXAMeter(channel_, /*TXA_CFC_GAIN=*/9); // dB
-}
-
-double TxChannel::compressorPeakDbFs() const {
-    // TXA_COMP_PK = 10.  Reads -400 until the compress.c block is
-    // enabled (v0.2.1 territory).  Distinct from CFC: this is the
-    // single-band downstream peak compressor.
-    std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !wdsp_) return -400.0;
-    const WdspApi &api = wdsp_->api();
-    if (!api.GetTXAMeter) return -400.0;
-    return api.GetTXAMeter(channel_, /*TXA_COMP_PK=*/10); // dBFS
-}
+// NOTE: TXA_CFC_PK/_CFC_GAIN/_COMP_PK intentionally NOT exposed
+// here.  Lyra's TXA chain does not enable the WDSP CFC nor
+// compress.c blocks — their roles are taken by the Lyra-native
+// Combinator pre-processor (Task #51, v0.2.1) sitting BEFORE the
+// WDSP TXA entry.  Combinator metering attaches to Lyra-native
+// accessors that don't exist until #51 ships; in the meantime the
+// MeterModel Source enum reserves values 10/11/12 for them.
 
 double TxChannel::alcPeakDbFs() const {
     // TXA_ALC_PK = 12.  ALC is always running in our TXA chain so

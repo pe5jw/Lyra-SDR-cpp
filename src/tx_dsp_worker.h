@@ -125,8 +125,12 @@ public:
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
     // Task #69 + #71 — live TXA meter accessors for the operator-
-    // facing multimeter dynamics-meter sources (reference-faithful
-    // set: MIC + LEVELER pk/g + CFC pk/g + COMP pk + ALC pk/g).
+    // facing multimeter dynamics-meter sources.  Lyra TXA set:
+    //   MIC + LEVELER (pk/g) + ALC (pk/g).
+    // No CFC or COMP — the Combinator (Task #51, v0.2.1) replaces
+    // both roles as a Lyra-native pre-processor.  Combinator
+    // meters will land on Lyra-native accessors when #51 ships.
+    //
     // Pass-through to the owned TxChannel.  Polled from the Qt
     // main thread by MeterModel::tick on MOX; safe per the
     // read-only contract.  All values already in dB (WDSP's
@@ -135,9 +139,6 @@ public:
     double micPeakDbFs()        const { return tx_.micPeakDbFs(); }
     double levelerPeakDbFs()    const { return tx_.levelerPeakDbFs(); }
     double levelerGainDb()      const { return tx_.levelerGainDb(); }
-    double cfcPeakDbFs()        const { return tx_.cfcPeakDbFs(); }
-    double cfcGainDb()          const { return tx_.cfcGainDb(); }
-    double compressorPeakDbFs() const { return tx_.compressorPeakDbFs(); }
     double alcPeakDbFs()        const { return tx_.alcPeakDbFs(); }
     double alcGainDb()          const { return tx_.alcGainDb(); }
 

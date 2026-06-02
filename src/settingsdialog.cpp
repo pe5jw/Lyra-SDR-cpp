@@ -1588,13 +1588,12 @@ QWidget *SettingsDialog::buildMeterTab() {
         static const Opt kRxOpts[] = {
             {0, "RX S-meter (signal strength)", true},
         };
-        // Reference-faithful TX dynamics-meter set (Task #71 §2).
-        // Ordered top-to-bottom by the signal-flow stage each one
-        // taps: mic → leveler → CFC → compressor → ALC → wire.
-        // CFC and the actual compressor blocks aren't running in
-        // TXA until v0.2.1 (Tasks #50/#51) — those entries read
-        // "—" / 0 dB correctly until then (reference shares the
-        // same behaviour for an unrun block).
+        // Lyra TX dynamics-meter set (Task #71 §2; CFC + COMP
+        // pruned 2026-06-02 PM — Combinator (Task #51, v0.2.1)
+        // replaces both as a Lyra-native pre-processor, so its
+        // meters will arrive as Lyra-native sources when #51
+        // ships — not WDSP TXA indices).  Ordered top-to-bottom
+        // by signal-flow stage: mic → leveler → ALC → wire.
         static const Opt kTxOpts[] = {
             // Wire / safety / telemetry (always meaningful):
             {1,  "PWR (forward power, watts)",              true},
@@ -1606,9 +1605,6 @@ QWidget *SettingsDialog::buildMeterTab() {
             {7,  "MIC (mic peak, dBFS)",                    true},
             {9,  "LEV (leveler output peak, dBFS)",         true},
             {8,  "LVL G (leveler gain, dB)",                true},
-            {10, "CFC (CFC output peak, dBFS — v0.2.1)",    true},
-            {11, "CFC G (CFC gain reduction, dB — v0.2.1)", true},
-            {12, "CMP (compressor peak, dBFS — v0.2.1)",    true},
             {13, "ALC (ALC output peak, dBFS)",             true},
             {6,  "ALC G (ALC gain reduction, dB)",          true},
             {14, "ALC Σ (ALC_PK + ALC_GAIN, dBFS)",         true},
@@ -1721,13 +1717,11 @@ QWidget *SettingsDialog::buildMeterTab() {
             {3,  "ID — PA Current (HL2 bias)",                  true},
             {4,  "VDD — PA Volts (HL2 supply)",                 true},
             {5,  "Temp (HL2 board)",                            true},
-            // Reference-faithful TX dynamics set (Task #71 §2):
+            // Lyra TX dynamics set (Task #71 §2; CFC+COMP pruned
+            // 2026-06-02 PM — Combinator replaces both):
             {7,  "MIC (mic peak, dBFS)",                        true},
             {9,  "LEV (leveler output peak, dBFS)",             true},
             {8,  "LVL G (leveler gain, dB)",                    true},
-            {10, "CFC (CFC output peak, dBFS — v0.2.1)",        true},
-            {11, "CFC G (CFC gain reduction, dB — v0.2.1)",     true},
-            {12, "CMP (compressor peak, dBFS — v0.2.1)",        true},
             {13, "ALC (ALC output peak, dBFS)",                 true},
             {6,  "ALC G (ALC gain reduction, dB)",              true},
             {14, "ALC Σ (ALC_PK + ALC_GAIN, dBFS)",             true},

@@ -153,22 +153,21 @@ public:
     // -200 dB sentinel + railed ALC/COMP bars at full red (Task
     // #71 §1 root cause, fixed 2026-06-02).
     //
-    // The full reference-parity set (Task #71 §2):
+    // Lyra TXA dynamics meter set (Task #71 §2; CFC + COMP pruned
+    // 2026-06-02 PM — Combinator replaces both per #51 design;
+    // Combinator runs as a pre-processor BEFORE the WDSP TXA
+    // chain, NOT a WDSP block, so it has no TXA_* meter index —
+    // its meters will attach to Lyra-native accessors when #51
+    // ships):
     //   Level meters (dBFS, post-stage signal level):
-    //     micPeakDbFs        — TXA_MIC_PK  (mic peak into modulator)
-    //     levelerPeakDbFs    — TXA_LVLR_PK (post-leveler output)
-    //     cfcPeakDbFs        — TXA_CFC_PK  (post-CFC 5-band output)
-    //                          off until v0.2.1 enables the block
-    //     compressorPeakDbFs — TXA_COMP_PK (post-compress.c output)
-    //                          off until v0.2.1 enables the block
-    //     alcPeakDbFs        — TXA_ALC_PK  (post-ALC final output)
+    //     micPeakDbFs     — TXA_MIC_PK  (mic peak into modulator)
+    //     levelerPeakDbFs — TXA_LVLR_PK (post-leveler output)
+    //     alcPeakDbFs     — TXA_ALC_PK  (post-ALC final output)
     //
     //   Gain meters (dB; positive for LVL boost, negative for
-    //   CFC/ALC reduction; 0 = no action):
-    //     levelerGainDb      — TXA_LVLR_GAIN (leveler boost / red)
-    //     cfcGainDb          — TXA_CFC_GAIN  (CFC reduction;
-    //                          off until v0.2.1)
-    //     alcGainDb          — TXA_ALC_GAIN  (ALC reduction)
+    //   ALC reduction; 0 = no action):
+    //     levelerGainDb   — TXA_LVLR_GAIN (leveler boost / red)
+    //     alcGainDb       — TXA_ALC_GAIN  (ALC reduction)
     //
     // When the channel isn't open / WDSP not loaded these return
     // the WDSP OFF-state sentinel (-400 dB for level meters,
@@ -176,9 +175,6 @@ public:
     double micPeakDbFs() const;
     double levelerPeakDbFs() const;
     double levelerGainDb() const;
-    double cfcPeakDbFs() const;
-    double cfcGainDb() const;
-    double compressorPeakDbFs() const;
     double alcPeakDbFs() const;
     double alcGainDb() const;
 
