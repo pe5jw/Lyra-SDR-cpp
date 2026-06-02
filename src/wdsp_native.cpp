@@ -203,6 +203,7 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.SetRXAAGCDecay,         "SetRXAAGCDecay");
     resolve(api_.SetRXAAGCHang,          "SetRXAAGCHang");
     resolve(api_.SetRXAAGCHangThreshold, "SetRXAAGCHangThreshold");
+    resolve(api_.SetRXAAGCFixedGain,     "SetRXAAGCFixedGain");
     resolve(api_.SetRXAANFRun,         "SetRXAANFRun");
     resolve(api_.SetRXAANFVals,        "SetRXAANFVals");
     resolve(api_.SetRXAANRRun,         "SetRXAANRRun");

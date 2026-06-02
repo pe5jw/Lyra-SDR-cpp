@@ -95,6 +95,14 @@ using fn_SetRXAEMNRpost2Run_t   = void (*)(int channel, int run);
 using fn_SetRXAAGCDecay_t         = void (*)(int channel, int decay);
 using fn_SetRXAAGCHang_t          = void (*)(int channel, int hang);
 using fn_SetRXAAGCHangThreshold_t = void (*)(int channel, int hangthreshold);
+// AGC fixed gain (FIXD mode, AKA "AGC OFF").  WDSP's mode-0/FIXD
+// applies fixed_gain as a static multiplier (no envelope tracking);
+// without an explicit setter the create-time default sits well above
+// reference's +20 dB convention, which made operators perceive "OFF
+// louder than FAST/MED/SLOW" (mode 0 louder than the modes that
+// actively REDUCE gain on signals).  +20 dB at channel open matches
+// the reference's RXFixedAGC default (radio.cs:1001-1019).
+using fn_SetRXAAGCFixedGain_t     = void (*)(int channel, double fixed_gain_db);
 // Auto-notch (ANF) + LMS line enhancer (ANR) — adaptive LMS predictors.
 // Vals = (taps, delay, gain/adapt-rate, leakage).  ANF nulls carriers;
 // ANR lifts periodic content (CW/tones) above broadband noise.  Both
@@ -340,6 +348,7 @@ struct WdspApi {
     fn_SetRXAEMNRpost2Run_t   SetRXAEMNRpost2Run   = nullptr;
     fn_SetRXAAGCDecay_t         SetRXAAGCDecay         = nullptr;
     fn_SetRXAAGCHang_t          SetRXAAGCHang          = nullptr;
+    fn_SetRXAAGCFixedGain_t     SetRXAAGCFixedGain     = nullptr;
     fn_SetRXAAGCHangThreshold_t SetRXAAGCHangThreshold = nullptr;
     fn_SetRXAANFRun_t   SetRXAANFRun   = nullptr;
     fn_SetRXAANFVals_t  SetRXAANFVals  = nullptr;
