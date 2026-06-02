@@ -3183,7 +3183,7 @@ QWidget *SettingsDialog::buildVisualsTab() {
     form->addRow(tr("dB range — floor"), dbMin);
 
     auto *dbMax = new QDoubleSpinBox(page);
-    dbMax->setRange(-200.0, 20.0);
+    dbMax->setRange(-200.0, 30.0);
     dbMax->setSuffix(tr(" dB"));
     dbMax->setValue(prefs_->dbMax());
     connect(dbMax, &QDoubleSpinBox::valueChanged, prefs_, &Prefs::setDbMax);

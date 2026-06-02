@@ -28,6 +28,17 @@ class Prefs : public QObject {
                NOTIFY targetFpsChanged)
     Q_PROPERTY(double dbMin READ dbMin WRITE setDbMin NOTIFY dbMinChanged)
     Q_PROPERTY(double dbMax READ dbMax WRITE setDbMax NOTIFY dbMaxChanged)
+    // Task #44 Phase 1 — separate TX-side panadapter dB range.
+    // Lyra now swaps in/out on every moxActiveChanged edge: the
+    // operator's drag-the-right-edge muscle memory updates whichever
+    // state is currently active; the panadapter saves/restores
+    // between (dbMin,dbMax) and (txDbMin,txDbMax) Prefs pairs on
+    // every MOX edge.  Defaults +20 / -80 dBFS — match the
+    // reference's Display.cs:1881/1891 TX SpectrumGrid defaults.
+    Q_PROPERTY(double txDbMin READ txDbMin WRITE setTxDbMin
+               NOTIFY txDbMinChanged)
+    Q_PROPERTY(double txDbMax READ txDbMax WRITE setTxDbMax
+               NOTIFY txDbMaxChanged)
     // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
     Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
@@ -235,10 +246,29 @@ public:
     void setGridLevel(int v);
     int  targetFps() const { return targetFps_; }
     void setTargetFps(int v);
-    double dbMin() const { return dbMin_; }
+    // Task #44 Phase 1 — dbMin/dbMax return the LIVE pair (TX while
+    // moxActive, else RX); writes route to the matching persistence
+    // key.  setMoxActive() is wired to Stream::moxActiveChanged and
+    // emits dbMin/dbMaxChanged so the QML panadapter binding re-reads
+    // the swapped values automatically.  rxDbMin/rxDbMax (the
+    // pre-Phase-1 RX-only values) remain on the kDbMin/kDbMax keys
+    // unchanged for backward QSettings compatibility.
+    double dbMin() const { return moxActive_ ? txDbMin_ : rxDbMin_; }
     void   setDbMin(double v);
-    double dbMax() const { return dbMax_; }
+    double dbMax() const { return moxActive_ ? txDbMax_ : rxDbMax_; }
     void   setDbMax(double v);
+    double rxDbMin() const { return rxDbMin_; }
+    void   setRxDbMin(double v);
+    double rxDbMax() const { return rxDbMax_; }
+    void   setRxDbMax(double v);
+    double txDbMin() const { return txDbMin_; }
+    void   setTxDbMin(double v);
+    double txDbMax() const { return txDbMax_; }
+    void   setTxDbMax(double v);
+    bool   moxActive() const { return moxActive_; }
+public slots:
+    void   setMoxActive(bool on);
+public:
     bool dbAuto() const { return dbAuto_; }
     void setDbAuto(bool v);
     int  traceMode() const { return traceMode_; }
@@ -375,6 +405,8 @@ signals:
     void targetFpsChanged();
     void dbMinChanged();
     void dbMaxChanged();
+    void txDbMinChanged();
+    void txDbMaxChanged();
     void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
@@ -433,8 +465,15 @@ signals:
 private:
     int     gridLevel_;
     int     targetFps_;
-    double  dbMin_;
-    double  dbMax_;
+    // Task #44 Phase 1 — rxDbMin_/rxDbMax_ are the persistent RX
+    // values (on kDbMin/kDbMax keys for backward compat); txDbMin_/
+    // txDbMax_ are the TX-state pair; moxActive_ selects which the
+    // public dbMin/dbMax accessors return.
+    double  rxDbMin_;
+    double  rxDbMax_;
+    double  txDbMin_;
+    double  txDbMax_;
+    bool    moxActive_ = false;
     bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;

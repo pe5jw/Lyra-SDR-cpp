@@ -124,8 +124,12 @@ void BandMemory::saveCurrent() {
     QSettings s;
     const QString p = QString::fromLatin1(kPfx) + currentBand_ + QLatin1Char('/');
     s.setValue(p + QStringLiteral("mode"),  prefs_->mode());
-    s.setValue(p + QStringLiteral("dbMin"), prefs_->dbMin());
-    s.setValue(p + QStringLiteral("dbMax"), prefs_->dbMax());
+    // Task #44 Phase 1 — always persist the RX pair as the band's
+    // panadapter range.  Prefs::dbMin/dbMax return the LIVE pair
+    // (TX while moxActive); reading rxDbMin/rxDbMax directly keeps
+    // a TX-side drag from polluting the band's RX scale memory.
+    s.setValue(p + QStringLiteral("dbMin"), prefs_->rxDbMin());
+    s.setValue(p + QStringLiteral("dbMax"), prefs_->rxDbMax());
     s.setValue(p + QStringLiteral("wfMin"), prefs_->waterfallDbMin());
     s.setValue(p + QStringLiteral("wfMax"), prefs_->waterfallDbMax());
 }
@@ -182,8 +186,12 @@ void BandMemory::applyBand(const QString &band) {
             mode = bandSsb;
     }
     prefs_->setMode(mode);
-    prefs_->setDbMin(s.value(p + QStringLiteral("dbMin")).toDouble());
-    prefs_->setDbMax(s.value(p + QStringLiteral("dbMax")).toDouble());
+    // Task #44 Phase 1 — band recall ALWAYS targets the RX pair,
+    // even during MOX (the band's persisted range IS the RX scale).
+    // setRxDbMin/Max writes the RX backing directly without polluting
+    // the live TX pair currently bound to the panadapter.
+    prefs_->setRxDbMin(s.value(p + QStringLiteral("dbMin")).toDouble());
+    prefs_->setRxDbMax(s.value(p + QStringLiteral("dbMax")).toDouble());
     prefs_->setWaterfallDbMin(s.value(p + QStringLiteral("wfMin")).toDouble());
     prefs_->setWaterfallDbMax(s.value(p + QStringLiteral("wfMax")).toDouble());
     applying_ = false;

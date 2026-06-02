@@ -433,6 +433,14 @@ int main(int argc, char *argv[])
                          lyra::ui::LogBuffer::instance().setVerbose(
                              prefs->debugLogging());
                      });
+    // Task #44 Phase 1 — wire MOX edges into Prefs so dbMin/dbMax
+    // swap to the TX persistence pair on the air, and back to the RX
+    // pair on un-key.  QML's `dbMin: Prefs.dbMin` binding picks up
+    // the swap via the dbMin/MaxChanged signals Prefs emits in
+    // setMoxActive — no panadapter wiring needed.
+    QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
+                     prefs,  &lyra::ui::Prefs::setMoxActive);
+    prefs->setMoxActive(stream->moxActive());   // seed initial state
     // Weather-alert service — polls the operator's enabled sources and
     // feeds the header badges + toasts.  Reads its location from Prefs,
     // so a station-location change re-arms it.

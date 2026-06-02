@@ -18,6 +18,11 @@ constexpr auto kGrid   = "panadapter/gridLevel";
 constexpr auto kFps    = "panadapter/targetFps";
 constexpr auto kDbMin  = "panadapter/dbMin";
 constexpr auto kDbMax  = "panadapter/dbMax";
+// Task #44 Phase 1 — separate TX-state dB range pair so a drag
+// during MOX persists per-state.  Defaults +20 / -80 dBFS match
+// the reference TX SpectrumGridMin/Max.
+constexpr auto kTxDbMin = "panadapter/txDbMin";
+constexpr auto kTxDbMax = "panadapter/txDbMax";
 constexpr auto kDbAuto = "panadapter/dbAuto";
 constexpr auto kTrace  = "panadapter/traceColor";
 constexpr auto kMode   = "panadapter/traceMode";
@@ -103,8 +108,10 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     QSettings s;
     gridLevel_  = std::clamp(s.value(kGrid, 35).toInt(), 0, 100);
     targetFps_  = std::clamp(s.value(kFps, 60).toInt(), 1, 240);
-    dbMin_      = s.value(kDbMin, -130.0).toDouble();
-    dbMax_      = s.value(kDbMax, -20.0).toDouble();
+    rxDbMin_      = s.value(kDbMin, -130.0).toDouble();
+    rxDbMax_      = s.value(kDbMax, -20.0).toDouble();
+    txDbMin_    = s.value(kTxDbMin, -80.0).toDouble();
+    txDbMax_    = s.value(kTxDbMax, 20.0).toDouble();
     dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
@@ -236,18 +243,88 @@ void Prefs::setTargetFps(int v) {
 }
 
 void Prefs::setDbMin(double v) {
-    if (v != dbMin_) {
-        dbMin_ = v;
-        QSettings().setValue(kDbMin, v);
-        emit dbMinChanged();
+    // Task #44 Phase 1 — route by MOX state so a drag during MOX
+    // updates the TX pair (sticks across band changes; recalls
+    // independently of the RX pair).
+    if (moxActive_) {
+        if (v != txDbMin_) {
+            txDbMin_ = v;
+            QSettings().setValue(kTxDbMin, v);
+            emit txDbMinChanged();
+            emit dbMinChanged();
+        }
+    } else {
+        if (v != rxDbMin_) {
+            rxDbMin_ = v;
+            QSettings().setValue(kDbMin, v);
+            emit dbMinChanged();
+        }
     }
 }
 
 void Prefs::setDbMax(double v) {
-    if (v != dbMax_) {
-        dbMax_ = v;
+    if (moxActive_) {
+        if (v != txDbMax_) {
+            txDbMax_ = v;
+            QSettings().setValue(kTxDbMax, v);
+            emit txDbMaxChanged();
+            emit dbMaxChanged();
+        }
+    } else {
+        if (v != rxDbMax_) {
+            rxDbMax_ = v;
+            QSettings().setValue(kDbMax, v);
+            emit dbMaxChanged();
+        }
+    }
+}
+
+void Prefs::setRxDbMin(double v) {
+    // Direct RX-pair writer for band-memory recall, so a recall
+    // during MOX always updates the RX backing (takes effect on
+    // MOX-off) rather than the live TX pair.
+    if (v != rxDbMin_) {
+        rxDbMin_ = v;
+        QSettings().setValue(kDbMin, v);
+        if (!moxActive_) emit dbMinChanged();
+    }
+}
+
+void Prefs::setRxDbMax(double v) {
+    if (v != rxDbMax_) {
+        rxDbMax_ = v;
         QSettings().setValue(kDbMax, v);
-        emit dbMaxChanged();
+        if (!moxActive_) emit dbMaxChanged();
+    }
+}
+
+void Prefs::setMoxActive(bool on) {
+    // Wired to Stream::moxActiveChanged in main.cpp.  The flag flip
+    // changes which pair (rx vs tx) the dbMin/dbMax accessors return;
+    // emitting both *Changed signals causes QML's `Prefs.dbMin/dbMax`
+    // bindings to re-evaluate, so the panadapter renders the swapped
+    // pair without any extra wiring.
+    if (on == moxActive_) return;
+    moxActive_ = on;
+    emit dbMinChanged();
+    emit dbMaxChanged();
+}
+
+void Prefs::setTxDbMin(double v) {
+    if (v != txDbMin_) {
+        txDbMin_ = v;
+        QSettings().setValue(kTxDbMin, v);
+        emit txDbMinChanged();
+        if (moxActive_) emit dbMinChanged();
+    }
+}
+
+void Prefs::setTxDbMax(double v) {
+    if (v != txDbMax_) {
+        txDbMax_ = v;
+        QSettings().setValue(kTxDbMax, v);
+        emit txDbMaxChanged();
+        if (moxActive_) emit dbMaxChanged();
     }
 }
 
