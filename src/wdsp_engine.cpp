@@ -524,6 +524,33 @@ void WdspEngine::configureAnalyzerForTx() noexcept
     }
 }
 
+void WdspEngine::setTxOwnsAnalyzer(bool on)
+{
+    {
+        // channelMtx_ — lifecycle-vs-feed serializer (matches the
+        // openRx1 / configureAnalyzer caller-holds convention).
+        // Inside the block, configureAnalyzerForRx/Tx ALSO take
+        // analyzerMtx_ for the SetAnalyzer-vs-Spectrum0 serializer.
+        // Lock-order: channelMtx_ BEFORE analyzerMtx_ (documented
+        // in wdsp_engine.h members section, never violated).
+        std::lock_guard<std::mutex> lk(channelMtx_);
+        if (on) {
+            configureAnalyzerForTx();
+        } else {
+            configureAnalyzerForRx();
+        }
+    }
+    // Release-store so the SetAnalyzer reconfigure side-effects
+    // happen-before any reader's acquire-load of the flag (per
+    // amendment A.2).  The mutex provides the synchronization for
+    // happens-before; the explicit release/acquire on the atomic
+    // removes reader-side reordering ambiguity for non-mutex-
+    // protected readers (TX worker's block-pack site, RX worker's
+    // feedIq).
+    txOwnsAnalyzer_.store(on, std::memory_order_release);
+    emit spanChanged();
+}
+
 bool WdspEngine::feedTxSpectrumFromSip1() noexcept
 {
     if (!analyzerOpen_ || !wdsp_) return false;
@@ -2166,7 +2193,16 @@ void WdspEngine::feedIq(const double *iq, int nframes)
 
         // Step 5: feed the SAME block WDSP saw (cleaned when applying) to
         // the panadapter so the trace matches the audio.
-        if (analyzerOpen_ && api.Spectrum0) {
+        //
+        // Task #44 Phase 2: skip the RX feed when TX owns the analyzer —
+        // the TX worker is then feeding pre-iqc TX I/Q via
+        // feedTxSpectrumFromSip1 (tx_dsp_worker.cpp post-sip1Ring write).
+        // RX-side processing continues (operator may un-mute, audio
+        // path stays alive) but the spectrum trace shows TX content
+        // during MOX.  Flag set/cleared by setTxOwnsAnalyzer() on the
+        // moxActiveChanged edge from main.cpp.
+        if (analyzerOpen_ && api.Spectrum0
+                && !txOwnsAnalyzer_.load(std::memory_order_acquire)) {
             api.Spectrum0(1, kAnDisp, 0, 0, dspPtr);
         }
 

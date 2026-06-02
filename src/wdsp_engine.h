@@ -301,6 +301,25 @@ public:
     // Returns true on success, false on no-op (analyzer closed,
     // size mismatch, cdef not resolved).
     bool   feedTxSpectrumFromSip1() noexcept;
+    // Task #44 Phase 2 — MOX-edge analyzer source swap.  Called
+    // from main.cpp on every moxActiveChanged signal:
+    //   on=true  (keydown post-mox_delay+rf_delay): reconfigure
+    //     kAnDisp for the 96 kHz sip1 feed via
+    //     configureAnalyzerForTx(), then store txOwnsAnalyzer_=true
+    //     (release).  RX worker's feedIq sees the flag on next
+    //     block + skips Spectrum0; TX worker's feed call gates on
+    //     it + starts feeding pre-iqc samples.
+    //   on=false (keyup post-ptt_out_delay): restore the RX-side
+    //     analyzer config via configureAnalyzerForRx(), then store
+    //     txOwnsAnalyzer_=false (release).  RX feed resumes on
+    //     next block.
+    // Order: SetAnalyzer reconfigure FIRST under both channelMtx_
+    // (lifecycle vs feed) AND analyzerMtx_ (taken inside the
+    // configure helpers), THEN release-store the flag.  Per
+    // amendment A.2 (reconciled doc).  Emits spanChanged() so the
+    // QML freq scale picks up the new (or restored) span via
+    // spanHz() in both directions.
+    void   setTxOwnsAnalyzer(bool on);
 
     // Frames fexchange0 writes per process() call (= in_size *
     // out_rate / in_rate).  Step 3d sizes its output buffer to this.

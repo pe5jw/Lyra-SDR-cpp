@@ -385,6 +385,20 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxMuted);
 
+    // Task #44 Phase 2 — analyzer source swap on the MOX edge.
+    // Same moxActiveChanged signal as setTxMuted (above); connection
+    // ORDER matters: setTxMuted MUST run before setTxOwnsAnalyzer on
+    // the keydown edge so audio mutes BEFORE the analyzer flips
+    // sources (operator hears silence, not a brief blip).  Qt
+    // guarantees connection-order DirectConnection slot dispatch
+    // for same-thread emitter+receiver — leave THIS connect AFTER
+    // the setTxMuted connect above.  Reordering them is a §15.26
+    // PART B integrity hazard (amendment A.7 in the reconciled
+    // doc).  If a future maintainer needs to reorder for any
+    // reason, route both through a single combined slot instead.
+    QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
+                     wdspEngine, &lyra::dsp::WdspEngine::setTxOwnsAnalyzer);
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still
