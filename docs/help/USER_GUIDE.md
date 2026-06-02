@@ -741,15 +741,6 @@ docks. Layout (left → right):
   Watch the **ALC meter** as you raise — back off when ALC engages
   hard (more than ~3 dB of gain reduction means you're driving past
   the limiter ceiling and creating splatter risk).
-- **+20 chip** (next to the Mic Gain readout) — engages the HL2 codec's
-  hardware **+20 dB mic preamp** (analog PGA in the codec, ahead of the
-  DSP chain). Use this when your hand-mic or headset mic is genuinely
-  weak — Mic Gain near the top of its travel and still not hitting the
-  WDSP TXA chain at a workable level. The chip lights orange when on,
-  greys when off; single click to toggle. **Persists across launches.**
-  *Only affects the codec mic source* — PC mic and TCI audio bypass the
-  codec entirely, so this chip has no effect on them. Composes with the
-  Mic Gain slider: HW +20 dB → SW continuous trim above that.
 - **TUN button** — single-click gesture: arms a 1 kHz **tune carrier**
   AND keys MOX in one click. Click again to release MOX; the carrier
   auto-disarms on the next MOX-off edge for any reason (your click,
