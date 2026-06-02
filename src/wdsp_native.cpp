@@ -259,6 +259,7 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.SetTXALevelerSt,      "SetTXALevelerSt");
     resolve(api_.SetTXAPanelGain1,     "SetTXAPanelGain1");
     resolve(api_.GetTXAMeter,          "GetTXAMeter");
+    resolve(api_.TXAGetaSipF1,         "TXAGetaSipF1");   // Task #44 Phase 2
     resolve(api_.create_resampleFV,    "create_resampleFV");
     resolve(api_.xresampleFV,          "xresampleFV");
     resolve(api_.destroy_resampleFV,   "destroy_resampleFV");

@@ -278,6 +278,14 @@ using fn_SetTXAPanelGain1_t     = void (*)(int channel, double gain);
 // concrete enum (TxaMeterType) lives in wdsp_engine; the
 // cdef stays untyped because WDSP exposes it as `int`.
 using fn_GetTXAMeter_t          = double (*)(int channel, int meter_type);
+// WDSP TX sip1 reader (siphon.c:268-282 TXAGetaSipF1).  Drains up to
+// `size` complex samples from txa[channel].sip1 into `out` (writes
+// 2*size floats: interleaved I,Q,I,Q,…).  Internally locked via
+// EnterCriticalSection(&a->update); calls suck(a) to populate sipout.
+// sip1 captures at dsp_rate (96 kHz for our TX channel) BEFORE the
+// iqc stage in TXA.c:586 — pre-PureSignal-correction, so the panadapter
+// trace stays clean whether PS is on or off.  Used by Task #44 Phase 2.
+using fn_TXAGetaSipF1_t         = void (*)(int channel, float *out, int size);
 // WDSP polyphase float-vector resampler (resample.c).  Opaque void*
 // handle returned by create_resampleFV; xresampleFV consumes
 // `numsamps` input samples and writes the resulting count into
@@ -373,6 +381,7 @@ struct WdspApi {
     fn_SetTXALevelerSt_t      SetTXALevelerSt      = nullptr;
     fn_SetTXAPanelGain1_t     SetTXAPanelGain1     = nullptr;
     fn_GetTXAMeter_t          GetTXAMeter          = nullptr;
+    fn_TXAGetaSipF1_t         TXAGetaSipF1         = nullptr;  // Task #44 Phase 2 sip1 reader
     // WDSP polyphase float-vector resampler (resample.c PORT block
     // 342-361).  Used by TciServer to resample inbound non-48 kHz
     // TX_AUDIO_STREAM frames to the TXA input rate (48 kHz) — the
