@@ -439,15 +439,28 @@ int TxChannel::process(const float *mic_block, int n,
 // and the GetTXAMeter call (mirrors the open/close lifecycle
 // discipline the setters use).
 
+// NOTE on units: WDSP's create_meter machinery internally
+// converts magnitude-squared (and linear gain) to dB BEFORE
+// storing into result[]: meter.c:96-99 stores
+//     result[av]   = 10·log10(avg²    + 1e-40)   // dBFS
+//     result[pk]   = 10·log10(peak²   + 1e-40)   // dBFS
+//     result[gain] = 20·log10(linear  + 1e-40)   // dB
+// So GetTXAMeter ALREADY returns dB — these accessors must NOT
+// re-apply log10 on top (an earlier slice did, and pegged MIC
+// at the -200 dB sentinel + railed ALC/COMP bars at full red
+// regardless of true compression — Task #71, audit 2026-06-02).
+// Off-state sentinel: WDSP returns -400.0 for level meters when
+// the meter isn't running, 0.0 for gain meters — we mirror those
+// so the upstream validity gate in MeterModel sees one
+// consistent floor across both sources (live WDSP off-state and
+// "no channel open").
+
 double TxChannel::micPeakDbFs() const {
     std::lock_guard<std::mutex> lk(channelMtx_);
-    if (!opened_ || !wdsp_) return -200.0;
+    if (!opened_ || !wdsp_) return -400.0;
     const WdspApi &api = wdsp_->api();
-    if (!api.GetTXAMeter) return -200.0;
-    const double pk = api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);
-    // Floor at 1e-10 so a true-zero or negative-eps reading lands
-    // at the -200 dB sentinel instead of NaN/-inf.
-    return 20.0 * std::log10(std::max(pk, 1e-10));
+    if (!api.GetTXAMeter) return -400.0;
+    return api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);  // dBFS
 }
 
 double TxChannel::levelerGainDb() const {
@@ -455,8 +468,7 @@ double TxChannel::levelerGainDb() const {
     if (!opened_ || !wdsp_) return 0.0;
     const WdspApi &api = wdsp_->api();
     if (!api.GetTXAMeter) return 0.0;
-    const double g = api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6);
-    return 20.0 * std::log10(std::max(g, 1e-10));
+    return api.GetTXAMeter(channel_, /*TXA_LVLR_GAIN=*/6);  // dB
 }
 
 double TxChannel::alcGainDb() const {
@@ -464,8 +476,7 @@ double TxChannel::alcGainDb() const {
     if (!opened_ || !wdsp_) return 0.0;
     const WdspApi &api = wdsp_->api();
     if (!api.GetTXAMeter) return 0.0;
-    const double g = api.GetTXAMeter(channel_, /*TXA_ALC_GAIN=*/14);
-    return 20.0 * std::log10(std::max(g, 1e-10));
+    return api.GetTXAMeter(channel_, /*TXA_ALC_GAIN=*/14);  // dB
 }
 
 } // namespace lyra::dsp

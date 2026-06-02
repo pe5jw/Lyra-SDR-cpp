@@ -1389,7 +1389,10 @@ void MeterModel::computeMic() {
     const double raw = (txWorker_ && mox)
         ? txWorker_->micPeakDbFs()
         : std::numeric_limits<double>::quiet_NaN();
-    const bool valid = !std::isnan(raw) && raw > -190.0;
+    // WDSP off-state sentinel is -400 (meter not running); anything
+    // below -300 means "no live reading" → render "—".  Live mic
+    // peak sits in the [-90, 0] dBFS band during normal operation.
+    const bool valid = !std::isnan(raw) && raw > -300.0;
     const double dbFs = valid ? raw : kMicDbMin;
 
     if (dispDbm_ < -100.0 || dispDbm_ > 100.0) dispDbm_ = dbFs;
