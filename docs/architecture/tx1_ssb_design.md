@@ -2157,3 +2157,112 @@ Remaining TX scope (per CLAUDE.md task list):
 * **#52** TX Plate Reverb.
 * **#55** Profile Manager quick-recall panel.
 * **#59** RX 8-band parametric EQ (mirrors #50).
+
+---
+
+## §13. TX-panel wiring polish + live TXA meters + Mic Boost (2026-06-01 late EOD)
+
+Operator-driven cleanup after the §12 TCI 5-fix bundle landed and
+MSHV first-light FT8 QSO completed.  Three small but operator-
+critical surfaces closed:
+
+### §13.1 Task #69 — Live TX MIC / COMP / ALC meters (commit `aec8c7c`)
+
+The TX multimeter source picker had ALC/MIC/COMP enum entries
+since v0.2.2 with comments literally "deferred — needs TX DSP"
+and a `case ALC: case MIC: case COMP: return;` no-op in the
+tick() switch.  WDSP TXA chain has been live since first-RF;
+the meter taps just weren't wired.
+
+Implementation matches the reference exactly:
+
+* `tx_channel.{h,cpp}` — three new const accessors backed by
+  `GetTXAMeter` at reference indices per `wdsp/TXA.h:51-65`
+  `enum txaMeterType`:
+  - `micPeakDbFs()`   = TXA_MIC_PK    (idx 0,  linear → dBFS)
+  - `levelerGainDb()` = TXA_LVLR_GAIN (idx 6,  linear → dB)
+  - `alcGainDb()`     = TXA_ALC_GAIN  (idx 14, linear → dB)
+* `tx_dsp_worker.h` — pass-through getters.
+* `metermodel.{h,cpp}` — late-bound `TxDspWorker*` member +
+  `setTxDspWorker` setter (mirrors `setTciMicSource` pattern);
+  new `computeMic/computeComp/computeAlc` modeled on
+  `computeTemp` (smoothed, normalised, peak+hold+decay).  Bar
+  mappings: MIC -60..0 dBFS (danger -6); COMP/ALC 0..-20 dB
+  reduction (danger -12 / -6 respectively).
+* `mainwindow.{h,cpp}` — `setTxDspWorker` forwarder.
+* `main.cpp` — wires `winRef->setTxDspWorker(txWorker)` in the
+  WDSP-loaded singleShot block + clears in `aboutToQuit`.
+
+Live values populate the moment MOX engages; render "—" on RX.
+
+### §13.2 Task #69 follow-up — Picker UI unlock (commit `b5508b3`)
+
+Operator-caught: the wiring landed but the picker still showed
+"coming v0.2.1" and refused selection.  Two pickers
+(`settingsdialog.cpp:1695-1697` primary + `:1807-1809`
+secondary) had `enabled = false` flags on the ALC/MIC/COMP
+entries from when they were placeholders.  Flipped to `true`
+and rewrote labels to reflect the live sources.  No model
+change.
+
+### §13.3 Task #39 — HL2 hardware +20 dB Mic Boost (commit `aec8c7c`)
+
+Pre-implementation verification (research agent, full Thetis +
+HL2 `_hl2src/` gateware RTL read): the standard HPSDR P1
+MicBoost bit is at C0 0x12 C2 bit 0 per `netInterface.c:536-544`
++ `network.h:220-221` `mic_boost : 1`.  Hardware is **2-state
+only** — the AK4951 codec datasheet supports multi-step PGA,
+but the HL2+ `hl2b5up_ak4951v4` gateware doesn't expose PGA
+steps via the wire (`i2s_ak4951.v` is audio-only I2S; no I2C
+side-channel to the codec from C&C).  Reference ships a single
+boolean checkbox labeled "20 dB Mic Boost".
+
+Operator request was a 3-way Off/+10/+20.  Declined (Option A,
+match reference): the +10 step would have to be software gain
+via the existing Mic Gain slider, which already provides
+continuous trim composing on top of the hardware boost.  3-way
+combo would create a fight with the slider; better to leave HW
+as binary + slider as continuous (composes cleanly).
+
+  * `hl2_stream.{h,cpp}` — `micBoost_` atomic + Q_PROPERTY +
+    `setMicBoost` + signal + autoload from QSettings
+    `tx/micBoost`; persisted, NOT defensively cleared on
+    open/close (voice-chain calibration, not a safety gate).
+    Frame-10 (0x12) C2 composer now ORs in bit 0 when
+    `micBoost_` set, alongside the existing PA-enable bit 3.
+
+### §13.4 Task #39 follow-up — TX-panel chip relocation (commit `070ccdb`, partially WRONG)
+
+Initial implementation put the Mic Boost checkbox in Settings →
+TX next to the Mic Source picker.  Operator pushback: it
+belongs on the operating-time TX panel, not buried in Settings.
+
+Commit `070ccdb` added a compact "+20" lit chip to `TxPanel.qml`
+right after the Mic Gain readout (same orange-lit visual idiom
+as TUN) and **removed** the Settings checkbox.
+
+**Operator clarification immediately after**: they wanted Mic
+Boost in BOTH Settings AND the TX panel (matches the reference's
+"20 dB Mic Boost" under "Other H/W" setup PLUS the operating-
+time surface — exactly how Mic Gain already works: slider on TX
+panel + spinbox in Settings → TX, both bidirectionally tuning
+the same QSettings/Q_PROPERTY).  The removal was an over-fit
+to "two-place-truth" concerns that the QSignalBlocker pattern
+already handles cleanly.
+
+**Followup: Task #70** — re-add the Settings checkbox at the
+TX grid row 8 position the relocation removed, with the standard
+QSignalBlocker bidirectional sync wiring matching PA Enable's
+pattern.  Lands tomorrow.
+
+### §13.5 What this leaves
+
+TX-panel surface for v0.2.2 voice-chain operation is now
+operator-complete: TX Drive % + Mic Gain dB + Mic Boost +20
+chip + TUN + MOX, plus the live MIC/COMP/ALC multimeter
+sources for actually dialing in the chain.  The TX-side
+divergence-from-reference debt from the v0.2.0..v0.2.2 cycle
+is closed; remaining TX work is genuine feature scope (#49
+Profile Manager, #50 EQ, #51 Combinator, #52 Plate Reverb,
+#55 Profile chips, #59 RX EQ mirror) plus the deferred
+panadapter rescale (#44) and PWR calibration (#45).

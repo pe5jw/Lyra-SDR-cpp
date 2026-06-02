@@ -697,15 +697,19 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > The relative movement, peak-hold, SNR, and
 > noise-floor behaviour are all live regardless.
 >
-> **Transmit meters** are now wired for the sources whose computes
-> exist today: **PWR** (forward power, watts) and **SWR** (antenna
-> match). On every MOX edge, the panel auto-swaps from your RX
-> source to your TX source and back — set both pickers in
-> **[Meter panel](#meter-panel)**. Three more TX
-> sources — **ALC**, **MIC**, **COMP** — appear in the picker
-> when their computes land (they depend on the TX DSP chain
-> being driven by a live modulator; today only the **TUN
-> tune-carrier** path emits, which doesn't exercise ALC or MIC).
+> **Transmit meters** are fully wired. PWR (forward power, watts),
+> SWR (antenna match), ID (PA bias current), VDD (PA supply), Temp
+> (HL2 board) plus the three WDSP TXA chain meters — **ALC** (gain
+> reduction in dB), **MIC** (mic peak in dBFS), and **COMP** (leveler
+> gain reduction in dB) — all read live from the running TX chain
+> the moment MOX engages, and show "—" on RX. Set the active TX
+> source (and an optional secondary readout line) in
+> **[Meter panel](#meter-panel)**. The panel auto-swaps from your RX
+> source to your TX source on every MOX edge and back, so you can
+> watch what you need without manual switching. Tip for dialing in
+> the chain: pick **MIC** as primary + **ALC** as secondary, key
+> the mic, and adjust Mic Gain until MIC peaks land near −6 dBFS
+> with ALC reduction staying under 3 dB.
 
 ---
 
@@ -737,6 +741,15 @@ docks. Layout (left → right):
   Watch the **ALC meter** as you raise — back off when ALC engages
   hard (more than ~3 dB of gain reduction means you're driving past
   the limiter ceiling and creating splatter risk).
+- **+20 chip** (next to the Mic Gain readout) — engages the HL2 codec's
+  hardware **+20 dB mic preamp** (analog PGA in the codec, ahead of the
+  DSP chain). Use this when your hand-mic or headset mic is genuinely
+  weak — Mic Gain near the top of its travel and still not hitting the
+  WDSP TXA chain at a workable level. The chip lights orange when on,
+  greys when off; single click to toggle. **Persists across launches.**
+  *Only affects the codec mic source* — PC mic and TCI audio bypass the
+  codec entirely, so this chip has no effect on them. Composes with the
+  Mic Gain slider: HW +20 dB → SW continuous trim above that.
 - **TUN button** — single-click gesture: arms a 1 kHz **tune carrier**
   AND keys MOX in one click. Click again to release MOX; the carrier
   auto-disarms on the next MOX-off edge for any reason (your click,
