@@ -54,6 +54,21 @@ BandMemory::BandMemory(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         connect(prefs_, &Prefs::dbMaxChanged,          this, live);
         connect(prefs_, &Prefs::waterfallDbMinChanged, this, live);
         connect(prefs_, &Prefs::waterfallDbMaxChanged, this, live);
+        // Task #74 follow-up — per-band TUN drive memory.  Same pattern
+        // as txDriveLevel (live-save on change, restore on band entry):
+        // tune-into-amp-at-200W on 80m differs from tune-into-tuner-at-
+        // 5W on 10m, so each band gets its own remembered value.
+        // Focused lambda writes only the tuneDrive key (the saveCurrent
+        // path would re-write the 4 panadapter keys unnecessarily on
+        // every drive nudge).
+        connect(prefs_, &Prefs::tuneDrivePctChanged, this,
+                [this]() {
+                    if (applying_ || currentBand_.isEmpty()) return;
+                    QSettings().setValue(
+                        QString::fromLatin1(kPfx) + currentBand_ +
+                        QStringLiteral("/tuneDrive"),
+                        prefs_->tuneDrivePct());
+                });
     }
     // Apply the current band's saved settings ONCE at startup.  The
     // stream restores its RX1 frequency in its own ctor via an atomic
@@ -161,6 +176,22 @@ void BandMemory::applyBand(const QString &band) {
             ? s.value(p + QStringLiteral("txDrive")).toInt()
             : 0;
         stream_->setTxDriveLevel(restored);
+        applying_ = false;
+    }
+    // Task #74 follow-up — per-band TUN drive restore.  Stored value
+    // present → restore (the operator's per-band-tuned amp / tuner
+    // setting).  Stored value absent → fall back to the global Prefs
+    // default (currently 25 %) rather than the txDrive=0 fail-safe;
+    // tuneDrive only takes effect when the operator opts into separate
+    // tune drive AND presses TUN, both deliberate gestures, so the
+    // unattended-keying failure mode the txDrive=0 fail-safe addresses
+    // doesn't apply here.  applying_ guards the live-save callback.
+    if (prefs_) {
+        applying_ = true;
+        const int restoredTune = s.contains(p + QStringLiteral("tuneDrive"))
+            ? s.value(p + QStringLiteral("tuneDrive")).toInt()
+            : prefs_->tuneDrivePct();
+        prefs_->setTuneDrivePct(restoredTune);
         applying_ = false;
     }
     if (!s.contains(p + QStringLiteral("mode"))) {
