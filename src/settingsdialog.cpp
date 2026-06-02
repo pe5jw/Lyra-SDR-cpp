@@ -1678,10 +1678,9 @@ QWidget *SettingsDialog::buildMeterTab() {
         //     ACTIVELY changing during TX — PA bias rising, supply
         //     sagging on a hard key, board heating up under sustained
         //     TX — so they belong on the operator's TX-watch list)
-        //     plus ALC / MIC / COMP placeholders for v0.2.1 (each
-        //     greyed with a "coming v0.2.1" caveat so the menu stays
-        //     honest about the TX-chain gain-structure meters that
-        //     unlock when the WDSP TXA-meter readout lands).
+        //     plus ALC / MIC / COMP gain-structure meters that
+        //     read live from WDSP TXA GetTXAMeter (Task #69 wiring,
+        //     2026-06-01).
         struct Opt { int v; const char *label; bool enabled; };
         static const Opt kRxOpts[] = {
             {0, "RX S-meter (signal strength)", true},
@@ -1692,9 +1691,9 @@ QWidget *SettingsDialog::buildMeterTab() {
             {3, "ID — PA Current (HL2 bias)",           true},
             {4, "VDD — PA Volts (HL2 supply)",          true},
             {5, "Temp (HL2 board)",                     true},
-            {6, "ALC (gain reduction) — coming v0.2.1", false},
-            {7, "MIC (mic peak dBFS) — coming v0.2.1",  false},
-            {8, "COMP (compressor) — coming v0.2.1",    false},
+            {6, "ALC (gain reduction, dB)",             true},
+            {7, "MIC (mic peak, dBFS)",                 true},
+            {8, "COMP (leveler gain reduction, dB)",    true},
         };
 
         auto buildSourceCombo = [this](MeterModel *m, bool isTx) {
@@ -1794,8 +1793,8 @@ QWidget *SettingsDialog::buildMeterTab() {
         // Hidden automatically when the secondary == current primary.
         // TX-only option set (mirrors the verified reference's TX
         // meter-mode list + HL2 telemetry that's meaningful during
-        // TX).  ALC/MIC/COMP shown but disabled until v0.2.1 — keeps
-        // the picker honest.
+        // TX).  ALC/MIC/COMP read live from WDSP TXA GetTXAMeter
+        // (Task #69 wiring, 2026-06-01).
         auto *txSec = new QComboBox(this);
         const struct { int v; const char *label; bool enabled; } secOpts[] = {
             {-1, "None (hide line)",                            true},
@@ -1804,9 +1803,9 @@ QWidget *SettingsDialog::buildMeterTab() {
             {3,  "ID — PA Current (HL2 bias)",                  true},
             {4,  "VDD — PA Volts (HL2 supply)",                 true},
             {5,  "Temp (HL2 board)",                            true},
-            {6,  "ALC (gain reduction) — coming v0.2.1",        false},
-            {7,  "MIC (mic peak dBFS) — coming v0.2.1",         false},
-            {8,  "COMP (compressor) — coming v0.2.1",           false},
+            {6,  "ALC (gain reduction, dB)",                    true},
+            {7,  "MIC (mic peak, dBFS)",                        true},
+            {8,  "COMP (leveler gain reduction, dB)",           true},
         };
         auto fillSecondaryCombo = [](QComboBox *cb,
             const decltype(secOpts) &opts) {
