@@ -2320,6 +2320,147 @@ instead of jumping between two tabs.
   and the band/filter/operator/station/PA-safety controls
   for the wire-level radio configuration.
 
+### §13.7 Task #71 — TX metering audit + fix bundle (commits `70e947b`, `ac21c47`, `2d5ccf2`, 2026-06-02)
+
+Operator-flagged 2026-06-01 EOD ("doesn't look correct or
+act correct") and re-confirmed 2026-06-02 AM ("look DEEP at
+all the metering").  Two parallel research agents (one per
+tree) + verify-don't-guess audit of the most-suspicious
+claim against the WDSP source surfaced **one math bug and
+two reference-divergence items**.  Full provenance dossier
+at `docs/architecture/refs/metering_audit_2026-06-02.md`.
+
+#### §13.7.1 §1 — math bug fix (commit `70e947b`)
+
+Root cause: WDSP's `create_meter` machinery converts
+magnitude-squared and linear-gain to dB INSIDE the DLL
+before storing into the `result[]` array (`wdsp/meter.c:96-99`):
+
+```c
+result[av]   = 10·log10(avg²    + 1e-40)   // dBFS
+result[pk]   = 10·log10(peak²   + 1e-40)   // dBFS
+result[gain] = 20·log10(linear  + 1e-40)   // dB
+```
+
+So `GetTXAMeter` returns dB.  The §13.1 Task #69 wire-up
+applied another `20·log10()` on top:
+
+```cpp
+const double pk = api.GetTXAMeter(channel_, /*TXA_MIC_PK=*/0);
+return 20.0 * std::log10(std::max(pk, 1e-10));   // ← BUG
+```
+
+For a typical MIC peak of −12 dBFS:
+`max(−12, 1e-10) = 1e-10` → `log10 = −10` → `× 20 = −200`.
+So the reading was **pinned at −200 dB any time the mic was
+below full scale** — i.e. always, in practice.  MIC bar
+dead (`computeMic`'s `raw > −190` validity gate failed →
+text `"—"`).  ALC bar pegged at full red (`computeAlc`
+treated `−200` as valid → reduction = `+200` → `n = 1.0`).
+Same trap on COMP.
+
+Fix: drop the extra `log10` — three one-line `return`s in
+`tx_channel.cpp`.  Also aligned the off-state sentinel to
+WDSP's `−400` for level meters / `0` for gain meters
+(was `−200` / `0`), and widened `computeMic`'s validity
+gate to `raw > −300.0` so the new `−400` off-state
+correctly renders `"—"`.
+
+#### §13.7.2 §2 + §3 — reference-faithful TX dynamics meter set (commit `ac21c47`)
+
+Operator directive: "Fix 2 and 3 to be like the reference,
+no divergence."
+
+§2 added the full reference-faithful TX dynamics-meter set
+beyond the prior MIC/COMP/ALC trio.  The reference's TXA
+chain has FOUR distinct dynamics blocks in series — leveler
+(uphill boost) → CFC (5-band shaping) → compressor (peak
+limit, compress.c) → ALC (final safety limiter) — each with
+its own level meter (dBFS post-stage) and most with a gain
+meter (dB action).
+
+Source enum extended:
+* `Source::ALC` (=6) **renamed** → `Source::ALC_G` (same
+  value 6 → QSettings persistence stable; the enum was
+  already routing to `TXA_ALC_GAIN`, now labeled honestly).
+* `Source::COMP` (=8) **renamed** → `Source::LVL_G` (same
+  value 8 → was routing to `TXA_LVLR_GAIN` all along under
+  the misleading "COMP" label; now correctly labeled
+  "leveler gain").
+* New value 9: `Source::LVL_PK` → `TXA_LVLR_PK` (leveler
+  output peak, dBFS).
+* New value 13: `Source::ALC_PK` → `TXA_ALC_PK` (ALC
+  output peak, dBFS — what the wire sees).
+* New value 14: `Source::ALC_GROUP` → composite
+  `ALC_PK + ALC_GAIN` (the reference's "ALC Group" — what
+  the wire **would** see if the ALC weren't acting; useful
+  for ESSB headroom analysis).
+
+§3 fixed the UI-side ballistic divergence.  WDSP's own
+`create_meter` applies a 100 ms `tau_average` IIR + 100 ms
+peak-decay INSIDE the DLL before storing into `result[]`.
+The §13.1 Task #69 wire-up layered ANOTHER ~100 ms IIR on
+top (`kTelSmooth = 0.30` per 50 ms tick), producing ~240 ms
+total settling time vs the reference's ~100 ms.  Result:
+laggy needle on voice attack + under-read on transients
+(real problem when gain-staging by watching peaks land
+near −6 dBFS).
+
+Fix: drop the UI-side IIR on dynamics meters entirely — use
+the WDSP-returned value directly.  Peak marker decay
+changed from linear (`peak_ -= 0.06` per tick → 833 ms
+full fall) to exponential (`peak_ *= 0.80` per tick →
+~155 ms 50% fall, ~515 ms 90% fall) matching the
+reference's `MeterManager.DecayRatio = 0.20 / 50 ms`.
+Removed the hold-then-decay phase (reference decays
+immediately on first non-rising tick).
+
+Implementation: two new shared helpers in `MeterModel` —
+`computeLevelMeterFromDb()` for dBFS level meters and
+`computeGainMeterFromDb()` for dB gain meters.  Each of the
+9 dynamics compute methods is now a thin shim: read the
+right WDSP index, route to the helper.  Single source of
+truth for the ballistic across the whole TX dynamics chain.
+
+`Max-hold` (Lyra's longer-term high-water marker, operator-
+toggleable) is preserved unchanged — it's a Lyra UX
+extension with no reference equivalent but useful for gain-
+staging review.  Operator can disable via `maxPeakEnabled_`
+if they want strict reference parity.
+
+#### §13.7.3 CFC + COMP pruning (commit `2d5ccf2`, same day)
+
+Operator catch immediately after `ac21c47` shipped: the
+initial expansion included `Source::CFC_PK` /
+`Source::CFC_G` / `Source::COMP` entries that tapped WDSP's
+`TXA_CFC_PK` / `TXA_CFC_GAIN` / `TXA_COMP_PK` indices — but
+per §15.19 + Task #51, Lyra's v0.2.1 chain replaces both
+WDSP blocks entirely with the Lyra-native **Combinator**
+(5-band IIR multiband compressor, X-Air-style, runs as a
+pre-processor BEFORE the WDSP TXA entry).  So those WDSP
+blocks will NEVER be enabled in Lyra — their meters would
+read `"—"` / 0 dB forever, which IS inert UI by definition.
+
+Pruned all three from the Source enum + the picker arrays +
+the TxChannel accessors + the TxDspWorker pass-throughs +
+the compute methods + the formatSecondaryText cases.
+Source enum values 10 / 11 / 12 LEFT UNUSED to reserve
+slots for the future Combinator-native meter sources when
+Task #51 ships.
+
+Final Lyra TX dynamics-meter set (exactly what's running in
+the chain):
+* `MIC` (= 7) — `TXA_MIC_PK`, dBFS mic peak.
+* `LEV` (`LVL_PK` = 9) — `TXA_LVLR_PK`, dBFS leveler output.
+* `LVL G` (`LVL_G` = 8) — `TXA_LVLR_GAIN`, dB leveler boost.
+* `ALC` (`ALC_PK` = 13) — `TXA_ALC_PK`, dBFS ALC output.
+* `ALC G` (`ALC_G` = 6) — `TXA_ALC_GAIN`, dB ALC reduction.
+* `ALC Σ` (`ALC_GROUP` = 14) — composite pre-ALC estimate.
+
+Plus the always-meaningful wire / safety / telemetry set
+(PWR / SWR / ID / VDD / Temp) — those are EP6 decode, not
+WDSP-meter.
+
 **Operator-facing fallout:**
 
 * Any operator who had set Mic Source = TCI or enabled Mic

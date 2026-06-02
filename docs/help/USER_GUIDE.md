@@ -697,19 +697,45 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > The relative movement, peak-hold, SNR, and
 > noise-floor behaviour are all live regardless.
 >
-> **Transmit meters** are fully wired. PWR (forward power, watts),
-> SWR (antenna match), ID (PA bias current), VDD (PA supply), Temp
-> (HL2 board) plus the three WDSP TXA chain meters — **ALC** (gain
-> reduction in dB), **MIC** (mic peak in dBFS), and **COMP** (leveler
-> gain reduction in dB) — all read live from the running TX chain
-> the moment MOX engages, and show "—" on RX. Set the active TX
-> source (and an optional secondary readout line) in
-> **[Meter panel](#meter-panel)**. The panel auto-swaps from your RX
-> source to your TX source on every MOX edge and back, so you can
-> watch what you need without manual switching. Tip for dialing in
-> the chain: pick **MIC** as primary + **ALC** as secondary, key
-> the mic, and adjust Mic Gain until MIC peaks land near −6 dBFS
-> with ALC reduction staying under 3 dB.
+> **Transmit meters** are fully wired. The wire / safety / telemetry
+> set — **PWR** (forward power, watts), **SWR** (antenna match),
+> **ID** (PA bias current), **VDD** (PA supply), **Temp** (HL2
+> board) — plus the full TX-chain dynamics set that taps every
+> stage of the modulator chain in signal-flow order:
+>
+> | Picker entry | What it shows | Unit |
+> |---|---|---|
+> | **MIC** | mic peak into the modulator | dBFS |
+> | **LEV** | leveler **output** level | dBFS |
+> | **LVL G** | leveler gain (how much it's boosting weak passages) | dB (typically positive) |
+> | **ALC** | ALC **output** level — what the wire sees | dBFS |
+> | **ALC G** | ALC gain reduction (how hard the limiter is working) | dB (typically negative or 0) |
+> | **ALC Σ** | ALC_PK + ALC_GAIN — what the wire **would** see if the ALC weren't acting | dBFS |
+>
+> All read live from the running TX chain the moment MOX engages,
+> and show "—" on RX. Each meter uses the reference's ballistic
+> exactly: the DSP engine smooths internally over ~100 ms, and the
+> peak marker decays exponentially over ~500 ms (no UI-side
+> over-smoothing — needles respond crisply to voice attack so
+> transients show their true peak). Set the active TX source (and
+> an optional secondary readout line, or a third line under that)
+> in **[Meter panel](#meter-panel)**. The panel auto-swaps from
+> your RX source to your TX source on every MOX edge and back, so
+> you can watch what you need without manual switching.
+>
+> **Tip for dialing in the chain:** pick **MIC** as primary +
+> **ALC G** as secondary, key the mic, and adjust Mic Gain until
+> MIC peaks land near −6 dBFS with ALC G staying under 3 dB. Want
+> to see the leveler doing its work? Pick **LVL G** — a positive
+> reading means the leveler is boosting a quiet passage to keep
+> your modulator level consistent.
+>
+> **What's coming with v0.2.1:** the **Combinator** (5-band
+> multiband compressor + speech enhancements + parametric EQ +
+> tube plating) lands as a Lyra-native processor before the WDSP
+> TXA chain. Its per-band activity and total gain reduction will
+> arrive as additional Meter Panel sources at that time — picker
+> values 10/11/12 are reserved for them now.
 
 ---
 
