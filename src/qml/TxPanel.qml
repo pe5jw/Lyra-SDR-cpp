@@ -176,6 +176,48 @@ Rectangle {
             Layout.preferredWidth: 52
         }
 
+        // ── Mic Boost (+20 dB HW) — Task #39 ─────────────────────────
+        // HL2 codec analog PGA hardware boost via C0 0x12 C2 bit 0.
+        // Compact lit chip next to Mic Gain because they're the same
+        // operator question ("the voice into the chain isn't loud
+        // enough — pull what lever?").  Hardware is 2-state (off /
+        // +20 dB); the Mic Gain slider above does continuous trim
+        // on top.  Only effective when the codec mic is the active
+        // TX source — PC mic / TCI inputs bypass the codec PGA.
+        Button {
+            id: micBoostBtn
+            checkable: true
+            implicitWidth: 56
+            implicitHeight: 28
+            text: qsTr("+20")
+            font.bold: true
+            font.pixelSize: 12
+            checked: Stream.micBoost
+            onClicked: Stream.setMicBoost(checked)
+            background: Rectangle {
+                radius: 4
+                color: Stream.micBoost ? "#3a2a14" : "#1f2a35"
+                border.color: Stream.micBoost ? root.cOn : "#3a5060"
+                border.width: 2
+            }
+            contentItem: Text {
+                text: micBoostBtn.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: Stream.micBoost ? root.cOn : root.cMuted
+                font: micBoostBtn.font
+            }
+            ToolTip.text: qsTr("Mic Boost — engages the HL2 codec's hardware "
+                + "+20 dB mic preamp.  Use when your hand-mic / headset mic "
+                + "is too quiet to hit the WDSP TXA chain at a sensible "
+                + "level with the Mic slider near max.  Only affects the "
+                + "codec mic source — PC mic / TCI audio bypass the codec "
+                + "entirely, so this chip has no effect on them.  Persists "
+                + "across launches.")
+            ToolTip.delay: 1500
+            ToolTip.visible: hovered && !pressed
+        }
+
         Item { Layout.fillWidth: true }   // pushes TUN + MOX to the right
 
         // ── TUN — armed-tune button (carrier @ TX freq + 1 kHz) ─────
