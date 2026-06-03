@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <thread>
 #ifdef _WIN32
 // WIN32_LEAN_AND_MEAN prevents windows.h pulling in winsock1, which
@@ -445,33 +446,82 @@ int main(int argc, char *argv[])
                      prefs,  &lyra::ui::Prefs::setMoxActive);
     prefs->setMoxActive(stream->moxActive());   // seed initial state
 
-    // Task #74 — TUN separate-drive orchestrator.  When the operator
-    // arms TUN and Prefs.useTuneDrive is on, stash the current wire
-    // drive level and push the tune-drive % (0..100 → 0..255 wire DAC);
-    // on TUN-off, restore the stashed value.  When useTuneDrive is
-    // off this is a no-op — TUN keys at the operator's TX Drive %
-    // (byte-identical to pre-#74 behaviour).
+    // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
+    // the operator arms TUN and Prefs.useTuneDrive is on, stash the
+    // current wire drive level and push the tune-drive % (0..100 →
+    // 0..255 wire DAC); on TUN-off, restore the stashed value.  When
+    // useTuneDrive is off this is a no-op — TUN keys at the
+    // operator's TX Drive % (byte-identical to pre-#74 behaviour).
     //
-    // shared_ptr so the captured saved-level survives connect/
-    // disconnect cycles for the app lifetime.  Lambda runs on the
-    // emitter thread (DirectConnection by default; HL2Stream lives
-    // on the main thread same as prefs) so the drive push completes
-    // BEFORE the QML's subsequent Stream.requestMox(true) call sees
-    // the wire — first TX frame post-MOX-rise already carries the
-    // tune-drive level.
+    // #77 fix: use std::optional<int> on the heap (shared_ptr-wrapped
+    // for lifetime) so we track whether a real TUN-arm edge has
+    // stashed a value in this session.  HL2Stream emits a defensive
+    // `tuneEnabledChanged(false)` at every stream START and STOP
+    // (hl2_stream.cpp, the auto-clear at lines ~586/685) — without
+    // the optional guard those spurious off-edges would call
+    // `setTxDriveLevel(*savedDrive)` with the default-constructed
+    // 0, blanking the operator's TX Drive on every stream restart.
+    // Only an actual arm→release pair restores; spurious offs no-op.
+    //
+    // #78 fix: a second connection on Prefs::tuneDrivePctChanged
+    // routes live slider movement to the stream during an active
+    // tune (when stream->tuneEnabled() AND prefs->useTuneDrive()).
+    // Critically does NOT touch `savedDrive` — the stashed pre-tune
+    // value must stay frozen so the tune-release restore is correct.
+    //
+    // Lambdas run on the emitter thread (DirectConnection by default;
+    // HL2Stream + prefs both live on the main thread) so a TUN arm's
+    // drive push completes BEFORE the QML's subsequent
+    // Stream.requestMox(true) — first TX frame post-MOX-rise
+    // carries the tune-drive level.
     {
-        auto savedDrive = std::make_shared<int>(0);
+        auto savedDrive = std::make_shared<std::optional<int>>();
         QObject::connect(stream, &lyra::ipc::HL2Stream::tuneEnabledChanged,
                          prefs, [stream, prefs, savedDrive](bool on) {
-            if (!prefs->useTuneDrive()) return;
+            if (!prefs->useTuneDrive()) {
+                // Toggle is off — never stash, never restore.  Also
+                // clear any orphan stash so a later toggle-on +
+                // arm cycle starts clean.
+                savedDrive->reset();
+                return;
+            }
             if (on) {
-                *savedDrive = stream->txDriveLevel();
+                // Real TUN-arm: stash + push tune-drive.  Re-arm
+                // without a release between (defensive) — keep the
+                // earliest pre-tune value, not a tune-drive value.
+                if (!savedDrive->has_value()) {
+                    *savedDrive = stream->txDriveLevel();
+                }
                 const int raw = std::clamp(int(std::lround(
                     prefs->tuneDrivePct() * 255.0 / 100.0)), 0, 255);
                 stream->setTxDriveLevel(raw);
             } else {
-                stream->setTxDriveLevel(*savedDrive);
+                // TUN-release.  Restore ONLY if we have a real
+                // stashed value from a prior arm in this session
+                // (#77 fix: the spurious off-edges at stream
+                // start/stop carry no stash and must no-op).
+                if (savedDrive->has_value()) {
+                    stream->setTxDriveLevel(savedDrive->value());
+                    savedDrive->reset();
+                }
             }
+        });
+
+        // #78 — live tune-drive while TUN is active.  Drag the
+        // TxPanel TUN-drive slider while keyed and the wire DAC
+        // follows immediately.  Skipped when TUN is not armed or
+        // the toggle is off (no spurious wire pushes; the
+        // tuneDrivePct value still persists per-band via #74
+        // recall for the next arm).  Does NOT mutate savedDrive
+        // — restore-on-release must use the pre-tune value, not
+        // the last live-tuned value.
+        QObject::connect(prefs, &lyra::ui::Prefs::tuneDrivePctChanged,
+                         prefs, [stream, prefs]() {
+            if (!prefs->useTuneDrive()) return;
+            if (!stream->tuneEnabled())  return;
+            const int raw = std::clamp(int(std::lround(
+                prefs->tuneDrivePct() * 255.0 / 100.0)), 0, 255);
+            stream->setTxDriveLevel(raw);
         });
     }
     // Weather-alert service — polls the operator's enabled sources and
