@@ -842,23 +842,34 @@ Item {
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
                             property double lastMs: 0
-                            // Task #54 — distinguish lo-edge vs hi-edge
-                            // drag.  Pre-fix: BOTH edges wrote
-                            // Prefs.rxBandwidth via bandwidthForEdge(),
-                            // which meant the lo edge was pinned at
-                            // the carrier (0 Hz for SSB) and the
-                            // operator could only widen by dragging the
-                            // hi edge.  Now: hi-edge drag → Prefs
-                            // .rxBandwidth (the high cutoff, what
-                            // bandwidthForEdge has always computed);
-                            // lo-edge drag → Prefs.filterLow (the
-                            // shared RX+TX low cut, Task #53).
+                            // Task #54 + #80 (sideband symmetry fix) —
+                            // distinguish lo-edge vs hi-edge drag, then
+                            // map to filterLow vs rxBandwidth by mode.
+                            //
+                            // The Repeater spawns two edges by ARRAY
+                            // INDEX (isLo = index 0); the SEMANTIC
+                            // mapping flips by sideband:
+                            //   USB/DIGU: passbandLowHz=+flo near
+                            //       carrier, passbandHighHz=+bw far
+                            //       out.  Lo edge IS the inner /
+                            //       filterLow knob; hi edge IS the
+                            //       outer / rxBandwidth knob.
+                            //   LSB/DIGL: passbandLowHz=-bw far out,
+                            //       passbandHighHz=-flo near carrier.
+                            //       MIRRORED — lo edge is now the
+                            //       OUTER (rxBandwidth), hi edge is
+                            //       the INNER (filterLow).  Pre-fix
+                            //       routed by isLo alone → in LSB the
+                            //       outer drag wrote filterLow which
+                            //       clamped to 500 Hz, collapsing the
+                            //       inner edge instead of extending
+                            //       the outer (#80 operator-reported).
                             //
                             // For symmetric modes (AM/DSB/FM) and CW
-                            // (pitch-centred), the lo-edge drag still
-                            // writes rxBandwidth — the asymmetric SSB/
-                            // DIG case is the only one where the lo
-                            // edge is independently meaningful.
+                            // (pitch-centred), both edges write
+                            // rxBandwidth — the asymmetric SSB/DIG
+                            // case is the only one where filterLow
+                            // is independently meaningful.
                             onPositionChanged: (m) => {
                                 var nowMs = Date.now()
                                 if (nowMs - lastMs < 33) return
@@ -869,14 +880,26 @@ Item {
                                 var mode = Prefs.mode
                                 var isSsbOrDig = (mode === "USB" || mode === "LSB"
                                                || mode === "DIGU" || mode === "DIGL")
-                                if (isLo && isSsbOrDig) {
-                                    // |off| at the lo edge IS the low cutoff
-                                    // for SSB/DIG (USB lo edge sits at +flo,
-                                    // LSB at -flo).  Clamp to Prefs's 0..500
-                                    // range; drag-below-0 just pins at 0.
-                                    var flo = Math.abs(off)
-                                    Prefs.filterLow =
-                                        Math.max(0, Math.min(500, Math.round(flo)))
+                                if (isSsbOrDig) {
+                                    var isLsb = (mode === "LSB" || mode === "DIGL")
+                                    // Lower-sideband mirrors the
+                                    // inner/outer role of the two
+                                    // edges (see comment above).
+                                    var isInnerEdge = isLsb ? !isLo : isLo
+                                    if (isInnerEdge) {
+                                        // |off| at the inner edge IS
+                                        // the low cutoff for SSB/DIG.
+                                        // Clamp to Prefs's 0..500
+                                        // range; drag-below-0 just
+                                        // pins at 0.
+                                        var flo = Math.abs(off)
+                                        Prefs.filterLow =
+                                            Math.max(0, Math.min(500, Math.round(flo)))
+                                    } else {
+                                        // Outer edge → bandwidth.
+                                        Prefs.rxBandwidth =
+                                            WdspEngine.bandwidthForEdge(off)
+                                    }
                                 } else {
                                     Prefs.rxBandwidth =
                                         WdspEngine.bandwidthForEdge(off)
