@@ -58,6 +58,15 @@ constexpr double kUsbHighHz  = 3000.0;
 constexpr int    kAgcSlope         = 35;
 constexpr double kAgcThreshDbFs    = -100.0;
 constexpr double kAgcThreshFftSize = 4096.0;
+// AGC fixed-gain (dB) for mode 0 / FIXD ("AGC OFF").  WDSP's
+// create-time default is 1000.0 linear = +60 dB (RXA.c:366) which
+// makes AGC OFF audibly LOUDER than FAST/MED/SLOW that actively
+// reduce gain on signal — operator-reported "backwards" behaviour.
+// +20 dB matches the reference's RXFixedAGC default and gives
+// modest amplification operators can dial up via AF/Vol.  Pushed
+// on every AGC-mode flip (cheap; WDSP only USES fixed_gain when
+// mode=FIXD).  Operator-tunable surface ships in sub-commit B.
+constexpr double kAgcFixedGainDb   = 20.0;
 
 // Step 5: WDSP spectral analyzer (panadapter) config.  Values mirror
 // the standard HL2 RX analyzer setup (fft 4096, window 4, kaiser 14).  pixels is
@@ -1251,6 +1260,18 @@ void WdspEngine::pushAgcMode()
     // plus the decay rate.  SetRXAAGCMode sets WDSP internal defaults
     // too, but pushing them ourselves removes any doubt about the values.
     // (Off = FIXD/fixed gain — decay/hang are irrelevant, left alone.)
+    //
+    // Operator-reported "AGC OFF louder than FAST/MED/SLOW" (#76A):
+    // mode 0 / FIXD applies fixed_gain as a static multiplier instead
+    // of envelope-tracked gain.  WDSP create-time default is 1000.0
+    // linear (+60 dB) which produces the backwards-loudness.  Push
+    // kAgcFixedGainDb on EVERY mode change regardless of current mode
+    // so a subsequent flip to OFF inherits the +20 dB reference-match
+    // value instead of WDSP's hot default.  Inert when mode != FIXD;
+    // a no-op when SetRXAAGCFixed didn't resolve (null guard).
+    if (api.SetRXAAGCFixed) {
+        api.SetRXAAGCFixed(channel_, kAgcFixedGainDb);
+    }
     if (mode != kAgcModeOff) {
         int decayMs = 250, hangMs = 0, hangThr = 100;   // med
         if (mode == kAgcModeFast)      { decayMs =  50; hangMs =    0; hangThr = 100; }
