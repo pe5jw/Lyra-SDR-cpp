@@ -257,6 +257,13 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     // ticks when the timer is started (in tryAcquireActiveTxAudioListener).
     chronoTimer_ = new QTimer(this);
     chronoTimer_->setInterval(kChronoIntervalMs);
+    // PreciseTimer: Qt's default CoarseTimer downgrades sub-50 ms
+    // intervals to ~5 % accuracy, which at 2 ms means the kernel
+    // could quantise the tick up to ~20 ms.  Precise mode keeps the
+    // 2 ms cadence the reference's TX stream loop establishes
+    // (cmaster.cs:1253 `Thread.Sleep(2)`).  Per-tick work is
+    // microseconds — Qt PreciseTimer at 500 Hz is well within budget.
+    chronoTimer_->setTimerType(Qt::PreciseTimer);
     connect(chronoTimer_, &QTimer::timeout, this, &TciServer::onChronoTick);
     if (prefs_)
         connect(prefs_, &Prefs::modeChanged, this, &TciServer::onModeChanged);

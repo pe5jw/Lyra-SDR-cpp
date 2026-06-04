@@ -273,7 +273,16 @@ private:
     static constexpr int   kTciTxBlockSamples = 64;
     static constexpr int   kTciTxMaxOutstanding = 64;   // ref TCI_TX_MAX_OUTSTANDING
     static constexpr int   kTciTxExtraBufferMs = 50;    // ref TCI_TX_EXTRA_BUFFER_MS
-    static constexpr int   kChronoIntervalMs   = 50;    // tick cadence
+    // CHRONO tick cadence — matches the reference's TX stream service
+    // loop sleep (cmaster.cs:1253 `Thread.Sleep(2)`).  Was 50 ms; that
+    // 25× slower cadence let MSHV's audio buffer drain between Lyra
+    // pull requests, producing audible alternating multi-tone / carrier-
+    // residue on the panadapter during FT8 transmits (operator bench
+    // 2026-06-04 mid-day, post-R-FT8 stereo-decode fix `8cddfa5`).
+    // At 2 ms the per-tick work is microseconds (a few integer ops +
+    // 0-3 ~64-byte WebSocket binary frames), well within Qt's
+    // PreciseTimer envelope.
+    static constexpr int   kChronoIntervalMs   = 2;     // tick cadence
     static constexpr int   kChronoTimeoutMs    = 250;   // outstanding clear
     static constexpr int   kChronoFallbackRequestSamples = 480;
     static constexpr int   kChronoFallbackBufferingMs    = 50;
