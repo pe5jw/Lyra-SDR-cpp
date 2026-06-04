@@ -140,15 +140,28 @@ std::vector<float> decodeTciTxAudio(const char *data, int dataBytes,
         for (int f = 0; f < frames; ++f)
             mono.push_back(sanitize(decodeScalar(f)));
     } else {
-        // 2-channel: DIGU/DIGL convention per TCI spec §3.4 — "complex
-        // signal will be transmitted if the number of channels is 2".
-        // The working reference (cmaster.c:380 path) feeds this through
-        // the regular TXA mic input; Lyra's TXA also expects real mono
-        // audio for SSB/DIGU.  Take the L (real) channel; if a client
-        // ever needs true complex IQ injection, that's a future TCI
-        // mode (separate dispatch).
-        for (int f = 0; f < frames; ++f)
-            mono.push_back(sanitize(decodeScalar(f * 2)));
+        // 2-channel inbound: average left + right into a single mono
+        // float per audio frame.  This matches the working reference's
+        // default `TCITxStereoInputMode.Both` behaviour at
+        // cmaster.cs:1412-1416 (`mono[i] = (float)((left + right) * 0.5)`).
+        //
+        // Earlier Lyra code took ONLY the left channel here on a
+        // misread of the TCI spec §3.4 "complex signal if channels=2"
+        // line — that line refers to TCI v2 IQ streams (a different
+        // dispatch path), NOT TX_AUDIO_STREAM.  For TX audio the
+        // 2-channel payload is plain stereo PCM and clients are free
+        // to place the modulated waveform in either channel or both;
+        // dropping the right channel silently lost the audio whenever
+        // a client (MSHV-class digital-modes client) put the signal
+        // in R-only or distributed it across both channels.  The
+        // operator-bench symptom was a single vertical line on the
+        // panadapter during FT8 transmit (suppressed-carrier residue
+        // only) and zero PSKReporter spots.
+        for (int f = 0; f < frames; ++f) {
+            const float l = decodeScalar(f * 2);
+            const float r = decodeScalar(f * 2 + 1);
+            mono.push_back(sanitize(0.5f * (l + r)));
+        }
     }
     return mono;
 }
