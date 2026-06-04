@@ -55,14 +55,22 @@ constexpr double kTSlewDown  = 0.010;
 // handled BY THE RING — not by matching in_size to per-datagram
 // count, which is what bit us.
 //
-// §15.29 (2026-06-03): bumped 64 → 128 to match reference Buffer
-// Size operator-setting exactly per "do as reference, no
-// variation" rule.  MUST stay in sync with kBlockSize in
-// tx_dsp_worker.h (the worker drains the SPSC ring in kBlockSize
+// R-H1 (2026-06-04): reverted 128 → 64.  The TXA input block-size
+// rule is `in_size = 64 * rate / 48000`; at our 48 kHz mic rate
+// this is 64, not 128.  §15.29 (2026-06-03) bumped to 128 and was
+// invisible for SSB voice but collapsed multi-tone modes
+// (operator FT8/MSHV-via-TCI bench: the 8-tone cycling pattern
+// rendered as a single vertical line on the panadapter, zero
+// PSKReporter spots over 15+ min on a band with 1000+ monitors).
+// Sub-block sample-timing precision matters once the modulator
+// has more than one carrier in motion.  MUST stay locked with
+// kBlockSize (tx_dsp_worker.h) and kTciTxBlockSamples
+// (tci_server.h): the worker drains the SPSC ring in kBlockSize
 // chunks and passes those to process(); process() rejects any
-// `n != kInSize`, so a divergence between these two constants is
-// a guaranteed fexchange0-skip at runtime).
-constexpr int kInSize  = 128;
+// `n != kInSize`, so a divergence between these constants is a
+// guaranteed fexchange0-skip at runtime.  See
+// docs/THETIS_VS_LYRA_RECONCILED.md R-H1 for the provenance trail.
+constexpr int kInSize  = 64;
 constexpr int kDspSize = 4096;
 
 // Operator dB → linear gain.

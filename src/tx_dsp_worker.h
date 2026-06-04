@@ -82,19 +82,21 @@ class WdspEngine;   // fwd-decl — set via setWdspEngine() for the
 class TxDspWorker {
 public:
     // Block size the worker drains per popBlock + feeds to
-    // TxChannel::process — must match TxChannel::kInSize=128
-    // (the reference's Setup → DSP → Options → Buffer Size
-    // (IQcomp) SSB/AM TX operator setting, verified 2026-06-03
-    // from operator reference setup screenshot).  Datagram-to-
-    // block alignment is handled BY THE RING: mic samples arrive
-    // in datagram-sized chunks (~9-10 at 48 k mic), accumulate,
-    // and the worker drains them in fixed kBlockSize-sample blocks.
+    // TxChannel::process — must match TxChannel::kInSize=64.  The
+    // TXA input block-size rule is `in_size = 64 * rate / 48000`;
+    // at our 48 kHz mic rate this is 64.  Datagram-to-block
+    // alignment is handled BY THE RING: mic samples arrive in
+    // datagram-sized chunks (~9-10 at 48 k mic), accumulate, and
+    // the worker drains them in fixed kBlockSize-sample blocks.
     //
-    // §15.29 (2026-06-03): bumped 64 → 128 to match reference per
-    // "do as reference, no variation" rule.  MUST stay in sync
-    // with TxChannel::kInSize — process() rejects any `n != kInSize`,
-    // so a divergence is a guaranteed fexchange0-skip at runtime.
-    static constexpr int kBlockSize = 128;
+    // R-H1 (2026-06-04): reverted 128 → 64.  §15.29 (2026-06-03)
+    // bumped to 128, invisible for SSB voice but collapsed
+    // multi-tone modes (FT8/MSHV via TCI).  MUST stay in sync
+    // with TxChannel::kInSize and tci_server.h kTciTxBlockSamples
+    // — process() rejects any `n != kInSize`, so a divergence is
+    // a guaranteed fexchange0-skip at runtime.  See
+    // docs/THETIS_VS_LYRA_RECONCILED.md R-H1 for provenance.
+    static constexpr int kBlockSize = 64;
 
     // Construction does the wire-up: opens the WDSP TX channel,
     // installs `micSource`'s consumer (samples → ring), and

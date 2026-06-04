@@ -231,15 +231,18 @@ private:
     int                    bufferingMs_      = 50;
     // Lyra-side TXA input constants — txa input rate matches Lyra's
     // open-TX-channel in-rate (48 kHz) and block size matches
-    // TxChannel::kInSize (128 samples post-§15.29 / ~2.67 ms).  See
-    // the reference's GetInputRate + GetBuffSize (cmaster.cs:1267 +
-    // :1313).  For the typical MSHV cadence (requestSamples=2048,
+    // TxChannel::kInSize (64 samples post-R-H1 / ~1.33 ms).  The
+    // TXA input block-size rule is `in_size = 64 * rate / 48000`;
+    // at 48 kHz this is 64.  R-H1 (2026-06-04) reverted from the
+    // §15.29 (2026-06-03) bump to 128 back to 64 (§15.29 was
+    // invisible for SSB voice but collapsed multi-tone modes —
+    // FT8/MSHV via TCI; see docs/THETIS_VS_LYRA_RECONCILED.md R-H1).
+    // For the typical MSHV cadence (requestSamples=2048,
     // requestRate=48000), predictedPacketSamples=2048 and
-    // targetQueuedSamples=4800 — the small Lyra txBlock vs the
-    // reference's 720 does not affect the formula at this client
-    // cadence.
+    // targetQueuedSamples=4800 — the Lyra txBlock does not affect
+    // the formula at this client cadence.
     static constexpr int   kTciTxTargetRate   = 48000;
-    static constexpr int   kTciTxBlockSamples = 128;
+    static constexpr int   kTciTxBlockSamples = 64;
     static constexpr int   kTciTxMaxOutstanding = 64;   // ref TCI_TX_MAX_OUTSTANDING
     static constexpr int   kTciTxExtraBufferMs = 50;    // ref TCI_TX_EXTRA_BUFFER_MS
     static constexpr int   kChronoIntervalMs   = 50;    // tick cadence
