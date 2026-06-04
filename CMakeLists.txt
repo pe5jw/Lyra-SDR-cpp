@@ -61,6 +61,22 @@ qt_add_executable(lyra
     src/wdsp_engine.cpp
     src/mic_source.h
     src/mic_source.cpp
+    # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
+    # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
+    src/wire/Hl2ControlState.h
+    src/wire/Hl2ControlState.cpp
+    src/wire/Hl2DispatchState.h
+    src/wire/Hl2FrameComposer.h
+    src/wire/Hl2FrameComposer.cpp
+    src/wire/Ep6RecvThread.h
+    src/wire/Ep6RecvThread.cpp
+    src/wire/Ep2SendThread.h
+    src/wire/Ep2SendThread.cpp
+    src/wire/DdcMap.h
+    src/wire/DdcMap.cpp
+    src/wire/OutboundRing.h
+    src/wire/ForceCandC.h
+    src/wire/ForceCandC.cpp
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
@@ -200,6 +216,14 @@ target_link_libraries(lyra PRIVATE
     Qt6::QuickWidgets
     Qt6::WebSockets
 )
+
+# TX-rip Phase 1 step 1c — put `src/` on the include path so the
+# new namespace subdirs (src/wire/, src/wdsp/, src/dsp/, src/tx/,
+# src/tci/, src/ps/) are reachable as `#include "wire/X.h"` etc.
+# from anywhere in the tree.  Same-dir relative includes inside
+# each subdir continue to work because CMake auto-adds the
+# current source file's directory.
+target_include_directories(lyra PRIVATE src)
 
 # Single source of truth for the app version + release repo: the
 # project(... VERSION ...) above flows to code as LYRA_VERSION, and the
