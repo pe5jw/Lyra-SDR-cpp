@@ -257,6 +257,23 @@ private:
     int                    requestRate_      = 48000;
     int                    requestSamples_   = 2048;
     int                    bufferingMs_      = 50;
+    // Negotiated audio_stream_channels — captured from inbound
+    // AUDIO_STREAM_CHANNELS text command (handshake or live update)
+    // and used in the CHRONO request `channels` field + modern
+    // length semantics (length = samples * channels).  Mirrors
+    // m_audioStreamChannels in the reference (TCIServer.cs:781
+    // default 2; :5935-5949 handleAudioStreamChannels; :5526
+    // CHRONO consumer).  Default 2 matches Lyra's outbound
+    // advertisement on Connect (sendInit line ~949).
+    int                    requestChannels_  = 2;
+    // Modern-length-semantics flag, mirrors the reference's
+    // m_seenModernTxAudioNegotiation (TCIServer.cs:5528 + :5946).
+    // Set true the moment any modern handshake command arrives
+    // (AUDIO_STREAM_CHANNELS / AUDIO_STREAM_SAMPLE_TYPE) — clients
+    // that talk that vocabulary expect CHRONO length = samples *
+    // channels.  Legacy/JTDX-style clients leave this false and
+    // get the older length = samples behaviour.
+    bool                   seenModernTxNeg_  = false;
     // Lyra-side TXA input constants — txa input rate matches Lyra's
     // open-TX-channel in-rate (48 kHz) and block size matches
     // TxChannel::kInSize (64 samples post-R-H1 / ~1.33 ms).  The

@@ -160,11 +160,21 @@ public:
     static constexpr int kInboundCapacity = 96000;
 
     // Drain timer cadence (ms) + max samples popped per fire.
-    // 10 ms × 48 kHz = 480 samples/fire.  Sized so the final-stage
-    // TxRing (8 × kBlockSize = 1024 samples post-§15.29) has plenty
-    // of room with the worker draining at the wire's 48 kHz rate.
-    static constexpr int kDrainIntervalMs = 10;
-    static constexpr int kDrainMaxSamples = 480;
+    // 2 ms tick matches the reference's TX stream service loop
+    // (cmaster.cs:1253 `Thread.Sleep(2)`) AND the chrono pump tick
+    // (tci_server.h kChronoIntervalMs=2), keeping the whole TX-audio
+    // path on a uniform 2 ms cadence.  At 48 kHz × 2 ms = 96
+    // samples/fire average; the worker ring (8 × kBlockSize = 512
+    // samples) holds ~5 fires worth of headroom.
+    //
+    // Earlier 10 ms × 480-sample chunking with Qt's default
+    // CoarseTimer drifted up to ~15-20 ms between fires, momentarily
+    // starving ring_ and producing audible audio gaps on the wire
+    // (operator bench 2026-06-04: "tones then carrier then tones"
+    // alternation on the panadapter during FT8 TX).  Paired with
+    // PreciseTimer in the constructor.
+    static constexpr int kDrainIntervalMs = 2;
+    static constexpr int kDrainMaxSamples = 96;
 
 private slots:
     void onDrainTimerFired();

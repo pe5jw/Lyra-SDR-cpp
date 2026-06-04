@@ -851,14 +851,37 @@ void TciServer::onChronoTick() {
 
     // Emit up to requestsNeeded CHRONO requests this tick, bounded
     // by kTciTxMaxOutstanding (reference TCI_TX_MAX_OUTSTANDING).
+    //
+    // Channels + length matches the reference's SendTxChrono
+    // (TCIServer.cs:5515-5532):
+    //   - channels field = negotiated requestChannels_ (1 or 2)
+    //   - length = useModernLengthSemantics ? samples * channels
+    //                                       : samples
+    //
+    // Modern flag flips true the moment a client sends
+    // AUDIO_STREAM_CHANNELS or AUDIO_STREAM_SAMPLE_TYPE during
+    // handshake (TCIServer.cs:5930 + 5946).  Legacy/JTDX-style
+    // clients leave it false; they expect length = samples
+    // scalars regardless of channels.  Both are protocol-correct.
+    //
+    // Earlier Lyra hardcoded channels=1 / length=samples
+    // regardless of negotiation — for MSHV-class clients that
+    // negotiated channels=2 this meant Lyra was asking MSHV for
+    // half-sized response frames, which MSHV may interpret as a
+    // "send me less" hint and reduce its TX-audio rate to match.
+    const int chFld = (requestChannels_ == 2) ? 2 : 1;
+    const quint32 lenFld =
+        seenModernTxNeg_
+            ? quint32(predictedPacketSamples * chFld)
+            : quint32(predictedPacketSamples);
     while (requestsNeeded > 0
            && chronoOutstanding_ < kTciTxMaxOutstanding) {
         QByteArray hdr = streamHeader(0,
                                       /*rate=*/quint32(targetRate),
                                       /*fmt=*/FMT_FLOAT32,
-                                      /*length=*/quint32(predictedPacketSamples),
+                                      /*length=*/lenFld,
                                       /*type=*/STREAM_TX_CHRONO,
-                                      /*channels=*/1);
+                                      /*channels=*/quint32(chFld));
         txAudioOwner_->sendBinaryMessage(hdr);
         ++chronoOutstanding_;
         chronoLastInboundMs_ = nowMs;
@@ -1208,17 +1231,30 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
     // number of TX-audio samples per tick.
     if (cmd == QStringLiteral("AUDIO_SAMPLERATE")
         || cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")
+        || cmd == QStringLiteral("AUDIO_STREAM_CHANNELS")
+        || cmd == QStringLiteral("AUDIO_STREAM_SAMPLE_TYPE")
         || cmd == QStringLiteral("TX_STREAM_AUDIO_BUFFERING")) {
         const QString val = args.isEmpty() ? QStringLiteral("0") : args[0];
         bool okv = false;
         const int n = val.trimmed().toInt(&okv);
         if (okv && n > 0) {
-            if (cmd == QStringLiteral("AUDIO_SAMPLERATE"))
+            if (cmd == QStringLiteral("AUDIO_SAMPLERATE")) {
                 requestRate_ = n;
-            else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLES"))
+            } else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")) {
                 requestSamples_ = n;
-            else // TX_STREAM_AUDIO_BUFFERING
+            } else if (cmd == QStringLiteral("AUDIO_STREAM_CHANNELS")) {
+                // Reference clamps to {1, 2} (TCIServer.cs:5942-5943).
+                if (n == 1 || n == 2)
+                    requestChannels_ = n;
+                seenModernTxNeg_ = true;
+            } else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLE_TYPE")) {
+                // Sample-type negotiation also flips the modern flag
+                // per TCIServer.cs:5930.  Stored value handled by the
+                // softSet echo path; we just need the flag here.
+                seenModernTxNeg_ = true;
+            } else { // TX_STREAM_AUDIO_BUFFERING
                 bufferingMs_ = std::max(n, 50);   // reference floor
+            }
         }
         softSet(cmd, val);
         sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(val));

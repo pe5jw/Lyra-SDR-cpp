@@ -21,6 +21,13 @@ TciMicSource::TciMicSource(TxDspWorker *worker, QObject *parent)
 
     drainTimer_ = new QTimer(this);
     drainTimer_->setInterval(kDrainIntervalMs);
+    // PreciseTimer: at 2 ms intervals Qt's default CoarseTimer
+    // (5 % accuracy below 50 ms) would quantise the tick up to
+    // ~5-10 ms.  Precise mode holds the 2 ms cadence the
+    // reference's TX stream loop establishes — required to keep
+    // the worker ring fed without 10+ ms starvation gaps that
+    // produce alternating multi-tone/carrier output on the wire.
+    drainTimer_->setTimerType(Qt::PreciseTimer);
     connect(drainTimer_, &QTimer::timeout,
             this, &TciMicSource::onDrainTimerFired);
     drainTimer_->start();
