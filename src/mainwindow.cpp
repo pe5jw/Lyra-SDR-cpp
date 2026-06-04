@@ -1345,6 +1345,12 @@ void MainWindow::setTxDspWorker(lyra::dsp::TxDspWorker *w) {
     // WDSP TXA tap.  Null-safe (caller passes nullptr on
     // teardown).
     if (meter_) meter_->setTxDspWorker(w);
+    // R-H2 — also wire the worker into TciServer so its handleTrx
+    // keydown branch can log activeMicSource_ + force it to Tci
+    // for the keydown lifetime (token-agnostic, restored on keyup
+    // or owner disconnect).  Mirrors setTciMicSource() above.  See
+    // docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
+    if (tci_) tci_->setTxDspWorker(w);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

@@ -25,6 +25,7 @@
 #include <QObject>
 #include <QString>
 
+#include <cstdint>
 #include <vector>
 
 class QWebSocketServer;
@@ -32,7 +33,7 @@ class QWebSocket;
 class QTimer;
 
 namespace lyra::ipc { class HL2Stream; }
-namespace lyra::dsp { class WdspEngine; class TciMicSource; }
+namespace lyra::dsp { class WdspEngine; class TciMicSource; class TxDspWorker; }
 
 namespace lyra::ui {
 
@@ -82,6 +83,19 @@ public:
     // {nullptr} to clear (e.g. on TciMicSource teardown).
     void setTciMicSource(lyra::dsp::TciMicSource *src) {
         tciMicSource_ = src;
+    }
+
+    // R-H2: register the TxDspWorker so the TRX keydown handler can
+    // (a) log activeMicSource_ vs prefs->micSource() empirically and
+    // (b) force activeMicSource_ to Tci for the keydown lifetime
+    //     whenever a TCI client owns TX_AUDIO_STREAM (token-
+    //     agnostic — covers MSHV/JTDX/WSJT-X bare trx:0,true).
+    // Called from main.cpp once both objects exist; null tolerated
+    // (force step skipped, diagnostic still fires if prefs_ set).
+    // Pass {nullptr} on teardown.  Mirrors the setTciMicSource
+    // pattern above (line 83-85).
+    void setTxDspWorker(lyra::dsp::TxDspWorker *worker) {
+        txWorker_ = worker;
     }
 
 signals:
@@ -159,6 +173,20 @@ private:
     // the binary handler tolerates by dropping frames + rate-limited
     // diagnostic.
     lyra::dsp::TciMicSource *tciMicSource_ = nullptr;
+    // R-H2: registered alongside tciMicSource_.  Null tolerated.
+    // Used by handleTrx wantsTx=true/false to log+force the source
+    // dispatcher gate so MSHV's bare trx:0,true (no ,tci token) does
+    // not leave TXA with zero audio input → carrier-residue-only TX.
+    lyra::dsp::TxDspWorker   *txWorker_      = nullptr;
+    // R-H2 save/restore: stored as uint8_t to avoid pulling
+    // tx_dsp_worker.h into this header (forward-declared above).
+    // Initialized to a sentinel (255) meaning "no save active" —
+    // the keydown branch overwrites with the live activeMicSource_
+    // value, the keyup/release branch restores from it.  The flag
+    // controls whether restore runs (so a back-to-back keydown
+    // without a release does not double-save / lose the original).
+    std::uint8_t              savedMicSource_     = 255;
+    bool                      micSourceForcedTci_ = false;
     QWebSocketServer      *server_        = nullptr;
     QList<QWebSocket *>    clients_;
     // Per-client binary-stream subscription state (TCI v2.0 §3.4).

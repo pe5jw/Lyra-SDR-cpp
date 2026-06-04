@@ -7,6 +7,7 @@
 #include "prefs.h"
 #include "spotstore.h"
 #include "tci_mic_source.h"
+#include "tx_dsp_worker.h"
 #include "wdsp_engine.h"
 
 #include <QDateTime>
@@ -415,6 +416,20 @@ void TciServer::onClientDisconnected() {
         emit statusMessage(QStringLiteral(
             "TCI: TX-audio ownership released (client disconnected)"));
         if (stream_) stream_->requestMoxFromTci(false);
+        // R-H2 — restore activeMicSource_ if the owning keydown
+        // forced it.  Matches the keyup/release branch in handleTrx
+        // so an abrupt client drop does not strand the worker at
+        // MicSource::Tci.  See docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
+        if (micSourceForcedTci_ && txWorker_) {
+            using MS = lyra::dsp::TxDspWorker::MicSource;
+            const MS prev = static_cast<MS>(savedMicSource_);
+            txWorker_->setActiveMicSource(prev);
+            emit statusMessage(QString(
+                "TCI: restored activeMicSource → %1 on disconnect")
+                    .arg(static_cast<int>(prev)));
+            micSourceForcedTci_ = false;
+            savedMicSource_     = 255;
+        }
     }
     clients_.removeAll(ws);
     streams_.remove(ws);
@@ -1312,6 +1327,59 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
                 if (useTciAudio && prefs_)
                     prefs_->setMicSource(QStringLiteral("tci"));
             }
+            // R-H2 — diagnostic snapshot + token-agnostic source force.
+            //
+            // Mechanism guarded against: bare `trx:0,true` from MSHV /
+            // JTDX / WSJT-X (no `,tci` token) WITH operator's
+            // Prefs::micSource != "tci" produces:
+            //   wantTciAudio = false → no audio ownership → no picker
+            //   flip → activeMicSource_ stays at its previous value →
+            //   TXA chain runs with zero audio input → SSB modulator
+            //   outputs only the suppressed-carrier residue (a single
+            //   tone at the bp0 passband center, visible as one bright
+            //   vertical line on the panadapter and zero PSKReporter
+            //   spots because there is no FT8 content in the I/Q).
+            //
+            // Fix: when ANY TCI client keys via trx:0,true (token-
+            // agnostic), force activeMicSource_ to Tci for the
+            // keydown lifetime so TCI binary-frame samples reach the
+            // TXA chain.  Operator's persistent Prefs::micSource() is
+            // NOT mutated (the picker UI does not flicker / does not
+            // get rewritten); only the worker's runtime atomic is
+            // forced, restored on keyup or owner disconnect.
+            //
+            // The unconditional statusMessage records the live state
+            // at every keydown so the operator can verify post-bench
+            // whether the force fired (and whether the original was
+            // already Tci, in which case R-H2 is a no-op and the
+            // diagnosis must descend to the next reconciled
+            // deviation).  See docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
+            {
+                const QString pickerStr = prefs_ ? prefs_->micSource()
+                                                 : QStringLiteral("(null)");
+                const int activeRaw = txWorker_
+                    ? static_cast<int>(txWorker_->activeMicSource())
+                    : -1;
+                emit statusMessage(QString(
+                    "TCI: keydown — activeMicSource=%1 prefs.micSource=%2 "
+                    "useTciAudio=%3")
+                        .arg(activeRaw)
+                        .arg(pickerStr)
+                        .arg(useTciAudio ? QStringLiteral("1")
+                                         : QStringLiteral("0")));
+                if (txWorker_) {
+                    using MS = lyra::dsp::TxDspWorker::MicSource;
+                    const MS cur = txWorker_->activeMicSource();
+                    if (cur != MS::Tci && !micSourceForcedTci_) {
+                        savedMicSource_     = static_cast<std::uint8_t>(cur);
+                        micSourceForcedTci_ = true;
+                        txWorker_->setActiveMicSource(MS::Tci);
+                        emit statusMessage(QStringLiteral(
+                            "TCI: forced activeMicSource → Tci for keydown "
+                            "lifetime (restored on keyup)"));
+                    }
+                }
+            }
             // Key MOX (Thetis-faithful) — records PttSource::Tci on
             // the FSM since the request arrived via the TCI WebSocket.
             stream_->requestMoxFromTci(true);
@@ -1332,6 +1400,23 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             chronoTimer_->stop();
             emit statusMessage(
                 QStringLiteral("TCI: TX-audio ownership RELEASED"));
+        }
+        // R-H2 — restore activeMicSource_ if the matching keydown
+        // forced it.  Fires whether the keydown forced via the gate
+        // above or not (idempotent on the !micSourceForcedTci_
+        // branch).  Operator's Prefs::micSource() was never mutated
+        // here, so this restores exactly the value at which the
+        // worker was running when MSHV first keyed.  See
+        // docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
+        if (micSourceForcedTci_ && txWorker_) {
+            using MS = lyra::dsp::TxDspWorker::MicSource;
+            const MS prev = static_cast<MS>(savedMicSource_);
+            txWorker_->setActiveMicSource(prev);
+            emit statusMessage(QString(
+                "TCI: restored activeMicSource → %1 on keyup")
+                    .arg(static_cast<int>(prev)));
+            micSourceForcedTci_ = false;
+            savedMicSource_     = 255;
         }
         stream_->requestMoxFromTci(false);
         sendTo(ws, QStringLiteral("trx:0,false"));
