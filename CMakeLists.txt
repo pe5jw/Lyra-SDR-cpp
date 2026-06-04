@@ -114,6 +114,17 @@ qt_add_executable(lyra
     src/tci/TciTxBridge.h
     src/tci/TciTxBridge.cpp
     src/tci/TciTxStereoMode.h
+    # TX-rip Phase 1 step 1c-f — ps/ empty skeletons (Rule 10:
+    # present from v0.2 but empty/inert; v0.3 PureSignal fills).
+    # Populated in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §9.
+    src/ps/CalcCffi.h
+    src/ps/IqcCffi.h
+    src/ps/PsCalcThread.h
+    src/ps/PsCalcThread.cpp
+    src/ps/PsFsm.h
+    src/ps/PsFsm.cpp
+    src/ps/IqcLifecycle.h
+    src/ps/IqcLifecycle.cpp
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
