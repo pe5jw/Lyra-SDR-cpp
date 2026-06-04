@@ -90,6 +90,19 @@ qt_add_executable(lyra
     src/dsp/StreamRing.h
     src/dsp/StreamRegistry.h
     src/dsp/StreamRegistry.cpp
+    # TX-rip Phase 1 step 1c-d — tx/ empty skeletons.  Populated
+    # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §5.
+    src/tx/PttFsm.h
+    src/tx/PttFsm.cpp
+    src/tx/KeydownSequence.h
+    src/tx/KeydownSequence.cpp
+    src/tx/KeyupSequence.h
+    src/tx/KeyupSequence.cpp
+    src/tx/AttOnTxPolicy.h
+    src/tx/AttOnTxPolicy.cpp
+    src/tx/TrSequencing.h
+    src/tx/MoxEdgeFade.h
+    src/tx/MoxEdgeFade.cpp
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
