@@ -103,6 +103,17 @@ qt_add_executable(lyra
     src/tx/TrSequencing.h
     src/tx/MoxEdgeFade.h
     src/tx/MoxEdgeFade.cpp
+    # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
+    # components; TciServer.{h,cpp} stays at top level and is
+    # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
+    # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §7.
+    src/tci/TciListener.h
+    src/tci/TciListener.cpp
+    src/tci/TciTxSupervisorThread.h
+    src/tci/TciTxSupervisorThread.cpp
+    src/tci/TciTxBridge.h
+    src/tci/TciTxBridge.cpp
+    src/tci/TciTxStereoMode.h
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
