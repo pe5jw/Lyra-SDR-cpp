@@ -77,6 +77,12 @@ qt_add_executable(lyra
     src/wire/OutboundRing.h
     src/wire/ForceCandC.h
     src/wire/ForceCandC.cpp
+    # TX-rip Phase 1 step 1c-b — wdsp/ empty skeletons.  Populated
+    # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §6.
+    src/wdsp/TxChannel.h
+    src/wdsp/TxChannel.cpp
+    src/wdsp/TxaCffi.h
+    src/wdsp/ChannelLifecycle.h
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
