@@ -83,6 +83,13 @@ qt_add_executable(lyra
     src/wdsp/TxChannel.cpp
     src/wdsp/TxaCffi.h
     src/wdsp/ChannelLifecycle.h
+    # TX-rip Phase 1 step 1c-c — dsp/ empty skeletons.  Populated
+    # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3.
+    src/dsp/StreamThread.h
+    src/dsp/StreamThread.cpp
+    src/dsp/StreamRing.h
+    src/dsp/StreamRegistry.h
+    src/dsp/StreamRegistry.cpp
     src/mox_edge_fade.h
     src/mox_edge_fade.cpp
     src/iqstft.h
