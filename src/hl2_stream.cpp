@@ -329,24 +329,56 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                           lyra::dsp::MoxEdgeFade::kDefaultFadeOutMs).toInt());
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     // micGainDb defaults to 0 dB = WDSP unity (no change vs the lyra-
-    // cpp ship-no-setters posture at TxChannel::open()).  alcMaxGainDb
-    // defaults to +3 dB which mirrors the verified reference's
-    // Setup-load default — THE smoking-gun fix for the 2026-05-31
-    // 0.2 W first-SSB bench (WDSP create-time is 0 dB, which pins the
-    // TXA output chain at the ALC ceiling regardless of mic level).
+    // cpp ship-no-setters posture at TxChannel::open()).
+    //
+    // alcMaxGainLinear defaults to 3.0 LINEAR (= 3.0× amplitude =
+    // +9.54 dB amplification headroom), matching the verified
+    // reference's Setup-load spinner default EXACTLY — integer
+    // spinner 0..120 incr 1 default 3, passed straight to
+    // SetTXAALCMaxGain as LINEAR (no dB conversion).  WDSP create-
+    // time is 1.0 LINEAR (= 0 dB) which pins the entire TXA output
+    // chain at a 0 dB ALC ceiling regardless of mic level — the
+    // load-bearing trap that this default lifts.  Earlier Lyra
+    // shipped this property as dB and called `dbToLin(3.0)=1.413`
+    // — capping the ceiling at 47% of the reference's value and
+    // producing a 5-6 dB power deficit on continuous mic-input
+    // tones (task #79 root cause, fixed in §15.27 2026-06-03).
+    //
+    // The old QSettings key `tx/alcMaxGainDb` (dB semantics) is
+    // intentionally abandoned on upgrade — operator silently
+    // inherits the new reference-faithful default on first launch.
+    //
     // Push-to-channel happens in registerTxControl() once the
-    // TxControl callbacks are wired (the channel is open by then; the
-    // operator's persisted/default values land on the channel before
-    // the first keydown).  Clamped on load to defend against stale /
-    // corrupt QSettings (hand-edited file).
+    // TxControl callbacks are wired (the channel is open by then;
+    // the operator's persisted/default values land on the channel
+    // before the first keydown).  Clamped on load to defend against
+    // stale / corrupt QSettings (hand-edited file).
     micGainDb_ = std::clamp(
         QSettings().value(QStringLiteral("tx/micGainDb"),
                           kDefaultMicGainDb).toDouble(),
         kMinMicGainDb, kMaxMicGainDb);
-    alcMaxGainDb_ = std::clamp(
-        QSettings().value(QStringLiteral("tx/alcMaxGainDb"),
-                          kDefaultAlcMaxGainDb).toDouble(),
-        kMinAlcMaxGainDb, kMaxAlcMaxGainDb);
+    alcMaxGainLinear_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/alcMaxGainLinear"),
+                          kDefaultAlcMaxGainLinear).toDouble(),
+        kMinAlcMaxGainLinear, kMaxAlcMaxGainLinear);
+    // §15.27 Commit B — ALC decay (operator-tunable wcpagc release tau).
+    alcDecayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/alcDecayMs"),
+                          kDefaultAlcDecayMs).toInt(),
+        kMinAlcDecayMs, kMaxAlcDecayMs);
+    // §15.27 Commit B — Leveler trio.  Default OFF (operator preference);
+    // when enabled, defaults match the verified reference UI exactly
+    // (15.0 LINEAR / 100 ms).  All three keys clamped on load.
+    levelerOn_ = QSettings().value(QStringLiteral("tx/levelerOn"),
+                                   kDefaultLevelerOn).toBool();
+    levelerMaxGainLinear_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/levelerMaxGainLinear"),
+                          kDefaultLevelerMaxGainLinear).toDouble(),
+        kMinLevelerMaxGainLinear, kMaxLevelerMaxGainLinear);
+    levelerDecayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/levelerDecayMs"),
+                          kDefaultLevelerDecayMs).toInt(),
+        kMinLevelerDecayMs, kMaxLevelerDecayMs);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -1876,16 +1908,101 @@ void HL2Stream::setMicGainDb(double db) {
     if (fwd) fwd(clamped);
 }
 
-void HL2Stream::setAlcMaxGainDb(double db) {
-    const double clamped = std::clamp(db, kMinAlcMaxGainDb, kMaxAlcMaxGainDb);
-    if (clamped == alcMaxGainDb_) return;
-    alcMaxGainDb_ = clamped;
-    QSettings().setValue(QStringLiteral("tx/alcMaxGainDb"), clamped);
-    emit alcMaxGainDbChanged(clamped);
+void HL2Stream::setAlcMaxGainLinear(double linear) {
+    // §15.27 — pass-through LINEAR factor (matches the verified
+    // reference's Setup spinner-to-SetTXAALCMaxGain plumbing
+    // exactly: no unit conversion at any layer between operator
+    // value and WDSP API).  Clamped to [0, 120] LINEAR to match
+    // the reference's spinner range.
+    const double clamped = std::clamp(linear,
+                                      kMinAlcMaxGainLinear,
+                                      kMaxAlcMaxGainLinear);
+    if (clamped == alcMaxGainLinear_) return;
+    alcMaxGainLinear_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/alcMaxGainLinear"), clamped);
+    emit alcMaxGainLinearChanged(clamped);
     std::function<void(double)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
-        fwd = txControl_.setAlcMaxGainDb;
+        fwd = txControl_.setAlcMaxGainLinear;
+    }
+    if (fwd) fwd(clamped);
+}
+
+// §15.27 Commit B — ALC decay (operator-tunable wcpagc release tau).
+// Same persistence + forward pattern as setAlcMaxGainLinear.
+void HL2Stream::setAlcDecayMs(int decay_ms) {
+    const int clamped = std::clamp(decay_ms,
+                                   kMinAlcDecayMs,
+                                   kMaxAlcDecayMs);
+    if (clamped == alcDecayMs_) return;
+    alcDecayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/alcDecayMs"), clamped);
+    emit alcDecayMsChanged(clamped);
+    std::function<void(int)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setAlcDecayMs;
+    }
+    if (fwd) fwd(clamped);
+}
+
+// §15.27 Commit B — Leveler enable.  Forwards the CURRENT max-gain
+// value alongside the enable state because the WDSP run-flag setter
+// pairs with the ceiling (we always want them coherent on every
+// state change).  Same persistence + forward pattern as above.
+void HL2Stream::setLevelerOn(bool on) {
+    if (on == levelerOn_) return;
+    levelerOn_ = on;
+    QSettings().setValue(QStringLiteral("tx/levelerOn"), on);
+    emit levelerOnChanged(on);
+    std::function<void(bool,double)> fwd;
+    double topLinear;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setLevelerOn;
+        topLinear = levelerMaxGainLinear_;
+    }
+    if (fwd) fwd(on, topLinear);
+}
+
+// §15.27 Commit B — Leveler max-gain ceiling (LINEAR factor,
+// matches the verified reference's Setup spinner-to-SetTXALevelerTop
+// plumbing exactly).  Clamped to [0, 20] LINEAR to match the
+// reference's spinner range (narrower than ALC's 0..120).  Forwards
+// the CURRENT enable state alongside the new ceiling so the WDSP
+// pair stays coherent.
+void HL2Stream::setLevelerMaxGainLinear(double linear) {
+    const double clamped = std::clamp(linear,
+                                      kMinLevelerMaxGainLinear,
+                                      kMaxLevelerMaxGainLinear);
+    if (clamped == levelerMaxGainLinear_) return;
+    levelerMaxGainLinear_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/levelerMaxGainLinear"), clamped);
+    emit levelerMaxGainLinearChanged(clamped);
+    std::function<void(bool,double)> fwd;
+    bool on;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setLevelerOn;
+        on  = levelerOn_;
+    }
+    if (fwd) fwd(on, clamped);
+}
+
+// §15.27 Commit B — Leveler decay (exponential-curve tau in ms).
+void HL2Stream::setLevelerDecayMs(int decay_ms) {
+    const int clamped = std::clamp(decay_ms,
+                                   kMinLevelerDecayMs,
+                                   kMaxLevelerDecayMs);
+    if (clamped == levelerDecayMs_) return;
+    levelerDecayMs_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/levelerDecayMs"), clamped);
+    emit levelerDecayMsChanged(clamped);
+    std::function<void(int)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setLevelerDecayMs;
     }
     if (fwd) fwd(clamped);
 }
@@ -1987,34 +2104,48 @@ void HL2Stream::setInjectTxIq(bool on) {
 
 // TX-1 component 7 — register the TX channel lifecycle callbacks.
 // Empty TxControl = clear all five (start/stop/setInjectTxIq +
-// component-8a setMicGainDb/setAlcMaxGainDb).  See TxControl struct
-// doc in the header for the contract.  Same mutex pattern as
+// component-8a setMicGainDb/setAlcMaxGainLinear).  See TxControl
+// struct doc in the header for the contract.  Same mutex pattern as
 // registerTxIqSource.
 //
 // TX-1 component 8a — registration ALSO pushes the autoloaded
-// micGainDb_ + alcMaxGainDb_ to the channel ONCE so the freshly-
+// micGainDb_ + alcMaxGainLinear_ to the channel ONCE so the freshly-
 // opened WDSP TXA channel doesn't sit at WDSP create-time defaults
-// (especially the load-bearing ALC max-gain = 0 dB trap).  This is
-// the architectural equivalent of the verified reference's Setup
-// first-load pushing the operator's persisted profile values onto
-// the channel.  Capture the callbacks INSIDE the lock, release the
+// (especially the load-bearing ALC max-gain = 1.0 LINEAR trap that
+// pins the TXA output chain at a 0 dB ALC ceiling).  This is the
+// architectural equivalent of the verified reference's Setup first-
+// load pushing the operator's persisted profile values onto the
+// channel.  Capture the callbacks INSIDE the lock, release the
 // lock, then call OUTSIDE the lock — TxChannel's own channelMtx_
 // will serialise the WDSP setter call against any in-flight
 // process() on the worker thread.
 void HL2Stream::registerTxControl(TxControl ctl) {
-    std::function<void(double)> pushMic;
-    std::function<void(double)> pushAlc;
+    std::function<void(double)>       pushMic;
+    std::function<void(double)>       pushAlc;
+    std::function<void(int)>          pushAlcDecay;
+    std::function<void(bool,double)>  pushLeveler;
+    std::function<void(int)>          pushLevelerDecay;
+    bool   levOn;
+    double levTop;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         txControl_ = std::move(ctl);
-        // Only push if BOTH callbacks landed — a clear ({}) call
+        // Only push if the callback landed — a clear ({}) call
         // gives us null function objects, in which case we just
         // dropped the registration and there's nothing to push.
-        pushMic = txControl_.setMicGainDb;
-        pushAlc = txControl_.setAlcMaxGainDb;
+        pushMic          = txControl_.setMicGainDb;
+        pushAlc          = txControl_.setAlcMaxGainLinear;
+        pushAlcDecay     = txControl_.setAlcDecayMs;
+        pushLeveler      = txControl_.setLevelerOn;
+        pushLevelerDecay = txControl_.setLevelerDecayMs;
+        levOn            = levelerOn_;
+        levTop           = levelerMaxGainLinear_;
     }
-    if (pushMic) pushMic(micGainDb_);
-    if (pushAlc) pushAlc(alcMaxGainDb_);
+    if (pushMic)          pushMic(micGainDb_);
+    if (pushAlc)          pushAlc(alcMaxGainLinear_);
+    if (pushAlcDecay)     pushAlcDecay(alcDecayMs_);
+    if (pushLeveler)      pushLeveler(levOn, levTop);
+    if (pushLevelerDecay) pushLevelerDecay(levelerDecayMs_);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer

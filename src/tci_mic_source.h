@@ -161,8 +161,8 @@ public:
 
     // Drain timer cadence (ms) + max samples popped per fire.
     // 10 ms × 48 kHz = 480 samples/fire.  Sized so the final-stage
-    // TxRing (8 × 64 = 512 samples) has just enough room with the
-    // worker draining at the wire's 48 kHz rate.
+    // TxRing (8 × kBlockSize = 1024 samples post-§15.29) has plenty
+    // of room with the worker draining at the wire's 48 kHz rate.
     static constexpr int kDrainIntervalMs = 10;
     static constexpr int kDrainMaxSamples = 480;
 

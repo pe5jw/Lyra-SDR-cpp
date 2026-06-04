@@ -49,7 +49,7 @@ not programmers — if you can click a menu, you can use this.
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
-- [Settings → TX (TR sequencing + cos² fade)](#settings--tx-mic--alc-tr-sequencing--cos-fade)
+- [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [DX-cluster spots](#dx-cluster-spots)
 - [Settings → Visuals](#settings--visuals)
@@ -63,6 +63,7 @@ not programmers — if you can click a menu, you can use this.
   - [Gridline brightness](#gridline-brightness)
   - [Frame rate](#frame-rate)
   - [dB range (floor / ceiling)](#db-range-floor--ceiling)
+  - [Waterfall dB range (RX and TX)](#waterfall-db-range-rx-and-tx)
   - [Watermark](#watermark)
   - [Meteors](#meteors)
   - [Graphics backend](#graphics-backend)
@@ -1259,7 +1260,7 @@ in real time. Dragging below 0 just pins at 0.
 
 ---
 
-## Settings → TX (Mic + ALC, TR sequencing + cos² fade)
+## Settings → TX (Mic + ALC + Leveler, TR sequencing + cos² fade)
 
 > **⚠ Read [Operating with an external amplifier](#operating-with-an-external-amplifier-hot-switch-protection) FIRST**
 > if you're driving a solid-state HF linear from the HL2. The TR-
@@ -1268,11 +1269,12 @@ in real time. Dragging below 0 just pins at 0.
 > T/R relay settle spec can damage the PA. Tooltips on the most
 > dangerous knobs carry the warning; don't dismiss it.
 
-Three sub-sections. The **Mic + ALC** group controls input/output
-gain on the WDSP TXA chain — operator-tunable, live-apply. The
-**TR Sequencing** and **Amplitude Envelope** groups control the
-timing + amplitude shape of the MOX → RF edges. All values
-persisted across Lyra restarts.
+**Layout (v0.2.x §15.28 polish):** the tab is now organized in **two
+columns** with cyan column headers at the top — **TIMING** (left:
+TR Sequencing + Amplitude Envelope + Tune — set once for your amp +
+station) and **AUDIO + GAIN** (right: Mic + ALC + Leveler — operating
+gain stages you tune actively).  All values persisted across Lyra
+restarts; live-apply (changes take effect on the next MOX edge).
 
 ### Mic + ALC (TXA input + output gain stages)
 
@@ -1281,7 +1283,7 @@ rendered top-to-bottom in **signal-flow order** — what the audio
 sees first is at the top, what it sees last is at the bottom:
 
 ```
-Mic source   →   Mic Boost (+20 dB HW)   →   Mic Gain (SW)   →   ALC ceiling   →   wire
+Mic source → Mic Boost (+20 dB HW) → Mic Gain (SW) → Leveler (optional) → bp0 → ALC → wire
 ```
 
 | Knob | Default | What it controls |
@@ -1289,7 +1291,8 @@ Mic source   →   Mic Boost (+20 dB HW)   →   Mic Gain (SW)   →   ALC ceili
 | **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **Line In / VAC1 / VAC2** anchor entries are visible for layout but disabled until v0.2.x. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
 | **Mic Boost** | OFF | HL2 hardware +20 dB analog mic preamp (codec PGA, single bit on the wire — C0 0x12 C2 bit 0). Pure hardware boost ahead of the digital chain. Enable when your hand mic / headset mic is genuinely too quiet to hit the modulator at a reasonable level even with the Mic Gain slider near max. Hardware is 2-state (off / +20 dB); intermediate trim comes from Mic Gain stacked on top. **Only affects the codec mic input** — PC mic / TCI sources bypass the codec PGA entirely, so this checkbox has no effect on those routes. Persisted across launches. |
 | **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. **Stacks on top of Mic Boost** — if Mic Boost is ON, the modulator sees Mic Boost +20 dB + Mic Gain combined. |
-| **ALC Max Gain** ⚠ | +3 dB | The ALC (Automatic Level Control) max-gain ceiling — the limiter that catches mic-input peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **Load-bearing default**: WDSP's own create-time default for this is 0 dB, which pins the entire TX output chain at a hard 0-dB limiter ceiling regardless of mic level — that was the 2026-05-31 first-SSB-bench 0.2 W root cause (Lyra never called the setter before this slice). +3 dB mirrors the verified reference's profile default and lifts the ceiling enough for normal SSB peaks to pass through to the wire. Operator tuning: lower (e.g. 0 to +1 dB) for tighter splatter protection at the cost of headroom; higher (e.g. +5 to +10 dB) for more program-level headroom at the cost of splatter-protection margin. ±3 dB around the default is the sane range; outside that, ALC stops being a meaningful safety net. |
+| **ALC Max Gain** ⚠ | 3 (LINEAR) | The ALC (Automatic Level Control) max-gain ceiling — the always-on output limiter that catches peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **LINEAR amplitude factor (NOT dB) — units corrected in §15.27**: 1 = unity (limiter cannot amplify, only attenuate); 3 = the verified reference's default = 3× amplitude headroom = +9.54 dB of allowed amplification before the ALC pulls down. Earlier Lyra builds shipped this property as dB and called `dbToLin(3.0) = 1.413` — capping the ceiling at 47% of the reference's value and producing a ~6 dB power deficit on continuous mic-input tones (the §15.27 / #79 root cause; fixed 2026-06-03). Range 0..120 LINEAR matches the reference spinner exactly. Operator tuning: lower (1–2) for tighter splatter protection at the cost of headroom; higher (5–20) for ESSB-style program-level headroom. |
+| **ALC Decay** | 10 ms | The ALC release time constant — exponential-curve tau, NOT an absolute time. Sets how quickly the limiter releases gain reduction after a peak. Default 10 ms matches the verified reference's Setup-load value EXACTLY. Operator tuning: lower (3–5 ms) for snappier release that lets program material breathe but can sound 'pumpy' on aggressive content; higher (30–50 ms) for smoother release that holds gain steadier but compresses dynamics more. Range 1..50 ms matches the reference spinner exactly. Attack stays at the WDSP create-time default (1 ms) and is not exposed (reference UI doesn't expose attack either). |
 
 > **The ALC ceiling is a SAFETY knob, not a daily-use one.** Set it
 > once to match your mic + voice + amp combination, then leave it.
@@ -1298,6 +1301,44 @@ Mic source   →   Mic Boost (+20 dB HW)   →   Mic Gain (SW)   →   ALC ceili
 > (more than ~3 dB of gain reduction visible on the meter), you're
 > driving past the limiter ceiling and creating splatter risk —
 > either reduce Mic Gain or carefully raise the ALC ceiling.
+
+### Leveler (TXA pre-ALC amplifier stage)
+
+The Leveler is a pre-ALC amplifier stage that **boosts weak input
+signals up toward unity before the always-on ALC limiter sees them**
+— particularly helpful for quiet passages of voice, or for ESSB
+operators who want consistent on-air loudness without riding the mic
+gain knob constantly.  Sits in the chain BEFORE bp0 (the SSB
+bandpass) and the ALC — so on a quiet syllable, the Leveler can
+amplify by up to its Max-Gain ceiling, then bp0 + ALC produce a
+wire-level signal that's much closer to full scale than the raw
+mic level would otherwise allow.
+
+**Operator-preference default: Leveler is OFF in Lyra.** The
+verified reference's UI ships this Enabled checkbox **ON** by
+default (and silently auto-enables it when you create a new TX
+profile), but some operators (including the project's primary
+tester) prefer it off — typical reason is that always-on
+leveler interaction with predistortion / PureSignal calibration
+can be unpredictable.  Tick the Enable checkbox if you want
+reference-parity gain behaviour; leave it off if you prefer to
+ride mic gain manually.
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **Enabled** | OFF (Lyra) / ON (reference UI default) | Master Leveler on/off.  Default OFF in Lyra by operator preference; tick this if your reference profile has it on and you want Lyra to match the reference's signal behaviour exactly.  Mostly noticeable on quiet voice content — the Leveler does little when input is already loud. |
+| **Max Gain** | 15 (LINEAR) | Maximum amplitude factor the Leveler will amplify weak signals by.  **LINEAR factor (NOT dB)**: 1 = unity (no boost); 15 = the reference's default = 15× amplitude ceiling = +23.5 dB of amplification headroom for weak input.  Same unit-correction class as ALC Max Gain (the WDSP API takes LINEAR; the reference's "(dB)" label on its UI is misleading — the value is passed straight through with no conversion).  Range 0..20 LINEAR matches the reference spinner exactly.  Operator tuning: lower (5–10) for gentler boost that preserves natural mic dynamics; higher (15–20) for ESSB-style consistent loudness.  Has effect only when Enabled is ticked. |
+| **Decay** | 100 ms | Leveler release time constant (exponential-curve tau, NOT absolute time).  Sets how quickly the Leveler releases its boost after a stronger signal subsides.  Default 100 ms matches the verified reference's Setup-load value EXACTLY.  Operator tuning: lower (30–50 ms) for faster release that follows voice envelope more tightly; higher (200–500 ms) for smoother release that holds boost steadier across syllables.  Range 1..5000 ms matches the reference spinner exactly.  Has effect only when Enabled is ticked. |
+
+> **When to enable Leveler:** if your reference setup has it on (most
+> reference TX profiles do — check Setup → DSP → AGC/ALC → Leveler
+> in the reference for your active profile), enable it in Lyra and
+> set Max Gain + Decay to match.  With Leveler on at typical values
+> (15 LINEAR / 100 ms) you'll see Lyra produce **reference-parity
+> actual RF on the same mic input** — the missing pre-ALC gain stage
+> was the root cause of the §15.27 / #79 "Lyra produces less power
+> than the reference on the same whistle/voice" investigation; the
+> Leveler closes that gap completely.
 
 ### TR Sequencing + Amplitude Envelope (timing knobs below)
 
@@ -1438,6 +1479,30 @@ no host-side sound card needed.
   between an SSB-voice profile and an FT8/MSHV profile recalls the
   right trim automatically.
 
+**Dedicated TCI-only gain sliders** (Settings → Network → TCI server
+group). Two independent ±dB knobs sized for the common digital-mode
+mismatches, so you can dial the TCI path without disturbing your voice
+mic gain:
+
+- **RX-out gain** (−40 … +10 dB, default **0 dB** = unity) — attenuates
+  or boosts the audio Lyra **sends** to TCI clients. Drop this if
+  MSHV / JTDX / WSJT-X show an unusably hot waterfall and the
+  client-side RX gain slider isn't bringing it down enough. 0 dB =
+  byte-identical to Lyra's RX level. Takes effect at the next emitted
+  audio packet (~43 ms at 48 kHz / 2048-sample frames).
+- **TX-in gain** (−40 … +10 dB, default **0 dB** = unity) — attenuates
+  or boosts the TX audio Lyra **receives** from the client before it
+  hits the WDSP TXA chain. Drop this if your client outputs audio
+  hotter than Lyra's ALC handles gracefully (the common case —
+  digital-mode software often sends near full-scale by default and
+  overdrives Lyra's TXA limiter slightly). Boost it for an unusually
+  quiet client. 0 dB = byte-identical to the client's stream level.
+  Takes effect at the next received audio packet.
+
+Both sliders are stopgaps until per-mode TX/RX gain profiles ship
+(Tasks #49 + #55); for now they let you keep ESSB voice and digital
+modes balanced without retouching mic gain every time you switch.
+
 **Troubleshooting:**
 
 * **MOX engages but the client says "no audio"** — confirm Mic source =
@@ -1447,8 +1512,14 @@ no host-side sound card needed.
 * **Client RX waterfall looks unusably hot** — Lyra advertises the
   format at connect so the client's RX gain slider should land in a
   sensible position. If your client doesn't honour the advertised
-  parameters, drop its RX gain slider until the waterfall sits in the
-  normal -20 to -10 dB range.
+  parameters, drop **Settings → Network → RX-out gain** (Lyra side,
+  works for all clients at once) or the client's own RX gain slider
+  until the waterfall sits in the normal −20 to −10 dB range.
+* **MSHV / JTDX TX overdrives Lyra's ALC** — drop **Settings → Network
+  → TX-in gain** by 3-6 dB (the client's modulator is louder than
+  Lyra's TXA chain wants by default). Watch the MIC and ALC bars on
+  the multimeter while keying — MIC should peak around −10 to −6 dBFS
+  with ALC barely budging.
 * **You're transmitting but nobody's decoding you (no PSKReporter
   spots)** — usually means a frequency / band / power issue on the
   station side (wrong dial, antenna fault, low drive). Check the
@@ -1562,6 +1633,40 @@ How many times per second the panadapter redraws, **1–240 fps**. Default
 The exact numbers for the bottom (**floor**) and top (**ceiling**) of the
 signal-strength scale. Most operators just drag the scale on the
 panadapter edge, but you can type precise values here.
+
+### Waterfall dB range (RX and TX)
+
+The waterfall has its **own** dB floor / ceiling, independent of the
+spectrum scale above, so you can tune the colour map for detail (a dark
+waterfall with colours that **POP** on weak SSB) without changing how
+the panadapter looks. Four numeric spinboxes plus an Auto switch:
+
+- **Auto-fit the waterfall dB range** — tracks the band automatically
+  (noise floor − 15 dB to peak + 15 dB). When on, the four manual rows
+  below gray out. Off = use the floor/ceiling values you set.
+- **Waterfall dB — RX floor / RX ceiling** — active when **MOX is OFF**.
+  This is the scale your normal listening uses; drag the waterfall's
+  right-edge during RX and these update automatically. Defaults
+  **−120 / −20 dB**.
+- **Waterfall dB — TX floor / TX ceiling** — active when **MOX is ON**.
+  Separate from the RX pair so a key-down doesn't blow out your
+  carefully-tuned listening scale. Defaults **−70 / +30 dB**, which
+  frame a clean TX-tone line at typical HL2 drive levels (matching the
+  reference's TX-side waterfall convention). Drag the waterfall's
+  right-edge during MOX to tune from the panadapter instead — the
+  spinboxes follow the drag live.
+
+The RX and TX backings live on separate QSettings keys, so each pair
+persists independently across sessions; existing operators who already
+tuned their RX waterfall keep their settings on the same keys (no
+upgrade migration needed).
+
+The MOX edge switches which pair is **live** instantly — your RX
+preferences (dark with pop) come back the moment you un-key, and the
+TX scale snaps in the moment you key. If the live waterfall still
+looks too hot on TX after first try, drag its right edge down a few dB
+while keyed (or tighten the **TX ceiling** spinner) and it'll stick
+for next time.
 
 ### Watermark
 

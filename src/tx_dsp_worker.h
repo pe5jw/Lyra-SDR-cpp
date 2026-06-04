@@ -82,12 +82,19 @@ class WdspEngine;   // fwd-decl — set via setWdspEngine() for the
 class TxDspWorker {
 public:
     // Block size the worker drains per popBlock + feeds to
-    // TxChannel::process — must match TxChannel::kInSize=64
-    // (the reference's getbuffsize(48000)).  Datagram-to-block
-    // alignment is handled BY THE RING: mic samples arrive in
-    // datagram-sized chunks (~9-10 at 48 k mic), accumulate,
-    // and the worker drains them in fixed 64-sample blocks.
-    static constexpr int kBlockSize = 64;
+    // TxChannel::process — must match TxChannel::kInSize=128
+    // (the reference's Setup → DSP → Options → Buffer Size
+    // (IQcomp) SSB/AM TX operator setting, verified 2026-06-03
+    // from operator reference setup screenshot).  Datagram-to-
+    // block alignment is handled BY THE RING: mic samples arrive
+    // in datagram-sized chunks (~9-10 at 48 k mic), accumulate,
+    // and the worker drains them in fixed kBlockSize-sample blocks.
+    //
+    // §15.29 (2026-06-03): bumped 64 → 128 to match reference per
+    // "do as reference, no variation" rule.  MUST stay in sync
+    // with TxChannel::kInSize — process() rejects any `n != kInSize`,
+    // so a divergence is a guaranteed fexchange0-skip at runtime.
+    static constexpr int kBlockSize = 128;
 
     // Construction does the wire-up: opens the WDSP TX channel,
     // installs `micSource`'s consumer (samples → ring), and
@@ -131,10 +138,12 @@ public:
         tx_.setBandpass(opLowHz, opHighHz);
     }
     void setMicGainDb(double db)                  { tx_.setMicGainDb(db); }
-    void setAlcMaxGainDb(double db)               { tx_.setAlcMaxGainDb(db); }
-    void setLevelerOn(bool on, double topDb = 5.0) {
-        tx_.setLevelerOn(on, topDb);
+    void setAlcMaxGainLinear(double linear)       { tx_.setAlcMaxGainLinear(linear); }
+    void setAlcDecayMs(int decay_ms)              { tx_.setAlcDecayMs(decay_ms); }
+    void setLevelerOn(bool on, double topLinear = 15.0) {
+        tx_.setLevelerOn(on, topLinear);
     }
+    void setLevelerDecayMs(int decay_ms)          { tx_.setLevelerDecayMs(decay_ms); }
     void setPhrotOn(bool on)                      { tx_.setPhrotOn(on); }
 
     // Task #69 + #71 — live TXA meter accessors for the operator-

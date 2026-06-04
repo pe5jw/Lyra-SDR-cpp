@@ -509,17 +509,47 @@ void WdspEngine::configureAnalyzerForTx() noexcept
     // captures pre-iqc + pre-rsmpout); Lyra TX worker pulls ~256
     // samples per EP2-cadence tick via TXAGetaSipF1 — matches the
     // sip1 production rate (96000 / 381 Hz ≈ 252).
-    constexpr int kRateTx       = 96000;
-    constexpr int kBlockTx      = 4096;   // = TX dsp_size; matches xsiphon a->insize feed
+    //
+    // §15.29 (2026-06-03): TX-state analyzer parameters match the
+    // verified reference's Setup → Display → TX values EXACTLY:
+    //   * FFT size 32768 (Bin Width 2.93 Hz at 96 kHz) — 8× finer
+    //     resolution than the RX default 4096.  Reference uses this
+    //     finer-bin display only on TX state (the operator-captured
+    //     Setup screenshot shows 32768 in the TX panel; RX1 + RX2
+    //     panels are configured separately at 4096 there too).
+    //   * Averaging Log Recursive (av_mode=3) with 30 ms tau.  The
+    //     reference's dB-space IIR (analyzer.c:540-549) smooths the
+    //     per-frame Peak detector output across time, damping
+    //     transient bin excursions that otherwise read as a wide
+    //     red/orange "wash" on voice + dead-key content.
+    // Both addressed together because they interact: coarser bins
+    // (4096) concentrate per-pixel peaks more dramatically, and
+    // without averaging those peaks fan out across the trace.
+    // Fixing only one would only partially close the gap to
+    // reference visual parity.  See §15.29 for the diagnostic chain.
+    constexpr int    kRateTx       = 96000;
+    constexpr int    kBlockTx      = 4096;   // = TX dsp_size; matches xsiphon a->insize feed
+    constexpr int    kTxFftSize    = 32768;  // matches reference's Display → TX FFT Size
+    constexpr int    kTxAvgMode    = 3;      // Log Recursive (dB-space IIR)
+    constexpr double kTxPanaTauSec = 0.030;  // 30 ms — reference's panadapter tau
+    constexpr double kTxWfTauSec   = 0.120;  // 120 ms — reference's waterfall tau (4× smoother)
     const int overlap =
-        std::max(0, kAnFftSize - kRateTx / kAnFrameRate);
-    const int maxW = kAnFftSize +
-        std::min(kRateTx / 10, kAnFftSize * kAnFrameRate / 10);
+        std::max(0, kTxFftSize - kRateTx / kAnFrameRate);
+    const int maxW = kTxFftSize +
+        std::min(kRateTx / 10, kTxFftSize * kAnFrameRate / 10);
     int flp[1] = {0};
     api.SetAnalyzer(
         kAnDisp,
-        1, 1, 1, flp,
-        kAnFftSize,
+        2,                          // §15.29 C1 — n_pixout=2 (was 1); pixout 0
+                                    // = panadapter, pixout 1 = waterfall.
+                                    // Reference does the same — independent
+                                    // detector/avg/tau per pixout per
+                                    // specHPSDR.cs:262-263/308/320/361-362/
+                                    // 377-378.  copyWaterfallSpectrum reads
+                                    // pixout=1 during TX; copySpectrum
+                                    // stays on pixout=0 (panadapter).
+        1, 1, flp,
+        kTxFftSize,                 // §15.29 — 32768 (was kAnFftSize=4096)
         kBlockTx,                   // bf_sz (TX worker per-call sip1 read)
         kAnWindow, kAnKaiserPi,
         overlap, 0,
@@ -536,24 +566,51 @@ void WdspEngine::configureAnalyzerForTx() noexcept
     }
     txAnalyzerBfSize_.store(kBlockTx, std::memory_order_relaxed);
     txSpanHz_.store(kRateTx, std::memory_order_relaxed);
-    if (api.SetDisplayDetectorMode) {
-        api.SetDisplayDetectorMode(kAnDisp, 0, kAnDetector);
-    }
-    if (api.SetDisplayAverageMode) {
-        api.SetDisplayAverageMode(kAnDisp, 0, kAnAvgMode);
-    }
-    if (kAnAvgMode != 0) {
-        const double avb =
-            std::exp(-1.0 / (kAnFrameRate * kAnTau));
-        const int numAvg = std::max(2,
-            std::min(60, static_cast<int>(kAnFrameRate * kAnTau)));
-        if (api.SetDisplayAvBackmult) {
-            api.SetDisplayAvBackmult(kAnDisp, 0, avb);
+
+    // §15.29 C1 — configure BOTH pixout=0 (panadapter) AND pixout=1
+    // (waterfall) independently.  Reference architecture per
+    // specHPSDR.cs:262-263/308/320/361-362/377-378 — same detector
+    // mode but different averaging tau (30 ms pana / 120 ms wf) so
+    // the waterfall is ~4× smoother than the panadapter.  WDSP keeps
+    // separate averaging state per pixout; copyWaterfallSpectrum
+    // reads pixout=1 during TX, leaves pixout=0 to copySpectrum
+    // (panadapter caller).
+    //
+    // avb (IIR backmult) formula matches reference specHPSDR.cs:
+    // 357-364: avb = exp(-1/(frame_rate * tau)).  Lyra's 60 fps:
+    //   pana 30 ms  → avb = exp(-1/(60*0.030))  ≈ 0.534
+    //   wf   120 ms → avb = exp(-1/(60*0.120))  ≈ 0.871 (heavier IIR)
+    // numAvg = display-history depth, clamped [2, 60] per reference.
+    auto pushAvgConfig = [&](int pixout, double tau) {
+        if (api.SetDisplayDetectorMode) {
+            api.SetDisplayDetectorMode(kAnDisp, pixout, kAnDetector);
         }
-        if (api.SetDisplayNumAverage) {
-            api.SetDisplayNumAverage(kAnDisp, 0, numAvg);
+        if (api.SetDisplayAverageMode) {
+            api.SetDisplayAverageMode(kAnDisp, pixout, kTxAvgMode);
         }
-    }
+        if (kTxAvgMode != 0) {
+            const double avb = std::exp(-1.0 / (kAnFrameRate * tau));
+            const int numAvg = std::max(2,
+                std::min(60, static_cast<int>(kAnFrameRate * tau)));
+            if (api.SetDisplayAvBackmult) {
+                api.SetDisplayAvBackmult(kAnDisp, pixout, avb);
+            }
+            if (api.SetDisplayNumAverage) {
+                api.SetDisplayNumAverage(kAnDisp, pixout, numAvg);
+            }
+        }
+    };
+    pushAvgConfig(0, kTxPanaTauSec);   // panadapter 30 ms
+    pushAvgConfig(1, kTxWfTauSec);     // waterfall  120 ms
+
+    // §15.29 C1 — signal the waterfall caller that pixout=1 is now
+    // configured + ready to read.  copyWaterfallSpectrum checks this
+    // flag (via txOwnsAnalyzer_ which is set after this function
+    // returns, in setTxOwnsAnalyzer) and switches its GetPixels
+    // index from 0 to 1.  RX state stays on n_pixout=1 (pixout=0
+    // only) — waterfall continues to share the panadapter's
+    // pixout=0 in RX (no operator-visible issue there per §15.29
+    // C2 deferred).
 }
 
 void WdspEngine::setTxOwnsAnalyzer(bool on)
@@ -1025,6 +1082,68 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
     // reconfigured, so the trace can't be corrupted by a live re-setup.
     const double keep = static_cast<double>(kAnPixels) / z;   // bins shown
     const double lo   = (kAnPixels - keep) * 0.5;             // left edge
+    const double span = (keep > 1.0) ? (keep - 1.0) : 1.0;
+    const int    denom = std::max(1, n - 1);
+    for (int i = 0; i < n; ++i) {
+        const double srcf =
+            lo + (static_cast<double>(i) / denom) * span;
+        int    i0   = static_cast<int>(srcf);
+        double frac = srcf - i0;
+        if (i0 < 0)              { i0 = 0;             frac = 0.0; }
+        if (i0 >= kAnPixels - 1) { i0 = kAnPixels - 2; frac = 1.0; }
+        dst[i] = static_cast<float>(full[i0] * (1.0 - frac)
+                                    + full[i0 + 1] * frac);
+    }
+    return n;
+}
+
+// §15.29 C1 — waterfall-specific spectrum read.  Mirrors copySpectrum's
+// pattern (caching, zoom crop, dual-consumer ready-flag handling) but
+// reads pixout=1 (waterfall) during TX state — where configureAnalyzerForTx
+// has set up n_pixout=2 with a separate 120 ms tau IIR averaging on
+// pixout=1.  In RX state (txOwnsAnalyzer_=false), pixout=1 isn't
+// configured (n_pixout=1 in configureAnalyzerForRx), so we fall through
+// to copySpectrum's pixout=0 path — waterfall shares the panadapter's
+// 30 ms-averaged buffer the same way Lyra did before §15.29.  This
+// keeps RX-state behaviour byte-identical until §15.29 C2 (deferred
+// per phased scope choice) adds pixout=1 RX averaging.
+int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
+{
+    if (!analyzerOpen_ || dst == nullptr) {
+        return 0;
+    }
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetPixels) {
+        return 0;
+    }
+
+    // RX state — fall through to copySpectrum (which reads pixout=0).
+    // The waterfall and panadapter share that buffer in RX, matching
+    // pre-§15.29 behaviour.
+    if (!txOwnsAnalyzer_.load(std::memory_order_acquire)) {
+        return copySpectrum(dst, maxN);
+    }
+
+    // TX state — pixout=1 is configured + IIR-smoothed at 120 ms tau
+    // (configureAnalyzerForTx).  Read into the waterfall-specific
+    // cache so the second consumer (if any) still gets valid data
+    // when GetPixels' ready-flag clears.
+    const int n = std::min(maxN, kAnPixels);
+    if (static_cast<int>(wfCache_.size()) != kAnPixels) {
+        wfCache_.assign(kAnPixels, -200.0f);
+    }
+    int flag = 0; double ref = 0.0;
+    api.GetPixels(kAnDisp, 1, wfCache_.data(), &flag, &ref);
+    const float *full = wfCache_.data();
+
+    const double z = zoom_.load(std::memory_order_relaxed);
+    if (z <= 1.0) {
+        std::memcpy(dst, full, static_cast<size_t>(n) * sizeof(float));
+        return n;
+    }
+    // Zoom crop — same math as copySpectrum.
+    const double keep = static_cast<double>(kAnPixels) / z;
+    const double lo   = (kAnPixels - keep) * 0.5;
     const double span = (keep > 1.0) ? (keep - 1.0) : 1.0;
     const int    denom = std::max(1, n - 1);
     for (int i = 0; i < n; ++i) {

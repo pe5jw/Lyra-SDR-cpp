@@ -148,7 +148,12 @@ void Waterfall::onFrame() {
     if (static_cast<int>(pendingMax_.size()) != n) {
         pendingMax_.assign(static_cast<size_t>(n), -200.0f);
     }
-    engine_->copySpectrum(row_.data(), n);
+    // §15.29 C1 — switched copySpectrum (pixout=0, panadapter's 30 ms
+    // IIR cache) → copyWaterfallSpectrum (pixout=1, waterfall's
+    // 120 ms IIR cache).  Effective only during TX state — WdspEngine
+    // falls through to pixout=0 in RX (current shared behaviour) per
+    // §15.29 C2 deferral.
+    engine_->copyWaterfallSpectrum(row_.data(), n);
 
     // Auto-fit the dB range from the live spectrum (throttled to ~5 Hz),
     // independent of scroll speed / fps.  Runs every frame (not just on a

@@ -231,14 +231,15 @@ private:
     int                    bufferingMs_      = 50;
     // Lyra-side TXA input constants — txa input rate matches Lyra's
     // open-TX-channel in-rate (48 kHz) and block size matches
-    // TxChannel::kInSize (64 samples / ~1.33 ms).  See the reference's
-    // GetInputRate + GetBuffSize (cmaster.cs:1267 + :1313).  For the
-    // typical MSHV cadence (requestSamples=2048, requestRate=48000),
-    // predictedPacketSamples=2048 and targetQueuedSamples=4800 — the
-    // small Lyra txBlock vs the reference's 720 does not affect the
-    // formula at this client cadence.
+    // TxChannel::kInSize (128 samples post-§15.29 / ~2.67 ms).  See
+    // the reference's GetInputRate + GetBuffSize (cmaster.cs:1267 +
+    // :1313).  For the typical MSHV cadence (requestSamples=2048,
+    // requestRate=48000), predictedPacketSamples=2048 and
+    // targetQueuedSamples=4800 — the small Lyra txBlock vs the
+    // reference's 720 does not affect the formula at this client
+    // cadence.
     static constexpr int   kTciTxTargetRate   = 48000;
-    static constexpr int   kTciTxBlockSamples = 64;
+    static constexpr int   kTciTxBlockSamples = 128;
     static constexpr int   kTciTxMaxOutstanding = 64;   // ref TCI_TX_MAX_OUTSTANDING
     static constexpr int   kTciTxExtraBufferMs = 50;    // ref TCI_TX_EXTRA_BUFFER_MS
     static constexpr int   kChronoIntervalMs   = 50;    // tick cadence
@@ -262,6 +263,11 @@ private:
     // ingress + main-thread Prefs setter never race).  Default
     // 1.0 = unity = pre-#75 byte-identical wire.
     double   rxGainLinear_     = 1.0;
+    // Task #108 — symmetric INBOUND gain cache (MSHV → Lyra TXA).
+    // Cached from Prefs.tciTxGainDb on every tciTxGainDbChanged emit
+    // so the per-sample multiply in onTciAudioBlock doesn't pay
+    // std::pow.  Default 1.0 = unity = pre-#108 byte-identical wire.
+    double   txGainLinear_     = 1.0;
 
     // Per-key broadcast rate limiter + soft DSP-parameter store.
     QHash<QString, qint64> lastSent_;

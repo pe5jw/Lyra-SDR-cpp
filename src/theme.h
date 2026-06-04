@@ -247,6 +247,67 @@ QMenu::item { padding: 5px 24px 5px 12px; }
 QMenu::item:selected { background: rgba(0,229,255,50); color: rgb(0,229,255); }
 QDialog { background: rgb(10,13,18); }
 QToolBar { background: rgb(10,13,18); border: none; spacing: 4px; }
+
+/* §15.28 — Settings dialog design language additions.  Opt-in via
+   widget->setProperty("lyra<name>", true).  Cascades through every
+   QWidget that uses the qApp stylesheet, so these markers are
+   available from anywhere in the app, not just the Settings dialog. */
+
+/* Column header — "TIMING", "AUDIO + GAIN", etc. at the top of a
+   multi-column tab.  Larger + bolder than a group title, with a thin
+   cyan underline so the columns read as visually distinct sections. */
+QLabel[lyraColHeader="true"] {
+    color: rgb(0,229,255);
+    font-weight: 800;
+    font-size: 13pt;
+    letter-spacing: 1.5px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(0,229,255,80);
+    margin-bottom: 6px;
+}
+
+/* Column subtitle — italic muted descriptor under the column header
+   ("set once", "operating", etc.). */
+QLabel[lyraColSubtitle="true"] {
+    color: rgb(138,154,172);
+    font-style: italic;
+    font-size: 9pt;
+    padding-bottom: 10px;
+}
+
+/* Group subtitle — italic muted one-liner directly under a QGroupBox
+   title row inside a form.  Use sparingly (only where the group title
+   alone isn't self-evident). */
+QLabel[lyraGroupSubtitle="true"] {
+    color: rgb(138,154,172);
+    font-style: italic;
+    font-size: 9pt;
+}
+
+/* Restore-defaults button — amber accent so it visually pops out of
+   the regular cyan-on-dark control field.  Lyra's "engaged orange"
+   token (rgb(255,154,60), same as old-Lyra dsp_btn checked state). */
+QPushButton[lyraRestore="true"] {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 rgb(58,42,20), stop:1 rgb(42,26,10));
+    color: rgb(255,154,60);
+    border: 1px solid rgb(90,58,26);
+}
+QPushButton[lyraRestore="true"]:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 rgb(90,58,26), stop:1 rgb(58,42,20));
+    border-color: rgb(255,154,60);
+    color: rgb(255,184,90);
+}
+
+/* Footer description text — small italic muted, typically a paragraph
+   under the Restore button explaining live-apply / methodology notes. */
+QLabel[lyraFooter="true"] {
+    color: rgb(138,154,172);
+    font-style: italic;
+    font-size: 9pt;
+    padding: 6px 4px 0 4px;
+}
 )QSS");
 }
 

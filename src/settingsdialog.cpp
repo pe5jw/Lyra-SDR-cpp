@@ -525,6 +525,45 @@ QWidget *SettingsDialog::buildNetworkTab() {
             }
         });
         form->addRow(tr("RX-out gain:"), rxGainSpin);
+
+        // ── Task #108 — symmetric INBOUND TCI gain (operator-flagged
+        //    2026-06-03: MSHV / JTDX / WSJT-X overdrive Lyra's TXA
+        //    ALC).  Same range, same pattern as the RX-out spinner
+        //    above, applied in TciServer at audio-block ingress —
+        //    AFTER decode + resample, BEFORE TciMicSource hands the
+        //    samples to TxDspWorker.  Stopgap until per-profile TCI
+        //    gain ships under #49 + #55.
+        auto *txGainSpin = new QDoubleSpinBox(grp);
+        txGainSpin->setRange(-40.0, 10.0);
+        txGainSpin->setDecimals(1);
+        txGainSpin->setSingleStep(1.0);
+        txGainSpin->setSuffix(tr(" dB"));
+        txGainSpin->setValue(prefs_->tciTxGainDb());
+        txGainSpin->setToolTip(tr(
+            "Attenuate (or boost) the TX audio Lyra RECEIVES from TCI "
+            "clients (MSHV, JTDX, WSJT-X, etc.) before it hits the "
+            "WDSP TXA chain.  Negative dB reduces the level if your "
+            "client sends audio hotter than Lyra's ALC handles "
+            "gracefully (the common case — digital-mode software "
+            "often outputs near full-scale by default).  Positive dB "
+            "boosts a quiet client.  0 dB = byte-identical to your "
+            "client's stream level.  Live: takes effect on the next "
+            "received audio packet.\n\n"
+            "Mirror of the RX-out gain above.  Stopgap until per-mode "
+            "RX/TX gain profiles ship (planned tasks #49 + #55)."));
+        connect(txGainSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                grp, [this](double v) {
+            if (prefs_) prefs_->setTciTxGainDb(v);
+        });
+        connect(prefs_, &lyra::ui::Prefs::tciTxGainDbChanged, txGainSpin,
+                [this, txGainSpin]() {
+            const double v = prefs_->tciTxGainDb();
+            if (txGainSpin->value() != v) {
+                QSignalBlocker b(txGainSpin);
+                txGainSpin->setValue(v);
+            }
+        });
+        form->addRow(tr("TX-in gain:"), txGainSpin);
     }
 
     auto *enable = new QCheckBox(tr("TCI server running"), grp);
@@ -1577,8 +1616,22 @@ QWidget *SettingsDialog::buildHardwareTab() {
 }
 
 QWidget *SettingsDialog::buildMeterTab() {
+    // §15.28 — 3-group restructure (Meter Sources / Power Calibration /
+    // Display Behaviour) wraps the previously-flat form rows in proper
+    // QGroupBox containers.  The existing `form` pointer pattern lets
+    // the ~440 lines of `form->addRow(...)` call sites stay byte-
+    // identical — only the form layout it points to changes at section
+    // transitions, same idiom the Visuals tab uses.
     auto *page = new QWidget(this);
-    auto *form = new QFormLayout(page);
+    auto *root = new QVBoxLayout(page);
+    root->setSpacing(10);
+
+    // First group: Meter Sources.  The very first addRow() calls go
+    // here (the RX source + TX source dropdowns inside `if (meter_)`).
+    auto *grpSources = new QGroupBox(tr("Meter Sources"), page);
+    auto *formSources = new QFormLayout(grpSources);
+    root->addWidget(grpSources);
+    QFormLayout *form = formSources;
 
     // ── Meter source preferences (task #33 — MOX-edge auto-swap) ──
     // The Meter Panel shows ONE source at a time.  Operator picks what
@@ -1706,6 +1759,14 @@ QWidget *SettingsDialog::buildMeterTab() {
             "on keyup.  Default PWR (forward power).  Switching mid-TX "
             "takes effect on the next ~50 ms tick."));
         form->addRow(tr("TX source (on MOX):"), txCb);
+
+        // §15.28 — switch to the second group (Power Calibration).
+        // The next ~140 lines of operator controls (PWR rated max,
+        // TX secondary readouts, PWR cal scale) live here.
+        auto *grpPwrCal = new QGroupBox(tr("Power Calibration"), page);
+        auto *formPwrCal = new QFormLayout(grpPwrCal);
+        root->addWidget(grpPwrCal);
+        form = formPwrCal;
 
         // ── PWR calibration (task #34) ──
         // Two knobs the operator typically sets ONCE per amp / per
@@ -1844,6 +1905,16 @@ QWidget *SettingsDialog::buildMeterTab() {
         });
         form->addRow(tr("PWR cal scale:"), calScale);
     }
+
+    // §15.28 — switch to the third group (Display Behaviour).  S-meter
+    // cal trim, peak-hold timings, PWR ballistic mode picker, max-peak
+    // high-water marker, and the footer hint all live here.  Visible
+    // whether `meter_` is set or not (the original code rendered these
+    // rows outside the `if (meter_)` guard).
+    auto *grpDisplay = new QGroupBox(tr("Display Behaviour"), page);
+    auto *formDisplay = new QFormLayout(grpDisplay);
+    root->addWidget(grpDisplay);
+    form = formDisplay;
 
     // S-meter calibration trim (calDb) — applied live + persisted by the
     // MeterModel.  The meter reads WDSP RXA_S_PK; this offset lands it on
@@ -2019,6 +2090,8 @@ QWidget *SettingsDialog::buildMeterTab() {
     hint->setStyleSheet(QStringLiteral("color:#8a9aac;"));
     form->addRow(hint);
 
+    // §15.28 — let groups sit at the top, push trailing space to bottom.
+    root->addStretch(1);
     return page;
 }
 
@@ -2041,6 +2114,55 @@ QWidget *SettingsDialog::buildMeterTab() {
 QWidget *SettingsDialog::buildTxTab() {
     auto *page = new QWidget(this);
     auto *root = new QVBoxLayout(page);
+
+    // §15.28 — 2-column layout with column headers.  LEFT = timing
+    // (TR Sequencing + Amplitude Envelope + Tune — set-once values
+    // an operator configures for their amp + station and rarely
+    // touches again).  RIGHT = audio/gain (Mic + ALC + Leveler —
+    // the operating controls an operator actively tunes during a
+    // session).  Restore-defaults button + footer description text
+    // span both columns at the bottom (root-level layout below the
+    // body row).
+    {
+        auto *colHeaders = new QHBoxLayout();
+        colHeaders->setSpacing(14);
+
+        // LEFT column header — TIMING (set once).
+        auto *leftHeaderBox = new QVBoxLayout();
+        leftHeaderBox->setSpacing(0);
+        auto *leftHeader = new QLabel(tr("TIMING"), page);
+        leftHeader->setProperty("lyraColHeader", true);
+        leftHeaderBox->addWidget(leftHeader);
+        auto *leftSub = new QLabel(tr("set once for your amp + station"),
+                                   page);
+        leftSub->setProperty("lyraColSubtitle", true);
+        leftHeaderBox->addWidget(leftSub);
+        colHeaders->addLayout(leftHeaderBox, 1);
+
+        // RIGHT column header — AUDIO + GAIN (operating).
+        auto *rightHeaderBox = new QVBoxLayout();
+        rightHeaderBox->setSpacing(0);
+        auto *rightHeader = new QLabel(tr("AUDIO + GAIN"), page);
+        rightHeader->setProperty("lyraColHeader", true);
+        rightHeaderBox->addWidget(rightHeader);
+        auto *rightSub = new QLabel(tr("operating gain stages"), page);
+        rightSub->setProperty("lyraColSubtitle", true);
+        rightHeaderBox->addWidget(rightSub);
+        colHeaders->addLayout(rightHeaderBox, 1);
+
+        root->addLayout(colHeaders);
+    }
+
+    // 2-column body: groups added to leftCol / rightCol below.
+    auto *bodyRow  = new QHBoxLayout();
+    bodyRow->setSpacing(14);
+    auto *leftCol  = new QVBoxLayout();
+    auto *rightCol = new QVBoxLayout();
+    leftCol->setSpacing(10);
+    rightCol->setSpacing(10);
+    bodyRow->addLayout(leftCol,  1);
+    bodyRow->addLayout(rightCol, 1);
+    root->addLayout(bodyRow);
 
     // Common spin-box bounds — match HL2Stream::kMin/kMaxFsmDelayMs +
     // MoxEdgeFade::kMin/kMaxFadeMs (deliberately literal here so the
@@ -2159,7 +2281,7 @@ QWidget *SettingsDialog::buildTxTab() {
                 });
         form->addRow(tr("TX-Stop Delay:"), txStopSpin);
 
-        root->addWidget(grp);
+        leftCol->addWidget(grp);   // §15.28 — TIMING column
     }
 
     // ── Amplitude Envelope group ────────────────────────────────
@@ -2209,7 +2331,7 @@ QWidget *SettingsDialog::buildTxTab() {
                 });
         form->addRow(tr("Fade-Out Duration:"), outSpin);
 
-        root->addWidget(grp);
+        leftCol->addWidget(grp);   // §15.28 — TIMING column
     }
 
     // ── Tune (separate TUN drive, Task #74) ─────────────────────
@@ -2276,7 +2398,7 @@ QWidget *SettingsDialog::buildTxTab() {
             }
         });
 
-        root->addWidget(grp);
+        leftCol->addWidget(grp);   // §15.28 — TIMING column (Tune)
     }
 
     // ── Mic + ALC (TXA input/output gain stages) group ───────────
@@ -2447,45 +2569,207 @@ QWidget *SettingsDialog::buildTxTab() {
         form->addRow(tr("Mic Gain:"), micSpin);
 
         // ── ALC Max Gain (output limiter ceiling) ────────────────
+        // §15.27: WDSP `SetTXAALCMaxGain` takes a LINEAR amplitude
+        // factor (NOT dB).  Verified reference exposes this as an
+        // integer spinner 0..120 incr 1 default 3, passed straight
+        // through with no unit conversion.  Lyra mirrors that
+        // EXACTLY — operator coming from a reference-pattern radio
+        // sees identical units, range, and default.
         auto *alcSpin = new QDoubleSpinBox(this);
-        alcSpin->setRange(-3.0, 10.0);
-        alcSpin->setSingleStep(0.5);
-        alcSpin->setDecimals(1);
-        alcSpin->setSuffix(tr(" dB"));
-        alcSpin->setValue(stream_->alcMaxGainDb());
+        alcSpin->setRange(0.0, 120.0);
+        alcSpin->setSingleStep(1.0);
+        alcSpin->setDecimals(0);
+        alcSpin->setSuffix(QString());     // no unit suffix — linear factor
+        alcSpin->setValue(stream_->alcMaxGainLinear());
         alcSpin->setToolTip(tr(
-            "ALC (Automatic Level Control) max-gain ceiling — the "
-            "limiter that catches mic-input peaks the leveler and "
-            "compressor didn't bound, BEFORE the I/Q reaches the "
-            "wire.\n\n"
-            "Default +3 dB matches the verified reference's profile "
-            "default.  WDSP's own create-time default is 0 dB which "
-            "pins the entire TX output chain at the limiter regardless "
-            "of mic level — that was the 2026-05-31 first-SSB-bench "
-            "0.2 W root cause.\n\n"
-            "Operator tuning: lower (e.g. 0 to +1 dB) for tighter "
+            "ALC (Automatic Level Control) Max Gain — the maximum "
+            "amplitude factor the always-on output limiter will "
+            "amplify the TX signal by before clamping.  LINEAR "
+            "factor (NOT dB): 1 = unity (limiter cannot amplify, "
+            "only attenuate); 3 = the reference's default = 3× "
+            "amplitude headroom = +9.54 dB of allowed amplification "
+            "before the ALC pulls down.\n\n"
+            "Default 3 matches the verified reference's Setup-load "
+            "value EXACTLY (integer spinner 0..120 incr 1 default 3 "
+            "passed straight through to the WDSP API).  WDSP's "
+            "create-time default is 1 (= 0 dB, no amplification "
+            "allowed) which pins the entire TX output chain at a "
+            "hard 0 dB ceiling regardless of mic level — that was "
+            "the root cause of the task #79 whistle-vs-reference "
+            "RF gap (see CLAUDE.md §15.27 for the units-mismatch "
+            "history).\n\n"
+            "Operator tuning: lower (e.g. 1 to 2) for tighter "
             "splatter protection at the cost of headroom; higher "
-            "(e.g. +5 to +10 dB) for more program-level headroom at "
-            "the cost of splatter-protection margin.  ±3 dB around "
-            "the default is the operator-tunable range; outside that, "
-            "ALC stops being a meaningful safety net."));
+            "(e.g. 5 to 20) for ESSB-style program-level headroom "
+            "at the cost of splatter-protection margin.  Range "
+            "0..120 matches the reference's spinner exactly."));
         connect(alcSpin,
                 qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, [this](double v) {
-                    stream_->setAlcMaxGainDb(v);
+                    stream_->setAlcMaxGainLinear(v);
                 });
-        connect(stream_, &lyra::ipc::HL2Stream::alcMaxGainDbChanged,
+        connect(stream_, &lyra::ipc::HL2Stream::alcMaxGainLinearChanged,
                 alcSpin, [alcSpin](double v) {
                     if (alcSpin->value() != v) alcSpin->setValue(v);
                 });
         form->addRow(tr("ALC Max Gain:"), alcSpin);
 
-        root->addWidget(grp);
+        // ── ALC Decay (wcpagc release time constant) ─────────────
+        // §15.27 Commit B.  Integer spinner 1..50 ms incr 1 default 10
+        // — matches the verified reference UI exactly.  Attack stays
+        // at the WDSP create-time default (1 ms) and is not exposed
+        // (the reference UI doesn't expose attack either).
+        auto *alcDecaySpin = new QSpinBox(this);
+        alcDecaySpin->setRange(1, 50);
+        alcDecaySpin->setSingleStep(1);
+        alcDecaySpin->setSuffix(tr(" ms"));
+        alcDecaySpin->setValue(stream_->alcDecayMs());
+        alcDecaySpin->setToolTip(tr(
+            "ALC decay time constant (exponential-curve tau in ms; "
+            "NOT an absolute time).  Sets how quickly the always-on "
+            "output limiter releases gain reduction after a peak.\n\n"
+            "Default 10 ms matches the verified reference's Setup-load "
+            "value EXACTLY.  Operator tuning: lower (e.g. 3-5 ms) for "
+            "snappier release that lets program material breathe but "
+            "can sound 'pumpy' on aggressive content; higher (e.g. "
+            "30-50 ms) for smoother release that holds gain steadier "
+            "but compresses dynamics more.  Range 1..50 ms matches "
+            "the reference's spinner exactly."));
+        connect(alcDecaySpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    stream_->setAlcDecayMs(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::alcDecayMsChanged,
+                alcDecaySpin, [alcDecaySpin](int v) {
+                    if (alcDecaySpin->value() != v) alcDecaySpin->setValue(v);
+                });
+        form->addRow(tr("ALC Decay:"), alcDecaySpin);
+
+        rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column
     }
+
+    // ── Leveler (TXA pre-ALC amplifier stage) group ──────────────
+    // §15.27 Commit B.  New operator-facing subgroup, sibling of
+    // "Mic + ALC", exposing the WDSP TXA Leveler that was wired in
+    // the chain but never had Settings controls.  Three controls
+    // match the verified reference's primary Leveler surface
+    // (Enable + Max Gain + Decay) — Attack + Hang stay at the
+    // WDSP create-time defaults (1 ms / 500 ms) and are not
+    // exposed.  Defaults: OFF (operator preference override of
+    // reference's default ON, per explicit PS/predistortion
+    // quality concern); when enabled, 15 LINEAR / 100 ms matches
+    // the reference's UI ship-defaults EXACTLY.
+    if (stream_) {
+        auto *grp = new QGroupBox(
+            tr("Leveler  (TXA pre-ALC amplifier stage)"), page);
+        auto *form = new QFormLayout(grp);
+
+        // ── Enable checkbox ──────────────────────────────────────
+        auto *enBox = new QCheckBox(
+            tr("Enabled  (boosts weak signals pre-ALC)"), grp);
+        enBox->setChecked(stream_->levelerOn());
+        enBox->setToolTip(tr(
+            "Leveler is a pre-ALC amplifier stage that boosts weak "
+            "input signals up toward unity before the always-on ALC "
+            "limiter sees them — particularly helpful for quiet "
+            "passages of voice or for ESSB operators who want "
+            "consistent on-air loudness without riding the mic "
+            "gain.\n\n"
+            "Default OFF in Lyra (operator preference: leveler can "
+            "interact with predistortion / PureSignal calibration).  "
+            "The verified reference's UI ships this checkbox ON by "
+            "default — turn ON here to match reference behaviour."));
+        connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setLevelerOn(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::levelerOnChanged, enBox,
+                [enBox](bool on) {
+                    if (enBox->isChecked() != on) enBox->setChecked(on);
+                });
+        form->addRow(enBox);
+
+        // ── Max Gain spinner (LINEAR) ────────────────────────────
+        // Reference UI: integer spinner 0..20 LINEAR incr 1
+        // default 15.  Same LINEAR-not-dB semantics as the ALC
+        // Max Gain (the API takes LINEAR; reference UI label says
+        // "(dB)" but that label is misleading — value is passed
+        // straight through with no conversion).
+        auto *lvlSpin = new QDoubleSpinBox(grp);
+        lvlSpin->setRange(0.0, 20.0);
+        lvlSpin->setSingleStep(1.0);
+        lvlSpin->setDecimals(0);
+        lvlSpin->setSuffix(QString());     // no unit — LINEAR factor
+        lvlSpin->setValue(stream_->levelerMaxGainLinear());
+        lvlSpin->setToolTip(tr(
+            "Leveler Max Gain — the maximum amplitude factor the "
+            "pre-ALC leveler will amplify weak signals by.  LINEAR "
+            "factor (NOT dB): 1 = unity (no boost); 15 = the "
+            "reference's default = 15× amplitude ceiling = +23.5 dB "
+            "amplification headroom for weak signals.\n\n"
+            "Default 15 matches the verified reference's Setup-load "
+            "value EXACTLY (integer spinner 0..20 incr 1 default 15 "
+            "passed straight through to the WDSP API).  Range 0..20 "
+            "matches the reference's spinner exactly.\n\n"
+            "Operator tuning: lower (e.g. 5-10) for gentler boost "
+            "that preserves natural mic dynamics; higher (e.g. "
+            "15-20) for ESSB-style consistent loudness.  Has effect "
+            "only when the Enabled checkbox above is ticked."));
+        connect(lvlSpin,
+                qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    stream_->setLevelerMaxGainLinear(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::levelerMaxGainLinearChanged,
+                lvlSpin, [lvlSpin](double v) {
+                    if (lvlSpin->value() != v) lvlSpin->setValue(v);
+                });
+        form->addRow(tr("Max Gain:"), lvlSpin);
+
+        // ── Decay spinner (ms) ───────────────────────────────────
+        // Reference UI: integer spinner 1..5000 ms incr 1 default
+        // 100.  Exponential-curve tau, not absolute time.
+        auto *lvlDecaySpin = new QSpinBox(grp);
+        lvlDecaySpin->setRange(1, 5000);
+        lvlDecaySpin->setSingleStep(1);
+        lvlDecaySpin->setSuffix(tr(" ms"));
+        lvlDecaySpin->setValue(stream_->levelerDecayMs());
+        lvlDecaySpin->setToolTip(tr(
+            "Leveler decay time constant (exponential-curve tau in ms; "
+            "NOT an absolute time).  Sets how quickly the leveler "
+            "releases its boost after a stronger signal subsides.\n\n"
+            "Default 100 ms matches the verified reference's Setup-load "
+            "value EXACTLY.  Operator tuning: lower (e.g. 30-50 ms) "
+            "for faster release that follows voice envelope more "
+            "tightly; higher (e.g. 200-500 ms) for smoother release "
+            "that holds boost steadier across syllables.  Range "
+            "1..5000 ms matches the reference's spinner exactly.\n\n"
+            "Has effect only when the Enabled checkbox above is ticked."));
+        connect(lvlDecaySpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    stream_->setLevelerDecayMs(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::levelerDecayMsChanged,
+                lvlDecaySpin, [lvlDecaySpin](int v) {
+                    if (lvlDecaySpin->value() != v) lvlDecaySpin->setValue(v);
+                });
+        form->addRow(tr("Decay:"), lvlDecaySpin);
+
+        rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column (Leveler)
+    }
+
+    // §15.28 — push groups to top of each column so trailing whitespace
+    // sits between the body and the Restore button instead of between
+    // groups.  Mismatched group counts (3 left vs 2 right) otherwise
+    // produce uneven vertical spacing.
+    leftCol->addStretch(1);
+    rightCol->addStretch(1);
 
     // ── Restore hot-switch-safe defaults button ──────────────────
     auto *restoreBtn = new QPushButton(
         tr("Restore hot-switch-safe defaults"), page);
+    restoreBtn->setProperty("lyraRestore", true);   // §15.28 — amber accent
     restoreBtn->setToolTip(tr(
         "Resets all seven values above to the bench-validated defaults "
         "(MOX 15 / RF 50 / Space-MOX 13 / PTT-Out 5 / Fade-In 50 / "
@@ -2599,6 +2883,38 @@ QWidget *SettingsDialog::buildVisualsTab() {
     rightForm->setContentsMargins(0, 0, 0, 0);
     rightForm->setVerticalSpacing(10);
     outer->addWidget(rightCol, 1);
+
+    // §15.28 — column headers (TRACE & PALETTE / SPECTRUM & WATERFALL /
+    // EFFECTS & PERFORMANCE).  Inserted at row 0 of each form as
+    // spanning widgets so the body's existing addRow() call sites stay
+    // byte-identical — only the row-index offset shifts.  Cyan-bold
+    // via the lyraColHeader QSS property marker; italic subtitle via
+    // lyraColSubtitle.  Matches the TX tab's column-header treatment
+    // for visual consistency across the Settings dialog.
+    {
+        auto *h = new QLabel(tr("TRACE & PALETTE"), leftCol);
+        h->setProperty("lyraColHeader", true);
+        leftForm->insertRow(0, h);
+        auto *s = new QLabel(tr("trace look + palette ramp"), leftCol);
+        s->setProperty("lyraColSubtitle", true);
+        leftForm->insertRow(1, s);
+    }
+    {
+        auto *h = new QLabel(tr("SPECTRUM & WATERFALL"), midCol);
+        h->setProperty("lyraColHeader", true);
+        midForm->insertRow(0, h);
+        auto *s = new QLabel(tr("levels, peaks, noise, glow"), midCol);
+        s->setProperty("lyraColSubtitle", true);
+        midForm->insertRow(1, s);
+    }
+    {
+        auto *h = new QLabel(tr("EFFECTS & PERFORMANCE"), rightCol);
+        h->setProperty("lyraColHeader", true);
+        rightForm->insertRow(0, h);
+        auto *s = new QLabel(tr("eye candy + render"), rightCol);
+        s->setProperty("lyraColSubtitle", true);
+        rightForm->insertRow(1, s);
+    }
 
     // Body below addresses `form` extensively.  Start at left, switch
     // to middle just before "Waterfall speed", switch to right just
@@ -2923,40 +3239,97 @@ QWidget *SettingsDialog::buildVisualsTab() {
     connect(wfAuto, &QCheckBox::toggled, prefs_, &Prefs::setWaterfallDbAuto);
     form->addRow(tr("Waterfall dB"), wfAuto);
 
-    // The waterfall's own floor/ceiling — tune these to make detail
-    // pop in the heat map without changing the spectrum scale.
+    // §15.30 — TWO independent pairs (RX-state and TX-state) so an
+    // operator can tune the TX waterfall scale without keying, and so
+    // the RX pair (their tuned dark-with-pop preference) never gets
+    // overwritten by a drag during MOX (or vice versa).  Both pairs
+    // are always-visible: the RX spinboxes always read+write the RX
+    // backing; the TX spinboxes always read+write the TX backing.
+    //
+    // The live `waterfallDbMin()/Max()` accessors still MOX-route
+    // (drag-the-right-edge during MOX updates whichever state is
+    // active) — these spinboxes just bypass that and address each
+    // backing directly via setRxWaterfallDb*/setTxWaterfallDb*.
+
+    // --- RX-state waterfall (the operator's normal listening scale) ---
     auto *wfMin = new QDoubleSpinBox(page);
     wfMin->setRange(-200.0, 0.0);
     wfMin->setSuffix(tr(" dB"));
-    wfMin->setValue(prefs_->waterfallDbMin());
-    wfMin->setToolTip(tr("Waterfall floor — levels at/below this map to the "
-                         "darkest palette colour."));
+    wfMin->setValue(prefs_->rxWaterfallDbMin());
+    wfMin->setToolTip(tr("RX-state waterfall floor — levels at/below this "
+                         "map to the darkest palette colour.  Active when "
+                         "MOX is OFF.  Drag the waterfall's right-edge "
+                         "during RX to tune this from the panadapter."));
     connect(wfMin, &QDoubleSpinBox::valueChanged,
-            prefs_, &Prefs::setWaterfallDbMin);
+            prefs_, &Prefs::setRxWaterfallDbMin);
     connect(prefs_, &Prefs::waterfallDbMinChanged, page, [this, wfMin]() {
-        if (wfMin->value() != prefs_->waterfallDbMin())
-            wfMin->setValue(prefs_->waterfallDbMin());
+        // Mirror RX changes that came from elsewhere (drag during RX,
+        // band-memory recall, etc.).  RX backing only — TX changes
+        // arrive on txWaterfallDbMinChanged below.
+        if (wfMin->value() != prefs_->rxWaterfallDbMin())
+            wfMin->setValue(prefs_->rxWaterfallDbMin());
     });
-    form->addRow(tr("Waterfall dB — floor"), wfMin);
+    form->addRow(tr("Waterfall dB — RX floor"), wfMin);
 
     auto *wfMax = new QDoubleSpinBox(page);
     wfMax->setRange(-200.0, 20.0);
     wfMax->setSuffix(tr(" dB"));
-    wfMax->setValue(prefs_->waterfallDbMax());
-    wfMax->setToolTip(tr("Waterfall ceiling — levels at/above this map to the "
-                         "brightest palette colour."));
+    wfMax->setValue(prefs_->rxWaterfallDbMax());
+    wfMax->setToolTip(tr("RX-state waterfall ceiling — levels at/above this "
+                         "map to the brightest palette colour.  Active when "
+                         "MOX is OFF."));
     connect(wfMax, &QDoubleSpinBox::valueChanged,
-            prefs_, &Prefs::setWaterfallDbMax);
+            prefs_, &Prefs::setRxWaterfallDbMax);
     connect(prefs_, &Prefs::waterfallDbMaxChanged, page, [this, wfMax]() {
-        if (wfMax->value() != prefs_->waterfallDbMax())
-            wfMax->setValue(prefs_->waterfallDbMax());
+        if (wfMax->value() != prefs_->rxWaterfallDbMax())
+            wfMax->setValue(prefs_->rxWaterfallDbMax());
     });
-    form->addRow(tr("Waterfall dB — ceiling"), wfMax);
+    form->addRow(tr("Waterfall dB — RX ceiling"), wfMax);
 
-    // Gray the manual floor/ceiling out while Auto is on.
-    auto applyWfAuto = [wfMin, wfMax](bool a) {
+    // --- TX-state waterfall (active while MOX is on) ---
+    // Defaults −70 / +30 dBFS match the reference TX waterfall
+    // Low / High Level for HL2 TX drive levels — a clean tune-carrier
+    // line that doesn't blow out the heat map.  Tune from here OR by
+    // dragging the waterfall's right-edge during MOX.
+    auto *wfTxMin = new QDoubleSpinBox(page);
+    wfTxMin->setRange(-200.0, 30.0);
+    wfTxMin->setSuffix(tr(" dB"));
+    wfTxMin->setValue(prefs_->txWaterfallDbMin());
+    wfTxMin->setToolTip(tr("TX-state waterfall floor — active only while "
+                           "MOX is ON.  Default −70 dB frames a clean "
+                           "TX-tone line; the operator's RX preferences "
+                           "are preserved separately."));
+    connect(wfTxMin, &QDoubleSpinBox::valueChanged,
+            prefs_, &Prefs::setTxWaterfallDbMin);
+    connect(prefs_, &Prefs::txWaterfallDbMinChanged, page, [this, wfTxMin]() {
+        if (wfTxMin->value() != prefs_->txWaterfallDbMin())
+            wfTxMin->setValue(prefs_->txWaterfallDbMin());
+    });
+    form->addRow(tr("Waterfall dB — TX floor"), wfTxMin);
+
+    auto *wfTxMax = new QDoubleSpinBox(page);
+    wfTxMax->setRange(-200.0, 60.0);
+    wfTxMax->setSuffix(tr(" dB"));
+    wfTxMax->setValue(prefs_->txWaterfallDbMax());
+    wfTxMax->setToolTip(tr("TX-state waterfall ceiling — active only while "
+                           "MOX is ON.  Default +30 dB matches the "
+                           "reference TX waterfall High Level."));
+    connect(wfTxMax, &QDoubleSpinBox::valueChanged,
+            prefs_, &Prefs::setTxWaterfallDbMax);
+    connect(prefs_, &Prefs::txWaterfallDbMaxChanged, page, [this, wfTxMax]() {
+        if (wfTxMax->value() != prefs_->txWaterfallDbMax())
+            wfTxMax->setValue(prefs_->txWaterfallDbMax());
+    });
+    form->addRow(tr("Waterfall dB — TX ceiling"), wfTxMax);
+
+    // Gray ALL four manual floor/ceiling spinboxes out while Auto is on
+    // (Auto applies to whichever pair is currently live — driven by
+    // the panadapter's noise-floor / peak tracking).
+    auto applyWfAuto = [wfMin, wfMax, wfTxMin, wfTxMax](bool a) {
         wfMin->setEnabled(!a);
         wfMax->setEnabled(!a);
+        wfTxMin->setEnabled(!a);
+        wfTxMax->setEnabled(!a);
     };
     applyWfAuto(prefs_->waterfallDbAuto());
     connect(prefs_, &Prefs::waterfallDbAutoChanged, page,

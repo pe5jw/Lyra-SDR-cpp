@@ -681,11 +681,21 @@ int main(int argc, char *argv[])
                         ? lyra::dsp::TxChannel::Mode::USB
                         : lyra::dsp::TxChannel::Mode::LSB);
                 },
-                .setMicGainDb     = [txWorker](double db) {
+                .setMicGainDb        = [txWorker](double db) {
                     txWorker->setMicGainDb(db);
                 },
-                .setAlcMaxGainDb  = [txWorker](double db) {
-                    txWorker->setAlcMaxGainDb(db);
+                .setAlcMaxGainLinear = [txWorker](double linear) {
+                    txWorker->setAlcMaxGainLinear(linear);
+                },
+                // §15.27 Commit B — ALC decay + Leveler trio.
+                .setAlcDecayMs       = [txWorker](int ms) {
+                    txWorker->setAlcDecayMs(ms);
+                },
+                .setLevelerOn        = [txWorker](bool on, double topLin) {
+                    txWorker->setLevelerOn(on, topLin);
+                },
+                .setLevelerDecayMs   = [txWorker](int ms) {
+                    txWorker->setLevelerDecayMs(ms);
                 },
                 // TX-1 component 8c — operator TX bandwidth callback.
                 // Forwards (low, high) Hz straight to TxChannel which

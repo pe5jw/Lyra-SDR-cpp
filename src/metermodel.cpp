@@ -1628,31 +1628,38 @@ void MeterModel::computeAlcG() {
     // operator bench 2026-06-02 PM showed "stuck/hangs" — root
     // cause was display-formula divergence from reference).
     //
-    // Reference (Thetis dsp.cs:1019-1056 + console.cs ALC_G case):
+    // Reference (dsp.cs:1019-1056 + console.cs ALC_G case):
     //   raw       = GetTXAMeter(TXA_ALC_GAIN)  // = 20·log10(current_linear_gain)
-    //   displayed = max(0, raw + alcMaxGainDb)
+    //   displayed = max(0, raw + maxGainDb)
     //
-    // WDSP's TXA_ALC_GAIN returns the CURRENT applied gain (not
-    // "dB of reduction").  For wcpagc mode 5 ALC, gain rests at
-    // max_gain when signal is weak (e.g. operator's +3 dB ceiling
-    // → raw = +3), drops below max_gain when ALC actively reduces
-    // (e.g. raw = -3 for 6 dB cut from a +3 dB max).  Reference's
-    // formula "raw + alcMaxGainDb" turns this into a headroom-
-    // oriented number that grows with ALC action — operator-
-    // intuitive: 0 = clamping/heavy-reduce, larger = more headroom.
+    // WDSP's TXA_ALC_GAIN returns the CURRENT applied gain in dB
+    // (20·log10(linear_gain)).  For wcpagc mode 5 ALC, gain rests
+    // at `max_gain` when signal is weak (e.g. ceiling at 3.0 LINEAR
+    // → raw ~ +9.5 dB), drops below `max_gain` when ALC actively
+    // reduces.  Reference's formula `raw + maxGainDb` turns this
+    // into a headroom-oriented number that grows with ALC action —
+    // operator-intuitive: 0 = clamping/heavy-reduce, larger = more
+    // headroom.
     //
-    // alcMaxGainDb is the operator's persistent SetTXAALCMaxGain
-    // setting (default 3.0 dB; HL2Stream::alcMaxGainDb()).
+    // §15.27: HL2Stream::alcMaxGainLinear() returns a LINEAR
+    // amplitude factor (matching the WDSP API + verified reference's
+    // Setup spinner).  The display formula needs dB on both sides,
+    // so we convert: maxGainDb = 20·log10(linear).  The previous
+    // formula treated the stored value as already-dB, which is
+    // wrong now that the storage is LINEAR (per the §15.27 fix to
+    // the underlying setter / unit semantics).
     const bool mox = stream_ && stream_->moxActive();
     const double raw = (txWorker_ && mox)
         ? txWorker_->alcGainDb()
         : std::numeric_limits<double>::quiet_NaN();
-    const double maxg = stream_ ? stream_->alcMaxGainDb() : 3.0;
-    // Apply reference formula: max(0, raw + maxg).  NaN raw stays
+    const double maxLin = stream_ ? stream_->alcMaxGainLinear() : 3.0;
+    const double maxgDb = (maxLin > 0.0) ? 20.0 * std::log10(maxLin)
+                                         : 0.0;
+    // Apply reference formula: max(0, raw + maxgDb).  NaN raw stays
     // NaN (validity gate in the helper renders "—").
     const double display = std::isnan(raw)
         ? raw
-        : std::max(0.0, raw + maxg);
+        : std::max(0.0, raw + maxgDb);
     // ALC danger threshold: ≥ 6 dB of displayed action signals
     // gain-staging too hot (pumping / splatter risk).  Reference
     // threshold.  Bar scale (kGainDbMax = -20) unchanged so the

@@ -61,6 +61,16 @@ class Prefs : public QObject {
     // gain profile bundles.
     Q_PROPERTY(double tciRxGainDb READ tciRxGainDb WRITE setTciRxGainDb
                NOTIFY tciRxGainDbChanged)
+    // Task #108 — symmetric mirror of Task #75 on the INBOUND side.
+    // MSHV / JTDX / WSJT-X often send TX audio at levels that overdrive
+    // Lyra's TXA ALC — operator-flagged 2026-06-03 ("looks like it
+    // might be overdriving it slightly").  Applied in TciServer at
+    // audio-block ingress, AFTER decode + resample and BEFORE handing
+    // samples to TciMicSource.  Range -40..+10 dB, default 0 dB =
+    // unity = byte-identical to pre-#108 behaviour.  Stopgap until
+    // per-profile TCI gain ships under #49 + #55.
+    Q_PROPERTY(double tciTxGainDb READ tciTxGainDb WRITE setTciTxGainDb
+               NOTIFY tciTxGainDbChanged)
     // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
     Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
@@ -126,6 +136,17 @@ class Prefs : public QObject {
                WRITE setWaterfallDbMin NOTIFY waterfallDbMinChanged)
     Q_PROPERTY(double waterfallDbMax READ waterfallDbMax
                WRITE setWaterfallDbMax NOTIFY waterfallDbMaxChanged)
+    // §15.30 — separate TX-state waterfall dB range so an operator who
+    // likes a dark RX waterfall with colours that POP on weak SSB
+    // doesn't see "blowout" the instant they key.  Same MOX-edge swap
+    // pattern as the Task #44 panadapter pair: waterfallDbMin/Max
+    // return the LIVE pair (TX while moxActive, else RX) and writes
+    // route to the matching persistence key.  Defaults +30 / -70 dBFS
+    // frame a clean tune-carrier line at typical HL2 TX drive levels.
+    Q_PROPERTY(double txWaterfallDbMin READ txWaterfallDbMin
+               WRITE setTxWaterfallDbMin NOTIFY txWaterfallDbMinChanged)
+    Q_PROPERTY(double txWaterfallDbMax READ txWaterfallDbMax
+               WRITE setTxWaterfallDbMax NOTIFY txWaterfallDbMaxChanged)
     // Auto-fit the waterfall dB range (ignores waterfallDbMin/Max).
     Q_PROPERTY(bool waterfallDbAuto READ waterfallDbAuto
                WRITE setWaterfallDbAuto NOTIFY waterfallDbAutoChanged)
@@ -294,6 +315,8 @@ public:
     void   setTuneDrivePct(int v);
     double tciRxGainDb() const { return tciRxGainDb_; }
     void   setTciRxGainDb(double v);
+    double tciTxGainDb() const { return tciTxGainDb_; }
+    void   setTciTxGainDb(double v);
 public slots:
     void   setMoxActive(bool on);
 public:
@@ -347,10 +370,29 @@ public:
     void    setWaterfallColor(const QString &hex);
     int  waterfallSpeed() const { return waterfallSpeed_; }
     void setWaterfallSpeed(int v);
-    double waterfallDbMin() const { return waterfallDbMin_; }
+    // §15.30 — waterfallDbMin/Max return the LIVE pair (TX while
+    // moxActive, else RX); writes route to the matching backing.
+    // rxWaterfallDbMin_/Max_ remain on the kWfDbMin/kWfDbMax keys
+    // unchanged for backward QSettings compatibility (the operator's
+    // existing RX waterfall scaling is preserved across upgrade).
+    double waterfallDbMin() const {
+        return moxActive_ ? txWaterfallDbMin_ : rxWaterfallDbMin_;
+    }
     void   setWaterfallDbMin(double v);
-    double waterfallDbMax() const { return waterfallDbMax_; }
+    double waterfallDbMax() const {
+        return moxActive_ ? txWaterfallDbMax_ : rxWaterfallDbMax_;
+    }
     void   setWaterfallDbMax(double v);
+    // Direct accessors for the RX-only and TX-only pairs (mirrors the
+    // panadapter Task #44 surface — rxDbMin/setRxDbMin etc.).
+    double rxWaterfallDbMin() const { return rxWaterfallDbMin_; }
+    void   setRxWaterfallDbMin(double v);
+    double rxWaterfallDbMax() const { return rxWaterfallDbMax_; }
+    void   setRxWaterfallDbMax(double v);
+    double txWaterfallDbMin() const { return txWaterfallDbMin_; }
+    void   setTxWaterfallDbMin(double v);
+    double txWaterfallDbMax() const { return txWaterfallDbMax_; }
+    void   setTxWaterfallDbMax(double v);
     bool waterfallDbAuto() const { return waterfallDbAuto_; }
     void setWaterfallDbAuto(bool v);
     QVariant panadapterSplit() const { return panadapterSplit_; }
@@ -438,6 +480,7 @@ signals:
     void useTuneDriveChanged();
     void tuneDrivePctChanged();
     void tciRxGainDbChanged();
+    void tciTxGainDbChanged();
     void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
@@ -466,6 +509,8 @@ signals:
     void waterfallSpeedChanged();
     void waterfallDbMinChanged();
     void waterfallDbMaxChanged();
+    void txWaterfallDbMinChanged();
+    void txWaterfallDbMaxChanged();
     void waterfallDbAutoChanged();
     void panadapterSplitChanged();
     void cursorReadoutChanged();
@@ -510,6 +555,9 @@ private:
     int     tuneDrivePct_ = 25;
     // Task #75 — TCI RX-out gain (dB); default 0 = unity.
     double  tciRxGainDb_ = 0.0;
+    // Task #108 — symmetric INBOUND TCI gain (MSHV → Lyra TXA).
+    // Default 0 dB = unity = byte-identical to pre-#108 behaviour.
+    double  tciTxGainDb_ = 0.0;
     bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;
@@ -535,8 +583,17 @@ private:
     int     waterfallPalette_;
     QString waterfallColor_;
     int     waterfallSpeed_;
-    double  waterfallDbMin_;
-    double  waterfallDbMax_;
+    // §15.30 — rxWaterfallDbMin_/Max_ are the persistent RX values
+    // (on the kWfDbMin/kWfDbMax keys for backward compat — that's
+    // what the operator's current "dark RX waterfall" config lives
+    // on); txWaterfallDbMin_/Max_ are the TX-state pair (defaults
+    // -70 / +30 dBFS = the reference TX waterfall Low / High Level).
+    // moxActive_ selects which the public waterfallDbMin/Max
+    // accessors return.
+    double  rxWaterfallDbMin_;
+    double  rxWaterfallDbMax_;
+    double  txWaterfallDbMin_;
+    double  txWaterfallDbMax_;
     bool    waterfallDbAuto_;
     QVariant panadapterSplit_;
     bool    cursorReadout_;

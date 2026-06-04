@@ -259,6 +259,18 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
             rxGainLinear_ =
                 std::pow(10.0, prefs_->tciRxGainDb() / 20.0);
         });
+        // Task #108 — symmetric INBOUND (MSHV → Lyra TXA) gain cache.
+        // Seeded from the persisted value at ctor; refreshed on every
+        // tciTxGainDbChanged emit (operator drags the Settings slider,
+        // future TX-profile recall, etc.).  Hot path applies the
+        // multiplier in onTciAudioBlock right before TciMicSource->
+        // submitFromTci, AFTER decode + resample.
+        txGainLinear_ =
+            std::pow(10.0, prefs_->tciTxGainDb() / 20.0);
+        connect(prefs_, &Prefs::tciTxGainDbChanged, this, [this]() {
+            txGainLinear_ =
+                std::pow(10.0, prefs_->tciTxGainDb() / 20.0);
+        });
     }
     if (engine_) {
         connect(engine_, &lyra::dsp::WdspEngine::volumeChanged,
@@ -698,6 +710,22 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
                      "registered yet (commit 4 wires it via main.cpp)");
         }
         return;
+    }
+
+    // Task #108 — apply the operator's TCI TX-in gain ONCE at audio-
+    // block ingress (AFTER decode + resample, BEFORE TciMicSource).
+    // Same hot-path discipline as the #75 RX-out path: cached linear
+    // multiplier so we don't pay std::pow per sample; skip the loop
+    // entirely on unity (g ≈ 1.0, the default) so the pre-#108 path
+    // is byte-identical when the slider hasn't moved.  The sample
+    // bounds stay within the working-reference clamp (±4.0 per
+    // decodeTciTxAudio) — the slider's +10 dB ceiling pushes those
+    // to ±~12.6, which the WDSP TXA ALC + EP2 int16 saturation handle
+    // as designed.
+    const double txg = txGainLinear_;
+    if (txg != 1.0) {
+        const float gf = float(txg);
+        for (float &s : mono) s *= gf;
     }
     tciMicSource_->submitFromTci(mono.data(), int(mono.size()));
 }

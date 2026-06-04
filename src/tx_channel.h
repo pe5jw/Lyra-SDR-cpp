@@ -107,16 +107,38 @@ public:
     // gain; we accept dB at the public boundary for UI sanity.
     void setMicGainDb(double db);
 
-    // ALC ceiling.  SetTXAALCMaxGain takes linear; we accept dB.
-    // Operator-tunable in roughly -3..+3 dB around the WDSP
-    // create-time default 0 dB.  ALC run state is pinned ON in
-    // open() and not exposed here (always-on splatter protection).
-    void setAlcMaxGainDb(double db);
+    // ALC ceiling.  WDSP `SetTXAALCMaxGain` takes a LINEAR factor
+    // (NOT dB) — pass-through with no unit conversion.  Verified-
+    // reference UI exposes this as an integer spinner 0..120 with
+    // a default of 3 (= 3.0× amplitude = +9.54 dB amplification
+    // headroom before the ALC limiter pulls down).  Operator-
+    // tunable; ALC run state is pinned ON in open() and not
+    // exposed here (always-on splatter protection).
+    void setAlcMaxGainLinear(double linear);
 
-    // Leveler run + ceiling.  topDb is the operator's max-gain
-    // headroom (linear top = 10^(topDb/20)); WDSP create-time
-    // default top is +5 dB.  Wired but defaults OFF in open().
-    void setLevelerOn(bool on, double topDb = 5.0);
+    // ALC decay time constant in ms.  WDSP `SetTXAALCDecay`
+    // sets the exponential-curve tau the wcpagc envelope detector
+    // uses to release.  Verified-reference UI: integer spinner
+    // 1..50 ms incr 1, default 10 ms.  ALC attack stays at the
+    // WDSP create-time default (1 ms) — no operator surface for
+    // it (the reference UI doesn't expose attack either).
+    void setAlcDecayMs(int decay_ms);
+
+    // Leveler run + ceiling.  topLinear is the operator's max-
+    // gain headroom as a LINEAR amplitude factor (NOT dB).
+    // Verified-reference UI: integer spinner 0..20 LINEAR incr 1
+    // default 15 (= 15× amplification = +23.5 dB pre-ALC boost
+    // for weak signals).  WDSP API takes LINEAR direct (same
+    // unit-mismatch class the ALC ceiling had; see §15.27).
+    // Wired but defaults OFF in open() (operator opt-in).
+    void setLevelerOn(bool on, double topLinear = 15.0);
+
+    // Leveler decay time constant in ms.  WDSP `SetTXALevelerDecay`
+    // sets the exponential-curve tau the wcpagc envelope detector
+    // uses to release.  Verified-reference UI: integer spinner
+    // 1..5000 ms incr 1, default 100 ms.  Leveler attack stays
+    // at the WDSP create-time default (1 ms).
+    void setLevelerDecayMs(int decay_ms);
 
     // PHROT (phase rotator).  ON at open() per design v2 §4.6
     // for the PEP-to-PAR win; operator may toggle from Settings.

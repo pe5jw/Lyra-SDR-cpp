@@ -50,6 +50,12 @@ constexpr auto kWfCol  = "panadapter/waterfallColor";
 constexpr auto kWfSpd  = "panadapter/waterfallSpeed";
 constexpr auto kWfDbMin = "panadapter/waterfallDbMin";
 constexpr auto kWfDbMax = "panadapter/waterfallDbMax";
+// §15.30 — separate TX-state waterfall dB range pair so a drag
+// during MOX persists per-state.  Defaults +30 / -70 dBFS match
+// the reference TX waterfall Low / High Level for HL2 TX drive
+// levels (operator can re-tune in Settings → Visuals).
+constexpr auto kTxWfDbMin = "panadapter/txWaterfallDbMin";
+constexpr auto kTxWfDbMax = "panadapter/txWaterfallDbMax";
 constexpr auto kWfDbAuto = "panadapter/waterfallDbAuto";
 constexpr auto kPanSplit = "ui/panadapterSplit";
 constexpr auto kCursorRdt = "panadapter/cursorReadout";
@@ -90,6 +96,8 @@ constexpr auto kTuneDrivePct = "tx/tune_drive_pct";
 // TCI server group; clients see the gain change at the next emitted
 // audio packet boundary (~43 ms at 48 kHz / 2048-sample frames).
 constexpr auto kTciRxGainDb  = "tci/rx_gain_db";
+// Task #108 — symmetric inbound (MSHV/JTDX/WSJT-X → Lyra TXA) gain.
+constexpr auto kTciTxGainDb  = "tci/tx_gain_db";
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -126,6 +134,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         s.value(kTuneDrivePct, 25).toInt(), 0, 100);
     tciRxGainDb_  = std::clamp(
         s.value(kTciRxGainDb, 0.0).toDouble(), -40.0, 10.0);
+    tciTxGainDb_  = std::clamp(
+        s.value(kTciTxGainDb, 0.0).toDouble(), -40.0, 10.0);
     dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
@@ -151,8 +161,14 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     waterfallPalette_ = std::max(0, s.value(kWfPal, 0).toInt());
     waterfallColor_   = s.value(kWfCol, QStringLiteral("#30b0ff")).toString();
     waterfallSpeed_   = std::clamp(s.value(kWfSpd, 20).toInt(), 1, 120);
-    waterfallDbMin_   = s.value(kWfDbMin, -120.0).toDouble();
-    waterfallDbMax_   = s.value(kWfDbMax,  -20.0).toDouble();
+    // §15.30 — keep the operator's existing kWfDbMin/kWfDbMax values
+    // (their tuned RX waterfall) on the SAME keys for byte-identical
+    // upgrade; the new TX pair lives on kTxWfDbMin/kTxWfDbMax with
+    // reference-faithful defaults +30 / -70 dBFS.
+    rxWaterfallDbMin_ = s.value(kWfDbMin, -120.0).toDouble();
+    rxWaterfallDbMax_ = s.value(kWfDbMax,  -20.0).toDouble();
+    txWaterfallDbMin_ = s.value(kTxWfDbMin, -70.0).toDouble();
+    txWaterfallDbMax_ = s.value(kTxWfDbMax,  30.0).toDouble();
     waterfallDbAuto_  = s.value(kWfDbAuto, false).toBool();
     panadapterSplit_  = s.value(kPanSplit);   // invalid (= QML undefined) if unset
     cursorReadout_    = s.value(kCursorRdt, true).toBool();
@@ -338,16 +354,30 @@ void Prefs::setTciRxGainDb(double v) {
     emit tciRxGainDbChanged();
 }
 
+void Prefs::setTciTxGainDb(double v) {
+    // Task #108 — same pattern as setTciRxGainDb.  Range -40..+10 dB,
+    // skip no-op emits so TciServer's cached linear multiplier doesn't
+    // recompute std::pow for identical-value drags.
+    v = std::clamp(v, -40.0, 10.0);
+    if (v == tciTxGainDb_) return;
+    tciTxGainDb_ = v;
+    QSettings().setValue(kTciTxGainDb, v);
+    emit tciTxGainDbChanged();
+}
+
 void Prefs::setMoxActive(bool on) {
     // Wired to Stream::moxActiveChanged in main.cpp.  The flag flip
-    // changes which pair (rx vs tx) the dbMin/dbMax accessors return;
-    // emitting both *Changed signals causes QML's `Prefs.dbMin/dbMax`
-    // bindings to re-evaluate, so the panadapter renders the swapped
-    // pair without any extra wiring.
+    // changes which pair (rx vs tx) the dbMin/dbMax + waterfallDb
+    // Min/Max accessors return; emitting both *Changed signals
+    // causes QML's bindings to re-evaluate, so the panadapter AND
+    // the waterfall render the swapped pairs without any extra
+    // wiring (§15.30 added the waterfall pair to the swap).
     if (on == moxActive_) return;
     moxActive_ = on;
     emit dbMinChanged();
     emit dbMaxChanged();
+    emit waterfallDbMinChanged();
+    emit waterfallDbMaxChanged();
 }
 
 void Prefs::setTxDbMin(double v) {
@@ -580,18 +610,76 @@ void Prefs::setWaterfallSpeed(int v) {
 }
 
 void Prefs::setWaterfallDbMin(double v) {
-    if (v != waterfallDbMin_) {
-        waterfallDbMin_ = v;
-        QSettings().setValue(kWfDbMin, v);
-        emit waterfallDbMinChanged();
+    // §15.30 — route by MOX state, mirroring the Task #44 panadapter
+    // pair: a drag during MOX updates the TX backing (sticks across
+    // band changes; recalls independently of the RX backing).
+    if (moxActive_) {
+        if (v != txWaterfallDbMin_) {
+            txWaterfallDbMin_ = v;
+            QSettings().setValue(kTxWfDbMin, v);
+            emit txWaterfallDbMinChanged();
+            emit waterfallDbMinChanged();
+        }
+    } else {
+        if (v != rxWaterfallDbMin_) {
+            rxWaterfallDbMin_ = v;
+            QSettings().setValue(kWfDbMin, v);
+            emit waterfallDbMinChanged();
+        }
     }
 }
 
 void Prefs::setWaterfallDbMax(double v) {
-    if (v != waterfallDbMax_) {
-        waterfallDbMax_ = v;
+    if (moxActive_) {
+        if (v != txWaterfallDbMax_) {
+            txWaterfallDbMax_ = v;
+            QSettings().setValue(kTxWfDbMax, v);
+            emit txWaterfallDbMaxChanged();
+            emit waterfallDbMaxChanged();
+        }
+    } else {
+        if (v != rxWaterfallDbMax_) {
+            rxWaterfallDbMax_ = v;
+            QSettings().setValue(kWfDbMax, v);
+            emit waterfallDbMaxChanged();
+        }
+    }
+}
+
+void Prefs::setRxWaterfallDbMin(double v) {
+    // Direct RX-pair writer for per-band-memory recall, so a recall
+    // during MOX always updates the RX backing (takes effect on
+    // MOX-off) rather than the live TX pair.
+    if (v != rxWaterfallDbMin_) {
+        rxWaterfallDbMin_ = v;
+        QSettings().setValue(kWfDbMin, v);
+        if (!moxActive_) emit waterfallDbMinChanged();
+    }
+}
+
+void Prefs::setRxWaterfallDbMax(double v) {
+    if (v != rxWaterfallDbMax_) {
+        rxWaterfallDbMax_ = v;
         QSettings().setValue(kWfDbMax, v);
-        emit waterfallDbMaxChanged();
+        if (!moxActive_) emit waterfallDbMaxChanged();
+    }
+}
+
+void Prefs::setTxWaterfallDbMin(double v) {
+    if (v != txWaterfallDbMin_) {
+        txWaterfallDbMin_ = v;
+        QSettings().setValue(kTxWfDbMin, v);
+        emit txWaterfallDbMinChanged();
+        if (moxActive_) emit waterfallDbMinChanged();
+    }
+}
+
+void Prefs::setTxWaterfallDbMax(double v) {
+    if (v != txWaterfallDbMax_) {
+        txWaterfallDbMax_ = v;
+        QSettings().setValue(kTxWfDbMax, v);
+        emit txWaterfallDbMaxChanged();
+        if (moxActive_) emit waterfallDbMaxChanged();
     }
 }
 

@@ -29,31 +29,40 @@ constexpr double kTSlewUp    = 0.010;
 constexpr double kTDelayDown = 0.000;
 constexpr double kTSlewDown  = 0.010;
 
-// fexchange0 in_size + dsp_size match the reference's
-// constant-latency rule (in_size = 64 * rate / 48000) and its
-// TX dsp_size (4096) at dsp_rate=96 kHz.  At 48 kHz mic, that
-// is 64 samples per fexchange0 call.  THESE VALUES MATTER:
+// fexchange0 in_size + dsp_size — match the reference's Setup →
+// DSP → Options → Buffer Size (IQcomp) operator setting EXACTLY
+// (SSB/AM TX = 128 samples; verified 2026-06-03 from operator
+// reference setup screenshot).  dsp_size (4096) matches the
+// reference's Filter Size (taps) for SSB/AM = 4096.
 //
-//   * 64 is a CLEAN DIVISOR of dsp_insize = dsp_size / 2 = 2048
-//     at the 48 k↔96 k rate ratio (2048 / 64 = 32 fexchange0
-//     calls per DSP block).  Non-divisor in_size values (e.g.
+//   * 128 (in_size) is a CLEAN DIVISOR of dsp_insize = dsp_size /
+//     2 = 2048 at the 48 k↔96 k rate ratio (2048 / 128 = 16
+//     fexchange0 calls per DSP block).  Non-divisor values (e.g.
 //     the 126-per-datagram count Lyra used to choose) leave
-//     residual samples in the reference's r1/r2 rings, and
-//     the integer-division resampler/ring math then produces
-//     anomalous mid-call sizes that overrun the destination
-//     buffer on first fexchange0.  Same root cause class as
-//     the §15.23 SSB-bp1 trap: a parameter chosen locally
-//     that doesn't compose with WDSP's internal sizing.
+//     residual samples in WDSP's r1/r2 rings, and the integer-
+//     division resampler/ring math then produces anomalous mid-
+//     call sizes that overrun the destination buffer on first
+//     fexchange0.  Same root cause class as the §15.23 SSB-bp1
+//     trap: a parameter chosen locally that doesn't compose with
+//     WDSP's internal sizing.
 //   * 4096 sizes the FFT-coefficient buffers downstream (the
 //     reference's `max(2048, dsp_size)` clamp in TXA.c).
 //
-// Mic samples arrive from the rx-loop in datagram-sized
-// chunks (~9-10 samples per HL2+ EP6 datagram at 48 k mic),
-// accumulate in the SPSC ring, and the worker thread drains
-// the ring in kInSize=64-sample chunks.  Datagram-vs-fexchange0
-// alignment is handled BY THE RING — not by matching in_size
-// to per-datagram count, which is what bit us.
-constexpr int kInSize  = 64;
+// Mic samples arrive from the rx-loop in datagram-sized chunks
+// (~9-10 samples per HL2+ EP6 datagram at 48 k mic), accumulate
+// in the SPSC ring, and the worker thread drains the ring in
+// kInSize-sample chunks.  Datagram-vs-fexchange0 alignment is
+// handled BY THE RING — not by matching in_size to per-datagram
+// count, which is what bit us.
+//
+// §15.29 (2026-06-03): bumped 64 → 128 to match reference Buffer
+// Size operator-setting exactly per "do as reference, no
+// variation" rule.  MUST stay in sync with kBlockSize in
+// tx_dsp_worker.h (the worker drains the SPSC ring in kBlockSize
+// chunks and passes those to process(); process() rejects any
+// `n != kInSize`, so a divergence between these two constants is
+// a guaranteed fexchange0-skip at runtime).
+constexpr int kInSize  = 128;
 constexpr int kDspSize = 4096;
 
 // Operator dB → linear gain.
@@ -195,7 +204,7 @@ bool TxChannel::open(int micRate, int dspRate, int outRate)
     // layer wires through (mode change, filter edits, mic gain
     // slider, etc.) and calls the per-setter API exposed on this
     // class (setMode / setBandpass / setMicGainDb / setPhrotOn /
-    // setLevelerOn / setAlcMaxGainDb).
+    // setLevelerOn / setAlcMaxGainLinear).
     //
     // The earlier Lyra code crammed 17 SetTXA* calls into open()
     // at boot — exercising WDSP code paths the reference doesn't
@@ -335,26 +344,64 @@ void TxChannel::setMicGainDb(double db)
     api.SetTXAPanelGain1(channel_, dbToLin(db));
 }
 
-void TxChannel::setAlcMaxGainDb(double db)
+void TxChannel::setAlcMaxGainLinear(double linear)
 {
+    // SetTXAALCMaxGain's `max_gain` parameter is a LINEAR amplitude
+    // factor (NOT dB): the wcpagc mode-5 ALC clamps `gain = min(
+    // max_gain, out_targ / envelope)`, so a continuous tone settles
+    // at `output = max_gain * envelope`.  The verified-reference UI
+    // spinner is `0..120` increment `1`, default `3` (`3.0×`), and
+    // passes that integer DIRECTLY to the WDSP setter with no unit
+    // conversion.  Lyra previously called `dbToLin(3.0) = 1.413`
+    // here, treating the UI value as dB — that capped the ALC
+    // amplitude ceiling at 47% of the reference's value (a 6.5 dB
+    // power deficit on continuous mic-input tones; root cause of
+    // task #79 — see CLAUDE.md §15.27).  Now reference-faithful:
+    // pass the LINEAR factor straight through, no conversion.
     std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetTXAALCMaxGain) return;
-    api.SetTXAALCMaxGain(channel_, dbToLin(db));
+    api.SetTXAALCMaxGain(channel_, linear);
 }
 
-void TxChannel::setLevelerOn(bool on, double topDb)
+void TxChannel::setAlcDecayMs(int decay_ms)
 {
     std::lock_guard<std::mutex> lk(channelMtx_);
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
+    if (!api.SetTXAALCDecay) return;
+    api.SetTXAALCDecay(channel_, decay_ms);
+}
+
+void TxChannel::setLevelerOn(bool on, double topLinear)
+{
+    // SetTXALevelerTop's `max_gain` parameter is a LINEAR amplitude
+    // factor (NOT dB), same unit-mismatch class as the ALC ceiling
+    // (see CLAUDE.md §15.27).  Verified-reference UI exposes this
+    // as integer spinner 0..20 LINEAR default 15 and passes
+    // straight to WDSP with no conversion.  Lyra previously called
+    // `dbToLin(topDb)` here, treating the value as dB — same trap
+    // the ALC setter had until §15.27 fixed it.  Now reference-
+    // faithful: pass the LINEAR factor straight through.
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
     if (api.SetTXALevelerTop) {
-        api.SetTXALevelerTop(channel_, dbToLin(topDb));
+        api.SetTXALevelerTop(channel_, topLinear);
     }
     if (api.SetTXALevelerSt) {
         api.SetTXALevelerSt(channel_, on ? 1 : 0);
     }
+}
+
+void TxChannel::setLevelerDecayMs(int decay_ms)
+{
+    std::lock_guard<std::mutex> lk(channelMtx_);
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetTXALevelerDecay) return;
+    api.SetTXALevelerDecay(channel_, decay_ms);
 }
 
 void TxChannel::setPhrotOn(bool on)

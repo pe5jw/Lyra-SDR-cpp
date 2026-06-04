@@ -322,6 +322,15 @@ public:
     // the panadapter is a C++ QQuickPaintedItem, not QML JS.
     int  spectrumPixelCount() const;
     int  copySpectrum(float *dst, int maxN);
+    // §15.29 C1 — waterfall-specific spectrum read.  During TX state,
+    // the analyzer is configured with n_pixout=2 (configureAnalyzerForTx)
+    // — pixout=0 = panadapter (30 ms tau IIR), pixout=1 = waterfall
+    // (120 ms tau IIR, 4× smoother).  This method reads pixout=1
+    // during TX; falls through to pixout=0 during RX (no separate
+    // waterfall pixout in RX state — §15.29 C2 deferred).  Internal
+    // cache mirror of copySpectrum's pattern so dual consumers stay
+    // fed across GetPixels' single-read ready-flag.
+    int  copyWaterfallSpectrum(float *dst, int maxN);
     // Display-only notch cut: pull the columns under each
     // active manual notch down to floorDb in a display dB array of `n`
     // points spanning the CURRENT displayed span.  Called by the
@@ -809,6 +818,15 @@ private:
     // garbage feeding the zoom crop).  GUI-thread only (the QQuickWidget
     // panadapter + waterfall reads are serialised).
     std::vector<float> specCache_;
+    // §15.29 C1 — pixout=1 waterfall cache, mirrors specCache_ but
+    // populated by copyWaterfallSpectrum's GetPixels(pixout=1) during
+    // TX state.  Separate cache because pixout=0 and pixout=1 have
+    // independent ready-flags in WDSP, and the same dual-consumer
+    // GUI-thread serialisation contract applies (panadapter reads
+    // specCache_ via copySpectrum, waterfall reads wfCache_ via
+    // copyWaterfallSpectrum).  In RX state copyWaterfallSpectrum
+    // falls through to specCache_'s data (single-pixout RX).
+    std::vector<float> wfCache_;
     QList<QAudioDevice> devices_;       // operator's PC output devices
     int                 deviceIndex_ = 0;
     // Output routing: HL2 onboard codec (default — old Lyra's HL2 path)

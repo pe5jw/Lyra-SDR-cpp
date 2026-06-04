@@ -328,23 +328,34 @@ class HL2Stream : public QObject {
     //                   in TxChannel::open()).  Operator dials up via
     //                   the TxPanel slider for typical ESSB headroom.
     //
-    // alcMaxGainDb    — `SetTXAALCMaxGain` (always-on ALC ceiling).
-    //                   ⚠ LOAD-BEARING: WDSP create-time default is
-    //                   1.0 linear = 0 dB max gain, which pins the
-    //                   entire TXA output chain at a hard 0 dB ALC
-    //                   ceiling regardless of mic level.  The verified
-    //                   reference bootstraps to 3 dB at first Setup
-    //                   load (its profile default); lyra-cpp never
-    //                   called the setter before component 8a, which
-    //                   is the actual root cause of the 2026-05-31
-    //                   first-SSB-bench 0.2 W result.  Default 3 dB
-    //                   here mirrors the reference's Setup-load value
-    //                   = lifts the ceiling enough for normal SSB
-    //                   peaks to pass through to the wire.  Range
-    //                   [-3, +10] dB; operator-tunable in Settings →
-    //                   TX → ALC.
+    // alcMaxGainLinear — `SetTXAALCMaxGain` (always-on ALC ceiling).
+    //                   ⚠ LOAD-BEARING + ⚠ UNIT-CRITICAL: the WDSP
+    //                   `max_gain` parameter is a LINEAR amplitude
+    //                   factor, NOT dB.  On a continuous tone the
+    //                   wcpagc mode-5 ALC settles at `output =
+    //                   max_gain * envelope` — so a 2× difference
+    //                   in this value is a 6 dB difference in
+    //                   continuous-tone output power.  Default 3.0
+    //                   LINEAR (= 3.0× amplitude = +9.54 dB
+    //                   amplification headroom) matches the
+    //                   verified reference's Setup spinner default
+    //                   (integer 0..120 incr 1, default 3, passed
+    //                   straight through to WDSP).  Earlier Lyra
+    //                   shipped this as a dB value and called
+    //                   `dbToLin(3.0) = 1.413` — capping the
+    //                   ceiling at 47% of the reference's value
+    //                   and producing a 5-6 dB power deficit on
+    //                   continuous mic-input tones (the task #79
+    //                   whistle-vs-reference RF gap; see
+    //                   CLAUDE.md §15.27).  Range [0, 120]
+    //                   LINEAR; operator-tunable in Settings →
+    //                   TX → "ALC Max Gain" integer spinner.
     //
-    // Persisted under tx/micGainDb + tx/alcMaxGainDb in QSettings.
+    // Persisted under tx/micGainDb + tx/alcMaxGainLinear in
+    // QSettings.  The old `tx/alcMaxGainDb` key is intentionally
+    // abandoned on upgrade — operator silently inherits the new
+    // reference-faithful default (3.0 LINEAR) on first launch
+    // after the §15.27 fix, which is the desired correction.
     // Live-apply: setter forwards to the registered TxControl
     // callback (which calls TxDspWorker pass-through → TxChannel WDSP
     // setter) so a slider move takes effect on the next ~2.6 ms
@@ -353,10 +364,23 @@ class HL2Stream : public QObject {
     // also pushes the autoloaded values ONCE at registration time so
     // the freshly-opened WDSP channel doesn't sit at the load-bearing
     // ALC = 0 dB trap waiting for the operator to nudge the slider.
-    Q_PROPERTY(double micGainDb    READ micGainDb
-               WRITE setMicGainDb    NOTIFY micGainDbChanged)
-    Q_PROPERTY(double alcMaxGainDb READ alcMaxGainDb
-               WRITE setAlcMaxGainDb NOTIFY alcMaxGainDbChanged)
+    Q_PROPERTY(double micGainDb        READ micGainDb
+               WRITE setMicGainDb        NOTIFY micGainDbChanged)
+    Q_PROPERTY(double alcMaxGainLinear READ alcMaxGainLinear
+               WRITE setAlcMaxGainLinear NOTIFY alcMaxGainLinearChanged)
+    // §15.27 Commit B — ALC decay (operator-tunable wcpagc release tau).
+    // Integer ms, range 1..50, default 10 — matches verified reference UI.
+    Q_PROPERTY(int    alcDecayMs       READ alcDecayMs
+               WRITE setAlcDecayMs       NOTIFY alcDecayMsChanged)
+    // §15.27 Commit B — Leveler trio (pre-ALC amplifier stage).
+    // Lyra default OFF (operator preference; reference UI ships ON).
+    // Operator opt-in: tick the Enable checkbox in Settings → TX → Leveler.
+    Q_PROPERTY(bool   levelerOn               READ levelerOn
+               WRITE setLevelerOn               NOTIFY levelerOnChanged)
+    Q_PROPERTY(double levelerMaxGainLinear    READ levelerMaxGainLinear
+               WRITE setLevelerMaxGainLinear    NOTIFY levelerMaxGainLinearChanged)
+    Q_PROPERTY(int    levelerDecayMs          READ levelerDecayMs
+               WRITE setLevelerDecayMs          NOTIFY levelerDecayMsChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -429,7 +453,16 @@ public:
         // + emit without forwarding — operator state lives, channel
         // bringup applies on next radio start).
         std::function<void(double)> setMicGainDb;
-        std::function<void(double)> setAlcMaxGainDb;
+        std::function<void(double)> setAlcMaxGainLinear;
+        // §15.27 Commit B — ALC decay + full Leveler operator surface.
+        // ALC decay: WDSP `SetTXAALCDecay` exponential-curve tau in ms.
+        // Leveler: pre-ALC amplifier stage, OFF by default in Lyra (per
+        // operator preference for PS quality), but operator-tunable
+        // to match the verified reference's working profile (typical
+        // ON / max_gain=15 LINEAR / decay=100 ms).
+        std::function<void(int)>         setAlcDecayMs;
+        std::function<void(bool,double)> setLevelerOn;        // (enabled, topLinear)
+        std::function<void(int)>         setLevelerDecayMs;
         // TX-1 component 8c — operator TX bandpass.  Receives (low Hz,
         // high Hz); TxChannel internally sign-codes per the current
         // WDSP mode (USB pass-through, LSB negate-and-swap).  Called
@@ -547,8 +580,12 @@ public:
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     // Getters read the live operator-tuned values (or defaults if
     // unset).  See Q_PROPERTY block above for the safety rationale.
-    double  micGainDb()       const { return micGainDb_;        }
-    double  alcMaxGainDb()    const { return alcMaxGainDb_;     }
+    double  micGainDb()             const { return micGainDb_;             }
+    double  alcMaxGainLinear()      const { return alcMaxGainLinear_;      }
+    int     alcDecayMs()            const { return alcDecayMs_;            }
+    bool    levelerOn()             const { return levelerOn_;             }
+    double  levelerMaxGainLinear()  const { return levelerMaxGainLinear_;  }
+    int     levelerDecayMs()        const { return levelerDecayMs_;        }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -804,7 +841,14 @@ public slots:
     // emits the changed signal, and forwards to the registered
     // TxControl callback (no-op if TxControl not yet registered).
     void setMicGainDb(double db);
-    void setAlcMaxGainDb(double db);
+    void setAlcMaxGainLinear(double linear);
+    // §15.27 Commit B — ALC decay + Leveler trio.  Each clamps to its
+    // declared range, persists under tx/<key>, emits the changed signal,
+    // and forwards to the registered TxControl callback.
+    void setAlcDecayMs(int decay_ms);
+    void setLevelerOn(bool on);
+    void setLevelerMaxGainLinear(double linear);
+    void setLevelerDecayMs(int decay_ms);
 
     // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
     // to the TX channel via the registered TxControl.setMode callback.
@@ -913,7 +957,12 @@ signals:
     void txStopDelayMsChanged(int ms);
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     void micGainDbChanged(double db);
-    void alcMaxGainDbChanged(double db);
+    void alcMaxGainLinearChanged(double linear);
+    // §15.27 Commit B.
+    void alcDecayMsChanged(int decay_ms);
+    void levelerOnChanged(bool on);
+    void levelerMaxGainLinearChanged(double linear);
+    void levelerDecayMsChanged(int decay_ms);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -1324,25 +1373,38 @@ private:
 
     // ---- TX-1 component 8a: operator-tunable WDSP TXA gain stages -
     //
-    // Defaults (the load-bearing ones for the 2026-05-31 0.2 W bench
-    // root-cause fix):
+    // Defaults match the verified reference's Setup-load values
+    // EXACTLY (§15.27 reference-faithful posture, "do as the
+    // reference does, no variation"):
     //
-    //   alcMaxGainDb_ = +3.0 dB  — matches the reference's Setup-load
-    //                              default.  WDSP create-time is 1.0
-    //                              linear = 0 dB; never calling the
-    //                              setter pins the entire TXA output
-    //                              chain at the 0 dB ALC ceiling.
-    //                              This default is THE smoking-gun
-    //                              fix for the 0.2 W bench result.
-    //   micGainDb_    =  0.0 dB  — WDSP create-time unity.  Matches
-    //                              lyra-cpp's ship-no-setters posture
-    //                              for what the channel sees at boot.
-    //                              Operator dials up via TxPanel for
-    //                              typical ESSB headroom.
+    //   alcMaxGainLinear_ = 3.0 LINEAR  (= 3.0× amplitude = +9.54 dB
+    //                                    amplification headroom).
+    //                                    Reference UI: integer
+    //                                    spinner 0..120 incr 1
+    //                                    default 3, passed straight
+    //                                    through to SetTXAALCMaxGain
+    //                                    with NO unit conversion.
+    //                                    WDSP create-time is 1.0
+    //                                    linear (= 0 dB) which pins
+    //                                    the TXA output chain at
+    //                                    a hard 0 dB ALC ceiling
+    //                                    regardless of mic level —
+    //                                    the load-bearing trap that
+    //                                    THIS default lifts.
+    //   micGainDb_        = 0.0 dB     — WDSP create-time unity.
+    //                                    Matches lyra-cpp's ship-
+    //                                    no-setters posture for what
+    //                                    the channel sees at boot.
+    //                                    Operator dials up via
+    //                                    TxPanel for typical ESSB
+    //                                    headroom.
     //
-    // Persisted under tx/micGainDb + tx/alcMaxGainDb in QSettings.
-    static constexpr double  kDefaultMicGainDb     =  0.0;
-    static constexpr double  kDefaultAlcMaxGainDb  =  3.0;
+    // Persisted under tx/micGainDb + tx/alcMaxGainLinear in
+    // QSettings.  The old `tx/alcMaxGainDb` key (dB semantics) is
+    // intentionally abandoned on §15.27 upgrade — operator silently
+    // inherits the new reference-faithful default on first launch.
+    static constexpr double  kDefaultMicGainDb         =  0.0;
+    static constexpr double  kDefaultAlcMaxGainLinear  =  3.0;
     // Operator-tuning bounds.  Mic gain range matches the verified
     // reference's Default TX profile exactly (Max=+40, Min=-90) so a
     // Lyra-cpp slider drag covers the same operator-facing travel an
@@ -1350,20 +1412,45 @@ private:
     // Min=-90 is a deep attenuator (essentially mute for typical mic
     // levels) — useful for bench-test with a hot signal generator +
     // matches the reference's profile floor.
-    // ALC max-gain bounds are tighter — the setter is a SAFETY
-    // ceiling, not a gain knob; lower than -3 dB clips most program
-    // material, higher than +10 dB defeats the splatter-protection
-    // purpose.
-    static constexpr double  kMinMicGainDb        = -90.0;
-    static constexpr double  kMaxMicGainDb        = +40.0;
-    static constexpr double  kMinAlcMaxGainDb     =  -3.0;
-    static constexpr double  kMaxAlcMaxGainDb     = +10.0;
+    // ALC max-gain bounds match the reference's spinner range
+    // EXACTLY (0..120 LINEAR).  0 = ALC cannot amplify (Lyra's old
+    // -3 dB lower bound was conservative); 120 = the reference's
+    // ESSB-friendly upper bound (+41.6 dB amplification ceiling —
+    // far past where most operators run but matches the reference
+    // so the operator-tuning surface is identical).
+    static constexpr double  kMinMicGainDb           = -90.0;
+    static constexpr double  kMaxMicGainDb           = +40.0;
+    static constexpr double  kMinAlcMaxGainLinear    =   0.0;
+    static constexpr double  kMaxAlcMaxGainLinear    = 120.0;
+    // ALC decay (exponential-curve tau in ms).  Reference UI spinner
+    // range 1..50 incr 1 default 10; Lyra mirrors exactly.
+    static constexpr int     kDefaultAlcDecayMs      =  10;
+    static constexpr int     kMinAlcDecayMs          =   1;
+    static constexpr int     kMaxAlcDecayMs          =  50;
+    // Leveler trio defaults match the reference UI's ship-defaults
+    // EXACTLY (Max Gain 0..20 LINEAR default 15; Decay 1..5000 ms
+    // default 100).  The ENABLE checkbox is the one operator-
+    // preference override: reference UI ships Enabled=true, Lyra
+    // ships Enabled=false (operator's explicit PS/predistortion
+    // quality concern about always-on leveler interaction).
+    // Operator opts in via Settings → TX → Leveler.
+    static constexpr bool    kDefaultLevelerOn              = false;
+    static constexpr double  kDefaultLevelerMaxGainLinear   =  15.0;
+    static constexpr double  kMinLevelerMaxGainLinear       =   0.0;
+    static constexpr double  kMaxLevelerMaxGainLinear       =  20.0;
+    static constexpr int     kDefaultLevelerDecayMs         = 100;
+    static constexpr int     kMinLevelerDecayMs             =   1;
+    static constexpr int     kMaxLevelerDecayMs             = 5000;
     // Live values — written by the Q_PROPERTY setters on the Qt
     // main thread, forwarded to the registered TxControl callbacks
     // (which run on the same thread; TxChannel does the WDSP setter
     // call under its own channelMtx_).
-    double micGainDb_     = kDefaultMicGainDb;
-    double alcMaxGainDb_  = kDefaultAlcMaxGainDb;
+    double micGainDb_              = kDefaultMicGainDb;
+    double alcMaxGainLinear_       = kDefaultAlcMaxGainLinear;
+    int    alcDecayMs_             = kDefaultAlcDecayMs;
+    bool   levelerOn_              = kDefaultLevelerOn;
+    double levelerMaxGainLinear_   = kDefaultLevelerMaxGainLinear;
+    int    levelerDecayMs_         = kDefaultLevelerDecayMs;
 
     // ---- TX-1 component 5a: cos² TX-IQ amplitude envelope ----------
     // Owned by HL2Stream, lives on the EP2 wire writer thread.  See
