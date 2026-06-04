@@ -6,8 +6,10 @@
 #include "logbuffer.h"
 #include "prefs.h"
 #include "spotstore.h"
-#include "tci_mic_source.h"
-#include "tx_dsp_worker.h"
+// TX-rip Phase 1 (Q2): tci_mic_source.h / tx_dsp_worker.h removed —
+// TX DSP worker + TCI mic source are being rebuilt from empty files
+// per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  Inbound TX_AUDIO_STREAM
+// is dropped; R-H2 mic-source force/restore returns with the rebuild.
 #include "wdsp_engine.h"
 
 #include <QDateTime>
@@ -436,20 +438,9 @@ void TciServer::onClientDisconnected() {
         emit statusMessage(QStringLiteral(
             "TCI: TX-audio ownership released (client disconnected)"));
         if (stream_) stream_->requestMoxFromTci(false);
-        // R-H2 — restore activeMicSource_ if the owning keydown
-        // forced it.  Matches the keyup/release branch in handleTrx
-        // so an abrupt client drop does not strand the worker at
-        // MicSource::Tci.  See docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
-        if (micSourceForcedTci_ && txWorker_) {
-            using MS = lyra::dsp::TxDspWorker::MicSource;
-            const MS prev = static_cast<MS>(savedMicSource_);
-            txWorker_->setActiveMicSource(prev);
-            emit statusMessage(QString(
-                "TCI: restored activeMicSource → %1 on disconnect")
-                    .arg(static_cast<int>(prev)));
-            micSourceForcedTci_ = false;
-            savedMicSource_     = 255;
-        }
+        // TX-rip Phase 1 (Q2): R-H2 activeMicSource_ save/restore
+        // returns with the new TX DSP worker per
+        // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
     }
     clients_.removeAll(ws);
     streams_.remove(ws);
@@ -734,35 +725,19 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
         }
     }
 
-    if (!tciMicSource_) {
-        // TciMicSource isn't constructed yet (WDSP still loading) OR
-        // construction failed — drop silently after one diagnostic so
-        // a misconfigured launch doesn't go silent forever.
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            qWarning("[tci] TX_AUDIO_STREAM dropped — TciMicSource not "
-                     "registered yet (commit 4 wires it via main.cpp)");
-        }
-        return;
+    // TX-rip Phase 1 (Q2): the TciMicSource sink (and the rest of the
+    // TX DSP subsystem) is being rebuilt from empty files per
+    // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  Inbound TX_AUDIO_STREAM
+    // is silently dropped (after a one-shot diagnostic) until the new
+    // sink lands.
+    (void)mono;
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        qWarning("[tci] TX_AUDIO_STREAM dropped — TX DSP subsystem "
+                 "ripped for rebuild (see TX_ARCHITECTURAL_MAPPING.md)");
     }
-
-    // Task #108 — apply the operator's TCI TX-in gain ONCE at audio-
-    // block ingress (AFTER decode + resample, BEFORE TciMicSource).
-    // Same hot-path discipline as the #75 RX-out path: cached linear
-    // multiplier so we don't pay std::pow per sample; skip the loop
-    // entirely on unity (g ≈ 1.0, the default) so the pre-#108 path
-    // is byte-identical when the slider hasn't moved.  The sample
-    // bounds stay within the working-reference clamp (±4.0 per
-    // decodeTciTxAudio) — the slider's +10 dB ceiling pushes those
-    // to ±~12.6, which the WDSP TXA ALC + EP2 int16 saturation handle
-    // as designed.
-    const double txg = txGainLinear_;
-    if (txg != 1.0) {
-        const float gf = float(txg);
-        for (float &s : mono) s *= gf;
-    }
-    tciMicSource_->submitFromTci(mono.data(), int(mono.size()));
+    return;
 }
 
 void TciServer::onChronoTick() {
@@ -831,9 +806,10 @@ void TciServer::onChronoTick() {
         int((qint64(bufferingMs + kTciTxExtraBufferMs) * targetRate
              + 999) / 1000));
 
-    // queuedSamples = current TciMicSource inbound depth.
-    const int queuedSamples = tciMicSource_
-        ? tciMicSource_->currentQueueSize() : 0;
+    // queuedSamples = current TX-mic-source inbound depth.  TX-rip
+    // Phase 1 (Q2): TciMicSource is being rebuilt; report 0 until
+    // the new sink lands (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
+    const int queuedSamples = 0;
 
     // futureSamples = what we'll have after all outstanding requests
     // get answered with predictedPacketSamples each.
@@ -1411,30 +1387,17 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             // diagnosis must descend to the next reconciled
             // deviation).  See docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
             {
+                // TX-rip Phase 1 (Q2): R-H2 activeMicSource_ readout +
+                // force-to-Tci returns with the new TX DSP worker per
+                // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
                 const QString pickerStr = prefs_ ? prefs_->micSource()
                                                  : QStringLiteral("(null)");
-                const int activeRaw = txWorker_
-                    ? static_cast<int>(txWorker_->activeMicSource())
-                    : -1;
                 emit statusMessage(QString(
-                    "TCI: keydown — activeMicSource=%1 prefs.micSource=%2 "
-                    "useTciAudio=%3")
-                        .arg(activeRaw)
+                    "TCI: keydown — prefs.micSource=%1 useTciAudio=%2 "
+                    "(TX subsystem rebuilding)")
                         .arg(pickerStr)
                         .arg(useTciAudio ? QStringLiteral("1")
                                          : QStringLiteral("0")));
-                if (txWorker_) {
-                    using MS = lyra::dsp::TxDspWorker::MicSource;
-                    const MS cur = txWorker_->activeMicSource();
-                    if (cur != MS::Tci && !micSourceForcedTci_) {
-                        savedMicSource_     = static_cast<std::uint8_t>(cur);
-                        micSourceForcedTci_ = true;
-                        txWorker_->setActiveMicSource(MS::Tci);
-                        emit statusMessage(QStringLiteral(
-                            "TCI: forced activeMicSource → Tci for keydown "
-                            "lifetime (restored on keyup)"));
-                    }
-                }
             }
             // Key MOX (Thetis-faithful) — records PttSource::Tci on
             // the FSM since the request arrived via the TCI WebSocket.
@@ -1457,23 +1420,8 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             emit statusMessage(
                 QStringLiteral("TCI: TX-audio ownership RELEASED"));
         }
-        // R-H2 — restore activeMicSource_ if the matching keydown
-        // forced it.  Fires whether the keydown forced via the gate
-        // above or not (idempotent on the !micSourceForcedTci_
-        // branch).  Operator's Prefs::micSource() was never mutated
-        // here, so this restores exactly the value at which the
-        // worker was running when MSHV first keyed.  See
-        // docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
-        if (micSourceForcedTci_ && txWorker_) {
-            using MS = lyra::dsp::TxDspWorker::MicSource;
-            const MS prev = static_cast<MS>(savedMicSource_);
-            txWorker_->setActiveMicSource(prev);
-            emit statusMessage(QString(
-                "TCI: restored activeMicSource → %1 on keyup")
-                    .arg(static_cast<int>(prev)));
-            micSourceForcedTci_ = false;
-            savedMicSource_     = 255;
-        }
+        // TX-rip Phase 1 (Q2): R-H2 keyup-restore returns with the
+        // new TX DSP worker per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
         stream_->requestMoxFromTci(false);
         sendTo(ws, QStringLiteral("trx:0,false"));
         return;

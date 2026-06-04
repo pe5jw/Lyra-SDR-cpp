@@ -15,8 +15,10 @@
 #include "wdsp_engine.h"
 #include "mic_source.h"
 #include "mainwindow.h"
-#include "tci_mic_source.h"
-#include "tx_dsp_worker.h"
+// TX-rip Phase 1 (Q2): tci_mic_source.h / tx_dsp_worker.h removed —
+// the TX DSP subsystem is being rebuilt from empty files per
+// docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  TX wiring below collapses
+// to a stub until the new components land.
 #include "wdsp_native.h"
 
 #include <algorithm>
@@ -293,15 +295,9 @@ int main(int argc, char *argv[])
     //      while HL2Stream is still alive.
     //   4. stream->close() -> joins the rx-loop thread.
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
-    lyra::dsp::TxDspWorker     *txWorker  = nullptr;
-    // Task #33 — TCI inbound TX-audio source.  Constructed in the
-    // post-WDSP singleShot block (parallel to micSource/txWorker);
-    // handed to MainWindow → TciServer there.  Teardown ordering in
-    // the aboutToQuit chain below: clear from TciServer (so the
-    // binary handler sees null instead of a dangling pointer), then
-    // delete BEFORE txWorker (whose submitMicSamples is the only
-    // thing TciMicSource forwards to).
-    lyra::dsp::TciMicSource    *tciMicSource = nullptr;
+    // TX-rip Phase 1 (Q2): txWorker / tciMicSource pointer declarations
+    // removed — TX DSP worker + TCI mic source are being rebuilt from
+    // empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -330,7 +326,11 @@ int main(int argc, char *argv[])
     // pattern as &txWorker/&micSource above.
     lyra::ui::MainWindow *winRef = nullptr;
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [stream, &winRef, &txWorker, &micSource, &tciMicSource]() {
+                     [stream, &micSource]() {
+        // TX-rip Phase 1 (Q2): teardown collapses to the RX-only
+        // surface (HL2Stream TX callbacks unregister + Hl2Ep6MicSource
+        // delete).  TxDspWorker / TciMicSource teardown returns with
+        // the rebuild per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
         qWarning("[shutdown] handler-1 ENTRY");
         if (stream) {
             qWarning("[shutdown] handler-1 step a: registerTxIqSource({}) - start");
@@ -340,36 +340,6 @@ int main(int argc, char *argv[])
             stream->registerTxControl({});
             qWarning("[shutdown] handler-1 step b: done");
         }
-        // Task #33 — clear TciMicSource from TciServer BEFORE deleting
-        // so the binary handler sees null instead of a dangling
-        // pointer on any in-flight TX_AUDIO_STREAM frame that races
-        // teardown.  Then delete TciMicSource BEFORE txWorker
-        // (TciMicSource's submitFromTci forwards to txWorker; reverse
-        // would dangle for a tick).
-        qWarning("[shutdown] handler-1 step c0: tciServer.setTciMicSource(nullptr) - start");
-        if (winRef) winRef->setTciMicSource(nullptr);
-        qWarning("[shutdown] handler-1 step c0: done");
-        qWarning("[shutdown] handler-1 step c1: delete tciMicSource - start");
-        delete tciMicSource; tciMicSource = nullptr;
-        qWarning("[shutdown] handler-1 step c1: done");
-        // Task #69 — clear MeterModel's TxDspWorker pointer BEFORE
-        // deleting txWorker so a stray tick on the way out can't
-        // dereference a deleted worker.  Null-safe in MainWindow.
-        qWarning("[shutdown] handler-1 step c1b: meter.setTxDspWorker(nullptr) - start");
-        if (winRef) winRef->setTxDspWorker(nullptr);
-        qWarning("[shutdown] handler-1 step c1b: done");
-        // Task #44 Phase 2 — clear TxDspWorker's WdspEngine pointer
-        // BEFORE deleting txWorker.  Same pattern as the c1b
-        // MeterModel clear: a stray TX-worker block-pack tick on the
-        // way out must not dereference a deleted WdspEngine.  Order
-        // matters: wdspEngine itself is destroyed by Qt's QObject
-        // parenting (parent=&app, destroyed during QApp dtor — well
-        // after this aboutToQuit lambda runs), so wdspEngine still
-        // exists here; we just unwire the back-pointer.
-        if (txWorker) txWorker->setWdspEngine(nullptr);
-        qWarning("[shutdown] handler-1 step c: delete txWorker - start (~TxDspWorker runs now)");
-        delete txWorker;  txWorker  = nullptr;
-        qWarning("[shutdown] handler-1 step c: done");
         qWarning("[shutdown] handler-1 step d: delete micSource - start (~Hl2Ep6MicSource runs now)");
         delete micSource; micSource = nullptr;
         qWarning("[shutdown] handler-1 step d: done");
@@ -544,7 +514,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource, &txWorker, &tciMicSource]() {
+                                  &micSource]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
@@ -575,195 +545,18 @@ int main(int argc, char *argv[])
             // outer scope so the aboutToQuit lambda (connected
             // earlier) sees them populated at teardown.
             micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
-            txWorker  = new lyra::dsp::TxDspWorker(wdsp, *micSource);
 
-            // Task #44 Phase 2 — wire the WdspEngine pointer so the
-            // TX worker can feed pre-iqc sip1 samples into the
-            // panadapter analyzer during MOX (step 4 wires the call;
-            // step 5 wires the MOX-edge swap that gates it).
-            // Cleared in the aboutToQuit teardown chain so the TX
-            // worker never dereferences a deleted WdspEngine.
-            txWorker->setWdspEngine(wdspEngine);
-
-            // Task #33 — TCI inbound TX audio source.  Parented to
-            // app so QObject lifecycle is correct; back-pointer to
-            // txWorker is the only wire (submitFromTci forwards there
-            // tagged MicSource::Tci).  Registered with MainWindow →
-            // TciServer so the server's binaryMessageReceived path
-            // can dispatch into us.  Initial activeMicSource set from
-            // the autoloaded Prefs::micSource() token below.
-            tciMicSource = new lyra::dsp::TciMicSource(txWorker);
-            if (win) win->setTciMicSource(tciMicSource);
-
-            // Task #69 — wire the just-constructed TxDspWorker into
-            // MeterModel so the multimeter's MIC / COMP / ALC
-            // sources can poll live WDSP TXA meter taps.  Matches
-            // the setTciMicSource pattern immediately above
-            // (late-bound, post-WDSP-load).  Cleared in the
-            // aboutToQuit teardown chain so MeterModel never
-            // dereferences a deleted txWorker.
-            if (win) win->setTxDspWorker(txWorker);
-
-            // Task #33 — apply the autoloaded mic source + wire
-            // Prefs::micSourceChanged so Settings → TX → Mic Source
-            // (and the TRX:0,true,tci auto-flip in TciServer) drive
-            // the dispatch.  Map the string token to the enum here;
-            // unknown values silently fall back to Mic1 (matches
-            // Prefs::setMicSource validation — defence in depth).
-            auto applyMicSource = [txWorker](const QString &tok) {
-                using MS = lyra::dsp::TxDspWorker::MicSource;
-                MS s = MS::Mic1;
-                if      (tok == QLatin1String("tci"))    s = MS::Tci;
-                else if (tok == QLatin1String("mic2"))   s = MS::Mic2;
-                else if (tok == QLatin1String("micpc"))  s = MS::MicPc1;
-                else if (tok == QLatin1String("micpc2")) s = MS::MicPc2;
-                if (txWorker) txWorker->setActiveMicSource(s);
-            };
-            applyMicSource(prefs->micSource());
-            // Connection context = prefs (a QObject — txWorker isn't);
-            // captures the local &txWorker reference so a teardown
-            // that nulls txWorker leaves applyMicSource as a safe
-            // no-op (its `if (txWorker)` guard).
-            QObject::connect(prefs, &lyra::ui::Prefs::micSourceChanged,
-                             prefs, [prefs, applyMicSource]() {
-                applyMicSource(prefs->micSource());
-            });
-
-            // TX-1 component 6: register TxDspWorker as the HL2Stream
-            // EP2 packer's TX I/Q source.  The packer pulls 126
-            // complex<float> samples per datagram via this callback
-            // when (moxBit && injectTxIq) is true.  injectTxIq
-            // defaults FALSE (wire-inert) — the FSM (component 7
-            // flips it true at keydown).  Caller-owned lifetime:
-            // txWorker outlives the registration; the aboutToQuit
-            // handler above tears down stream + workers in safe
-            // order (handlers fire before destructors).
-            stream->registerTxIqSource(
-                [txWorker](std::complex<float> *out) {
-                    return txWorker->tryConsumeTxIq(out);
-                });
-
-            // TX-1 component 7: register TX channel lifecycle
-            // callbacks.  FSM calls start at keydown (after
-            // moxDelayMs, in fsmKeydownPostMox) and stop at keyup
-            // (after fadeOutMs elapses, in fsmKeyupFadeOut).
-            // setInjectTxIq is forwarded from HL2Stream's own setter
-            // so the EP2-packer flag and the TxDspWorker producer-
-            // side flag stay in lockstep — single point of FSM
-            // control.  Same caller-owned lifetime as above; cleared
-            // FIRST in the aboutToQuit chain via {} below.
-            // TX-1 component 8a-tx-mode follow-up (2026-05-31 PM): use
-            // C++20 DESIGNATED INITIALIZERS (.name = value) so the
-            // compiler enforces field-name matching, NOT positional
-            // order.  This prevents a recurrence of the silent
-            // misalignment bug that caused 8a-tx-mode to ship broken:
-            // a void(double) mic-gain lambda silently wrapped into a
-            // std::function<void(int)> setMode slot (implicit int→
-            // double conversion makes std::function happy), so every
-            // setMode call actually invoked setMicGainDb, every
-            // setMicGainDb call actually invoked setAlcMaxGainDb, and
-            // every setAlcMaxGainDb call actually invoked setMode.
-            // The result was the operator's Mic Gain slider silently
-            // capping ALC ceiling (and thus output power), TX mode
-            // stuck in LSB regardless of selection, and ALC default
-            // 3.0 push setting WDSP TXA mode to 3 (clamped LSB).
-            // Designated initializers make any future struct-field
-            // reorder or addition a hard compile error if the call
-            // site doesn't match — bug class eliminated.
-            stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
-                .start            = [txWorker]() { txWorker->startTxChannel(); },
-                .stop             = [txWorker]() { txWorker->stopTxChannel();  },
-                .setInjectTxIq    = [txWorker](bool on) {
-                    txWorker->setInjectTxIq(on);
-                },
-                .setMode          = [txWorker](int wdspMode) {
-                    txWorker->setMode(wdspMode == 1
-                        ? lyra::dsp::TxChannel::Mode::USB
-                        : lyra::dsp::TxChannel::Mode::LSB);
-                },
-                .setMicGainDb        = [txWorker](double db) {
-                    txWorker->setMicGainDb(db);
-                },
-                .setAlcMaxGainLinear = [txWorker](double linear) {
-                    txWorker->setAlcMaxGainLinear(linear);
-                },
-                // §15.27 Commit B — ALC decay + Leveler trio.
-                .setAlcDecayMs       = [txWorker](int ms) {
-                    txWorker->setAlcDecayMs(ms);
-                },
-                .setLevelerOn        = [txWorker](bool on, double topLin) {
-                    txWorker->setLevelerOn(on, topLin);
-                },
-                .setLevelerDecayMs   = [txWorker](int ms) {
-                    txWorker->setLevelerDecayMs(ms);
-                },
-                // TX-1 component 8c — operator TX bandwidth callback.
-                // Forwards (low, high) Hz straight to TxChannel which
-                // sign-codes per WDSP mode internally.
-                .setBandpass      = [txWorker](double lo, double hi) {
-                    txWorker->setBandpass(lo, hi);
-                },
-            });
-
-            // TX-1 component 8a-tx-mode — wire the operator's RX-mode
-            // changes through to the TX channel so the WDSP TXA mode
-            // tracks the operator's sideband selection.  Without this
-            // wiring the TX channel sits at whatever mode WDSP picked
-            // at create-time (mode=0=LSB), which the operator would
-            // observe as "USB doesn't take effect on TX, stays LSB"
-            // (the 2026-05-31 bench symptom).  The translator handles
-            // non-SSB modes (CWU/DIGU → USB, CWL/DIGL → LSB) for
-            // forward-compat; TX-1 is SSB-only so AM/FM/CW/DIG aren't
-            // operationally valid for keying yet, but mapping them to
-            // a sensible SSB sideband prevents an undefined state.
-            auto wdspTxModeFor = [](const QString &uiMode) -> int {
-                const QString m = uiMode.toUpper();
-                if (m == QStringLiteral("LSB")  ||
-                    m == QStringLiteral("CWL")  ||
-                    m == QStringLiteral("DIGL") ||
-                    m == QStringLiteral("DRMD")) {
-                    return 0;   // WDSP TXA mode LSB
-                }
-                return 1;       // WDSP TXA mode USB (default for
-                                // USB / CWU / DIGU / AM / FM / DSB /
-                                // SAM / SPEC / DRMU / unknown)
-            };
-
-            // Live propagation: every RX-mode change pushes TX mode too.
-            QObject::connect(wdspEngine,
-                             &lyra::dsp::WdspEngine::modeChanged,
-                             stream, [stream, wdspEngine, wdspTxModeFor]() {
-                stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
-            });
-
-            // Initial sync: push the operator's current mode to the
-            // freshly-registered TX channel ONCE right now, so the
-            // first TX keydown after app launch uses the correct
-            // sideband — not WDSP's create-time mode=0 (LSB) default.
-            // This is the actual fix for the operator's "USB stuck in
-            // LSB" symptom — the operator's saved mode (e.g. USB) is
-            // already loaded into wdspEngine by this point in init;
-            // we just need to relay it onto the TX channel since it
-            // was never previously pushed.
-            stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
-
-            // TX-1 component 8c + Task #53 — operator TX bandpass
-            // wiring.  Same pattern as setTxMode above: a live signal
-            // connection pushes (Prefs.filterLow, Prefs.txBandwidth)
-            // to the TX channel on every change of EITHER edge, plus
-            // one initial push right now so the freshly-opened
-            // channel uses the operator's persisted per-mode TX BW +
-            // shared filterLow rather than TxChannel's create-time
-            // (200, 3100) default.
-            auto pushTxBandpass = [stream, prefs]() {
-                stream->setTxBandpass(prefs->filterLow(),
-                                      prefs->txBandwidth());
-            };
-            QObject::connect(prefs, &lyra::ui::Prefs::txBandwidthChanged,
-                             stream, pushTxBandpass);
-            QObject::connect(prefs, &lyra::ui::Prefs::filterLowChanged,
-                             stream, pushTxBandpass);
-            pushTxBandpass();
+            // TX-rip Phase 1 (Q2): TxDspWorker / TciMicSource
+            // construction + the entire TxControl/TxIqSource
+            // registration block + RX-mode→TX-mode propagation +
+            // TX-bandpass wiring REMOVED.  The TX DSP subsystem is
+            // being rebuilt from empty files per the signed Phase 0
+            // mapping (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
+            // HL2Stream's TX-I/Q source + TX control callbacks are
+            // left unregistered — the EP2 packer zero-fills TX I/Q
+            // and FSM keydown/keyup become no-ops, leaving the wire
+            // RX-only.  The RX path below (filterLow wiring +
+            // hwPttEnabled forwarder) is untouched.
 
             // Task #53 — shared filterLow also drives the RX bandpass.
             // WdspEngine.setFilterLowHz triggers an internal

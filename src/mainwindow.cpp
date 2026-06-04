@@ -12,7 +12,9 @@
 #include "memorystore.h"
 #include "eibistore.h"
 #include "spotstore.h"
-#include "tci_mic_source.h"
+// TX-rip Phase 1 (Q2): tci_mic_source.h removed; the TciMicSource type
+// is being ripped along with the rest of the TX DSP subsystem and
+// rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 #include "tci_server.h"
 #include "metermodel.h"
 #include "wdsp_engine.h"
@@ -1335,23 +1337,9 @@ void MainWindow::applyDefaultLayout() {
     }
 }
 
-void MainWindow::setTciMicSource(lyra::dsp::TciMicSource *src) {
-    if (tci_) tci_->setTciMicSource(src);
-}
-
-void MainWindow::setTxDspWorker(lyra::dsp::TxDspWorker *w) {
-    // Task #69 — wire the late-constructed TxDspWorker into
-    // MeterModel so the MIC / COMP / ALC sources have a live
-    // WDSP TXA tap.  Null-safe (caller passes nullptr on
-    // teardown).
-    if (meter_) meter_->setTxDspWorker(w);
-    // R-H2 — also wire the worker into TciServer so its handleTrx
-    // keydown branch can log activeMicSource_ + force it to Tci
-    // for the keydown lifetime (token-agnostic, restored on keyup
-    // or owner disconnect).  Mirrors setTciMicSource() above.  See
-    // docs/THETIS_VS_LYRA_RECONCILED.md R-H2.
-    if (tci_) tci_->setTxDspWorker(w);
-}
+// TX-rip Phase 1 (Q2): setTciMicSource / setTxDspWorker method bodies
+// removed; declarations dropped in mainwindow.h.  TX wiring rebuilt per
+// docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();

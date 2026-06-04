@@ -11,7 +11,10 @@
 #include "metermodel.h"
 
 #include "hl2_stream.h"
-#include "tx_dsp_worker.h"    // Task #69 — live TXA meter taps
+// TX-rip Phase 1 (Q2): tx_dsp_worker.h removed — TX DSP worker is being
+// rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
+// TX meter taps (MIC / LVL / ALC cases below) return their "—"
+// placeholder until the new worker lands.
 #include "wdsp_engine.h"
 
 #include <QSettings>
@@ -567,67 +570,16 @@ QString MeterModel::formatSecondaryText(int src) const {
                    ? QStringLiteral("T —")
                    : QStringLiteral("T %1 °C").arg(c, 0, 'f', 1);
     }
-    // ── TX dynamics meter set (Task #71 §2, reference-faithful) ──
-    // Common pattern: each case reads a single dB value via the
-    // late-bound TxDspWorker; gated on MOX (the chain is silent at
-    // rest so readings are meaningless without active TX audio).
-    // Level meters show "—" when raw <= -300 (covers WDSP's -400
-    // off-state sentinel).  Gain meters never show "—" because
-    // their off-state is 0 dB (= no action), indistinguishable
-    // from "block on but not currently acting" — same posture as
-    // the reference.
-    case MIC: {
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("MIC —");
-        const double db = txWorker_->micPeakDbFs();
-        if (db <= -300.0) return QStringLiteral("MIC —");
-        return QStringLiteral("MIC %1 dBFS").arg(db, 0, 'f', 1);
-    }
-    case LVL_PK: {
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("LEV —");
-        const double db = txWorker_->levelerPeakDbFs();
-        if (db <= -300.0) return QStringLiteral("LEV —");
-        return QStringLiteral("LEV %1 dBFS").arg(db, 0, 'f', 1);
-    }
-    case LVL_G: {
-        // Leveler GAIN — typically positive (boost) since the
-        // leveler brings up weak passages.  "LVL +6 dB" means
-        // "leveler boosting 6 dB right now."
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("LVL —");
-        const double db = txWorker_->levelerGainDb();
-        return QStringLiteral("LVL %1 dB").arg(db, 0, 'f', 1);
-    }
-    // CFC_PK / CFC_G / COMP intentionally absent — Combinator
-    // (Task #51) replaces both WDSP blocks as a Lyra-native pre-
-    // processor with its own (future) Lyra-native meter sources.
-    case ALC_PK: {
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("ALC —");
-        const double db = txWorker_->alcPeakDbFs();
-        if (db <= -300.0) return QStringLiteral("ALC —");
-        return QStringLiteral("ALC %1 dBFS").arg(db, 0, 'f', 1);
-    }
-    case ALC_G: {
-        // ALC gain action.  Reference convention: positive number =
-        // dB of reduction the final limiter is applying.
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("ALC G —");
-        const double db = txWorker_->alcGainDb();
-        return QStringLiteral("ALC G %1 dB").arg(db, 0, 'f', 1);
-    }
-    case ALC_GROUP: {
-        // Composite: ALC_PK + ALC_GAIN — what the wire would have
-        // seen if the ALC limiter weren't acting (i.e. pre-ALC peak
-        // estimated from the post-ALC level + the gain reduction).
-        if (!txWorker_ || !stream_ || !stream_->moxActive())
-            return QStringLiteral("ALC Σ —");
-        const double pk = txWorker_->alcPeakDbFs();
-        const double gn = txWorker_->alcGainDb();
-        if (pk <= -300.0) return QStringLiteral("ALC Σ —");
-        return QStringLiteral("ALC Σ %1 dBFS").arg(pk + gn, 0, 'f', 1);
-    }
+    // ── TX dynamics meter set ──
+    // TX-rip Phase 1 (Q2): TxDspWorker is being rebuilt from empty
+    // files (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).  Until the new
+    // worker lands these meters report their idle placeholder.
+    case MIC:       return QStringLiteral("MIC —");
+    case LVL_PK:    return QStringLiteral("LEV —");
+    case LVL_G:     return QStringLiteral("LVL —");
+    case ALC_PK:    return QStringLiteral("ALC —");
+    case ALC_G:     return QStringLiteral("ALC G —");
+    case ALC_GROUP: return QStringLiteral("ALC Σ —");
     case RX_SMETER:
     default:
         return QString();
@@ -1560,21 +1512,18 @@ void MeterModel::computeGainMeterFromDb(double rawDb,
     emit updated();
 }
 
+// TX-rip Phase 1 (Q2): TX meter compute paths report NaN (rendered as
+// "—") until the new TxDspWorker lands per
+// docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 void MeterModel::computeMic() {
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->micPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                            kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
 
 void MeterModel::computeLvlPk() {
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->levelerPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                            kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
 
@@ -1584,43 +1533,20 @@ void MeterModel::computeLvlPk() {
 // will land on Lyra-native Source entries, not WDSP TXA indices.
 
 void MeterModel::computeAlcPk() {
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->alcPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    computeLevelMeterFromDb(raw, kMicDbMin, /*danger=*/-6.0,
+    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                            kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
 
 void MeterModel::computeAlcGroup() {
-    // Composite per reference's MeterTXMode.ALC_GROUP: ALC_PK +
-    // ALC_GAIN summed.  Renders as a single dBFS level number —
-    // what the wire would have seen if the ALC limiter hadn't
-    // applied its current gain reduction (i.e. pre-ALC peak
-    // estimated from post-ALC level + the reduction added back).
-    const bool mox = stream_ && stream_->moxActive();
-    const double pk = (txWorker_ && mox)
-        ? txWorker_->alcPeakDbFs()
-        : std::numeric_limits<double>::quiet_NaN();
-    const double gn = (txWorker_ && mox)
-        ? txWorker_->alcGainDb()
-        : std::numeric_limits<double>::quiet_NaN();
-    const double sum = (std::isnan(pk) || std::isnan(gn))
-        ? std::numeric_limits<double>::quiet_NaN()
-        : (pk + gn);
-    computeLevelMeterFromDb(sum, kMicDbMin, /*danger=*/-6.0,
+    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                            kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
 
 void MeterModel::computeLvlG() {
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->levelerGainDb()
-        : std::numeric_limits<double>::quiet_NaN();
-    // Leveler is uphill — typical action is boost (positive dB).
-    // Danger when boosting more than 12 dB (signal too weak to be
-    // recovered cleanly without making the noise floor audible).
-    computeGainMeterFromDb(raw, kGainDbMax, /*danger=*/12.0);
+    computeGainMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                           kGainDbMax, /*danger=*/12.0);
 }
 
 void MeterModel::computeAlcG() {
@@ -1648,23 +1574,11 @@ void MeterModel::computeAlcG() {
     // formula treated the stored value as already-dB, which is
     // wrong now that the storage is LINEAR (per the §15.27 fix to
     // the underlying setter / unit semantics).
-    const bool mox = stream_ && stream_->moxActive();
-    const double raw = (txWorker_ && mox)
-        ? txWorker_->alcGainDb()
-        : std::numeric_limits<double>::quiet_NaN();
-    const double maxLin = stream_ ? stream_->alcMaxGainLinear() : 3.0;
-    const double maxgDb = (maxLin > 0.0) ? 20.0 * std::log10(maxLin)
-                                         : 0.0;
-    // Apply reference formula: max(0, raw + maxgDb).  NaN raw stays
-    // NaN (validity gate in the helper renders "—").
-    const double display = std::isnan(raw)
-        ? raw
-        : std::max(0.0, raw + maxgDb);
-    // ALC danger threshold: ≥ 6 dB of displayed action signals
-    // gain-staging too hot (pumping / splatter risk).  Reference
-    // threshold.  Bar scale (kGainDbMax = -20) unchanged so the
-    // visualization is consistent with the LVL G bar.
-    computeGainMeterFromDb(display, kGainDbMax, /*danger=*/6.0);
+    // TX-rip Phase 1 (Q2): TxDspWorker ripped — display formula stays
+    // documented in the comment above for the rebuild; meter shows
+    // "—" via NaN until the new worker lands.
+    computeGainMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+                           kGainDbMax, /*danger=*/6.0);
 }
 
 } // namespace lyra::ui

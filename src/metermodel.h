@@ -25,7 +25,7 @@
 #include <deque>
 
 namespace lyra::ipc { class HL2Stream; }
-namespace lyra::dsp { class WdspEngine; class TxDspWorker; }
+namespace lyra::dsp { class WdspEngine; }  // TxDspWorker ripped (Q2)
 
 namespace lyra::ui {
 
@@ -254,14 +254,10 @@ public:
                         lyra::dsp::WdspEngine *wdsp,
                         QObject *parent = nullptr);
 
-    // Task #69 — late-bound TX DSP worker for the WDSP TXA meter
-    // taps (MIC / COMP / ALC sources).  Null at construction
-    // because TxDspWorker is built post-WDSP-load (main.cpp
-    // singleShot); main.cpp calls this after construction.  Held
-    // by raw pointer (caller owns lifetime; teardown order makes
-    // TxDspWorker destruct AFTER MeterModel goes silent — same
-    // pattern as setTciMicSource above).
-    void setTxDspWorker(lyra::dsp::TxDspWorker *w) { txWorker_ = w; }
+    // TX-rip Phase 1 (Q2): setTxDspWorker removed — TX DSP worker is
+    // being rebuilt from empty files per the signed Phase 0 mapping
+    // (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).  TX meter taps go
+    // silent until the new TxDspWorker lands.
 
     double  level()    const { return level_; }
     double  peak()     const { return peak_; }
@@ -422,7 +418,8 @@ private:
 
     lyra::ipc::HL2Stream   *stream_   = nullptr;
     lyra::dsp::WdspEngine  *wdsp_     = nullptr;
-    lyra::dsp::TxDspWorker *txWorker_ = nullptr;   // Task #69 (late-bound)
+    // TX-rip Phase 1 (Q2): txWorker_ removed; field returns with the
+    // new TX DSP worker (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
     QTimer timer_;
 
     // Active scale endpoints (recomputed each tick from the VFO freq;

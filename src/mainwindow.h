@@ -27,8 +27,6 @@ class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
-namespace lyra::dsp { class TciMicSource; class TxDspWorker; }
-
 namespace lyra::ui {
 
 class Prefs;
@@ -64,17 +62,10 @@ public:
                Prefs *prefs, lyra::wx::WxService *wx,
                QWidget *parent = nullptr);
 
-    // Task #33 — pass-through to TciServer so main.cpp can hand the
-    // TciMicSource (constructed late, after WDSP loads) into the
-    // server's binary-frame handler.  Null-safe (clears the wire on
-    // teardown).  See main.cpp's WDSP-loaded singleShot block + the
-    // aboutToQuit chain.
-    void setTciMicSource(lyra::dsp::TciMicSource *src);
-    // Task #69 — late-bound forwarder so main.cpp's WDSP-loaded
-    // singleShot block (where TxDspWorker is constructed) can
-    // wire the worker into the MeterModel for live MIC/COMP/ALC
-    // taps.  Same pattern as setTciMicSource above.
-    void setTxDspWorker(lyra::dsp::TxDspWorker *w);
+    // TX-rip Phase 1 (Q2): setTciMicSource / setTxDspWorker removed —
+    // the TX DSP subsystem is being rebuilt from empty files per the
+    // signed Phase 0 architectural mapping (docs/TX_ARCHITECTURAL_MAPPING.md
+    // §10.3).  Re-introduced when the new TX path lands.
 
 protected:
     void closeEvent(QCloseEvent *event) override;
