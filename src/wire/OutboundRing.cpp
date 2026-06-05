@@ -1,0 +1,128 @@
+// Lyra — OutboundRing implementation.  See OutboundRing.h.
+//
+// Producer/consumer handshake mirrors the reference's paired-event
+// + paired-semaphore pattern (`networkproto1.c:1199-1200, 1220`)
+// using C++20 `std::binary_semaphore` primitives.
+
+#include "wire/OutboundRing.h"
+
+#include <chrono>
+#include <cstring>
+
+namespace lyra::wire {
+
+namespace {
+// Bounded acquire timeout on the producer-side push.  Mirrors the
+// safety posture the §15.21 wedged-writer audit added on the EP6
+// side: a dead consumer must not wedge the producer permanently.
+// 5 s is generous (the consumer normally drains in ≤2.625 ms at
+// the HL2 EP2 cadence).
+constexpr std::chrono::seconds kProducerAcquireTimeout{5};
+}  // namespace
+
+OutboundRing::OutboundRing()
+    : lr_buf_(kDoublesPerBuffer, 0.0),
+      iq_buf_(kDoublesPerBuffer, 0.0) {
+    // Semaphore initial counts set via in-class initializers:
+    // lr_ready_/iq_ready_ = 0 (consumer waits for first fill);
+    // lr_consumed_/iq_consumed_ = 1 (producer can do the first
+    // fill without blocking — matches the reference's first-
+    // iteration behavior).
+}
+
+OutboundRing::~OutboundRing() {
+    unblock();
+}
+
+void OutboundRing::push_lr(const double* src) {
+    if (!src) return;
+    // Wait for the consumer to have drained the previous fill (or
+    // the initial signaled state on first call).  Bounded — on
+    // timeout the push is a no-op and the diagnostic counter
+    // increments.
+    if (!lr_consumed_.try_acquire_for(kProducerAcquireTimeout)) {
+        ++push_timeouts_lr_;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(pair_lock_);
+        std::memcpy(lr_buf_.data(), src,
+                    kDoublesPerBuffer * sizeof(double));
+    }
+    lr_ready_.release();
+}
+
+void OutboundRing::push_iq(const double* src) {
+    if (!src) return;
+    if (!iq_consumed_.try_acquire_for(kProducerAcquireTimeout)) {
+        ++push_timeouts_iq_;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(pair_lock_);
+        std::memcpy(iq_buf_.data(), src,
+                    kDoublesPerBuffer * sizeof(double));
+    }
+    iq_ready_.release();
+}
+
+bool OutboundRing::wait_pair_ready() {
+    // Wait-all semantic matching the reference's
+    // `WaitForMultipleObjects(2, hsendEventHandles, TRUE,
+    // INFINITE)` at `networkproto1.c:1220`.  Acquired in fixed
+    // order (lr first, then iq) — symmetric with `push_lr`/
+    // `push_iq` which release in the matching order.  The
+    // sequential acquire is equivalent to "wait until BOTH are
+    // signaled" because both semaphores must reach count>=1
+    // before both acquires can complete; the only observable
+    // difference vs the reference is the order in which the
+    // consumer is unblocked once the second signal arrives, and
+    // that order has no protocol effect (both buffers are
+    // consumed before the next datagram).
+    while (true) {
+        // Use a polling acquire so unblock() can wake the consumer
+        // without needing to release the semaphores.  100 ms
+        // polling cadence is below the operator-perceptible
+        // shutdown latency budget; the hot-path acquire is the
+        // bounded `try_acquire_for` below.
+        if (lr_ready_.try_acquire_for(std::chrono::milliseconds(100))) {
+            // Got LR; now wait for IQ.  Loop with unblock check
+            // here too so a stop-during-wait wakes promptly.
+            while (true) {
+                if (iq_ready_.try_acquire_for(std::chrono::milliseconds(100))) {
+                    return true;
+                }
+                if (stop_request_) {
+                    // Release LR back so a future restart can
+                    // re-pair cleanly.  (No-op if the ctor sets
+                    // initial count 0; releasing brings it to 1
+                    // which the next wait then consumes — safe.)
+                    lr_ready_.release();
+                    return false;
+                }
+            }
+        }
+        if (stop_request_) return false;
+    }
+}
+
+void OutboundRing::notify_consumed_pair() {
+    // Paired release matching the reference's
+    // `ReleaseSemaphore(hobbuffsRun[0], 1, 0);
+    //  ReleaseSemaphore(hobbuffsRun[1], 1, 0);` at
+    // `networkproto1.c:1199-1200`.
+    lr_consumed_.release();
+    iq_consumed_.release();
+}
+
+void OutboundRing::unblock() {
+    stop_request_ = true;
+    // Belt-and-suspenders: also release the ready semaphores so a
+    // consumer parked on `try_acquire_for` returns immediately.
+    // The next wait_pair_ready call will observe stop_request_ +
+    // return false.
+    lr_ready_.release();
+    iq_ready_.release();
+}
+
+}  // namespace lyra::wire

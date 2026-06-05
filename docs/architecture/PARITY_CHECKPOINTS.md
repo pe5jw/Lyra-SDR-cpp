@@ -2146,3 +2146,213 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §5-A parity correction sweep — 9 fixes vs `c8baa63` shipped (including the IQ-scale critical bug).  Single-commit parity correction on top of §5; §6 unblocked.*
+
+---
+
+## §6. `Ep2SendThread` + `OutboundRing` — EP2 datagram send loop + outbound framing primitives
+
+**Scope.** The EP2 send thread: semaphore-driven outbound pump that
+waits on a paired (LR-audio + TX-IQ) buffer-ready signal, applies
+the per-sample TX-side transforms (MOX-edge IQ zeroing, optional
+EER mode overwrite of LR with IQ, optional L/R audio channel swap,
+float → int16 round-to-nearest quantization, HL2 4-bit / non-HL2
+3-bit CW state-bit overlay on TX I-sample LSBs when CW enabled),
+calls into the §4 `FrameComposer` to produce the 2-USB-frame
+outbound buffer (504 bytes C&C + 504 bytes LRIQ per frame), and
+hands the 1024-byte composed payload to the EP2 frame writer
+(`MetisWriteFrame`-equivalent) which prepends the 8-byte HPSDR
+header + 4-byte BE outbound sequence number and calls `sendto`.
+Also covers the `OutboundRing` LR-audio + TX-IQ buffer plumbing
+that audio-mixer / TX-DSP threads write into and the send thread
+reads from.
+
+Source mirror: `networkproto1.c::sendProtocol1Samples` (lines
+1204-1267) + `networkproto1.c::MetisWriteFrame` (lines 216-237) +
+the `MetisOutBoundSeqNum` global + the `prn->hsendEventHandles[2]`
++ `prn->outLRbufp` + `prn->outIQbufp` + `prn->hobbuffsRun[2]`
+semaphore/buffer state.  HL2 / HL2+ EP2 send; ANAN-class branches
+(non-HERMESLITE) call `WriteMainLoop` instead of `WriteMainLoop_HL2`
+but the surrounding `sendProtocol1Samples` body is family-shared.
+
+**Locked architecture (Q1–Q5 — PROPOSED, awaiting operator
+sign-off).**  Per the standing 2026-06-05 directive "reference =
+make Lyra the same" all answers default to verbatim reference
+mirror.
+
+| # | Question | Proposed answer (operator review) |
+|---|---|---|
+| Q1 | Send-loop structure | **Switch-style send loop matching the reference verbatim.**  `Ep2SendThread::run_loop()` as a near-line-for-line port of `sendProtocol1Samples` (`networkproto1.c:1204-1267`).  Outer `while (io_keep_running)` + semaphore wait on both LR + IQ buffers ready + MOX-edge zeroing branch + optional EER overwrite + optional L/R swap + per-sample int16 quantization with CW state-bit overlay + call into `FrameComposer::compose_pair()` (the §4 emit path) → call into `metis_write_frame(0x02, buf)`. |
+| Q2 | `OutboundRing` as separate file? | **Yes — `src/wire/OutboundRing.{h,cpp}`** — matches reference's logical separation (`outLRbufp` + `outIQbufp` + `hsendEventHandles[2]` are a coherent buffer-pair-with-semaphore unit; reference holds them on `RADIONET` but they are unambiguously networking-infrastructure state per §1.1 RadioNet exclusion).  Lyra-native: one ring class holds the two paired buffers + the two-element semaphore + producer-side `push_lr()`/`push_iq()` setters + consumer-side `wait_pair_ready()` blocking method.  Outboundring header already present as empty skeleton in CMakeLists; populate in this commit. |
+| Q3 | `MetisWriteFrame` placement | **Free function `metis_write_frame(int endpoint, const uint8_t* payload, std::size_t payload_bytes)` in `src/wire/Ep2SendThread.cpp` anonymous namespace** — matches the reference's free-function shape (`networkproto1.c:216`).  Owns the 8-byte HPSDR header build (`0xEF 0xFE 0x01 endpoint` + 4-byte BE seqnum) + `MetisOutBoundSeqNum` increment + `sendto`/`sendPacket` call.  Outbound seqnum is a class member (`out_seq_num_`) — not a global — per the §1.1 networking-infrastructure-stays-out-of-RadioNet discipline.  ✅ accepted Lyra-native deviation. |
+| Q4 | Where do `outLRbufp` / `outIQbufp` / `OutBufp` / outbound seqnum live? | **Inside `OutboundRing` (LR + IQ buffers + their semaphore) + inside `Ep2SendThread` (composed outbound buffer + seqnum)** — honors the signed §1.1 networking-infrastructure exclusion from `RadioNet`.  `prn->outLRbufp` (sized for 126 LR audio samples) + `prn->outIQbufp` (sized for 126 TX IQ samples) live as `std::vector<double>` members on `OutboundRing`.  `prn->OutBufp` (the 504-byte composed LRIQ output buffer, written to by `sendProtocol1Samples`, read by `WriteMainLoop_HL2`) lives as a member of `Ep2SendThread` (`out_buf_`).  Same pattern as §5 (`RxBuff`/`TxReadBufp`/`ControlBytesIn`). |
+| Q5 | Synchronization | One `std::mutex send_lock_` member of `Ep2SendThread` ↔ reference's `prn->sndpktp1` (the P1 send critical section, sibling of the §5 `prn->rcvpktp1`).  Held across the `metis_write_frame` `sendto` call to prevent overlapping sends on the same socket.  Lock-order acyclic per §15.26 lessons.  The `OutboundRing` semaphore (LR-ready + IQ-ready paired wait) uses `std::counting_semaphore<1>` × 2 (matches reference's two `HANDLE` semaphores in `hsendEventHandles[2]`). |
+
+**§3 supplement — additional globals surfaced by §6:**
+
+| Global | Reference (file:line) | Lyra | Default |
+|---|---|---|---|
+| `MetisOutBoundSeqNum` | `network.h` (referenced by `networkproto1.c:221, 231` as `unsigned int`) — running outbound seq counter, incremented per emitted EP2 datagram | (NOT a global) — class member `Ep2SendThread::out_seq_num_` per Q3.  Lyra-native deviation; reference's global counter is the only consumer (no cross-file reads) so encapsulation is safe. | `0` (incremented to 1 on first emit; matches reference behavior at first `++MetisOutBoundSeqNum`) |
+| `XmitBit` | `network.h:413` (already surfaced in §3) — read at `:1222` (`prn->run && XmitBit`) and `:1227` (`if (!XmitBit) memset(outIQbufp, 0, ...);`) | already present | `0` (unchanged) |
+| `prn->swap_audio_channels` | `network.h` — read at `:1231` for the optional L/R channel-swap loop | RADIONET field, add to `AudioConfig` sub-struct (if not already present) | `0` (no swap) |
+| `prn->cw.cw_enable` + `prn->tx[0].{cwx_ptt, dot, dash, cwx}` | `network.h::CwConfig` + `network.h::TxState` — read at `:1247-1256` for the HL2 4-bit / non-HL2 3-bit CW state-bit overlay on TX I-sample LSBs | already present in `RadioNet.h` (CwConfig + TxState) | `0` (CW off; preserves bare-SSB-only behavior) |
+| `pcm->xmtr[0].peer->run` | reference's channel-master state — read at `:1222` for the EER mode gate | NOT applicable to Lyra (no channel-master); the EER branch is a deferred §6 deviation — see §6.4 below.  Operator-policy plumbing per Task #114. | (n/a) |
+
+---
+
+### §6.1 Thread lifecycle + MMCSS Pro-Audio priority (source: `networkproto1.c:1204-1216`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Function entry | `DWORD WINAPI sendProtocol1Samples(LPVOID n)` (`:1204`) | `void Ep2SendThread::run_loop()` — runs on a spawned `std::thread`; thread start sets MMCSS Pro-Audio priority via `AvSetMmThreadCharacteristicsW` (Windows-only; no-op elsewhere) |
+| MMCSS priority | `AvSetMmThreadCharacteristics(TEXT("Pro Audio"), &taskIndex); AvSetMmThreadPriority(hTask, 2);` (`:1207-1208`); fallback `SetThreadPriority(..., THREAD_PRIORITY_HIGHEST)` (`:1209`) | Same — MMCSS Pro-Audio + priority 2 via `AvSetMmThreadPriority(handle, AVRT_PRIORITY_NORMAL+2)` (Windows only); on non-Windows, no-op (cross-platform port acceptable deviation, signed §6.7) |
+| Local state | `double *pbuffs[2]; pbuffs[0]=prn->outLRbufp; pbuffs[1]=prn->outIQbufp;` (`:1214-1216`) | Same — local pointer pair captured from `OutboundRing` members at loop entry |
+| Loop entry | `while (io_keep_running != 0)` (`:1218`) | `while (io_keep_running_)` — `std::atomic<int>` member |
+
+**VERDICT:** ✅ **PARITY** — structural elements verbatim; ⚠ **ACCEPTABLE DEVIATION** on the Windows-only MMCSS calls being conditional under `#ifdef _WIN32` (cross-platform).
+
+---
+
+### §6.2 Paired-buffer semaphore wait (source: `networkproto1.c:1220`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Wait | `WaitForMultipleObjects(2, prn->hsendEventHandles, TRUE, INFINITE);` (`:1220`) — waits for BOTH LR + IQ buffers to signal ready (`TRUE` = wait-all semantic) | `OutboundRing::wait_pair_ready()` — acquires both `std::counting_semaphore<1>` members in lockstep; blocks until both producers (audio mixer + TX-DSP) have released their respective semaphores |
+| Semaphore release (producer side) | `ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0);` (`:1199` in `WriteMainLoop_HL2`) — done at the END of frame emission to signal "send-side has consumed; producer free to refill" | NOT in §6 scope — producer-side release is part of FrameComposer's emit path; the producer-side `notify_consumed()` API will land with the Phase 2 wire-up step that connects FrameComposer's emit to OutboundRing's free-list signaling.  For §6 wire-inert, the semaphore-pair is signaled by stub helpers in unit tests. |
+
+**VERDICT:** ✅ **PARITY** — `std::counting_semaphore<1>` × 2 acquired in lockstep matches the wait-all `WaitForMultipleObjects` semantic; ⚠ **DEFERRED** on the producer-side release wiring (lands with Phase 2 step 14).
+
+---
+
+### §6.3 MOX-edge IQ zeroing (source: `networkproto1.c:1227`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| MOX-off branch | `if (!XmitBit) memset(prn->outIQbufp, 0, sizeof(complex) * 126);` (`:1227`) — zero the IQ buffer when not transmitting | Same — `if (!XmitBit) { std::fill(out_iq_buf_.begin(), out_iq_buf_.begin() + 2 * 126, 0.0); }` |
+
+**Reference safety property preserved:** even if the audio-mixer / TX-DSP producer pushes non-zero IQ samples into the buffer while MOX is low (e.g., due to a race between PTT-release and the producer's next process_block), the EP2 send thread zeros the IQ buffer in the wire path BEFORE quantization → no RF leak on PTT-release race.  ⚠ **CRITICAL safety property** — preserve verbatim.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1227`; safety property preserved.
+
+---
+
+### §6.4 EER mode LR-overwrite-by-IQ (source: `networkproto1.c:1222-1226`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| EER branch | `if (pcm->xmtr[0].peer->run && XmitBit) { memcpy(prn->outLRbufp, prn->outIQbufp + 256, sizeof(complex) * 126); }` (`:1222-1226`) — when in EER/ETR mode and transmitting, overwrite the LR audio with delayed IQ data (EER = Envelope Elimination & Restoration; ETR = Envelope Tracking) | **DEFERRED** to Task #114 TX-policy plumbing — Lyra has no channel-master equivalent of `pcm->xmtr[0].peer->run`; EER mode is a v0.3+ TX feature that requires upstream WDSP TX-channel + envelope-tracking implementation.  For §6, the branch is stubbed with a `// FIXME (Task #114): EER mode requires WDSP TX channel state` comment + a hardcoded `if (false &&` guard that disables the branch.  When EER lands, the guard flips to the real condition. |
+
+**VERDICT:** ⚠ **DEFERRED DEVIATION** — operator-approved per the locked Q1-Q5 sign-off; branch shape preserved with stubbed condition.  Marked 🔴 OPERATOR-APPROVED DEVIATION pending Task #114.
+
+---
+
+### §6.5 Optional L/R audio channel swap (source: `networkproto1.c:1231-1239`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Swap branch | `if (prn->swap_audio_channels) { for (i = 0; i < 4 * 63; i += 2) { swap = pbuffs[0][i+0]; pbuffs[0][i+0] = pbuffs[0][i+1]; pbuffs[0][i+1] = swap; } }` (`:1231-1239`) — when operator-configured, swap L ↔ R audio in-place to compensate for hardware-firmware variants | Same — read `prn->swap_audio_channels` (RADIONET shadow set by operator-config), perform in-place swap on the 504-byte LR buffer (252 doubles = 4*63 LR pairs).  Verbatim loop bounds + index math. |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1231-1239`.
+
+---
+
+### §6.6 Float → int16 quantization with round-to-nearest (source: `networkproto1.c:1241-1259`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Outer loop | `for (i = 0; i < 2 * 63; i++)` — 126 sample-slots per buffer pair | Same — `for (int i = 0; i < 2 * 63; ++i)` |
+| Middle loop | `for (j = 0; j < 2; j++)` — j=0 = LR pair, j=1 = IQ pair | Same |
+| Inner loop | `for (k = 0; k < 2; k++)` — k=0 = first component (L or I), k=1 = second component (R or Q) | Same |
+| Quantization | `temp = pbuffs[j][i*2+k] >= 0.0 ? (short)floor(pbuffs[j][i*2+k] * 32767.0 + 0.5) : (short)ceil(pbuffs[j][i*2+k] * 32767.0 - 0.5);` (`:1245-1246`) — symmetric round-to-nearest with floor/ceil split on sign | Same — `int16_t temp = (v >= 0.0) ? static_cast<int16_t>(std::floor(v * 32767.0 + 0.5)) : static_cast<int16_t>(std::ceil(v * 32767.0 - 0.5));` |
+| BE pack to OutBufp | `prn->OutBufp[8*i + 4*j + 2*k + 0] = (char)((temp >> 8) & 0xff); prn->OutBufp[8*i + 4*j + 2*k + 1] = (char)(temp & 0xff);` (`:1257-1258`) — 8 bytes per sample-slot = L_hi L_lo R_hi R_lo I_hi I_lo Q_hi Q_lo | Same — verbatim offset math; output to `out_buf_[8*i + 4*j + 2*k + {0,1}]` |
+
+**Reference quirk preserved (Rule 24):** the quantization uses `(short)floor(...)` cast (truncation toward zero of a positive double; potential UB on value > INT16_MAX before cast).  Lyra preserves the same behavior via `static_cast<int16_t>(...)` (truncating-cast in C++23 is implementation-defined but identical on every two's-complement platform); add `assert(v >= -1.0 && v <= 1.0)` debug guard.
+
+**VERDICT:** ✅ **PARITY** — verbatim quantization + BE pack from `:1241-1259`.
+
+---
+
+### §6.7 CW state-bit overlay on TX I-sample LSBs (source: `networkproto1.c:1247-1256`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Gate | `if (prn->cw.cw_enable && j == 1)` (`:1247`) — only when CW enabled, only on the IQ pair (j=1) | Same |
+| HL2 branch | `if (HPSDRModel == HPSDRModel_HERMESLITE) temp = (prn->tx[0].cwx_ptt << 3 \| prn->tx[0].dot << 2 \| prn->tx[0].dash << 1 \| prn->tx[0].cwx) & 0b00001111;` (`:1248-1252`) — HL2 has 4 CW state bits (cwx_ptt at bit 3; dot at 2; dash at 1; cwx at 0); replace `temp` with the 4-bit state word | Same — gated on `hpsdrModel == HPSDRModel::HERMESLITE`; verbatim shift + OR + mask |
+| Non-HL2 branch | `else temp = (prn->tx[0].dot << 2 \| prn->tx[0].dash << 1 \| prn->tx[0].cwx) & 0b00000111;` (`:1253-1256`) — ANAN class has 3 CW state bits (dot at 2; dash at 1; cwx at 0); no cwx_ptt bit | Same |
+
+**Critical reference behavior:** when CW is enabled, the TX I-sample LSBs are OVERWRITTEN with the CW state word — the actual SSB / digital-mode modulator output is replaced by CW state on the wire.  This is intentional per the HL2 protocol; consumers (CW keyer + HL2 gateware) coordinate to interpret the I-LSB as CW state during CW transmit.  Preserved verbatim per Rule 24.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1247-1256`; HL2 4-bit / non-HL2 3-bit branch preserved.
+
+---
+
+### §6.8 `WriteMainLoop_HL2` dispatch + buffer copy (source: `networkproto1.c:1261-1264, 1193-1200`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Per-family branch | `if (HPSDRModel == HPSDRModel_HERMESLITE) WriteMainLoop_HL2(prn->OutBufp); else WriteMainLoop(prn->OutBufp);` (`:1261-1264`) | Same — `if (hpsdrModel == HPSDRModel::HERMESLITE) frame_composer_->compose_hl2(out_buf_.data()); else frame_composer_->compose_generic(out_buf_.data());` (the §4 FrameComposer's two emit paths) |
+| LRIQ memcpy into composed buffer | `memcpy(FPGAWriteBufp + 8, bufp, 8 * 63); memcpy(FPGAWriteBufp + 520, bufp + 504, 8 * 63);` (`:1193-1195`) — copy 504 bytes of LRIQ into each of the 2 USB frames (after the 8-byte sync+C&C header) | Already in §4 FrameComposer (`compose_hl2` writes the C&C header at offsets [0..7] + [512..519] and the LRIQ payload at offsets [8..511] + [520..1023]) |
+| Submit | `MetisWriteFrame(0x02, FPGAWriteBufp);` (`:1198`) — endpoint 0x02 = EP2 outbound | `metis_write_frame(0x02, fpga_write_buf_.data(), 1024)` — see §6.9 |
+| Producer-side release | `ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0); ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);` (`:1199-1200`) — signal both LR + IQ producers "buffer consumed, free to refill" | `outbound_ring_->notify_consumed_pair()` — Lyra-native, paired release on both semaphores |
+
+**VERDICT:** ✅ **PARITY** — verbatim dispatch + LRIQ memcpy (handled by §4 FrameComposer) + producer-side release.
+
+---
+
+### §6.9 `MetisWriteFrame` — 8-byte HPSDR header + seqnum + sendto (source: `networkproto1.c:216-237`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Function signature | `int MetisWriteFrame(int endpoint, char* bufp)` (`:216`) — endpoint ∈ {0x02 EP2, 2 priming-CC} | `int metis_write_frame(int endpoint, const uint8_t* payload, std::size_t payload_bytes)` — free function in `Ep2SendThread.cpp` anonymous namespace |
+| Outbound datagram size | `unsigned char framebuf[1032]` (`:218-220`) — 8-byte header + 1024-byte payload | Same — `std::array<uint8_t, 1032> framebuf{};` |
+| HPSDR sync | `framebuf[0]=0xef; framebuf[1]=0xfe; framebuf[2]=01; framebuf[3]=endpoint;` (`:223-226`) | Same — verbatim 4-byte sync prefix |
+| Outbound seqnum (BE) | `unsigned char* p = (unsigned char*)&MetisOutBoundSeqNum; framebuf[4]=p[3]; framebuf[5]=p[2]; framebuf[6]=p[1]; framebuf[7]=p[0]; ++MetisOutBoundSeqNum;` (`:221, 227-231`) — manual byte-swap of native uint32 to BE wire order, post-increment | Same — `framebuf[4]=(out_seq_num_ >> 24) & 0xff; framebuf[5]=(out_seq_num_ >> 16) & 0xff; framebuf[6]=(out_seq_num_ >> 8) & 0xff; framebuf[7]=out_seq_num_ & 0xff; ++out_seq_num_;` (explicit BE-pack via shifts — well-defined under C++23) |
+| Payload copy | `memcpy(outpacket.framebuf + 8, bufp, 1024);` (`:232`) | Same — `std::memcpy(framebuf.data() + 8, payload, 1024);` |
+| sendto | `result = sendPacket(listenSock, (char*)&outpacket, 1024 + 8, prn->base_outbound_port);` (`:234`) — `sendPacket` is a wrapper around `sendto` with the configured destination port | Same — `::sendto(socket_fd_, framebuf.data(), 1032, 0, dest_addr, dest_addrlen)` — Lyra holds the destination address as a member (set at thread start, alongside `socket_fd_`) |
+| Return | `result = sendPacket(...); result -= 8; return result;` (`:234-236`) — returns payload bytes sent (or negative error) | Same — `return result < 0 ? result : result - 8;` |
+
+**Reference quirk preserved (Rule 24):** outbound seqnum is post-incremented (first emit ships seq=0, second ships seq=1, ...) and wraps at uint32 max (~136 years at 380 fps).  Lyra mirrors verbatim.
+
+**VERDICT:** ✅ **PARITY** — verbatim header + seqnum + payload + sendto; Lyra-native `out_seq_num_` encapsulation per Q3 acceptable deviation.
+
+---
+
+### §6.10 `OutboundRing` — LR + IQ buffer-pair + paired semaphore (Lyra-native, source-mirror of `prn->outLRbufp` + `prn->outIQbufp` + `prn->hsendEventHandles[2]` + `prn->hobbuffsRun[2]`)
+
+Lyra-native class with reference-mirror state:
+
+| Member | Reference equivalent | Notes |
+|---|---|---|
+| `std::vector<double> lr_buf_` (252 doubles = 4 × 63 LR pairs) | `prn->outLRbufp` | Producer = audio-mixer; consumer = `Ep2SendThread` |
+| `std::vector<double> iq_buf_` (252 doubles = 4 × 63 IQ pairs) | `prn->outIQbufp` | Producer = TX-DSP worker; consumer = `Ep2SendThread` |
+| `std::counting_semaphore<1> lr_ready_` | `prn->hsendEventHandles[0]` | Released by producer when LR buffer filled |
+| `std::counting_semaphore<1> iq_ready_` | `prn->hsendEventHandles[1]` | Released by producer when IQ buffer filled |
+| `std::counting_semaphore<1> lr_consumed_` | `prn->hobbuffsRun[0]` | Released by consumer when LR buffer drained |
+| `std::counting_semaphore<1> iq_consumed_` | `prn->hobbuffsRun[1]` | Released by consumer when IQ buffer drained |
+| `void push_lr(const double* src, int n)` | producer-side memcpy + `ReleaseSemaphore(hsendEventHandles[0])` | Producer API |
+| `void push_iq(const double* src, int n)` | producer-side memcpy + `ReleaseSemaphore(hsendEventHandles[1])` | Producer API |
+| `void wait_pair_ready()` | `WaitForMultipleObjects(2, hsendEventHandles, TRUE, INFINITE)` | Consumer-blocking — waits for BOTH semaphores |
+| `void notify_consumed_pair()` | `ReleaseSemaphore(hobbuffsRun[0]); ReleaseSemaphore(hobbuffsRun[1]);` | Consumer-release — signals both producers free to refill |
+
+**VERDICT:** ✅ **PARITY** — buffer sizing + semaphore-pair semantics + producer/consumer API verbatim from reference.  Lives in its own file (`src/wire/OutboundRing.{h,cpp}`) per Q2 + §1.1 networking-buffer exclusion.
+
+---
+
+### §6 sign-off
+
+- [x] Q1 — switch-style send loop matching the reference verbatim
+- [x] Q2 — `OutboundRing` as separate `src/wire/OutboundRing.{h,cpp}` file
+- [x] Q3 — `metis_write_frame` as free function in `Ep2SendThread.cpp` anon namespace; `out_seq_num_` encapsulated as member (Lyra-native deviation)
+- [x] Q4 — `outLRbufp` / `outIQbufp` inside `OutboundRing`; `OutBufp` inside `Ep2SendThread`
+- [x] Q5 — `std::mutex send_lock_` + paired `std::counting_semaphore<1>` × 2 for OutboundRing
+- [x] §3 supplement globals added: `swap_audio_channels` field on `AudioConfig` if not present
+- [x] §6.4 EER mode deferred to Task #114 with stub + `// FIXME` marker (operator-approved deferred deviation)
+- [x] §6.6 quantization + §6.7 CW state-bit overlay preserved verbatim per Rule 24
+- [x] §6.9 outbound seqnum post-increment + BE pack preserved verbatim
+- [x] 4-item verbatim cross-check vs reference (§6.3 / §6.6 / §6.7 / §6.9) confirmed pre-sign-off
+- [x] Authorized to populate
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §6 Ep2SendThread + OutboundRing signed; populate commit lands separately.*
