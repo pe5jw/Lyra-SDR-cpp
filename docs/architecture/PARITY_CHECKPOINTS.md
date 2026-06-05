@@ -320,8 +320,8 @@ structs / globals, each warranting their own §N entry:
   `ApolloATU`, `WSAinitialized`, `listenSock`, `RemotePort`,
   `SampleRateIn2Bits`, `mic_decimation_factor`, `HPSDRModel`,
   `RadioProtocol`.  **Deferred to §3** (per `docs/TX_ARCHITECTURAL_MAPPING.md`
-  §10.2 these split across `Hl2DispatchState`, `Hl2Capabilities`,
-  `Hl2FrameComposer`, and family-enum scaffolding).
+  §10.2 these split across `DispatchState`, `Capabilities`,
+  `FrameComposer`, and family-enum scaffolding).
 
 ---
 
@@ -392,7 +392,7 @@ differ.  Lyra mirrors this:
 | Sibling struct shape (not inside `radionet`) | `network.h:293-389` — two distinct typedefs, NOT members of `_radionet` | `class RbpFilter { ... };` + `class RbpFilter2 { ... };` declared in `src/wire/RbpFilter.{h,cpp}` (sibling to `RadioNet`, NOT a member of it) |
 | Global instance pointers | `network.h:340` `RBPFILTER prbpfilter;` + `:389` `RBPFILTER2 prbpfilter2;` | `extern RbpFilter*  prbpfilter;` + `extern RbpFilter2* prbpfilter2;` declared in header; defined `nullptr` in `.cpp`; assigned at HL2 session start.  **Pointer names mirror the reference VERBATIM** (operator naming directive 2026-06-05 — reference symbols are preserved for grep parity with Thetis source; PureSignal port reads `prbpfilter->*` extensively).  Only the type names PascalCase per §1 convention. |
 | Lifecycle | `netInterface.c:1727-1733` `malloc0` + init `bpfilter=0`, `enable=1`/`enable=2`; `:1807-1808` `_aligned_free` | Constructor sets `bpfilter=0` + `enable` to the matching id (1 vs 2); destruction automatic via RAII when the wire-layer init releases ownership |
-| Coupling to `RadioNet` | Read together by the frame composers (`WriteMainLoop_HL2` reads both `prn->*` and `prbpfilter->*` per case) — separate sources, fanned in at the use site | `Hl2FrameComposer` (later §) takes pointers to BOTH `RadioNet` and `RbpFilter`/`RbpFilter2` — same fan-in pattern |
+| Coupling to `RadioNet` | Read together by the frame composers (`WriteMainLoop_HL2` reads both `prn->*` and `prbpfilter->*` per case) — separate sources, fanned in at the use site | `FrameComposer` (later §) takes pointers to BOTH `RadioNet` and `RbpFilter`/`RbpFilter2` — same fan-in pattern |
 
 **VERDICT:** ✅ **PARITY** on shape (sibling structs, NOT members
 of RadioNet; pointer names `prbpfilter`/`prbpfilter2` verbatim);
@@ -467,7 +467,7 @@ readers land.
 | `SetRX2GroundOnTX(bits)` | `netInterface.c:659-661` | `prbpfilter2->_rx2_gnd` |
 | `SetAlexLPF(bits)` w/ alex2 path | `netInterface.c:695-719` | Both structs' LPF bits + bit-inherit copy |
 
-**Readers (Phase 2 `Hl2FrameComposer` — separate §):**
+**Readers (Phase 2 `FrameComposer` — separate §):**
 
 | Reference case | File:line | Reads |
 |---|---|---|
@@ -479,7 +479,7 @@ readers land.
 
 **VERDICT:** Informational — no Lyra code declared in §2 for the
 setters or readers.  Setters land when the UI/protocol-config
-plumbing arrives (later §); readers land in `Hl2FrameComposer`
+plumbing arrives (later §); readers land in `FrameComposer`
 (its own §).  This enumeration is the audit trail so a future
 implementer knows the full surface.
 
@@ -519,7 +519,7 @@ the reference's plain-C posture.
   appropriate Lyra wire-layer or UI component when those §N
   entries arrive.
 - **Reader implementations** (the case-by-case bit-emit logic
-  in `Hl2FrameComposer`) — its own §N entry.  §2.4 enumerates
+  in `FrameComposer`) — its own §N entry.  §2.4 enumerates
   the read patterns; the composer's checkpoint will table them
   byte-by-byte.
 - **Bit-inherit copy logic** (`netInterface.c:489-490` and

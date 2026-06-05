@@ -388,7 +388,7 @@ public:
     // Lock-order across these mutexes is NOT documented in the
     // reference.  Lyra-native lock-order discipline lands when
     // Phase-2 fills the threads that take more than one of them
-    // (Hl2FrameComposer / Ep6RecvThread); see PARITY_CHECKPOINTS
+    // (FrameComposer / Ep6RecvThread); see PARITY_CHECKPOINTS
     // §1.11 deferral note.
 };
 #pragma warning(pop)

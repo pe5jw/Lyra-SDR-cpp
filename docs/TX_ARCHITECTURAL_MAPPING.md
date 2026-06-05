@@ -756,7 +756,7 @@ Operator values come from the Thetis DB export (`Y:\hold\screenshots\
 Thetis_database_export_Default_5_16_2026_6_54 PM.xml`).
 
 **Lyra-native:** capability-driven `TrSequencing` struct in
-`lyra::protocol::Hl2Capabilities` (currently exists per CLAUDE.md
+`lyra::protocol::Capabilities` (currently exists per CLAUDE.md
 §15.26 / commit `5c8e6b5`). Operator-tunable via Settings → TX → TR
 Sequencing (already shipped in Lyra). The rip carries these forward
 unchanged.
@@ -1565,7 +1565,7 @@ Organized by namespace / subsystem.
 | `src/tx/KeydownSequence.h / .cpp` | console.cs:30269-30348 | The exact 16-step keydown order. Calls StreamThread.requestStop(blocking) for RX; AttOnTxPolicy.applyKeydown; UpdateDdcs; UpdateAamixerStates; HdwMoxChanged; (rf_delay); AudioMoxChanged; TxChannel.start. |
 | `src/tx/KeyupSequence.h / .cpp` | console.cs:30350-30407 | The exact 16-step keyup order. (space_mox_delay); TxChannel.stop(blocking); (mox_delay); UpdateDdcs; UpdateAamixerStates; AudioMoxChanged; HdwMoxChanged; (ptt_out_delay); StreamThread.start for RX. |
 | `src/tx/AttOnTxPolicy.h / .cpp` | console.cs:19148-19178 + force-31 logic | Save per-band RX1 step-attn on keydown; force tx-att-for-band (31 if non-PS + non-ATU-bypass + non-CW); restore on keyup. Master default ON. |
-| `src/tx/TrSequencing.h` | console.cs operator settings | rf_delay (50), mox_delay (15), space_mox_delay (13), ptt_out_delay (5), key_up_delay (10). Operator-configurable; capability-sourced. Already in `Hl2Capabilities`. |
+| `src/tx/TrSequencing.h` | console.cs operator settings | rf_delay (50), mox_delay (15), space_mox_delay (13), ptt_out_delay (5), key_up_delay (10). Operator-configurable; capability-sourced. Already in `Capabilities`. |
 | `src/tx/MoxEdgeFade.h / .cpp` | uslew + WDSP cos² ramps | The cos² up-ramp + down-ramp wrapper. Internal to the keydown/keyup sequencers. |
 
 #### `lyra::wire` — HL2 EP6 receive + EP2 send (§3, §8)
@@ -1574,9 +1574,9 @@ Organized by namespace / subsystem.
 |---|---|---|
 | `src/wire/Ep6RecvThread.h / .cpp` | MetisReadThreadMain | std::thread, MMCSS, recvfrom loop on EP6 socket. Parses each datagram, dispatches via DdcMap to per-stream rings. |
 | `src/wire/Ep2SendThread.h / .cpp` | sendProtocol1Samples | std::thread, MMCSS Pro Audio @ 2. Two-condition AND wait for LR + IQ. MOX-gate-zero on `!XmitBit`. CW LSB packing. Quantize. Per-frame composer call. |
-| `src/wire/Hl2FrameComposer.h / .cpp` | WriteMainLoop_HL2 | The 19-case C&C round-robin (cases 0-18) per §8. ALL bits source-verified. |
-| `src/wire/Hl2ControlState.h / .cpp` | `prn->*` fields | The C&C register state struct (drive_level, step_attn for ADC[0..2], pa, mic_*, BPF/LPF flags, puresignal_run, tx[0].frequency, rx[0..1].frequency, ptt_hang, tx_latency, reset_on_disconnect, etc.). Single writer per field — caller discipline (Rule 1). |
-| `src/wire/Hl2DispatchState.h` | `XmitBit` global + dispatch axes | `{mox, ps_armed, rx2_enabled, family}` struct + atomic accessors. Read by the wire-send thread to gate MOX bit + DDC routing. |
+| `src/wire/FrameComposer.h / .cpp` | WriteMainLoop_HL2 | The 19-case C&C round-robin (cases 0-18) per §8. ALL bits source-verified. |
+| `src/wire/RadioNet.h / .cpp` | `prn->*` fields | The C&C register state struct (drive_level, step_attn for ADC[0..2], pa, mic_*, BPF/LPF flags, puresignal_run, tx[0].frequency, rx[0..1].frequency, ptt_hang, tx_latency, reset_on_disconnect, etc.). Single writer per field — caller discipline (Rule 1). |
+| `src/wire/DispatchState.h` | `XmitBit` global + dispatch axes | `{mox, ps_armed, rx2_enabled, family}` struct + atomic accessors. Read by the wire-send thread to gate MOX bit + DDC routing. |
 | `src/wire/DdcMap.h / .cpp` | UpdateDDCs + cntrl1 routing matrix | The §5.4 DDC routing — given `DispatchState`, returns which DDC samples route to which consumer (RX1, RX2, PS feedback, drop). |
 | `src/wire/OutboundRing.h` | obbuffs | SPSC ring for LR audio + TX IQ. Paired Win32-event / `std::condition_variable` AND-wait on consumer side. |
 | `src/wire/ForceCandC.h / .cpp` | ForceCandCFrame priming | Sends N C&C frames at startup before the EP2-send-thread is allowed to start the normal loop. |
@@ -1605,7 +1605,7 @@ Organized by namespace / subsystem.
 
 | Existing file | Extensions per Phase 0 |
 |---|---|
-| `src/protocol/capabilities/Hl2Capabilities.h` | Add `tx_step_attn_range = (-28, 31)`, `tx_step_attn_wire_encoding = HL2_31_MINUS_X`, `pa_enable_bit = ApolloTuner_C2_bit_3`, `cw_state_bits_count = 4` (HL2), `nddc = 4`. TR sequencing already there. |
+| `src/protocol/capabilities/Capabilities.h` | Add `tx_step_attn_range = (-28, 31)`, `tx_step_attn_wire_encoding = HL2_31_MINUS_X`, `pa_enable_bit = ApolloTuner_C2_bit_3`, `cw_state_bits_count = 4` (HL2), `nddc = 4`. TR sequencing already there. |
 
 ### 10.3 Empty-file creation order (Phase 1)
 
@@ -1615,9 +1615,9 @@ the file tree. The compile target builds (empty TX module
 compiles into an empty library) with `lyra.exe` running RX-only.
 Phase 2 then fills bottom-up:
 
-1. `protocol::capabilities` (extend Hl2Capabilities) — needed by everything
-2. `wire::Hl2ControlState`, `wire::Hl2DispatchState` — needed by composer + dispatch
-3. `wire::Hl2FrameComposer` — wire-correct C&C frame builder, no thread yet
+1. `protocol::capabilities` (extend Capabilities) — needed by everything
+2. `wire::RadioNet`, `wire::DispatchState` — needed by composer + dispatch
+3. `wire::FrameComposer` — wire-correct C&C frame builder, no thread yet
 4. `wdsp::TxChannel` (wire-inert: no Ep2SendThread yet, just channel construct/destruct)
 5. `dsp::StreamRing`, `dsp::StreamThread`
 6. `wire::Ep6RecvThread`, `wire::Ep2SendThread` (TX paths still wire-inert)

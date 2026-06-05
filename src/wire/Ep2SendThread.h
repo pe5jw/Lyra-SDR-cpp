@@ -3,7 +3,7 @@
 // std::thread, MMCSS Pro Audio priority 2.  Two-condition AND wait
 // for LR + IQ from `OutboundRing`.  MOX-gate-zero on `!XmitBit`.
 // CW LSB packing.  Quantize float -> int16.  Per-frame composer
-// call (`Hl2FrameComposer`) to assemble C&C header.  Mirrors the
+// call (`FrameComposer`) to assemble C&C header.  Mirrors the
 // reference `sendProtocol1Samples`.
 //
 // Phase 1 empty skeleton — populated in Phase 2 per

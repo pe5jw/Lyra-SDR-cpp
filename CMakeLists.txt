@@ -67,9 +67,9 @@ qt_add_executable(lyra
     src/wire/RadioNet.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
-    src/wire/Hl2DispatchState.h
-    src/wire/Hl2FrameComposer.h
-    src/wire/Hl2FrameComposer.cpp
+    src/wire/DispatchState.h
+    src/wire/FrameComposer.h
+    src/wire/FrameComposer.cpp
     src/wire/Ep6RecvThread.h
     src/wire/Ep6RecvThread.cpp
     src/wire/Ep2SendThread.h

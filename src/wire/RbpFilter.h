@@ -22,7 +22,7 @@
 // plumbing (the `SetTRRelay`, `SetAtten`, `SetAlexAntennas`,
 // `SetAlexHPF`, `SetAlex2HPF`, `SetRX2GroundOnTX`, `SetAlexLPF`
 // surfaces enumerated in §2.4).  Readers (the bit-emit logic in
-// case-0 / case-10 / case-16 of `Hl2FrameComposer`) land with
+// case-0 / case-10 / case-16 of `FrameComposer`) land with
 // their own checkpoint.
 //
 // WIRE-INERT: built but not wired into HL2Stream until §10.3

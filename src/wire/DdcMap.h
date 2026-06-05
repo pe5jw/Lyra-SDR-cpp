@@ -1,6 +1,6 @@
 // Lyra — DDC routing matrix (§5.4 / §10.2 wire layer).
 //
-// Given an `Hl2DispatchState`, returns which DDC samples route to
+// Given a `DispatchState`, returns which DDC samples route to
 // which consumer (RX1, RX2, PureSignal feedback, drop) per the
 // reference UpdateDDCs + cntrl1 routing matrix.  HL2 nddc=4.
 //

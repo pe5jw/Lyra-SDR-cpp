@@ -15,7 +15,7 @@ Call Stack (most recent call first):
   C:/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6Qml/Qt6QmlMacros.cmake:4013 (__qt_internal_setup_policy)
   C:/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6Qml/Qt6QmlMacros.cmake:1035 (qt6_target_qml_sources)
   C:/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6Qml/Qt6QmlMacros.cmake:1507 (qt6_add_qml_module)
-  CMakeLists.txt:205 (qt_add_qml_module)
+  CMakeLists.txt:207 (qt_add_qml_module)
 This warning is for project developers.  Use -Wno-dev to suppress it.
 
 src/shaders/glow.frag -> glow.frag.qsb exposed as :/shaders/glow.frag.qsb
@@ -23,14 +23,18 @@ src/shaders/watermark.frag -> watermark.frag.qsb exposed as :/shaders/watermark.
 -- Configuring done (1.5s)
 -- Generating done (0.2s)
 -- Build files have been written to: Y:/Claude local/SDRProject/lyra-cpp/build
-[1/35] Automatic MOC and UIC for target lyra
-[2/34] Running AUTOMOC file extraction for target lyra
-[3/9] Generating .qsb/glow.frag.qsb
-[4/9] Generating .qsb/watermark.frag.qsb
-[5/9] Running rcc for resource lyra_panadapter_shaders
-[6/9] Building CXX object CMakeFiles\lyra.dir\src\wire\RadioNet.cpp.obj
-[7/9] Building CXX object CMakeFiles\lyra.dir\build\.qt\rcc\qrc_lyra_panadapter_shaders.cpp.obj
-[8/9] Linking CXX executable lyra.exe
+[1/39] Automatic MOC and UIC for target lyra
+[2/38] Running AUTOMOC file extraction for target lyra
+[3/13] Generating .qsb/watermark.frag.qsb
+[4/13] Generating .qsb/glow.frag.qsb
+[5/13] Running rcc for resource lyra_panadapter_shaders
+[6/13] Building CXX object CMakeFiles\lyra.dir\src\wire\DdcMap.cpp.obj
+[7/13] Building CXX object CMakeFiles\lyra.dir\src\wire\FrameComposer.cpp.obj
+[8/13] Building CXX object CMakeFiles\lyra.dir\src\wire\Ep2SendThread.cpp.obj
+[9/13] Building CXX object CMakeFiles\lyra.dir\src\wire\RbpFilter.cpp.obj
+[10/13] Building CXX object CMakeFiles\lyra.dir\build\.qt\rcc\qrc_lyra_panadapter_shaders.cpp.obj
+[11/13] Building CXX object CMakeFiles\lyra.dir\src\wire\RadioNet.cpp.obj
+[12/13] Linking CXX executable lyra.exe
 Adding local dependencyY:/Claude local/SDRProject/lyra-cpp/build/MSVCP140.dll
 Adding local dependencyY:/Claude local/SDRProject/lyra-cpp/build/VCRUNTIME140.dll
 Adding local dependencyY:/Claude local/SDRProject/lyra-cpp/build/VCRUNTIME140_1.dll
