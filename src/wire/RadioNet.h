@@ -72,8 +72,9 @@ inline constexpr int kMaxInSeqLog     = 40;  // MAX_IN_SEQ_LOG
 //     available (Q2 / Option A).
 //   - NO Lyra-native `DispatchState` struct grouping.  Reference
 //     reads these as scattered globals at use sites; Lyra does the
-//     same (operator directive 2026-06-05: do as Thetis, eliminates
-//     sync hazard, preserves cross-reference grep parity 100%).
+//     same (operator directive 2026-06-05: do as the reference does,
+//     eliminates sync hazard, preserves cross-reference grep
+//     parity 100%).
 //   - Globals live in RadioNet.h alongside the existing `prn`
 //     pointer — matches reference placement (network.h holds the
 //     RadioNet equivalent + these enums + globals all in one file).

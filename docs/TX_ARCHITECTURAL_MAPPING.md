@@ -5,9 +5,13 @@
 **Operator:** Rick Langford (N8SDR)
 **Implementor:** Claude (Anthropic)
 **Started:** 2026-06-04
-**Reference:** working open-source SDR application at
-`D:\sdrprojects\OpenHPSDR-Thetis-2.10.3.13\Project Files\Source\`
-(named in `docs/` only per Rule 2; never in shipped code / commits / UI)
+**Reference:** working open-source GPL-v3+ SDR codebase, operator-
+local path.  All file:line citations below are relative to the
+reference source tree (e.g. `network.h:56-291`, `networkproto1.c:
+614-1267`).  Per Rule 2 the reference application's name is kept
+out of shipped code, code comments, commit messages, operator-
+visible UI strings — and out of these tracked docs as well
+(clarified 2026-06-05).
 **Governing rules:** `docs/RULES.md` (22 rules, local-only)
 
 ---
@@ -451,8 +455,9 @@ pull loop; possibly nowhere. Verify in §7 (TCI) read.
 
 **Open: TCI inbound audio format vs HL2 mic format.**
 HL2 codec mic at networkproto1.c:404-407 writes I=mic, Q=0. The
-reference task #67 framing claims "match Thetis I=Q=mono" — this
-contradicts the file:line. Verify in TCIServer.cs read by finding
+reference task #67 framing claims "match the reference I=Q=mono"
+— this contradicts the file:line. Verify in TCIServer.cs read by
+finding
 where TCI binary frames get unpacked and written into the buffer
 that `InboundTCITxAudio` exposes.
 
@@ -752,8 +757,9 @@ C4 MOX-gated TX branch) — v0.3 PureSignal will swap the SOURCE
 | `ptt_out_delay` | 0 (added wcp 2018-12-24) | **5** | console.cs:30377-30378 (keyup, between MOX-clear and RX-DSP-restart) | HW T/R switch time |
 | `key_up_delay` | 0 | **10** | console.cs:30362-30363 (CW keyup only, if !cw_fw_keyer) | CW key-up settle |
 
-Operator values come from the Thetis DB export (`Y:\hold\screenshots\
-Thetis_database_export_Default_5_16_2026_6_54 PM.xml`).
+Operator values come from the reference-app DB export on the
+operator's local disk under `Y:\hold\screenshots\` (filename
+preserved as-on-disk; not reproduced here per Rule 2).
 
 **Lyra-native:** capability-driven `TrSequencing` struct in
 `lyra::protocol::Capabilities` (currently exists per CLAUDE.md
@@ -1009,7 +1015,7 @@ declared structural detail.
 **L+R averaging confirmed at `cmaster.cs:1414`:**
 `mono[i] = (float)((left + right) * 0.5)` when
 `TXStereoInputMode.Both` (the default). Lyra's R-FT8 fix from
-earlier today (`8cddfa5`) is Thetis-faithful.
+earlier today (`8cddfa5`) is reference-faithful.
 
 ### 7.3 The CHRONO pull formula (`cmaster.cs:1313-1359`)
 
@@ -1690,8 +1696,9 @@ data.
 **Lyra implication:** the rip must handle both formats correctly:
 HL2-codec-mic path writes I=mic, Q=0; TCI path writes I=Q=mono.
 Both are correct against the reference. Lyra Task #67's framing
-("match Thetis I=Q=mono") is Thetis-faithful for the TCI path
-specifically — was previously ambiguous but now source-verified.
+("match the reference I=Q=mono") is reference-faithful for the
+TCI path specifically — was previously ambiguous but now source-
+verified.
 
 Not a deviation; declared here because future code must not break
 either layout assuming the other is "the only" correct one.
@@ -1728,10 +1735,10 @@ for when each Phase 2 component lands).
    etc.); they stay as-is until a dedicated post-rip cleanup
    commit.
 
-4. **PowerSDR cross-reference — SKIP.** Operator decision:
-   "Thetis is modern and contains everything we need as a
-   reference model." Phase 0+ proceeds against Thetis source
-   only.
+4. **Older legacy-app cross-reference — SKIP.** Operator decision:
+   "the current reference is modern and contains everything we
+   need as a reference model." Phase 0+ proceeds against the
+   current reference source only.
 
 5. **Phase-3-EXIT kill-test gate — bench-verify when applicable.**
    Operator: "Kill Test we bench verify!" Carried forward as a

@@ -186,8 +186,9 @@ public:
 //
 // Names mirror the reference VERBATIM per the operator naming
 // directive (2026-06-05) — cross-reference grep parity with
-// Thetis source.  Assigned at HL2 session start by the wire-
-// layer initializer (Phase 2 wire-up); stay nullptr until then.
+// the reference source.  Assigned at HL2 session start by the
+// wire-layer initializer (Phase 2 wire-up); stay nullptr until
+// then.
 extern RbpFilter*  prbpfilter;
 extern RbpFilter2* prbpfilter2;
 
