@@ -1,39 +1,404 @@
-// Lyra — radio-network state container (mirrors the reference
-// `radionet` struct in `network.h`).
+// Lyra — radio-network state container.
 //
-// Holds the full C&C register state (host→radio write fields:
-// drive_level, step_attn for ADC[0..2], pa, mic_*, BPF/LPF flags,
-// puresignal_run, tx[*].frequency, rx[*].frequency, ptt_hang,
-// tx_latency, reset_on_disconnect, etc.) PLUS the EP6 telemetry
-// fields (radio→host read fields: ptt_in, dot_in, dash_in,
-// adc_overload, fwd_power, rev_power, user_adc0..3, supply_volts,
-// etc.).  Family-parameterized via the HPSDRModel enum so the
-// same struct serves HL2/HL2+ today and ANAN/Hermes/Orion in
-// v0.4 (Lyra-cpp v0.4 multi-radio refactor); arrays sized to the
-// reference maxima MAX_ADC=3 / MAX_RX_STREAMS=12 / MAX_TX_STREAMS=3
-// so a future family swap is a constructor-side change only.
+// Mirrors the reference `radionet` struct (network.h:56-291).
+// Master state container for a host↔radio session: holds the C&C
+// register state (host→radio write fields) and the EP6 telemetry
+// (radio→host read fields) per the locked Q1 mixed-state decision
+// (2026-06-05).  Networking infrastructure (sockets, thread/event
+// handles, buffer pointers, sequence counters) is EXCLUDED per the
+// §10.2 component split (sign-off 2026-06-04) — those live in
+// `wire/Ep6RecvThread`, `wire/Ep2SendThread`, `wire/OutboundRing`.
 //
-// Synchronization is reference-faithful: six `std::mutex` members
+// Family-parameterized per Q2 lock — same struct serves HL2/HL2+
+// today and ANAN/Hermes/Orion in v0.4 (multi-radio refactor).
+// Array sizes preserved at reference maxima per Q3 lock
+// (MAX_ADC=3, MAX_RX_STREAMS=12, MAX_TX_STREAMS=3,
+// MAX_AUDIO_STREAMS=2).  HL2 populates adc[0]/rx[0..3]/tx[0]; the
+// rest is allocated but inert.
+//
+// Bit-packed control bytes mirror the reference verbatim per Q4
+// lock — C-style union-of-bitfield-struct + `#pragma pack(push,1)`
+// around each one.  Inner type names PascalCased per Lyra
+// convention (acceptable deviation per docs/architecture/
+// PARITY_CHECKPOINTS.md §1).
+//
+// Synchronization per Q5 Option A — six `std::mutex` members
 // embedded in the struct, mirroring the reference's six
-// CRITICAL_SECTIONs (`udpOUT`, `sendOUT`, `rcvpkt`, `sndpkt`,
-// `seqErrors`, `rcvpktp1`).  Threads that need them reach into
-// the live global instance and lock the relevant member at the
-// same call sites the reference does.  `sendOUT` is declared and
-// initialized but never locked anywhere in the reference tree;
-// included here for byte-for-byte parity and may be retired
-// post-Phase-2 if a future audit confirms it is still dead.
+// `CRITICAL_SECTION` members (network.h:99-104).  Five are LIVE
+// (udpOUT, rcvpkt, sndpkt, seqErrors, rcvpktp1).  `sendOUT` is
+// declared and initialized in the reference but never locked
+// anywhere in the tree — included here for byte-for-byte parity
+// per Rule 1; eligible for retirement post-Phase-2 if a future
+// audit re-confirms dead.
 //
-// Phase 1 empty skeleton — populated in Phase 2 per
-// docs/TX_ARCHITECTURAL_MAPPING.md §8.
+// Phase 2 step 13 — populated per the signed §1 parity checkpoint
+// (docs/architecture/PARITY_CHECKPOINTS.md).  WIRE-INERT: built
+// but not wired into HL2Stream until §10.3 step 14.
+//
+// Reference: ChannelMaster/network.h:33-291.
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <ctime>
+#include <mutex>
+
 namespace lyra::wire {
 
-class RadioNet {
+// Reference array sizes (network.h:33-36, 41, 43).  `inline
+// constexpr` so each translation unit gets the same address +
+// the linker does not duplicate.
+inline constexpr int kMaxAdc          = 3;   // MAX_ADC
+inline constexpr int kMaxRxStreams    = 12;  // MAX_RX_STREAMS
+inline constexpr int kMaxTxStreams    = 3;   // MAX_TX_STREAMS
+inline constexpr int kMaxAudioStreams = 2;   // MAX_AUDIO_STREAMS
+inline constexpr int kMaxI2cQueue     = 32;  // MAX_I2C_QUEUE
+inline constexpr int kMaxInSeqLog     = 40;  // MAX_IN_SEQ_LOG
+
+// Forward decl — RxState's seq-error linked-list node.
+struct SeqLogSnapshot;
+
+// Per-RX seq-error snapshot (network.h:46-54 / _seqLogSnapshot_t).
+// Linked-list node holding the in-seq-delta ring at the moment of
+// a seq error, plus a timestamp.
+struct SeqLogSnapshot {
+    SeqLogSnapshot* next{nullptr};
+    SeqLogSnapshot* previous{nullptr};
+
+    int          rx_in_seq_snapshot[kMaxInSeqLog]{};
+    char         dateTimeStamp[24]{};
+    unsigned int received_seqnum{0};
+    unsigned int last_seqnum{0};
+};
+
+// HL2 I²C queue state (network.h:113-148 / _i2c).
+struct I2cState {
+#pragma pack(push, 1)
+#pragma warning(push)
+#pragma warning(disable: 4201)  // nonstandard: nameless struct/union
+                                // — Q4 byte-for-byte parity with
+                                //   the reference's _radionet sub-
+                                //   struct unions (network.h).
+    union {
+        unsigned char i2c_control{0};
+        struct {
+            unsigned char ctrl_read            : 1;  // bit 0
+            unsigned char ctrl_stop            : 1;  // bit 1
+            unsigned char ctrl_request         : 1;  // bit 2
+            unsigned char ctrl_error           : 1;  // bit 3
+            unsigned char ctrl_read_available  : 1;  // bit 4
+            unsigned char                      : 1;  // bit 5 unused
+            unsigned char                      : 1;  // bit 6 unused
+            unsigned char                      : 1;  // bit 7 unused
+        };
+    };
+#pragma warning(pop)
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+    struct I2cQueueEntry {
+        unsigned char bus{0};
+        unsigned char address{0};
+        unsigned char control{0};
+        unsigned char write_data{0};
+    };
+    I2cQueueEntry i2c_queue[kMaxI2cQueue]{};
+#pragma pack(pop)
+
+    unsigned char in_index{0};
+    unsigned char out_index{0};
+    signed char   delay{0};
+
+    unsigned char returned_address{0};
+    unsigned char read_data[4]{};
+};
+
+// CW configuration (network.h:185-210 / _cw).
+struct CwConfig {
+    int sidetone_level{0};
+    int sidetone_freq{0};
+    int keyer_speed{0};
+    int keyer_weight{0};
+    int hang_delay{0};
+    int rf_delay{0};
+    int edge_length{0};
+
+#pragma pack(push, 1)
+#pragma warning(push)
+#pragma warning(disable: 4201)  // nonstandard: nameless struct/union
+                                // — Q4 byte-for-byte parity with
+                                //   the reference's _radionet sub-
+                                //   struct unions (network.h).
+    union {
+        unsigned char mode_control{0};
+        struct {
+            unsigned char eer            : 1;  // bit 0
+            unsigned char cw_enable      : 1;  // bit 1
+            unsigned char rev_paddle     : 1;  // bit 2
+            unsigned char iambic         : 1;  // bit 3
+            unsigned char sidetone       : 1;  // bit 4
+            unsigned char mode_b         : 1;  // bit 5
+            unsigned char strict_spacing : 1;  // bit 6
+            unsigned char break_in       : 1;  // bit 7
+        };
+    };
+#pragma warning(pop)
+#pragma pack(pop)
+};
+
+// Mic configuration (network.h:212-232 / _mic).
+struct MicConfig {
+    int line_in_gain{0};
+
+#pragma pack(push, 1)
+#pragma warning(push)
+#pragma warning(disable: 4201)  // nonstandard: nameless struct/union
+                                // — Q4 byte-for-byte parity with
+                                //   the reference's _radionet sub-
+                                //   struct unions (network.h).
+    union {
+        unsigned char mic_control{0};
+        struct {
+            unsigned char line_in   : 1;  // bit 0
+            unsigned char mic_boost : 1;  // bit 1
+            unsigned char mic_ptt   : 1;  // bit 2
+            unsigned char mic_trs   : 1;  // bit 3
+            unsigned char mic_bias  : 1;  // bit 4
+            unsigned char mic_xlr   : 1;  // bit 5
+            unsigned char           : 1;  // bit 6 unused
+            unsigned char           : 1;  // bit 7 unused
+        };
+    };
+#pragma warning(pop)
+#pragma pack(pop)
+
+    int spp{0};  // I-samples per network packet
+};
+
+// Per-ADC state (network.h:168-183 / _adc).
+struct AdcState {
+    int id{0};
+    int rx_step_attn{0};
+    int tx_step_attn{0};
+    int previous_adc_overload{0};
+    int adc_overload{0};
+    int dither{0};
+    int random{0};
+
+    // Wideband dynamic per-ADC (HL2-inert; ANAN-ready).
+    int      wb_seqnum{0};
+    int      wb_state{0};
+    double*  wb_buff{nullptr};
+    uint16_t max_magnitude{0};
+    uint16_t max_magnitude_at_overload{0};
+};
+
+// Per-RX stream state (network.h:234-256 / _rx).
+struct RxState {
+    int id{0};
+    int rx_adc{0};
+    int frequency{0};
+    int enable{0};
+    int sync{0};
+    int sampling_rate{0};
+    int bit_depth{0};
+    int preamp{0};
+
+    // Per-stream telemetry counters (not the global socket-level
+    // counters that §1.1 moved to wire-layer threads).
+    unsigned    rx_in_seq_no{0};
+    unsigned    rx_in_seq_err{0};
+    unsigned    rx_out_seq_no{0};
+    std::time_t time_stamp{0};
+    unsigned    bits_per_sample{0};
+    int         spp{0};  // IQ-samples per network packet
+
+    // Seq-delta ring + linked-list snapshot machinery
+    // (network.h:250-255).
+    int rx_in_seq_delta[kMaxInSeqLog]{};
+    int rx_in_seq_delta_index{0};
+
+    SeqLogSnapshot* snapshots_head{nullptr};
+    SeqLogSnapshot* snapshots_tail{nullptr};
+    int             snapshot_length{0};
+    SeqLogSnapshot* snapshot{nullptr};
+};
+
+// Per-TX stream state (network.h:258-282 / _tx).
+struct TxState {
+    int id{0};
+    int frequency{0};
+    int sampling_rate{0};
+
+    // CW state bits (cwx_ptt is the HL2 enhancement,
+    // network.h:264 MI0BOT note).
+    int cwx{0};
+    int cwx_ptt{0};
+    int dash{0};
+    int dot{0};
+
+    int ptt_out{0};
+    int drive_level{0};
+    int exciter_power{0};
+
+    int fwd_power{0};
+    int rev_power{0};
+    int phase_shift{0};
+
+    int epwm_max{0};
+    int epwm_min{0};
+    int pa{0};
+
+    // HL2 enhancements (network.h:276-277 MI0BOT notes;
+    // case-17 register).
+    int tx_latency{0};
+    int ptt_hang{0};
+
+    // Per-stream telemetry counters.
+    unsigned mic_in_seq_no{0};
+    unsigned mic_in_seq_err{0};
+    unsigned mic_out_seq_no{0};
+
+    int spp{0};  // IQ-samples per network packet
+};
+
+// Per-audio-stream config (network.h:284-287 / _audio).
+struct AudioConfig {
+    int spp{0};  // LR-samples per network packet
+};
+
+// Cache-aligned per network.h:38 (CACHE_ALIGN = __declspec(
+// align(16))).  C++23 spelling is `alignas`.
+#pragma warning(push)
+#pragma warning(disable: 4324)  // structure was padded due to
+                                // alignment specifier — the
+                                // explicit Q4/§1.12 design.
+class alignas(16) RadioNet {
 public:
     RadioNet();
     ~RadioNet();
+
+    // Non-copyable / non-movable — std::mutex members make the
+    // class non-copyable already; this is explicit so a future
+    // reader does not try.  Process-lifetime single instance per
+    // §1.12 (mirrors `RADIONET prn` at network.h:291).
+    RadioNet(const RadioNet&)            = delete;
+    RadioNet& operator=(const RadioNet&) = delete;
+    RadioNet(RadioNet&&)                 = delete;
+    RadioNet& operator=(RadioNet&&)      = delete;
+
+    // ===== §1.2 — Top-level state scalars (network.h:68-110) =====
+
+    int run{0};
+    int wdt{0};
+    int sendHighPriority{0};
+
+    int num_adc{0};
+    int num_dac{0};
+
+    int ptt_in{0};
+    int dot_in{0};
+    int dash_in{0};
+
+    int pll_locked{0};
+
+    int oc_output{0};
+    int oc_output_extras{0};
+
+    int supply_volts{0};
+
+    int user_adc0{0};
+    int user_adc1{0};
+    int user_adc2{0};
+    int user_adc3{0};
+
+    int user_dig_in{0};
+    int user_dig_out{0};
+
+    int hardware_LEDs{0};
+    int reset_on_disconnect{0};
+    int swap_audio_channels{0};
+
+    int puresignal_run{0};
+
+    int lr_audio_swap{0};
+    int CATPort{0};
+
+    // ===== §1.3 — Wideband scalars (network.h:155-160) =====
+    // HL2-inert; ANAN-ready per Q2.
+
+    int wb_base_dispid{0};
+    int wb_samples_per_packet{0};
+    int wb_sample_size{0};
+    int wb_update_rate{0};
+    int wb_packets_per_frame{0};
+
+    // Reference is `volatile long`; C++23 idiom for the same
+    // intent is `std::atomic<long>` (acceptable deviation per
+    // §1.3 — same semantics correctly expressed).
+    std::atomic<long> wb_enable{0};
+
+    // ===== §1.4–§1.10 — Sub-structs =====
+
+    I2cState    i2c{};
+    CwConfig    cw{};
+    MicConfig   mic{};
+
+    AdcState    adc[kMaxAdc]{};
+    RxState     rx[kMaxRxStreams]{};
+    TxState     tx[kMaxTxStreams]{};
+    AudioConfig audio[kMaxAudioStreams]{};
+
+    // ===== §1.11 — Synchronization primitives (Q5 Option A) =====
+    //
+    // Six std::mutex members mirroring the reference's six
+    // CRITICAL_SECTIONs.  Threads that need them reach into the
+    // live global instance and lock the relevant member at the
+    // same call sites the reference does.  Default-init via RAII;
+    // destruction automatic.
+    //
+    // Live-usage status was source-verified 2026-06-05; recorded
+    // in PARITY_CHECKPOINTS.md §1.11.
+
+    std::mutex udpOUT;     // UDP sendto() serializer
+                           //   (network.c:1248,1283 — wraps WSASend)
+
+    std::mutex sendOUT;    // Declared in reference, never locked
+                           //   anywhere (dead code in the reference
+                           //   tree; included for byte-for-byte
+                           //   parity per Rule 1)
+
+    std::mutex rcvpkt;     // P2 RX packet processor serializer
+                           //   (network.c:478,490,626)
+
+    std::mutex sndpkt;     // P2 send-side serializer
+                           //   (network.c:1387,1392)
+
+    std::mutex seqErrors;  // Seq-error log mutator serializer
+                           //   (6 sites across network.c +
+                           //   netInterface.c)
+
+    std::mutex rcvpktp1;   // P1 RX packet serializer
+                           //   (networkproto1.c:153,166,196,212 —
+                           //   ForceCandCFrame priming + P1 read
+                           //   path)
+
+    // Lock-order across these mutexes is NOT documented in the
+    // reference.  Lyra-native lock-order discipline lands when
+    // Phase-2 fills the threads that take more than one of them
+    // (Hl2FrameComposer / Ep6RecvThread); see PARITY_CHECKPOINTS
+    // §1.11 deferral note.
 };
+#pragma warning(pop)
+
+// ===== §1.12 — Global instance pointer =====
+//
+// Mirrors the reference's `RADIONET prn` (network.h:291) — one
+// process-lifetime instance owned by the wire-layer initializer
+// (Phase 2 wire-up).  Stays `nullptr` until the HL2 session is
+// constructed.
+
+extern RadioNet* g_radioNet;
 
 }  // namespace lyra::wire
