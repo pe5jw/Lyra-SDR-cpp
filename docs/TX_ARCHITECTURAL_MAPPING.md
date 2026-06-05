@@ -1816,6 +1816,17 @@ when each component lands in Phase 2)
 
 ### Sign-off log
 
+**Rule 2 exemption note (added 2026-06-05).** The signed sign-
+off row(s) below are PRESERVED VERBATIM as a historical audit
+artifact — the operator's signature ratifies the exact text in
+the cell at the time of signing.  Any reference-application
+name tokens that appear inside a signed sign-off cell are
+exempted from the Rule 2 scrub (per the 2026-06-05 operator
+decision) because rewriting a signed cell to neutral language
+would alter the historical record.  The exemption applies ONLY
+to text inside the table cells below — surrounding doc body
+remains Rule 2 scrubbed.
+
 | Date | Section | Rick sign-off | Notes |
 |---|---|---|---|
 | 2026-06-04 | first-pass end-to-end (§1-13) including §12 answers (10.4 approved / 10.3 follow 14-step as written / §15.27 defer cleanup / skip PowerSDR / kill-test bench-verify) | **✓ APPROVED** | Phase 0 closed. Phase 1 unblocked: archive `tx-rip-archive` + delete the 8 listed files from main + create empty file skeleton per §10.3 14-step order. Build target `lyra.exe` must continue to build (RX-only) at every step. |
