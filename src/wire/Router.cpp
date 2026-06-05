@@ -149,7 +149,13 @@ void twist(int nsamples,
         staging_buf[4 * s + 3] = stream1_buf[2 * s + 1];
     }
 
-    xrouter(router_ptr, router_id, source, nsamples, staging_buf);
+    // Reference dispatches the interleaved 4-tuple output as
+    // `2 * nsamples` "samples" (each twist source contributes
+    // `2 * nsamples` doubles to the staging buffer; the count
+    // matters for downstream sink-side slicing math —
+    // `sps = nsamples / n_streams` etc.).  Source:
+    // `networkproto1.c:273`.
+    xrouter(router_ptr, router_id, source, 2 * nsamples, staging_buf);
 }
 
 }  // namespace lyra::wire

@@ -2084,4 +2084,63 @@ Signed: N8SDR        Date: 2026-06-05
 
 ---
 
-*Last updated: 2026-06-05 — §5 Ep6RecvThread + Router signed; populate commit lands separately.  Single big checkpoint per the locked "reference = make Lyra the same" discipline.*
+## §5-A Parity correction sweep — 9 fixes vs `c8baa63` (audit-driven)
+
+Two-agent post-§5 audit (parity-vs-reference + rule-compliance) ran
+against commit `c8baa63`.  Rule audit PASS.  Parity audit returned
+FAIL on 3 items + 3 NOTEs.  Re-read of `networkproto1.c:422-586`
+verbatim surfaced 6 more items the audit had not isolated, including
+one CRITICAL RX-audio bug.  Operator directive: "fix all to match
+reference, including the NOTEs unless we lack hardware to test."
+All 9 fixes shipped together below; this entry records the audit
+trail.
+
+### Fixes applied (all reference-source-verified, Rule 24)
+
+| # | Item | Severity | Source-line |
+|---|------|----------|-------------|
+| 1 | **IQ unpack scale** — top-24 packing (`<<24, <<16, <<8`) + `/2^31` divisor (effective `/2^23`); was bottom-24 + `/2^31` (effective `/2^31`) → all RX 48 dB too quiet | 🔴 CRITICAL | `:533-540` |
+| 2 | Mic sink emits doubles as IQ-pairs (I=mic, Q=0); was raw int16 | drift | `:570-573, 579` |
+| 3 | Mic decimation logic (count++/==factor/reset+harvest); was ignored | drift | `:566-577` |
+| 4 | `twist()` → `xrouter()` passes `2 * nsamples`; was `nsamples` | drift | `:273` |
+| 5 | Dispatch cadence per-USB-frame (not per-datagram); twist/xrouter + mic harvest fire inside the per-frame body | drift | `:470-580` |
+| 6 | dash_in / dot_in REVERTED to literal `(cc[0] << N) & 0x1` (always-zero reference defect, preserved per Rule 24); was deliberate `& 0x02` / `& 0x04` "fix" | drift | `:497-498` |
+| 7 | 5-case telemetry switch on `cc[0] & 0xf8` populates RADIONET shadows: case 0x00 (adc[0].overload + user_dig_in), case 0x08 (tx[0].exciter_power + tx[0].fwd_power), case 0x10 (tx[0].rev_power + user_adc0), case 0x18 (user_adc1 + supply_volts), case 0x20 (adc[0..2].overload).  `adc[0].adc_overload` moved INSIDE cases 0x00 + 0x20 (was unconditional) | drift | `:499-524` |
+| 8 | Dynamic per-frame layout — `stride = 6*nddc + 2`, `spr = 504 / stride` computed from `nddc`; was hard-coded `26` / `19` (nddc=4 only) | drift | `:527, 532, 562` |
+| 9 | `mic_decimation_factor` default `0` (matches reference BSS-init); was `1`.  HL2 operating point sets `1` via per-family setter (lands with Phase 2 wire-up) | drift | `network.h:507` |
+
+### Deviation FIXMEs (deferred to Task #114 TX-policy plumbing)
+
+| Item | Note |
+|------|------|
+| `PeakFwdPower()` / `PeakRevPower()` side-effect helpers | Reference calls these as external functions after writing fwd/rev power to maintain peak-meter state.  Raw `tx[0].fwd_power` / `tx[0].rev_power` are populated; peak-tracking helper lands with Task #114.  FIXME comments inline at cases 0x08 + 0x10. |
+
+### Lyra-native additions (acceptable, signed off)
+
+| Item | Note |
+|------|------|
+| `Ep6TelemetrySink` raw-bytes forwarding | Additive convenience layer fired AFTER the reference-faithful RADIONET shadow writes.  Operator/host consumers that want raw payload bytes (independent of the RADIONET path) register a sink.  No impact on wire or RADIONET state.  Signed as an acceptable Lyra-native addition. |
+
+### Architectural cleanup
+
+- `set_ddc_sink()` REMOVED from `Ep6RecvThread`.  The reference uses
+  `xrouter()` as the SOLE per-DDC dispatch path; Lyra's earlier
+  duplicate `ddc_sinks_[]` was an unsigned parallel path.  Consumers
+  now register exclusively on `Router::instance(id)` per the §5.8
+  signed-off idiom translation.
+
+### Sign-off
+
+- [x] Source-verified line-by-line vs `networkproto1.c:422-586` +
+      `:263-274` (twist) + `network.h:507-508` (decimation globals)
+- [x] All 9 fixes applied; build green (`lyra.exe` re-linked, 0
+      compile warnings, 0 errors)
+- [x] Reference defects (dash_in/dot_in left-shift; adc_overload
+      single-frame assignment) preserved verbatim per Rule 24
+- [x] No new safety-relevant defaults; §4b-2 PA-OFF posture intact
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §5-A parity correction sweep — 9 fixes vs `c8baa63` shipped (including the IQ-scale critical bug).  Single-commit parity correction on top of §5; §6 unblocked.*

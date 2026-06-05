@@ -77,9 +77,25 @@ int ApolloTuner      = 0;
 int ApolloATU        = 0;
 
 // §5 supplement (added 2026-06-05 per §5 Ep6RecvThread
-// source-verification).  Decimation factor 1 = no decimation;
-// operator/per-family rate setter overwrites at session open.
-int mic_decimation_factor = 1;
+// source-verification; default values corrected 2026-06-05 per
+// §5-A audit to match reference BSS-init exactly).
+//
+// `mic_decimation_factor` default 0 mirrors the reference's
+// `int mic_decimation_factor;` BSS-zero initialization
+// (`network.h:507`).  With factor=0 the EP6 reader's
+// `if (mic_decimation_count == mic_decimation_factor)` check
+// never matches (count is post-incremented from 0 → 1 first
+// iteration; never compares equal to 0), so NO mic harvest
+// fires until a per-family setter writes a non-zero factor at
+// session open.  HL2 default (every slot harvested) corresponds
+// to factor=1, set by the equivalent of cmaster init in Phase 2
+// wire-up.  Shipping factor=0 here preserves the reference's
+// "silent until setter" posture verbatim.
+//
+// `mic_decimation_count` default 0 matches reference; also
+// re-zeroed at EP6 reader thread entry per
+// `networkproto1.c:424`.
+int mic_decimation_factor = 0;
 int mic_decimation_count  = 0;
 
 }  // namespace lyra::wire

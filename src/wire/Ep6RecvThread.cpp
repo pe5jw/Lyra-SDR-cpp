@@ -3,16 +3,15 @@
 // See Ep6RecvThread.h for the design commentary + source mirror.
 // This file mirrors `ChannelMaster/networkproto1.c:422-586` (the
 // `MetisReadThreadMainLoop_HL2` function) verbatim per the signed
-// §5 parity checkpoint.  All reference-side quirks (sample-slot
-// stride, 24-bit BE IQ unpack, 16-bit BE mic unpack, dash_in /
-// dot_in LEFT-shift "bug" preserved per Rule 24, no-mask quirks,
-// CC0-bit-7 I2C overlay) are preserved verbatim.
+// §5 parity checkpoint and the §5-A parity-correction audit
+// (2026-06-05).  Reference defects (dash_in/dot_in left-shift
+// always-zero; HL2 single-frame adc_overload assignment vs the
+// generic OR-until-cleared) are PRESERVED verbatim per Rule 24.
 
 #include "wire/Ep6RecvThread.h"
 #include "wire/RadioNet.h"
 #include "wire/Router.h"
 
-#include <algorithm>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -37,57 +36,72 @@
 namespace lyra::wire {
 
 // ---- constants mirroring the reference layout ----
-//
-// One UDP datagram = 8-byte HPSDR header (0xEF 0xFE 0x01 0x06
-// + 4-byte sequence) + 2 x 512-byte USB frames.
 namespace {
+// One UDP datagram = 8-byte HPSDR header (4 sync 0xEF/0xFE/0x01/
+// 0x06 + 4-byte BE sequence) + 2 x 512-byte USB frames.
 constexpr std::size_t kHpsdrHeaderBytes = 8;
 constexpr std::size_t kUsbFrameBytes    = 512;
 constexpr std::size_t kEp6DatagramBytes =
     kHpsdrHeaderBytes + 2 * kUsbFrameBytes;  // 1032
 
 // USB frame layout: 3-byte sync + 5-byte C0..C4 status + 504
-// bytes of sample slots.
-constexpr int  kUsbSyncBytes    = 3;
-constexpr int  kCcBytes         = 5;
-constexpr int  kSlotsPerFrame   = 19;
-constexpr int  kSlotStrideBytes = 26;
+// bytes of sample slots.  The reference's per-sample-slot index
+// uses `k = 8 + isample * (6*nddc + 2) + iddc * 6` — that is,
+// the sample area begins at byte 8 within the 512-byte USB frame
+// (3 sync + 5 CC = 8).
+constexpr int kFrameSampleAreaOffset = 8;
+constexpr int kSampleAreaBytes       = 504;
 
-// Per-DDC IQ within one 26-byte slot: each DDC contributes 6
-// bytes (3 I + 3 Q, 24-bit BE signed).  Mic occupies the last
-// 2 bytes (16-bit BE signed).
-constexpr int  kBytesPerDdc     = 6;
-constexpr int  kMicSlotOffset   = 24;
+// Reference IQ-pack divisor.  Per `networkproto1.c:533-540` each
+// 24-bit BE IQ value is packed into the TOP 24 bits of an int32
+// (`bptr[k+0] << 24 | bptr[k+1] << 16 | bptr[k+2] << 8`, low 8
+// bits zero) and then multiplied by `1.0 / 2147483648.0`.  The
+// effective normalization is `int24_value / 2^23` → ±1.0 double.
+constexpr double kIqDivisor = 1.0 / 2147483648.0;
 
-// 24-bit BE → double normalization divisor (`1.0 / 2^31`).
-constexpr double kIqScale       = 1.0 / 2147483648.0;
+// Per-DDC stride within a sample slot: 3 bytes I + 3 bytes Q.
+constexpr int kBytesPerDdc = 6;
+// Mic trailer within a sample slot: 2 bytes (16-bit BE).
+constexpr int kMicTrailerBytes = 2;
 
-// Unpack 3 BE bytes (signed 24-bit) → int32 with sign-extension,
-// then normalize to ±1.0 double.
-inline double unpack_24be_to_norm_double(const uint8_t* p) {
-    int32_t v =  (static_cast<int32_t>(static_cast<int8_t>(p[0])) << 16) |
-                 (static_cast<int32_t>(p[1])                       <<  8) |
-                 (static_cast<int32_t>(p[2]));
-    return static_cast<double>(v) * kIqScale;
+// Unpack one 24-bit BE IQ word from `p[0..2]` into a normalized
+// double, exactly mirroring the reference's bit pattern (top-24
+// pack + 1/2^31 divisor → effective /2^23).  Done via uint32
+// build + signed conversion to keep the path defined under C++23
+// (the reference's direct `unsigned char << 24` into a signed
+// int is technically UB but works on every two's-complement
+// platform; the uint32 build below is byte-identical and well-
+// defined).
+inline double unpack_iq_be(const uint8_t* p) {
+    const uint32_t raw = (static_cast<uint32_t>(p[0]) << 24) |
+                         (static_cast<uint32_t>(p[1]) << 16) |
+                         (static_cast<uint32_t>(p[2]) <<  8);
+    return static_cast<double>(static_cast<int32_t>(raw)) * kIqDivisor;
 }
 
-inline int16_t unpack_16be_to_i16(const uint8_t* p) {
-    return static_cast<int16_t>(
-        (static_cast<uint16_t>(p[0]) << 8) |
-         static_cast<uint16_t>(p[1]));
+// Unpack one 16-bit BE mic word from `p[0..1]` into a normalized
+// double via the SAME divisor — reference packs `bptr[k+0] << 24
+// | bptr[k+1] << 16` (top 16 bits of int32) and scales by
+// `1/2^31` → effective /2^15.  Result is in ±1.0.
+inline double unpack_mic_be(const uint8_t* p) {
+    const uint32_t raw = (static_cast<uint32_t>(p[0]) << 24) |
+                         (static_cast<uint32_t>(p[1]) << 16);
+    return static_cast<double>(static_cast<int32_t>(raw)) * kIqDivisor;
 }
 }  // namespace
 
 // ---- ctor/dtor ----
 
 Ep6RecvThread::Ep6RecvThread() {
-    // Reserve per-DDC staging for one full datagram up front
-    // (2 doubles per sample slot per DDC; 38 slots per datagram).
+    // Per-DDC IQ staging: 2 doubles per sample, sized for the
+    // largest spr any supported nddc produces.
     for (auto& v : rx_buff_) {
-        v.assign(2 * kSlotsPerDgm, 0.0);
+        v.assign(2 * kMaxSprPerFrame, 0.0);
     }
-    tx_read_bufp_.assign(4 * kSlotsPerDgm, 0.0);
-    mic_buff_.assign(kSlotsPerDgm, 0);
+    // Shared scratch (reused by twist + mic harvest).  twist
+    // writes 4 doubles per sample (4 streams x I/Q); mic writes
+    // 2 doubles per sample (I=mic, Q=0).  Size to the larger.
+    tx_read_bufp_.assign(4 * kMaxSprPerFrame, 0.0);
 }
 
 Ep6RecvThread::~Ep6RecvThread() {
@@ -101,6 +115,11 @@ void Ep6RecvThread::start(int socket_fd) {
     socket_fd_     = socket_fd;
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
+    // Reference re-zeroes `mic_decimation_count` at thread entry
+    // (`networkproto1.c:424`).  Mirror that here so a session
+    // restart starts with a clean decimator phase regardless of
+    // where the previous session ended.
+    mic_decimation_count = 0;
     thread_ = std::make_unique<std::thread>([this] { this->run_loop(); });
 }
 
@@ -114,11 +133,6 @@ void Ep6RecvThread::stop() {
 }
 
 // ---- sink registration ----
-
-void Ep6RecvThread::set_ddc_sink(int ddc_index, Ep6IqSink sink) {
-    if (ddc_index < 0 || ddc_index >= kMaxDdc) return;
-    ddc_sinks_[ddc_index] = std::move(sink);
-}
 
 void Ep6RecvThread::set_router(Router* router, int router_id) {
     router_    = router;
@@ -153,16 +167,8 @@ void Ep6RecvThread::run_loop() {
                                      reinterpret_cast<char*>(buf.data()),
                                      static_cast<socket_recv_size_t>(buf.size()),
                                      0);
-        if (n <= 0) {
-            // Spurious wake-up / timeout / shutdown — let the
-            // stop-flag check at the top of the loop govern exit.
-            continue;
-        }
-        if (static_cast<std::size_t>(n) < kEp6DatagramBytes) {
-            // Short read — skip, leave stats clean.  Reference
-            // ignores short reads silently.
-            continue;
-        }
+        if (n <= 0) continue;
+        if (static_cast<std::size_t>(n) < kEp6DatagramBytes) continue;
         process_datagram(buf.data(), static_cast<std::size_t>(n));
     }
 
@@ -188,7 +194,6 @@ void Ep6RecvThread::process_datagram(const uint8_t* data,
         (static_cast<uint32_t>(data[7]));
 
     if (seq_seen_) {
-        // Wrap-aware: expected = last + 1 (modulo 2^32).
         const uint32_t expected = last_seq_ + 1;
         if (seq != expected) {
             seq_errors_.fetch_add(1, std::memory_order_relaxed);
@@ -197,46 +202,154 @@ void Ep6RecvThread::process_datagram(const uint8_t* data,
     last_seq_ = seq;
     seq_seen_ = true;
 
-    // Reset staging fill positions for the new datagram.
-    for (int& f : rx_fill_) f = 0;
-    mic_fill_ = 0;
-
-    // Two USB frames per datagram.
+    // Two USB frames per datagram.  Each frame is dispatched
+    // independently — reference loops `for (frame=0; frame<2;
+    // frame++)` and runs the full unpack→switch→mic harvest
+    // sequence per frame.
     process_usb_frame(data + kHpsdrHeaderBytes);
     process_usb_frame(data + kHpsdrHeaderBytes + kUsbFrameBytes);
-
-    // Fire per-DDC sinks with the per-datagram interleaved IQ.
-    flush_per_datagram_staging();
 }
 
-// ---- USB frame parsing ----
+// ---- USB frame parsing (mirrors `networkproto1.c:470-580`) ----
 
 void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
-    // Sync check.  Reference accepts the frame only if all three
-    // sync bytes are 0x7F.
+    // Sync check: all three sync bytes must be 0x7F.  Reference
+    // `if ((bptr[0]==0x7f) && (bptr[1]==0x7f) && (bptr[2]==0x7f))`.
     if (frame[0] != 0x7F || frame[1] != 0x7F || frame[2] != 0x7F) {
         return;
     }
 
-    // Cache the 5-byte C&C-in.
-    std::memcpy(control_bytes_in_, frame + kUsbSyncBytes, kCcBytes);
+    // Cache the 5-byte C&C-in (status header) and decode.
+    std::memcpy(control_bytes_in_, frame + 3, 5);
     decode_status_header(control_bytes_in_);
 
-    // 19 sample slots per frame.
-    const uint8_t* slots = frame + kUsbSyncBytes + kCcBytes;
-    for (int i = 0; i < kSlotsPerFrame; ++i) {
-        dispatch_sample_slot(slots + i * kSlotStrideBytes, i);
+    // Dynamic per-frame layout (matches the reference exactly):
+    //   stride = 6 * nddc + 2   bytes per sample slot
+    //   spr    = 504 / stride   samples per DDC per frame
+    const int n = nddc;
+    if (n < 1) return;
+    const int stride = kBytesPerDdc * n + kMicTrailerBytes;
+    int spr = (stride > 0) ? (kSampleAreaBytes / stride) : 0;
+    if (spr <= 0) return;
+    if (spr > kMaxSprPerFrame) spr = kMaxSprPerFrame;
+    const int clamped_ddc = (n <= kMaxDdc) ? n : kMaxDdc;
+
+    // ---- Per-DDC IQ unpack (DDC-major, matches reference structure)
+    //
+    // Reference `networkproto1.c:528-542`:
+    //   for (iddc = 0; iddc < nddc; iddc++)
+    //     for (isample = 0; isample < spr; isample++)
+    //       k = 8 + isample*(6*nddc+2) + iddc*6
+    //       prn->RxBuff[iddc][2*isample+0] = const * (bptr[k+0]<<24 | bptr[k+1]<<16 | bptr[k+2]<<8)
+    //       prn->RxBuff[iddc][2*isample+1] = const * (bptr[k+3]<<24 | bptr[k+4]<<16 | bptr[k+5]<<8)
+    for (int iddc = 0; iddc < clamped_ddc; ++iddc) {
+        double* const dst = rx_buff_[iddc].data();
+        for (int isample = 0; isample < spr; ++isample) {
+            const int k = kFrameSampleAreaOffset
+                        + isample * stride
+                        + iddc * kBytesPerDdc;
+            dst[2 * isample + 0] = unpack_iq_be(frame + k);
+            dst[2 * isample + 1] = unpack_iq_be(frame + k + 3);
+        }
+    }
+
+    // ---- Per-nddc switch (`networkproto1.c:544-558`) ----
+    //
+    // Direct xrouter calls for unpaired DDCs; twist() (which
+    // calls xrouter internally with 2*spr) for paired DDCs.
+    switch (n) {
+    case 2:
+        if (router_) {
+            twist(spr,
+                  rx_buff_[0].data(), rx_buff_[1].data(),
+                  tx_read_bufp_.data(),
+                  /*source=*/0,
+                  router_, router_id_);
+        }
+        break;
+    case 4:
+        if (router_) {
+            // source 0 = DDC0; source 1 = twist(DDC2, DDC3);
+            // source 2 = DDC1.  Verbatim from
+            // `networkproto1.c:549-552`.
+            xrouter(router_, router_id_, 0, spr, rx_buff_[0].data());
+            twist(spr,
+                  rx_buff_[2].data(), rx_buff_[3].data(),
+                  tx_read_bufp_.data(),
+                  /*source=*/1,
+                  router_, router_id_);
+            xrouter(router_, router_id_, 2, spr, rx_buff_[1].data());
+        }
+        break;
+    case 5:
+        // ANAN P1 — kept structurally for parity; bench-untested
+        // in this Lyra build (no ANAN P1 hardware available).
+        // Reference `networkproto1.c:554-557`.
+        if (router_ && clamped_ddc >= 5) {
+            twist(spr,
+                  rx_buff_[0].data(), rx_buff_[1].data(),
+                  tx_read_bufp_.data(),
+                  /*source=*/0,
+                  router_, router_id_);
+            twist(spr,
+                  rx_buff_[3].data(), rx_buff_[4].data(),
+                  tx_read_bufp_.data(),
+                  /*source=*/1,
+                  router_, router_id_);
+            xrouter(router_, router_id_, 2, spr, rx_buff_[2].data());
+        }
+        break;
+    default:
+        // Other nddc values are not dispatched (reference's
+        // switch has no default body).  IQ has been unpacked
+        // into rx_buff_ regardless.
+        break;
+    }
+
+    // ---- Mic harvest with decimation
+    //      (`networkproto1.c:560-579`) ----
+    //
+    // `mic_decimation_count` is post-incremented and compared
+    // against `mic_decimation_factor`; on equality the counter
+    // resets and the mic sample is harvested.  Default factor=0
+    // (reference BSS-init) yields no harvest; HL2 default
+    // operating point sets factor=1 at session open for
+    // every-slot harvest.
+    //
+    // Mic-sample byte offset within the slot is at `k + nddc*6`
+    // (mic trailer immediately follows the last DDC's IQ).  IQ
+    // pair output is interleaved {I=mic, Q=0.0}, matching the
+    // reference's TxReadBufp layout.
+    int mic_sample_count = 0;
+    for (int isamp = 0; isamp < spr; ++isamp) {
+        const int k = kFrameSampleAreaOffset
+                    + n * kBytesPerDdc
+                    + isamp * stride;
+        ++mic_decimation_count;
+        if (mic_decimation_count == mic_decimation_factor) {
+            mic_decimation_count = 0;
+            tx_read_bufp_[2 * mic_sample_count + 0] =
+                unpack_mic_be(frame + k);
+            tx_read_bufp_[2 * mic_sample_count + 1] = 0.0;
+            ++mic_sample_count;
+        }
+    }
+    if (mic_sink_ && mic_sample_count > 0) {
+        // Reference: `Inbound(inid(1, 0), mic_sample_count,
+        // prn->TxReadBufp);`
+        mic_sink_(mic_sample_count, tx_read_bufp_.data());
     }
 }
 
-// ---- C&C-in header decode (§5.5 5-class telemetry switch +
-//      I2C overlay when bit 7 set) ----
+// ---- C&C-in header decode (`networkproto1.c:478-525`) ----
+//
+// I2C-overlay gate (C0 bit 7 set) takes precedence and replaces
+// the telemetry-class switch entirely; otherwise the PTT/dash/
+// dot shadow bits land on RadioNet and the 5-case telemetry
+// switch populates per-class RADIONET fields verbatim.
 
 void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
-    // §5.5.1 I2C-readback overlay: when C0 bit 7 is set, the
-    // remaining 4 bytes are an I2C response and DO NOT carry the
-    // usual telemetry class.  Mirrors
-    // `MetisReadThreadMainLoop_HL2:500-508`.
+    // I2C readback overlay — `networkproto1.c:478-493`.
     if (cc[0] & 0x80) {
         if (i2c_sink_) {
             i2c_sink_(cc + 1, 4);
@@ -244,28 +357,93 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
         return;
     }
 
-    // §5.5.2 Update PTT / dash / dot / ADC-overload shadows on
-    // RadioNet.  Reference: `prn->ptt_in = cc[0] & 0x01;`
-    // (`networkproto1.c:496`); `prn->dash_in = cc[0] & (0x01<<1);`
-    // and `prn->dot_in = cc[0] & (0x01<<2);` per :497-498 (the
-    // documented LEFT-shift behavior is preserved verbatim per
-    // Rule 24 — the `& mask` form below is byte-equivalent and
-    // does not "fix" the reference quirk).
     if (auto* p = prn) {
+        // ptt_in / dash_in / dot_in shadows — reference at
+        // `networkproto1.c:496-498`.
+        //
+        // Note Rule 24 preservation of reference defects:
+        // `dash_in = (cc[0] << 1) & 0x01` and
+        // `dot_in  = (cc[0] << 2) & 0x01` always evaluate to 0
+        // (left-shifting moves bits AWAY from the LSB; the LSB
+        // mask then captures the new LSB which is 0).  This is
+        // a known reference defect — preserved verbatim so a
+        // downstream consumer that depends on "dash/dot always
+        // 0" (e.g. as a placeholder for the per-HL2 hardware
+        // CW input path that is wired elsewhere) sees the same
+        // wire behaviour as the reference.
         p->ptt_in  = static_cast<int>(cc[0] & 0x01);
-        p->dash_in = static_cast<int>(cc[0] & 0x02);
-        p->dot_in  = static_cast<int>(cc[0] & 0x04);
-        // ADC overload latched bit on adc[0] (HL2 single-frame
-        // assignment per `networkproto1.c:502`; the host-side
-        // OR-until-cleared discipline lives in the consumer
-        // layer).
-        p->adc[0].adc_overload = static_cast<int>(cc[1] & 0x01);
+        p->dash_in = static_cast<int>((cc[0] << 1) & 0x01);
+        p->dot_in  = static_cast<int>((cc[0] << 2) & 0x01);
+
+        // ---- 5-class telemetry switch on (cc[0] & 0xf8) ----
+        //      Verbatim from `networkproto1.c:499-524`.
+        switch (cc[0] & 0xf8) {
+        case 0x00:  // C0 0000 0xxx
+            // adc_overload + user_dig_in.
+            p->adc[0].adc_overload = static_cast<int>(cc[1] & 0x01);
+            p->user_dig_in = static_cast<int>((cc[1] >> 1) & 0x0f);
+            break;
+        case 0x08:  // C0 0000 1xxx
+            // AIN5 exciter (drive) power + AIN1 PA coupler fwd.
+            p->tx[0].exciter_power =
+                static_cast<int>(((static_cast<int>(cc[1]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[2])       & 0x00ff));
+            p->tx[0].fwd_power =
+                static_cast<int>(((static_cast<int>(cc[3]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[4])       & 0x00ff));
+            // FIXME (Task #114 TX-policy plumbing): reference
+            // also calls `PeakFwdPower((float)prn->tx[0].fwd_power)`
+            // here to maintain a running peak-meter state for
+            // consumer-facing readouts.  Lyra-native peak
+            // helper lands with the TX-policy plumbing commit;
+            // raw fwd_power above is already populated for
+            // direct consumers.
+            break;
+        case 0x10:  // C0 0001 0xxx
+            // AIN2 PA reverse power + AIN3 MKII PA volts.
+            p->tx[0].rev_power =
+                static_cast<int>(((static_cast<int>(cc[1]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[2])       & 0x00ff));
+            // FIXME (Task #114): reference calls
+            // `PeakRevPower((float)prn->tx[0].rev_power)` here.
+            p->user_adc0 =
+                static_cast<int>(((static_cast<int>(cc[3]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[4])       & 0x00ff));
+            break;
+        case 0x18:  // C0 0001 1xxx
+            // AIN4 MKII PA amps + AIN6 Hermes (supply) volts.
+            p->user_adc1 =
+                static_cast<int>(((static_cast<int>(cc[1]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[2])       & 0x00ff));
+            p->supply_volts =
+                static_cast<int>(((static_cast<int>(cc[3]) << 8) & 0xff00) |
+                                 ( static_cast<int>(cc[4])       & 0x00ff));
+            break;
+        case 0x20:  // C0 0010 0xxx
+            // Per-ADC overload bits.  Note the reference's
+            // shift-then-write idiom for adc[1]/adc[2] is
+            // preserved verbatim (the resulting values are 0 or
+            // 2 for adc[1], 0 or 4 for adc[2] — non-1 truthy
+            // values that consumers test as bool).
+            p->adc[0].adc_overload = static_cast<int>(cc[1] & 0x01);
+            p->adc[1].adc_overload = static_cast<int>((cc[2] & 0x01) << 1);
+            p->adc[2].adc_overload = static_cast<int>((cc[3] & 0x01) << 2);
+            break;
+        default:
+            // Reference switch has no default body — other
+            // class IDs are reserved/unused.
+            break;
+        }
     }
 
-    // §5.5.3 5-class telemetry switch on (cc[0] & 0xf8).  Pure
-    // payload-forwarding — the consumer scales raw 16-bit words
-    // to physical units (per-family conversion lives there per
-    // §6.7 #5 hardware-abstraction).
+    // Lyra-native telemetry-sink forwarding (additive — not
+    // present in the reference).  Operator-side consumers that
+    // want raw payload bytes (independent of the RADIONET
+    // shadow writes above) can register a sink to receive them.
+    // The shadow writes above are the reference-faithful path;
+    // this sink is a convenience layer signed off as an
+    // acceptable Lyra-native addition (no impact on wire or
+    // RADIONET state).
     if (telemetry_sink_) {
         Ep6Telemetry tm{};
         tm.class_id   = static_cast<uint8_t>(cc[0] & 0xf8);
@@ -274,92 +452,6 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
         tm.control[2] = cc[3];
         tm.control[3] = cc[4];
         telemetry_sink_(tm);
-    }
-}
-
-// ---- per-sample-slot dispatch ----
-//
-// Inline switch on `nddc` per `MetisReadThreadMainLoop_HL2:544-558`
-// — HL2 / HL2+ default is nddc=4 (RX1 + RX2 + 2x TX-feedback
-// slots).  Non-HL2 families (Hermes II=2, ANAN 5/7-DDC) become
-// reachable later via per-family init writing `lyra::wire::nddc`;
-// today the switch supports 1, 2, 4 (HL2 targets) and falls
-// through to the 4-DDC layout on others.
-
-void Ep6RecvThread::dispatch_sample_slot(const uint8_t* slot,
-                                         int            /*slot_index_in_frame*/) {
-    if (mic_fill_ >= kSlotsPerDgm) return;
-
-    const int n = nddc;
-
-    auto push_iq = [this](int ddc_idx, const uint8_t* iq_bytes) {
-        if (ddc_idx >= kMaxDdc) return;
-        if (rx_fill_[ddc_idx] >= kSlotsPerDgm) return;
-        double* dst = rx_buff_[ddc_idx].data() + 2 * rx_fill_[ddc_idx];
-        dst[0] = unpack_24be_to_norm_double(iq_bytes);
-        dst[1] = unpack_24be_to_norm_double(iq_bytes + 3);
-        rx_fill_[ddc_idx] += 1;
-    };
-
-    switch (n) {
-    case 1:
-        push_iq(0, slot + 0 * kBytesPerDdc);
-        break;
-    case 2:
-        push_iq(0, slot + 0 * kBytesPerDdc);
-        push_iq(1, slot + 1 * kBytesPerDdc);
-        break;
-    case 4:
-    default:
-        push_iq(0, slot + 0 * kBytesPerDdc);
-        push_iq(1, slot + 1 * kBytesPerDdc);
-        push_iq(2, slot + 2 * kBytesPerDdc);
-        push_iq(3, slot + 3 * kBytesPerDdc);
-        break;
-    }
-
-    // Mic sample — last 2 bytes of the 26-byte slot.  HL2+
-    // AK4951-codec gateware emits a 16-bit sample every slot
-    // unconditionally; standard HL2 leaves it zero.
-    mic_buff_[mic_fill_] = unpack_16be_to_i16(slot + kMicSlotOffset);
-    mic_fill_ += 1;
-}
-
-// ---- per-datagram flush to registered sinks ----
-
-void Ep6RecvThread::flush_per_datagram_staging() {
-    // Per-DDC IQ-pair sinks.
-    const int n = nddc;
-    const int per_ddc = (n >= 1 && n <= kMaxDdc) ? n : kMaxDdc;
-    for (int i = 0; i < per_ddc; ++i) {
-        if (ddc_sinks_[i] && rx_fill_[i] > 0) {
-            ddc_sinks_[i](rx_fill_[i], rx_buff_[i].data());
-        }
-    }
-
-    // Case-4 inner pair (DDC2 + DDC3) → twist() + xrouter when a
-    // router is registered.  Mirrors the reference's nddc=4
-    // dispatch: per-DDC sinks above cover RX1/RX2 (source 0 +
-    // source 2 in reference terms); twist+xrouter on the inner
-    // pair is the source-1 path used by PureSignal consumers in
-    // v0.3.  RX-only / non-PS operation leaves router_ null and
-    // the inner pair stays inert.
-    if (n >= 4 && router_) {
-        const int samples = std::min(rx_fill_[2], rx_fill_[3]);
-        if (samples > 0) {
-            twist(samples,
-                  rx_buff_[2].data(),
-                  rx_buff_[3].data(),
-                  tx_read_bufp_.data(),
-                  /*source=*/1,
-                  router_,
-                  router_id_);
-        }
-    }
-
-    // Mic sink — fire once per datagram with the slot count.
-    if (mic_sink_ && mic_fill_ > 0) {
-        mic_sink_(mic_fill_, mic_buff_.data());
     }
 }
 

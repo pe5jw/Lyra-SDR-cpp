@@ -66,12 +66,21 @@ struct Ep6Telemetry {
 
 using Ep6TelemetrySink = std::function<void(const Ep6Telemetry&)>;
 
-// Sink for the per-sample mic word that the AK4951 (HL2+)
-// gateware appends at the end of each 26-byte slot.  HL2-only;
-// standard HL2 leaves the slot zero per §5.6.  Sink receives one
-// signed 16-bit sample per EP6 sample slot.
+// Sink for mic samples harvested from the per-sample-slot
+// trailer.  Mirrors the reference's `Inbound(inid(1,0),
+// mic_sample_count, prn->TxReadBufp)` call at
+// `networkproto1.c:579`: payload is interleaved IQ-pair
+// doubles where I = mic / 2^15 (top 16 bits of the slot's
+// 2-byte mic word packed into the high 16 bits of an int32,
+// then * 1/2^31 → effective /2^15 normalization) and Q = 0.0.
+//
+// Sink receives `n_samples` mic samples = `2 * n_samples`
+// doubles.  Decimation honours `mic_decimation_factor` per
+// `networkproto1.c:566-577`: with factor=0 (BSS default) NO
+// harvest fires; HL2 default operating point sets factor=1
+// at session open for every-slot harvest.
 using Ep6MicSink = std::function<void(int n_samples,
-                                      const int16_t* mic_pcm)>;
+                                      const double* iq_pairs)>;
 
 // Sink for the I2C-readback overlay (when C0 bit 7 is set per
 // `MetisReadThreadMainLoop_HL2:500-508`).  Inert on this build
@@ -100,22 +109,25 @@ public:
 
     // ---- sink registration (call BEFORE start) ----
     //
-    // Per-DDC IQ sinks: index by DDC 0..3.  Sinks receive
-    // interleaved IQ pairs (2 doubles per sample) for that DDC.
-    // Mirrors `xrouter`-dispatched terminal consumers in the
-    // reference — Lyra wires the sinks directly without the
-    // intermediate channel-master `Inbound()` indirection.
-    void set_ddc_sink(int ddc_index, Ep6IqSink sink);
-
-    // Router pointer for inline `twist`+`xrouter` dispatch in the
-    // nddc=4 HL2 path (case 4 of the §5.4 switch — DDC2+DDC3
-    // pair fed through `twist()` to xrouter source 1).  Optional;
-    // if null, the inner DDC pairs are dropped (RX-only / non-PS
-    // operation default — `xrouter` is exercised only when v0.3
-    // PureSignal consumers wire in).
+    // Router pointer — the SOLE per-DDC dispatch path.  Mirrors
+    // the reference's `xrouter(0, ...)` calls verbatim: DDC IQ
+    // is dispatched via `xrouter()` (direct, single-DDC paths)
+    // and `twist() + xrouter()` (interleaved-pair paths) per the
+    // `switch(nddc)` at `networkproto1.c:544-558`.
+    //
+    // Operator/host code registers per-port consumers on the
+    // Router (typically slot 0) to receive RX1 / RX2 / inner-pair
+    // samples.  HL2 / nddc=4 routing:
+    //   - source 0  =  DDC0          (RX1)
+    //   - source 1  =  twist(DDC2, DDC3)  (PS feedback / inner pair)
+    //   - source 2  =  DDC1          (RX2)
+    //
+    // Optional; if null the IQ samples are unpacked and then
+    // dropped (no dispatch).
     void set_router(Router* router, int router_id);
 
-    // Telemetry / mic / I2C sinks.
+    // Telemetry / mic / I2C sinks.  Mic mirrors the reference's
+    // `Inbound(inid(1,0), ...)` (`networkproto1.c:579`).
     void set_telemetry_sink(Ep6TelemetrySink sink);
     void set_mic_sink(Ep6MicSink sink);
     void set_i2c_sink(Ep6I2cSink sink);
@@ -143,19 +155,12 @@ private:
     // dispatch when `cc[0] & 0x80` is set (§5.5).
     void decode_status_header(const uint8_t cc[5]);
 
-    // Per-sample-slot dispatch — mirrors the inline `switch(nddc)`
-    // at `MetisReadThreadMainLoop_HL2:544-558` verbatim.  Reads
-    // per-DDC IQ from `slot[0..23]` + mic from `slot[24:25]`,
-    // pushes into the per-DDC staging buffers, and on a full
-    // staging batch fires the registered sinks.
-    void dispatch_sample_slot(const uint8_t* slot,
-                              int            slot_index_in_frame);
-
-    // Flush per-DDC staging once the EP6 datagram completes
-    // (one EP6 datagram = 2 USB frames = 38 sample slots = a
-    // full DSP block on HL2-default 48 kHz).  Fires registered
-    // sinks with interleaved IQ pairs.
-    void flush_per_datagram_staging();
+    // Process one 512-byte USB frame: per-DDC unpack into
+    // `rx_buff_[iddc]`, dispatch via `xrouter`/`twist` per the
+    // `switch(nddc)`, then harvest mic samples and fire the mic
+    // sink.  All flushing is per-USB-frame (mirrors the reference
+    // — `networkproto1.c:470-580` loops `for (frame = 0; frame
+    // < 2; frame++)` and dispatches inside the per-frame body).
 
 private:
     // Socket fd (not owned).
@@ -166,43 +171,44 @@ private:
     std::atomic<bool> stop_request_{false};
     std::unique_ptr<std::thread> thread_;
 
-    // Sequence-tracking.  Reference uses a wrap-aware compare.
+    // Sequence-tracking.  Reference uses `MetisReadDirect()` to
+    // track + post seq counters externally; Lyra adds a simple
+    // wrap-aware compare for diagnostic counting.
     uint32_t          last_seq_        = 0;
     bool              seq_seen_        = false;
 
     // ---- staging buffers (§1.1 RadioNet exclusion) ----
     //
-    // Sized for the reference's per-datagram budget: at HL2-default
-    // nddc=4 / 48 kHz, one datagram delivers 2 * 19 = 38 IQ samples
-    // per DDC plus 38 mic samples.  Per-DDC staging holds the
-    // un-interleaved doubles ready for the sink callback.
-    static constexpr int kMaxDdc      = 4;
-    static constexpr int kSlotsPerDgm = 38;  // 2 USB frames x 19
+    // Per-USB-frame staging, sized for the largest spr (samples-
+    // per-DDC-per-frame) any supported nddc produces.  Reference:
+    // `spr = 504 / (6*nddc + 2)`.  At nddc=2 (smallest stride 14),
+    // spr = 36.  We round up to kMaxSprPerFrame=64 for headroom
+    // (covers a hypothetical nddc=1 spr=63).
+    static constexpr int kMaxDdc          = 4;
+    static constexpr int kMaxSprPerFrame  = 64;
 
-    // Per-DDC: 2 doubles per sample (I,Q).
+    // Per-DDC: 2 doubles per sample (I,Q); reference is
+    // `prn->RxBuff[iddc][2*isample + {0,1}]`.
     std::array<std::vector<double>, kMaxDdc> rx_buff_{};
 
-    // Staging for twist() interleave: 4 doubles per sample
-    // ({s0_I, s0_Q, s1_I, s1_Q}); used only on the case-4 path.
+    // Reference's `prn->TxReadBufp` — single shared scratch buffer
+    // reused by BOTH twist() interleave (4 doubles per sample) AND
+    // mic harvest (2 doubles per sample, I=mic, Q=0).  Sized to
+    // the larger of the two: 4 * kMaxSprPerFrame doubles.  Reused
+    // sequentially within a frame: twist writes (xrouter consumes
+    // inline), then mic writes (mic_sink_ consumes inline) —
+    // exactly the reference's reuse pattern.
     std::vector<double> tx_read_bufp_{};
-
-    // Mic staging — 1 int16 per slot.
-    std::vector<int16_t> mic_buff_{};
 
     // C&C-in cache (5 bytes); refreshed each USB frame.
     uint8_t control_bytes_in_[5] = {0, 0, 0, 0, 0};
 
     // ---- sinks ----
-    std::array<Ep6IqSink, kMaxDdc> ddc_sinks_{};
     Ep6TelemetrySink                telemetry_sink_;
     Ep6MicSink                      mic_sink_;
     Ep6I2cSink                      i2c_sink_;
     Router*                         router_     = nullptr;
     int                             router_id_  = 0;
-
-    // ---- staging fill positions (samples, not doubles) ----
-    int rx_fill_[kMaxDdc] = {0, 0, 0, 0};
-    int mic_fill_         = 0;
 
     // ---- counters ----
     std::atomic<uint64_t> rx_datagrams_{0};
