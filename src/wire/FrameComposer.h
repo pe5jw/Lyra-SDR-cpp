@@ -76,6 +76,44 @@ public:
     // `cc_lock_`.  No-op if `prn` is nullptr.
     void set_tx_freq(int freq_hz);
 
+    // §4b-2.5 setter surface.
+
+    // Write `prn->tx[0].drive_level` (case 10 C1).  Operator-axis
+    // input (the reference's `_tx_attenuator_data` is the same
+    // operator-axis value; SWR correction happens at Radio-layer
+    // BEFORE calling this setter).  No-op if `prn` is nullptr.
+    void set_drive_level(int level);
+
+    // Write `prn->tx[0].pa` (case 10 C3 bit 7 — the LEGACY PA
+    // enable path).  Note: on Apollo-modded HL2+, the PA enable
+    // is C2 bit 3 via `ApolloTuner` global (Task #114), NOT this
+    // bit.  Kept for reference parity + non-Apollo paths.
+    void set_pa_on(bool on);
+
+    // §4b-2.5 TX step attenuator setter — **per-family branching**.
+    //
+    // For HL2 / HL2+ (`hpsdrModel == HPSDRModel::HERMESLITE`),
+    // applies the `(31 - signed_db) & 0x3F` inversion per the
+    // source-verified `console.cs:10657-10663` HL2-specific branch.
+    // For non-HL2 families, writes the raw value `& 0x3F`.
+    //
+    // Operator-axis input is signed dB (-28..+31 on HL2 per the
+    // hardware's bipolar range; 0..31 on ANAN-class).  Writes
+    // `prn->adc[0].tx_step_attn`; case 4 emits the 5-bit truncated
+    // form, case 11 emits the 6-bit + `0x40` enable form on the
+    // MOX branch.
+    //
+    // The Display.TXAttenuatorOffset panadapter compensation +
+    // m_bATTonTX policy gate are operator-layer concerns deferred
+    // to Task #114.  This setter just writes the wire-encoded
+    // field.
+    void set_tx_step_attn_db(int signed_db);
+
+    // §4b-2.5 RX step attenuator setter — no inversion (any family).
+    // Per-ADC variant for ANAN multi-ADC radios; HL2 uses only
+    // `adc_idx = 0`.
+    void set_rx_step_attn_db(int signed_db, int adc_idx = 0);
+
 private:
     // Scheduler-internal state — NOT cross-cutting globals.
     // Source mirror: `networkproto1.c:27` (`out_control_idx`),
@@ -119,6 +157,20 @@ private:
                          unsigned char& C2, unsigned char& C3,
                          unsigned char& C4);
     void compose_case_18(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+
+    // §4b-2 case helpers (TX heavyweight — §15.26 territory).
+    void compose_case_10(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_11(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_12(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_16(unsigned char& C0, unsigned char& C1,
                          unsigned char& C2, unsigned char& C3,
                          unsigned char& C4);
 };

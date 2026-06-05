@@ -555,4 +555,35 @@ extern int           P1_en_diversity;
 // for ANAN models.  Added 2026-06-05 per §4b-1 source-verification.
 extern int           P1_adc_cntrl;
 
+// §4b-2 supplement (added 2026-06-05 per §4b-2 source-verification).
+//
+// `xvtr_enable` (`network.h:419`) — transverter-enable flag.  Case
+// 16 (frame `0x24`) reads `(xvtr_enable & 1)` into C2 bit 0.  HL2
+// has no transverter port; default `0`.  Operator-toggleable via
+// Settings → TX → Transverter (Task #114).
+//
+// `ApolloFilt` / `ApolloFiltSelect` / `ApolloTuner` / `ApolloATU`
+// (`network.h:435-438`) — pre-shifted Apollo PA / filter / tuner /
+// ATU control bits.  Case 10 (frame `0x12`) OR's all four inline
+// into C2.  Per the gateware RTL ground truth (`control.v:209-220`):
+//   - `data[19] = pa_enable` → C2 bit 3 → `ApolloTuner = 0x08`
+//     when PA ON, `0` when PA OFF
+//   - `data[18] = tr_disable` → C2 bit 2 → `ApolloFilt = 0x04`
+//     (also serves as the tr_disable bit; PA-OFF should set
+//     this to keep T/R relay disabled, PA-ON clears it)
+//   - ApolloATU / ApolloFiltSelect are operator-feature bits for
+//     the HL2 Apollo daughterboard
+//
+// **All four default `0` per the §15.26-locked PA-OFF-at-startup
+// safety** — PA bias OFF, RF impossible until operator opt-in via
+// Settings → TX → "Enable PA" (Task #114).  Per-family init code
+// for HL2-with-Apollo-mod operators overwrites these at session
+// start ONLY when the operator has previously ticked Enable PA in
+// Settings.
+extern int           xvtr_enable;
+extern int           ApolloFilt;
+extern int           ApolloFiltSelect;
+extern int           ApolloTuner;
+extern int           ApolloATU;
+
 }  // namespace lyra::wire

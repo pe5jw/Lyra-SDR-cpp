@@ -63,4 +63,17 @@ int           P1_en_diversity   = 0;
 // C1=0, C2=0).  ANAN models set non-zero values at session open.
 int P1_adc_cntrl = 0;
 
+// §4b-2 supplement (added 2026-06-05 per §4b-2 source-verification).
+//
+// All five globals default 0 per the §15.26-locked PA-OFF-at-startup
+// safety.  C2 of frame 0x12 = `0x40` (case 10's OR'd `0b01000000`
+// constant only) → gateware `pa_enable = 0` → PA bias OFF → RF
+// impossible until operator opt-in (Task #114 Settings → TX →
+// "Enable PA").
+int xvtr_enable      = 0;
+int ApolloFilt       = 0;
+int ApolloFiltSelect = 0;
+int ApolloTuner      = 0;
+int ApolloATU        = 0;
+
 }  // namespace lyra::wire

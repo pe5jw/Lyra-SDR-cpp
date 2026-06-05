@@ -1321,3 +1321,321 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §4b-1 simple TX cases signed + Rule-24 circle-back verified clean; populate commit lands separately.*
+
+---
+
+## §4b-2. `FrameComposer` — TX heavyweight cases (10, 11, 12, 16)
+
+**Scope.** Four TX-relevant cases that form the §15.26-history
+careful-verification cluster:
+- Case 10 frame `0x12` — drive level + Apollo PA bits + mic/line
+  + per-band HPF/LPF + `prn->tx[0].pa` bit
+- Case 11 frame `0x14` — per-RX preamps + mic_trs/bias/ptt +
+  line_in_gain + `puresignal_run` + **MOX-gated step ATT**
+- Case 12 frame `0x16` — adc[1]/adc[2] step ATT (XmitBit-force
+  on adc[1]) + CW keyer config (iambic / mode_b / keyer_speed /
+  keyer_weight / strict_spacing)
+- Case 16 frame `0x24` — BPF2 (Alex1 HPFs from `prbpfilter2`) +
+  `xvtr_enable` + `puresignal_run` bit
+
+Source mirror: `networkproto1.c::WriteMainLoop_HL2` lines
+1076-1089 (case 10), 1091-1103 (case 11), 1105-1123 (case 12),
+1151-1160 (case 16).
+
+**§3 supplement — five more globals surfaced by §4b-2:**
+
+`network.h:419` declares `int xvtr_enable;` (case 16); `:435-438`
+declare four Apollo PA bit globals consumed inline in case 10's
+C2 OR-chain.  Same supplement pattern as §3.4 / §3.5 (added per
+Rule 24 once discovered).
+
+| Global | Reference (file:line) | Lyra | Default |
+|---|---|---|---|
+| `xvtr_enable` | `network.h:419` `int xvtr_enable;` | `extern int xvtr_enable;` | `0` (HL2; no transverter) |
+| `ApolloFilt` | `network.h:435` `int ApolloFilt;` | `extern int ApolloFilt;` | `0` (HL2 with no Apollo mod); set per-family at session start when Apollo PA mod is installed |
+| `ApolloFiltSelect` | `network.h:436` `int ApolloFiltSelect;` | `extern int ApolloFiltSelect;` | `0` |
+| `ApolloTuner` | `network.h:437` `int ApolloTuner;` | `extern int ApolloTuner;` | `0` (HL2 with no Apollo mod); set when Apollo tuner installed |
+| `ApolloATU` | `network.h:438` `int ApolloATU;` | `extern int ApolloATU;` | `0` |
+
+**Apollo bits — important note.** In the reference, these are
+PRE-SHIFTED flag bits (each carries its bit-position value when
+non-zero, not just `1`).  Case 10 OR's them inline into C2.
+Per the §15.26 PART C history the HL2 PA-enable on Apollo-modded
+gateware uses `ApolloTuner = 0x08` + `ApolloFilt = 0x04` (case
+10 C2 bit 3 + bit 2).  The reference's setter (`EnableApolloTuner`
+etc.) writes these bit values directly into the globals.  Lyra
+preserves the reference pattern: the globals hold the bit-value-
+or-zero, NOT a boolean.
+
+---
+
+### §4b-2.1 Case 10 — frame `0x12` — drive level + Apollo + mic + HPF/LPF (source: `networkproto1.c:1076-1089`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x12;` (`:1077`) → `C0 = XmitBit \| 0x12` | Same |
+| C1 | `C1 = prn->tx[0].drive_level;` (`:1078`) — pre-SWR-adjusted drive level (operator-facing setter applies SWR correction BEFORE writing this field) | Same — verbatim read of `prn->tx[0].drive_level` |
+| C2 | `C2 = ((prn->mic.mic_boost & 1) \| ((prn->mic.line_in & 1) << 1) \| ApolloFilt \| ApolloTuner \| ApolloATU \| ApolloFiltSelect \| 0b01000000) & 0x7f;` (`:1079-1080`) — bit 0 = mic_boost, bit 1 = line_in, Apollo bits OR'd in inline (each global holds its bit-position-or-zero), bit 6 forced ON (`0b01000000`), then masked to 7 bits (bit 7 reserved) | Same — verbatim OR-chain with the bit-6-forced-ON + final `& 0x7f` |
+| C3 | `C3 = (prbpfilter->_13MHz_HPF & 1) \| ((prbpfilter->_20MHz_HPF & 1) << 1) \| ((prbpfilter->_9_5MHz_HPF & 1) << 2) \| ((prbpfilter->_6_5MHz_HPF & 1) << 3) \| ((prbpfilter->_1_5MHz_HPF & 1) << 4) \| ((prbpfilter->_Bypass & 1) << 5) \| ((prbpfilter->_6M_preamp & 1) << 6) \| ((prn->tx[0].pa & 1) << 7);` (`:1081-1084`) — bits 0-4 are 5 actual HPF band-select bits (13 / 20 / 9.5 / 6.5 / 1.5 MHz); bit 5 is `_Bypass`; bit 6 is `_6M_preamp`; bit 7 is `prn->tx[0].pa` | Same — verbatim 8-bit OR-chain |
+| C4 | `C4 = (prbpfilter->_30_20_LPF & 1) \| ((prbpfilter->_60_40_LPF & 1) << 1) \| ((prbpfilter->_80_LPF & 1) << 2) \| ((prbpfilter->_160_LPF & 1) << 3) \| ((prbpfilter->_6_LPF & 1) << 4) \| ((prbpfilter->_12_10_LPF & 1) << 5) \| ((prbpfilter->_17_15_LPF & 1) << 6);` (`:1085-1088`) — seven per-band LPF bits, bit 7 unused | Same — verbatim 7-bit OR-chain |
+
+**Note on C2 mask `& 0x7f`.** The OR-chain produces a value
+that could in principle have bit 7 set (e.g. if an Apollo global
+held a value with bit 7).  The trailing `& 0x7f` clears bit 7
+unconditionally.  Preserved verbatim.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1076-1089`.
+
+---
+
+### §4b-2.2 Case 11 — frame `0x14` — preamps + mic + MOX-gated step ATT (source: `networkproto1.c:1091-1103`)
+
+The MOX-gated step ATT in C4 is the §15.26-history load-bearing
+RX-ADC protection mechanism.  When `XmitBit` is set, C4 carries
+`prn->adc[0].tx_step_attn` (the operator's TX-axis attenuator);
+when not transmitting, C4 carries `prn->adc[0].rx_step_attn`
+(operator's RX-axis attenuator).  Both with 6-bit width and the
+`0x40` enable bit set.
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x14;` (`:1092`) → `C0 = XmitBit \| 0x14` | Same |
+| C1 | `C1 = (prn->rx[0].preamp & 1) \| ((prn->rx[1].preamp & 1) << 1) \| ((prn->rx[2].preamp & 1) << 2) \| ((prn->rx[0].preamp & 1) << 3) \| ((prn->mic.mic_trs & 1) << 4) \| ((prn->mic.mic_bias & 1) << 5) \| ((prn->mic.mic_ptt & 1) << 6);` (`:1093-1096`) — bit 3 reads `rx[0].preamp` AGAIN (after bit 0 already did) — reference quirk preserved verbatim; possibly intentional (bit 3 = ADC0-shared preamp linked to RX[0]) or possibly typo for `rx[3].preamp`; do not "fix" | Same — verbatim including the `rx[0].preamp << 3` duplicate |
+| C2 | `C2 = (prn->mic.line_in_gain & 0b00011111) \| ((prn->puresignal_run & 1) << 6);` (`:1097`) — 5-bit line_in_gain + puresignal_run bit at 6 | Same |
+| C3 | `C3 = prn->user_dig_out & 0b00001111;` (`:1098`) — 4-bit user_dig_out | Same |
+| C4 | MOX-gated (`:1099-1102`): `if (XmitBit) C4 = (prn->adc[0].tx_step_attn & 0b00111111) \| 0b01000000;` else `C4 = (prn->adc[0].rx_step_attn & 0b00111111) \| 0b01000000;` — 6-bit step ATT + `0x40` enable bit, sourced per MOX state | Same — verbatim MOX-gated branch with 6-bit mask + 0x40 OR |
+
+**Reference quirk preserved:** the `rx[0].preamp << 3` at bit 3
+of C1 is the same field as bit 0.  Either intentional (a
+hardware-level preamp shared across the ADC0 RXes) or a typo
+that's been on the wire for years.  Rule 24 says preserve as-is.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1091-1103`.
+
+---
+
+### §4b-2.3 Case 12 — frame `0x16` — adc[1]/adc[2] step ATT + CW keyer (source: `networkproto1.c:1105-1123`)
+
+Multi-ADC step attenuator for ANAN-class radios (HL2 has 1 ADC,
+so `adc[1]`/`adc[2]` fields are inert on HL2 but case 12 still
+emits them).  Plus CW keyer config (iambic mode + speed + weight
++ strict spacing).  C1 has XmitBit-forced 0x1F for `adc[1]`
+during TX.
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x16;` (`:1106`) → `C0 = XmitBit \| 0x16` | Same |
+| C1 | `if (XmitBit) C1 = 0x1F; else C1 = (prn->adc[1].rx_step_attn);` THEN `C1 \|= 0b00100000;` (`:1107-1111`) — XmitBit forces `adc[1]` to max ATT (0x1F = 31) during TX; otherwise emit the operator's rx_step_attn for ADC1; then OR in the `0x20` enable bit.  **Reference quirk preserved:** the RX branch has NO explicit `& 0x1F` mask on `adc[1].rx_step_attn` — the reference relies on the field being already-5-bit; if it overflows, bit 5+ leakage would conflict with the subsequent `\| 0x20`.  Verbatim per Rule 24; do not add a mask. | Same — verbatim MOX-force then OR-enable pattern (no implicit mask added) |
+| C2 | `C2 = (prn->adc[2].rx_step_attn & 0b00011111) \| 0b00100000 \| ((prn->cw.rev_paddle & 1) << 6);` (`:1112-1113`) — 5-bit `adc[2].rx_step_attn` + 0x20 enable bit + CW rev_paddle at bit 6 | Same |
+| CWMode computation | Lines `:1115-1120`: `if (prn->cw.iambic == 0) CWMode = 0b00000000; else if (prn->cw.mode_b == 0) CWMode = 0b01000000; else CWMode = 0b10000000;` — 3-way conditional encoding iambic + mode_b into 2 bits of CWMode | Same — verbatim 3-way conditional |
+| C3 | `C3 = (prn->cw.keyer_speed & 0b00111111) \| CWMode;` (`:1121`) — 6-bit keyer_speed + 2-bit CWMode at bits 6-7 | Same |
+| C4 | `C4 = (prn->cw.keyer_weight & 0b01111111) \| ((prn->cw.strict_spacing) << 7);` (`:1122`) — 7-bit keyer_weight + strict_spacing bit at 7.  **Reference quirk preserved:** no `& 1` mask on `strict_spacing`.  Harmless because `strict_spacing` is a 1-bit bitfield (§1.5 `_cw.mode_control`), so the unmasked `<< 7` always yields 0 or 0x80.  Preserved verbatim per Rule 24. | Same — no mask added on strict_spacing |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1105-1123`.
+
+---
+
+### §4b-2.4 Case 16 — frame `0x24` — BPF2 (Alex1 HPFs) + xvtr_enable + puresignal_run (source: `networkproto1.c:1151-1160`)
+
+Alex1 secondary band-pass filter board — same HPF layout as
+case 10 C3 but reading from `prbpfilter2` (the §2 Alex1 struct)
+instead of `prbpfilter`.
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x24;` (`:1152`) → `C0 = XmitBit \| 0x24` | Same |
+| C1 | `C1 = (prbpfilter2->_13MHz_HPF & 1) \| ((prbpfilter2->_20MHz_HPF & 1) << 1) \| ((prbpfilter2->_9_5MHz_HPF & 1) << 2) \| ((prbpfilter2->_6_5MHz_HPF & 1) << 3) \| ((prbpfilter2->_1_5MHz_HPF & 1) << 4) \| ((prbpfilter2->_Bypass & 1) << 5) \| ((prbpfilter2->_6M_preamp & 1) << 6) \| ((prbpfilter2->_rx2_gnd) << 7);` (`:1153-1156`) — six Alex1 HPF bits + 6M preamp + `_rx2_gnd` at bit 7 (note: NOT `& 1` on `_rx2_gnd` per the reference — preserved verbatim) | Same — verbatim 8-bit OR-chain including the `_rx2_gnd` without `& 1` mask quirk |
+| C2 | `C2 = (xvtr_enable & 1) \| ((prn->puresignal_run & 1) << 6);` (`:1157`) — bit 0 = xvtr_enable, bit 6 = puresignal_run | Same |
+| C3 | `C3 = 0;` (`:1158`) | Same |
+| C4 | `C4 = 0;` (`:1159`) | Same |
+
+**Reference quirk preserved:** the `_rx2_gnd << 7` is the only
+bit in the Alex1 HPF byte that lacks an explicit `& 1` mask.
+Functional effect: if `_rx2_gnd` is ever multi-bit (it shouldn't
+be — it's a 1-bit bitfield from §2), the shift would propagate
+those bits into C2/C3 of the result.  Reference behavior, preserved
+as-is.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1151-1160`.
+
+---
+
+### §4b-2.5 Setters introduced by §4b-2
+
+The setter discipline established in §4a (each FrameComposer
+setter takes `cc_lock_`, writes the relevant `prn->*` field,
+relies on the per-frame switch reading the field at compose time)
+extends to §4b-2.  Four new setters:
+
+| Setter | Writes | Reference encoding | Per-row notes |
+|---|---|---|---|
+| `set_drive_level(int level)` | `prn->tx[0].drive_level = level;` | Reference operator-facing setter applies SWR correction at the call site BEFORE writing this field (`SetOutputPowerFactor`); composer just emits the field verbatim | Lyra-level SWR correction is operator-policy (deferred); §4b-2 setter takes the raw level |
+| `set_pa_on(bool on)` | `prn->tx[0].pa = on ? 1 : 0;` | Case 10 C3 bit 7 reads `prn->tx[0].pa & 1` | Boolean → 0/1; case 10 reads via the wire |
+| `set_tx_step_attn_db(int signed_db)` | HL2: `prn->adc[0].tx_step_attn = (31 - signed_db) & 0x3F;`  Non-HL2: `prn->adc[0].tx_step_attn = signed_db & 0x3F;` | Source-verified `console.cs:10657-10663`: the `(31 - x)` inversion is **HL2-FAMILY-SPECIFIC** — only when `HardwareSpecific.Model == HPSDRModel.HERMESLITE`.  ANAN / Orion / RedPitaya use the raw operator value.  The setter must branch on `hpsdrModel == HPSDRModel::HERMESLITE` and apply the inversion only on the HL2 branch (with non-HL2 paths `assert(false)` per §3.6 until tester hardware arrives). | This is the §15.26 history's load-bearing TX-att encoding.  6-bit storage holds the encoded value; case 4 emits 5-bit truncated form, case 11 emits 6-bit + `0x40` enable.  See "PureSignal + panadapter entanglements" note below for the subsystems that share this actuator. |
+| `set_rx_step_attn_db(int signed_db, int adc_idx = 0)` | `prn->adc[adc_idx].rx_step_attn = signed_db & 0x3F;` (no inversion for RX on any family) | Case 11 emits `adc[0].rx_step_attn` for RX path; cases 12 C1/C2 emit `adc[1]`/`adc[2].rx_step_attn` | Operator-axis dB matches wire encoding for RX (no inversion); 6-bit clamp |
+
+**PureSignal + panadapter entanglements of `prn->adc[0].tx_step_attn`
+(source-verified `console.cs`):**
+
+The TX-att field is a **shared actuator** with four subsystems
+writing it.  Single-writer discipline is critical.  These are
+ALL deferred to operator-policy work outside §4b-2 — listed here
+so the design ledger has the dependency map:
+
+1. **Manual ATT-on-TX** (`SetupForm.ATTOnTX` setter `console.cs:
+   10645+`).  Writes operator-set value (with HL2 inversion).
+2. **QSK keydown-force-31** (`console.cs:13078`).  When CW QSK
+   fires keydown: save current state + force ATTOnTX=true +
+   force value=31.  On keyup (line 13089): restore.  Keydown/keyup
+   are Ptt-FSM concerns in Lyra.
+3. **PureSignal calibration auto-attenuator** (the v0.3 PS state
+   machine).  PS writes the field during PS-on-TX state as part
+   of its calibration loop.
+4. **"Force 31 when PS-A off" safety** (`chkForceATTwhenPSAoff`,
+   per the operator screenshot from the §15.26 work).  When PS
+   is off, force ATTOnTX value to 31 for max RX-ADC protection.
+
+**`Display.TXAttenuatorOffset` — panadapter / waterfall display
+compensation** (`console.cs:10662 + 10665 + 19169 + 19174`):
+
+When ATT-on-TX engages, the local RX ADC sees the transmitted
+signal attenuated by N dB.  Without compensation, the panadapter
+shows the signal as N dB lower than reality.  The reference
+sets `Display.TXAttenuatorOffset = _tx_attenuator_data` (the
+operator-axis dB, **not** the wire-encoded value) so the
+panadapter/waterfall renderer can ADD BACK the attenuation when
+rendering TX-state samples.  When ATT-on-TX is OFF, the offset
+resets to 0.
+
+**Lyra equivalent (deferred to §4b-2-followup operator-policy
+commit):** add a Radio-layer signal `tx_attenuator_offset_db`
+that the panadapter widget subscribes to.  The setter sequence:
+- `set_tx_step_attn_db(signed_db)` writes the wire field (§4b-2)
+- `set_att_on_tx(bool enable)` policy gate updates the offset
+  signal and writes 0 to wire when disabled
+- Lyra panadapter / waterfall widget reads the offset signal to
+  compensate display levels during TX state (lands with the
+  TX-state panadapter port; mirrors §15.29 / §15.30 work)
+
+**Other deferred operator-policy items** (not reference-parity,
+not §4b-2 scope):
+
+- ATT-on-TX `m_bATTonTX` policy gate (when OFF, setter writes 0
+  to wire) — Settings → TX checkbox; default per operator's
+  recorded preference (the screenshot shows operator runs
+  ATTOnTX=true with value=31)
+- ATT-on-TX QSK keydown-force / keyup-restore — Ptt-FSM
+- ATT-on-TX "Force 31 when PS-A off" + "AutoAttTXWhenNotInPS"
+  policies — Settings → TX, PS-aware
+- PS auto-attenuator state machine — v0.3 PureSignal scope
+- Apollo bit setters — `ApolloFilt`/`ApolloTuner`/`ApolloATU`/
+  `ApolloFiltSelect` are per-family init values, set once at
+  session start; Lyra defaults all to 0 (PA OFF — the §15.26-
+  locked safety default; PA-ON discipline lands as a separate
+  operator-opt-in commit per §15.26 PART C)
+- CW keyer config setters (iambic, mode_b, keyer_speed,
+  keyer_weight, sidetone, rf_delay, hang_delay, strict_spacing,
+  cw_enable, rev_paddle) — operator-UI plumbing, lands with the
+  Settings → CW panel
+- `xvtr_enable` setter — transverter operator UI, lands with the
+  TX bandwidth / profile work
+- mic_boost / line_in / mic_trs / mic_bias / mic_ptt / line_in_gain
+  / user_dig_out setters — operator-UI plumbing
+- `set_pa_on(bool)` policy gating (Settings → TX "Enable PA"
+  default-OFF, force-off on session start, etc.) — operator-
+  facing safety policy; FrameComposer setter just writes the
+  ApolloTuner / ApolloFilt globals
+
+---
+
+### §4b-2 — Overall verdict (pending Rule 24 circle-back)
+
+| Section | Verdict |
+|---|---|
+| §3 supplement — 5 new globals (xvtr_enable + 4 Apollo) | ✅ PARITY (verbatim `network.h:419, 435-438`) |
+| §4b-2.1 case 10 (frame `0x12`) | ✅ PARITY verbatim from `:1076-1089` |
+| §4b-2.2 case 11 (frame `0x14`) | ✅ PARITY verbatim from `:1091-1103` incl. `rx[0].preamp << 3` quirk preserved + MOX-gated step ATT |
+| §4b-2.3 case 12 (frame `0x16`) | ✅ PARITY verbatim from `:1105-1123` incl. XmitBit-force `0x1F` for adc[1] + CW keyer 3-way CWMode |
+| §4b-2.4 case 16 (frame `0x24`) | ✅ PARITY verbatim from `:1151-1160` incl. `_rx2_gnd << 7` without `& 1` mask quirk preserved |
+| §4b-2.5 new setters (4 of them) | ✅ Pattern matches §4a / §4b-1 setters; `set_tx_step_attn_db` uses the §15.26-documented `(31 - signed_db)` encoding |
+
+**ZERO 🔴 OPERATOR-APPROVED DEVIATIONS. ZERO ⚠ new ACCEPTABLE
+DEVIATIONS** beyond what's already locked.  All 4 case bodies
+verbatim from source.
+
+---
+
+### §4b-2 — Rule 24 circle-back items
+
+Before sign-off + commit, the following will be re-verified by
+re-opening the cited lines (Rule 24 discipline):
+
+1. `networkproto1.c:1076-1089` — case 10: confirm C2 OR-chain
+   bit-position of each Apollo global (preserve the literal
+   `ApolloFilt \| ApolloTuner \| ApolloATU \| ApolloFiltSelect`
+   ordering — operator may verify each global's bit-position
+   intent from `netInterface.c` Apollo setters in a follow-up,
+   but the case body just OR's them as-given).
+2. `:1091-1103` — case 11: re-confirm the `rx[0].preamp << 3`
+   quirk + the 6-bit `0x3F` mask + the `0x40` enable bit on
+   both MOX branches.
+3. `:1105-1123` — case 12: re-confirm the `XmitBit ? 0x1F :
+   adc[1].rx_step_attn` 3-step pattern (assign then OR `0x20`),
+   the `adc[2]` 5-bit mask + `0x20` enable + rev_paddle bit, and
+   the CWMode 3-way conditional encoding into bits 6-7.
+4. `:1151-1160` — case 16: re-confirm the `_rx2_gnd << 7`
+   without `& 1` and the C2 `xvtr_enable` + `puresignal_run<<6`.
+5. `network.h:419, 435-438` — re-confirm the 5 new globals are
+   all `int`.
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [x] §3 supplement — 5 new globals (`xvtr_enable`,
+      `ApolloFilt`, `ApolloFiltSelect`, `ApolloTuner`,
+      `ApolloATU`) accepted, all `int`, all default `0`
+- [x] §4b-2.1 case 10 (frame `0x12`) — verbatim from
+      `:1076-1089` including the Apollo OR-chain + `& 0x7f`
+      final mask + the precise C3 bit layout (5 HPFs + Bypass
+      + 6M_preamp + tx_pa) + 7-bit LPF byte
+- [x] §4b-2.2 case 11 (frame `0x14`) — verbatim from
+      `:1091-1103` including the `rx[0].preamp << 3` reference
+      quirk preserved + the MOX-gated 6-bit step ATT + `0x40`
+      enable bit
+- [x] §4b-2.3 case 12 (frame `0x16`) — verbatim from
+      `:1105-1123` including the XmitBit-force-`0x1F` for adc[1]
+      + no-`& 0x1F`-mask on adc[1] RX branch + no-`& 1`-mask on
+      strict_spacing (both reference quirks preserved) +
+      CW keyer 3-way CWMode encoding
+- [x] §4b-2.4 case 16 (frame `0x24`) — verbatim from
+      `:1151-1160` including the `_rx2_gnd << 7` no-mask quirk
+- [x] §4b-2.5 setters — `set_tx_step_attn_db` per-family
+      branched (HL2 `(31 - signed_db) & 0x3F`; non-HL2 raw +
+      `assert(false)` placeholder), `set_rx_step_attn_db`
+      no-inversion, `set_drive_level`, `set_pa_on` (legacy
+      C3 bit 7; Apollo bit policy deferred to Task #114)
+- [x] Operator-policy work deferred to Task #114 — ATT-on-TX
+      m_bATTonTX gate, QSK keydown-force/keyup-restore,
+      Display.TXAttenuatorOffset panadapter compensation,
+      AutoAttTXWhenNotInPS, "Force 31 when PS-A off",
+      PA-enable Settings → TX safety, Apollo bit per-family
+      init, CW/mic/line operator-UI plumbing, PS auto-
+      attenuator (v0.3 PureSignal subsystem)
+- [x] Circle-back Rule 24 re-verified TWICE by implementor
+      against the five source spans (`:1076-1089`, `:1091-
+      1103`, `:1105-1123`, `:1151-1160`, `network.h:419 +
+      :435-438`); two independent passes both clean
+- [x] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
+      with the 4 case bodies + 4 setters + add the 5 new
+      `extern` globals to `RadioNet.h` / definitions to
+      `RadioNet.cpp`.  Cases 5-9 (§4c) remain `assert(false)`
+      placeholders.  With §4b-2 populated, the only remaining
+      `assert(false)` cases are 5-9 (§4c); FrameComposer is one
+      checkpoint away from fully callable.
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §4b-2 TX heavyweight cases signed + 2× Rule-24 circle-back verified clean; populate commit lands separately.*

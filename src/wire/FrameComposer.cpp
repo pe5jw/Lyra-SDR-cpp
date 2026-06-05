@@ -47,6 +47,66 @@ void FrameComposer::set_tx_freq(int freq_hz) {
     // directly at compose time.
 }
 
+// =================== §4b-2.5 setters =================================
+
+// §4b-2.5 — Write `prn->tx[0].drive_level` (case 10 C1).
+void FrameComposer::set_drive_level(int level) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr)
+        return;
+    prn->tx[0].drive_level = level;
+}
+
+// §4b-2.5 — Write `prn->tx[0].pa` (case 10 C3 bit 7, legacy path).
+// Apollo-modded HL2+ PA enable is via `ApolloTuner` C2 bit 3
+// (Task #114); this setter only touches the legacy bit.
+void FrameComposer::set_pa_on(bool on) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr)
+        return;
+    prn->tx[0].pa = on ? 1 : 0;
+}
+
+// §4b-2.5 — TX step attenuator setter with HL2-family branching.
+// Source-verified `console.cs:10657-10663`: HL2 applies the
+// (31 - signed_db) inversion; non-HL2 families use the raw value.
+void FrameComposer::set_tx_step_attn_db(int signed_db) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr)
+        return;
+
+    int wire_value;
+    switch (hpsdrModel) {
+        case HPSDRModel::HERMESLITE:
+        case HPSDRModel::HPSDR:  // HL2-class
+            // Operator-axis -28..+31 → wire-encoded (31 - x); store
+            // 6-bit (case 11 uses 6-bit + 0x40; case 4 uses 5-bit
+            // truncation from the same field).
+            wire_value = (31 - signed_db) & 0x3F;
+            break;
+        default:
+            // ANAN / Orion / RedPitaya: raw value 0..31 → wire 0..31
+            // (non-HL2 families).  ASSERT until tester hardware is
+            // available per §3.6 family-parameterized Option A.
+            assert(false && "non-HL2 TX step ATT encoding not yet "
+                            "implemented — needs operator bench "
+                            "verification");
+            wire_value = signed_db & 0x3F;  // unreachable; compiler-quiet
+            break;
+    }
+    prn->adc[0].tx_step_attn = wire_value;
+}
+
+// §4b-2.5 — RX step attenuator setter (no inversion, any family).
+void FrameComposer::set_rx_step_attn_db(int signed_db, int adc_idx) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr)
+        return;
+    if (adc_idx < 0 || adc_idx >= kMaxAdc)
+        return;
+    prn->adc[adc_idx].rx_step_attn = signed_db & 0x3F;
+}
+
 // =================== §4a.3 case 0 ====================================
 //
 // Source: networkproto1.c:948-970, HL2 dispatch.
@@ -308,6 +368,207 @@ void FrameComposer::compose_case_18(unsigned char& C0, unsigned char& C1,
     C4 = static_cast<unsigned char>(prn->reset_on_disconnect);
 }
 
+// =================== §4b-2.1 case 10 =================================
+//
+// Source: networkproto1.c:1076-1089, HL2 dispatch.
+// Drive level + Apollo PA / filter / tuner / ATU bits + mic_boost
+// + line_in + per-band HPF/LPF + legacy PA bit.
+
+void FrameComposer::compose_case_10(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+    assert(prbpfilter != nullptr);
+
+    C0 |= 0x12;  // addr 9: C0 |= 0x09 << 1 = 0x12
+
+    // C1 — drive level (operator-axis; SWR correction applied at
+    // Radio-layer caller, NOT here).  Source: :1078.
+    C1 = static_cast<unsigned char>(prn->tx[0].drive_level);
+
+    // C2 — mic_boost (bit 0) + line_in (bit 1) + Apollo globals
+    // OR'd inline + forced bit 6 (0x40), masked to 7 bits.  Source:
+    // :1079-1080.  The Apollo globals hold pre-shifted bit-values
+    // (or zero) per the reference convention.
+    C2 = static_cast<unsigned char>(
+            ((prn->mic.mic_boost & 1)
+          | ((prn->mic.line_in & 1) << 1)
+          | ApolloFilt
+          | ApolloTuner
+          | ApolloATU
+          | ApolloFiltSelect
+          | 0b01000000) & 0x7f);
+
+    // C3 — bit 0-4 = 5 HPF bands; bit 5 = Bypass; bit 6 = 6M_preamp;
+    // bit 7 = legacy `prn->tx[0].pa`.  Source: :1081-1084.
+    C3 = static_cast<unsigned char>(
+            (prbpfilter->_13MHz_HPF  & 1)
+          | ((prbpfilter->_20MHz_HPF & 1) << 1)
+          | ((prbpfilter->_9_5MHz_HPF & 1) << 2)
+          | ((prbpfilter->_6_5MHz_HPF & 1) << 3)
+          | ((prbpfilter->_1_5MHz_HPF & 1) << 4)
+          | ((prbpfilter->_Bypass     & 1) << 5)
+          | ((prbpfilter->_6M_preamp  & 1) << 6)
+          | ((prn->tx[0].pa           & 1) << 7));
+
+    // C4 — 7 per-band LPF bits, bit 7 unused.  Source: :1085-1088.
+    C4 = static_cast<unsigned char>(
+            (prbpfilter->_30_20_LPF  & 1)
+          | ((prbpfilter->_60_40_LPF & 1) << 1)
+          | ((prbpfilter->_80_LPF    & 1) << 2)
+          | ((prbpfilter->_160_LPF   & 1) << 3)
+          | ((prbpfilter->_6_LPF     & 1) << 4)
+          | ((prbpfilter->_12_10_LPF & 1) << 5)
+          | ((prbpfilter->_17_15_LPF & 1) << 6));
+}
+
+// =================== §4b-2.2 case 11 =================================
+//
+// Source: networkproto1.c:1091-1103, HL2 dispatch.
+// Preamps (4 bits, incl. the `rx[0].preamp << 3` reference quirk
+// preserved verbatim) + mic_trs/bias/ptt + line_in_gain +
+// puresignal_run + user_dig_out + MOX-gated 6-bit step ATT + 0x40
+// enable.
+//
+// C4 MOX-gated is the §15.26-history load-bearing RX-ADC protection
+// mechanism — during TX, the operator-policy layer ensures
+// `prn->adc[0].tx_step_attn` is set to the protective value
+// (Task #114 ATT-on-TX policy).
+
+void FrameComposer::compose_case_11(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x14;  // addr 10: C0 |= 0x0a << 1 = 0x14
+
+    // C1 — bits 0/1/2 = rx[0/1/2].preamp; bit 3 = rx[0].preamp
+    // AGAIN (reference quirk preserved per Rule 24); bits 4/5/6 =
+    // mic_trs / mic_bias / mic_ptt.  Source: :1093-1096.
+    C1 = static_cast<unsigned char>(
+            (prn->rx[0].preamp & 1)
+          | ((prn->rx[1].preamp & 1) << 1)
+          | ((prn->rx[2].preamp & 1) << 2)
+          | ((prn->rx[0].preamp & 1) << 3)   // verbatim duplicate
+          | ((prn->mic.mic_trs  & 1) << 4)
+          | ((prn->mic.mic_bias & 1) << 5)
+          | ((prn->mic.mic_ptt  & 1) << 6));
+
+    // C2 — line_in_gain (5-bit) + puresignal_run bit at 6.  Source:
+    // :1097.
+    C2 = static_cast<unsigned char>(
+            (prn->mic.line_in_gain & 0b00011111)
+          | ((prn->puresignal_run & 1) << 6));
+
+    // C3 — user_dig_out 4-bit.  Source: :1098.
+    C3 = static_cast<unsigned char>(prn->user_dig_out & 0b00001111);
+
+    // C4 — MOX-gated 6-bit step ATT + 0x40 enable bit.  Source:
+    // :1099-1102.  This is the §15.26-load-bearing RX-ADC
+    // protection mechanism.
+    if (XmitBit) {
+        C4 = static_cast<unsigned char>(
+                (prn->adc[0].tx_step_attn & 0b00111111) | 0b01000000);
+    } else {
+        C4 = static_cast<unsigned char>(
+                (prn->adc[0].rx_step_attn & 0b00111111) | 0b01000000);
+    }
+}
+
+// =================== §4b-2.3 case 12 =================================
+//
+// Source: networkproto1.c:1105-1123, HL2 dispatch.
+// ADC1/ADC2 step ATT (XmitBit-force on ADC1) + CW keyer config.
+// Two reference quirks preserved verbatim per Rule 24:
+//   - No explicit `& 0x1F` mask on `adc[1].rx_step_attn` RX branch
+//   - No `& 1` mask on `strict_spacing` (harmless — 1-bit bitfield)
+
+void FrameComposer::compose_case_12(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x16;  // addr 11: C0 |= 0x0b << 1 = 0x16
+
+    // C1 — XmitBit force-31 on ADC1 ATT, then OR 0x20 enable bit.
+    // RX branch does NOT mask `adc[1].rx_step_attn` — reference
+    // quirk preserved.  Source: :1107-1111.
+    if (XmitBit) {
+        C1 = 0x1F;
+    } else {
+        C1 = static_cast<unsigned char>(prn->adc[1].rx_step_attn);
+    }
+    C1 |= 0b00100000;  // 0x20 enable bit
+
+    // C2 — ADC2 5-bit step ATT + 0x20 enable + rev_paddle bit 6.
+    // Source: :1112-1113.
+    C2 = static_cast<unsigned char>(
+            (prn->adc[2].rx_step_attn & 0b00011111)
+          | 0b00100000
+          | ((prn->cw.rev_paddle & 1) << 6));
+
+    // CWMode 3-way conditional.  Source: :1115-1120.
+    unsigned char CWMode;
+    if (prn->cw.iambic == 0)
+        CWMode = 0b00000000;
+    else if (prn->cw.mode_b == 0)
+        CWMode = 0b01000000;
+    else
+        CWMode = 0b10000000;
+
+    // C3 — keyer_speed (6-bit) + CWMode (bits 6-7).  Source: :1121.
+    C3 = static_cast<unsigned char>(
+            (prn->cw.keyer_speed & 0b00111111) | CWMode);
+
+    // C4 — keyer_weight (7-bit) + strict_spacing at bit 7.
+    // `strict_spacing` has no `& 1` mask in the reference; harmless
+    // because it's a 1-bit bitfield.  Source: :1122.
+    C4 = static_cast<unsigned char>(
+            (prn->cw.keyer_weight & 0b01111111)
+          | ((prn->cw.strict_spacing) << 7));
+}
+
+// =================== §4b-2.4 case 16 =================================
+//
+// Source: networkproto1.c:1151-1160, HL2 dispatch.
+// BPF2 (Alex1 secondary band-pass filter board) HPF/Bypass/preamp
+// bits read from `prbpfilter2` + xvtr_enable + puresignal_run bit.
+//
+// The `_rx2_gnd << 7` has NO `& 1` mask in the reference — quirk
+// preserved per Rule 24 (harmless because `_rx2_gnd` is a 1-bit
+// bitfield in §2 RbpFilter2).
+
+void FrameComposer::compose_case_16(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+    assert(prbpfilter2 != nullptr);
+
+    C0 |= 0x24;  // addr 18: C0 |= 0x12 << 1 = 0x24
+
+    // C1 — 5 Alex1 HPF bands + Bypass + 6M_preamp + `_rx2_gnd` at
+    // bit 7 (no `& 1` mask preserved verbatim).  Source: :1153-1156.
+    C1 = static_cast<unsigned char>(
+            (prbpfilter2->_13MHz_HPF  & 1)
+          | ((prbpfilter2->_20MHz_HPF & 1) << 1)
+          | ((prbpfilter2->_9_5MHz_HPF & 1) << 2)
+          | ((prbpfilter2->_6_5MHz_HPF & 1) << 3)
+          | ((prbpfilter2->_1_5MHz_HPF & 1) << 4)
+          | ((prbpfilter2->_Bypass     & 1) << 5)
+          | ((prbpfilter2->_6M_preamp  & 1) << 6)
+          | ((prbpfilter2->_rx2_gnd          ) << 7));  // no `& 1` per source
+
+    // C2 — xvtr_enable (bit 0) + puresignal_run (bit 6).  Source:
+    // :1157.
+    C2 = static_cast<unsigned char>(
+            (xvtr_enable & 1)
+          | ((prn->puresignal_run & 1) << 6));
+
+    // C3 / C4 — unused on case 16.  Source: :1158-1159.
+    C3 = 0;
+    C4 = 0;
+}
+
 // =================== §4a.1 main scheduler ============================
 //
 // Source mirror: networkproto1.c::WriteMainLoop_HL2 lines 869-1191.
@@ -455,13 +716,16 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
                                     "— see §4c");
                     break;
 
-                case 10: case 11: case 12:
-                    // §4b-2 — TX heavyweight cluster (Apollo PA
-                    // bit C2 0x08, drive level, mic + line + LNA,
-                    // MOX-gated step ATT, CW keyer config).  The
-                    // §15.26 history's careful-verification cases.
-                    assert(false && "cases 10-12 not yet implemented "
-                                    "— see §4b-2");
+                case 10:  // §4b-2.1 — drive level + Apollo + mic + HPF/LPF + PA
+                    compose_case_10(C0, C1, C2, C3, C4);
+                    break;
+
+                case 11:  // §4b-2.2 — preamps + mic + MOX-gated step ATT
+                    compose_case_11(C0, C1, C2, C3, C4);
+                    break;
+
+                case 12:  // §4b-2.3 — adc[1]/adc[2] step ATT + CW keyer
+                    compose_case_12(C0, C1, C2, C3, C4);
                     break;
 
                 case 13:  // §4b-1.3 — CW enable + sidetone + rf_delay
@@ -476,13 +740,8 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
                     compose_case_15(C0, C1, C2, C3, C4);
                     break;
 
-                case 16:
-                    // §4b-2 — BPF2 (Alex1 HPFs) + xvtr_enable +
-                    // puresignal_run bit.  Reads `prbpfilter2->*`
-                    // and a `xvtr_enable` global to be added with
-                    // §4b-2's source-verification.
-                    assert(false && "case 16 not yet implemented "
-                                    "— see §4b-2");
+                case 16:  // §4b-2.4 — BPF2 (Alex1) + xvtr_enable + puresignal
+                    compose_case_16(C0, C1, C2, C3, C4);
                     break;
 
                 case 17:  // §4b-1.6 — HL2 TX-latency + PTT-hang
