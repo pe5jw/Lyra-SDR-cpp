@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where *)",
+      "Bash(dir *)",
+      "Bash(tasklist *)",
+      "Bash(pip show *)"
+    ]
+  }
+}

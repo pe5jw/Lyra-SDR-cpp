@@ -63,8 +63,8 @@ qt_add_executable(lyra
     src/mic_source.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
-    src/wire/Hl2ControlState.h
-    src/wire/Hl2ControlState.cpp
+    src/wire/RadioNet.h
+    src/wire/RadioNet.cpp
     src/wire/Hl2DispatchState.h
     src/wire/Hl2FrameComposer.h
     src/wire/Hl2FrameComposer.cpp
