@@ -2120,6 +2120,8 @@ trail.
 | Item | Note |
 |------|------|
 | `Ep6TelemetrySink` raw-bytes forwarding | Additive convenience layer fired AFTER the reference-faithful RADIONET shadow writes.  Operator/host consumers that want raw payload bytes (independent of the RADIONET path) register a sink.  No impact on wire or RADIONET state.  Signed as an acceptable Lyra-native addition. |
+| Shared `tx_read_bufp_` scratch buffer | Reference's `RADIONET prn` holds two separate pointers `RxReadBufp` + `TxReadBufp` (`network.h:291`); Lyra uses ONE buffer reused sequentially within each USB-frame body — twist writes (xrouter consumes inline), then mic harvest writes (mic_sink consumes inline).  Benign because sinks consume synchronously before the next step overwrites; sized to the larger of the two layouts (`4 * kMaxSprPerFrame` doubles).  Documented inline at `Ep6RecvThread.h:194-201`.  Signed as an acceptable Lyra-native addition (§1.1 buffer-ownership-in-EP6-thread). |
+| Wrap-aware sequence-error counter | Reference tracks seq externally via `MetisReadDirect()`; Lyra's `seq != last + 1` wrap-aware compare in `process_datagram()` is an additive diagnostic counter, read via `sequence_errors()`.  Documented inline at `Ep6RecvThread.h:174-178`.  Signed as an acceptable Lyra-native addition. |
 
 ### Architectural cleanup
 
