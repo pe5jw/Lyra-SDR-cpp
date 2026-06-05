@@ -2355,4 +2355,65 @@ Signed: N8SDR        Date: 2026-06-05
 
 ---
 
-*Last updated: 2026-06-05 — §6 Ep2SendThread + OutboundRing signed; populate commit lands separately.*
+## §6-A Parity correction sweep — 6 fixes vs `4c580a1` (audit-driven)
+
+Two-agent post-§6 audit (parity-vs-reference + rule-compliance)
+ran against commit `4c580a1`.  Rule audit PASS (1 cosmetic note
+re §6.9 inline `// Rule 24` token).  Parity audit returned FAIL
+on 2 drift items + 4 NOTEs.  Operator directive (consistent with
+§5-A precedent): "fix all to match reference."  All 6 fixes
+shipped together below; this entry records the audit trail.
+
+### Fixes applied (all reference-source-verified, Rule 24)
+
+| # | Item | Severity | Source-line |
+|---|------|----------|-------------|
+| 1 | **§6.1 MMCSS priority** — `AVRT_PRIORITY_CRITICAL` (=2 per Windows SDK avrt.h enum); was `AVRT_PRIORITY_HIGH` (=1 = one tier lower than reference) | drift | `:1208` |
+| 2 | **§6.8 dispatch** — per-family branch `if (hpsdrModel == HERMESLITE) write_main_loop_hl2 else …`; was unconditional HL2 call.  Non-HL2 path = zero-fill placeholder with FIXME (Task #114 / no ANAN hardware to test; full `WriteMainLoop_generic` port lands when hardware arrives).  Branch shape preserved per reference | drift | `:1261-1264` |
+| 3 | **§6.7 CW bit-source shifts** — REVERTED preemptive `& 0x01` masks on each bit-source value before shift; reference does NOT apply them.  In practice bool-like fields make the two forms equivalent, but byte-equivalence requires the verbatim reference idiom (final mask `& 0x0F` / `& 0x07` cleans up the result) | drift | `:1248-1256` |
+| 4 | **§6.7 CW state capture** — REVERTED once-per-pair capture to per-sample reads of `prn->cw.cw_enable` + `prn->tx[0].{cwx_ptt, dot, dash, cwx}` + `HPSDRModel` inside the innermost loop, matching the reference's 504-reads-per-datagram cadence verbatim.  CW keyer edge timing now observes the same Δt window as the reference | drift | `:1247-1259` |
+| 5 | **`OutboundRing::unblock()` UB guard** — REMOVED `lr_ready_.release()` + `iq_ready_.release()` calls.  C++20 `std::binary_semaphore::release()` is UB when the semaphore is already at max count (1); a producer-just-released-but-consumer-not-yet-acquired race would trigger it.  Shutdown latency falls back to the polling loop's 100 ms upper bound — well under the operator-perceptible budget | safety | n/a (C++20 [thread.sema.cnt]) |
+| 6 | **§6.9 inline `// Rule 24` token** — added the explicit "preserved verbatim per Rule 24" comment at the seqnum BE-pack site (consistent with §6.3 / §6.6 / §6.7 inline-token convention).  Cosmetic; structural Rule 24 coverage was already complete via the file-header block | doc cosmetic | n/a |
+
+### Lyra-native additions retained (signed, unchanged by §6-A)
+
+| Item | Note |
+|------|------|
+| `Ep2SendThread::out_seq_num_` encapsulated as `atomic<uint32_t>` | Q3 sign-off — replaces reference's `MetisOutBoundSeqNum` global per §1.1 networking-infrastructure exclusion |
+| `OutboundRing` as separate `src/wire/OutboundRing.{h,cpp}` file | Q2 sign-off |
+| `Ep2SendThread::send_lock_` mutex around `metis_write_frame` | Q5 sign-off — mirrors `prn->sndpktp1` send-side critical section |
+| Polling sequential `try_acquire_for` semaphore wait (vs `WaitForMultipleObjects` wait-all) | C++20 idiom translation; 100 ms shutdown poll cadence; wait-all semantic preserved |
+| Bounded 5 s `try_acquire_for` on producer push | §15.21 wedged-writer-audit-class safety belt; reference is unbounded |
+
+### Deferred FIXMEs (Task #114 TX-policy plumbing)
+
+| Item | Note |
+|------|------|
+| `WriteMainLoop_generic` for non-HL2 dispatch (§6.8 else-branch) | Pending ANAN P1 hardware availability for bench-verification |
+| EER mode LR-overwrite-by-IQ (§6.4) | Pending WDSP TX channel state Lyra does not have today |
+| `PeakFwdPower()` / `PeakRevPower()` helpers (§5 case 0x08/0x10) | Pending TX-policy plumbing |
+
+### Sign-off
+
+- [x] Source-verified line-by-line vs `networkproto1.c:1204-1267` +
+      `:216-237` + `:1193-1200`
+- [x] All 6 fixes applied; build green (`lyra.exe` re-linked, 0
+      compile warnings, 0 errors)
+- [x] Reference defects (floor/ceil sign-split quantization;
+      CW state-bit overlay overwriting TX I-LSBs; outbound
+      seqnum post-increment) preserved verbatim per Rule 24
+- [x] No new safety-relevant defaults; §4b-2 PA-OFF posture +
+      §5-A `mic_decimation_factor=0` intact
+- [x] §6.7 CW bit-source shifts no longer pre-masked
+      (preserved reference defect parity if multi-bit values
+      ever appear)
+- [x] §6.7 CW state capture per-sample (matches reference
+      504-reads/datagram cadence)
+- [x] `OutboundRing::unblock()` UB-free (C++20 binary_semaphore
+      compliance)
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §6-A parity correction sweep — 6 fixes vs `4c580a1` shipped (MMCSS priority drift + per-family dispatch branch + CW bit-source verbatim + CW state per-sample read + binary_semaphore UB guard + Rule 24 inline token).  §7 unblocked.*

@@ -117,12 +117,18 @@ void OutboundRing::notify_consumed_pair() {
 
 void OutboundRing::unblock() {
     stop_request_ = true;
-    // Belt-and-suspenders: also release the ready semaphores so a
-    // consumer parked on `try_acquire_for` returns immediately.
-    // The next wait_pair_ready call will observe stop_request_ +
-    // return false.
-    lr_ready_.release();
-    iq_ready_.release();
+    // The consumer's `wait_pair_ready()` polls with
+    // `try_acquire_for(100ms)` and re-checks `stop_request_`
+    // between polls, so the worst-case shutdown latency is one
+    // poll interval (~100 ms — far below operator-perceptible).
+    //
+    // We do NOT call `release()` on `lr_ready_`/`iq_ready_` here.
+    // C++20 `std::binary_semaphore::release()` is UB if the
+    // semaphore is already at max count (`least_max_value == 1`);
+    // if a producer has just released without the consumer having
+    // acquired yet, that precondition is violated and we trigger
+    // implementation-defined behavior.  The poll loop is the
+    // correct shutdown mechanism here.
 }
 
 }  // namespace lyra::wire

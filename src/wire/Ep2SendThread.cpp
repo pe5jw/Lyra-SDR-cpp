@@ -88,6 +88,8 @@ int metis_write_frame(int                socket_fd,
     // Reference uses a cast-to-byte-pointer manual byte-swap that
     // relies on little-endian host; Lyra uses explicit shifts that
     // are endian-portable and produce the IDENTICAL 4 wire bytes.
+    // Post-increment ordering (load → write bytes → fetch_add)
+    // preserved verbatim per Rule 24.
     const uint32_t seq = seq_num_ref.load(std::memory_order_acquire);
     framebuf[4] = static_cast<uint8_t>((seq >> 24) & 0xff);
     framebuf[5] = static_cast<uint8_t>((seq >> 16) & 0xff);
@@ -168,7 +170,12 @@ void Ep2SendThread::run_loop() {
     HANDLE mmcss_handle = AvSetMmThreadCharacteristicsW(L"Pro Audio",
                                                         &mmcss_task);
     if (mmcss_handle) {
-        AvSetMmThreadPriority(mmcss_handle, AVRT_PRIORITY_HIGH);
+        // §6.1 — reference passes literal `2` which corresponds to
+        // `AVRT_PRIORITY_CRITICAL` in the Windows SDK avrt.h enum
+        // (`networkproto1.c:1208`).  Preserved verbatim per Rule
+        // 24 — the prior `AVRT_PRIORITY_HIGH` (=1) was one tier
+        // lower than the reference.
+        AvSetMmThreadPriority(mmcss_handle, AVRT_PRIORITY_CRITICAL);
     }
 #endif
 
@@ -242,13 +249,36 @@ bool Ep2SendThread::process_one_pair() {
     // packed format (L_hi L_lo R_hi R_lo I_hi I_lo Q_hi Q_lo).
     quantize_and_pack(lr, iq);
 
-    // §6.8 — compose C&C bytes into the FPGA write buffer
-    // (`:1261-1264`, dispatched on hpsdrModel — HL2 path).
+    // §6.8 — compose C&C bytes into the FPGA write buffer.
+    // Per-family dispatch matches the reference's
+    // `if (HPSDRModel == HPSDRModel_HERMESLITE) WriteMainLoop_HL2
+    // else WriteMainLoop;` branch at `networkproto1.c:1261-1264`.
+    //
     // FrameComposer fills offsets [0..7] + [512..519] (sync + C&C)
     // of the 1024-byte buffer.  Body LRIQ at [8..511] + [520..1023]
     // is filled by the memcpy below.
-    composer_->write_main_loop_hl2(
-        reinterpret_cast<char*>(fpga_write_buf_.data()));
+    if (hpsdrModel == HPSDRModel::HERMESLITE) {
+        composer_->write_main_loop_hl2(
+            reinterpret_cast<char*>(fpga_write_buf_.data()));
+    } else {
+        // FIXME (Task #114 / non-HL2 hardware availability): the
+        // reference's generic `WriteMainLoop` (`networkproto1.c:
+        // 588-866`) handles the non-HL2 (ANAN-class) per-family
+        // C&C composition.  Lyra has no ANAN P1 hardware
+        // available to bench-verify a port, so the generic
+        // emit-path is deferred — when ANAN P1 hardware arrives,
+        // `FrameComposer::write_main_loop_generic()` lands as a
+        // sibling to `write_main_loop_hl2()` and is invoked from
+        // this `else` branch.  For now this branch is a
+        // skip-then-send-zero-CC path: the fpga_write_buf_ is
+        // zeroed in-place so the consumer (sendto below) emits a
+        // well-formed but inert datagram if the operator ever
+        // configures a non-HL2 hpsdrModel in this Lyra build.
+        // HL2-only operating point today; non-HL2 never reached.
+        std::fill(fpga_write_buf_.begin(),
+                  fpga_write_buf_.end(),
+                  static_cast<uint8_t>(0));
+    }
 
     // LRIQ memcpy (`:1193-1195`) — both USB frames.
     std::memcpy(fpga_write_buf_.data() + 8,
@@ -292,31 +322,18 @@ void Ep2SendThread::quantize_and_pack(const double* lr_buf,
                                       const double* iq_buf) {
     const double* const pbuffs[2] = { lr_buf, iq_buf };
 
-    // CW state bits captured once per pair (the values are
-    // updated by the CW keyer between pairs; sampling once per
-    // pair is consistent with the reference's per-frame read).
-    int      cw_enable = 0;
-    int      cw_word_hl2 = 0;
-    int      cw_word_non = 0;
-    bool     is_hl2    = false;
-    if (auto* p = prn) {
-        cw_enable = p->cw.cw_enable;
-        cw_word_hl2 = ((p->tx[0].cwx_ptt & 0x01) << 3) |
-                      ((p->tx[0].dot     & 0x01) << 2) |
-                      ((p->tx[0].dash    & 0x01) << 1) |
-                      ( p->tx[0].cwx     & 0x01);
-        cw_word_hl2 &= 0b00001111;
-        cw_word_non = ((p->tx[0].dot     & 0x01) << 2) |
-                      ((p->tx[0].dash    & 0x01) << 1) |
-                      ( p->tx[0].cwx     & 0x01);
-        cw_word_non &= 0b00000111;
-        is_hl2    = (hpsdrModel == HPSDRModel::HERMESLITE);
-    }
-
     // Reference triple-nested loop at `:1241-1259`.
     //   i = 0..125  (sample-slot index across both USB frames)
     //   j = 0..1    (j=0 = LR pair, j=1 = IQ pair)
     //   k = 0..1    (k=0 = first component, k=1 = second)
+    //
+    // Per-sample reads of `prn->cw.cw_enable` + `prn->tx[0].*` +
+    // `HPSDRModel` are preserved verbatim per Rule 24 (the
+    // reference reads them inside the innermost loop on every
+    // sample — 504 reads per datagram).  The CW keyer can flip
+    // bits mid-pair on a real-time key edge; matching the
+    // reference's read cadence means Lyra observes the same
+    // edge timing as the reference.
     for (int i = 0; i < kSampleSlotsPerDatagram; ++i) {
         for (int j = 0; j < 2; ++j) {
             for (int k = 0; k < 2; ++k) {
@@ -328,17 +345,40 @@ void Ep2SendThread::quantize_and_pack(const double* lr_buf,
                     ? static_cast<int16_t>(std::floor(v * 32767.0 + 0.5))
                     : static_cast<int16_t>(std::ceil( v * 32767.0 - 0.5));
 
-                // §6.7 — CW state-bit overlay on TX I-sample LSBs
-                // (`:1247-1256`).  Gated on `cw_enable && j == 1`
-                // (j=1 = IQ pair only).  When active, the entire
-                // 16-bit sample is REPLACED with the CW state
-                // word — TX I-sample LSBs are overwritten on the
-                // wire.  Preserved verbatim per Rule 24 — the
-                // HL2 gateware reads these bits as CW state
-                // during CW transmit.
-                if (cw_enable && j == 1) {
-                    temp = static_cast<int16_t>(
-                        is_hl2 ? cw_word_hl2 : cw_word_non);
+                // §6.7 — CW state-bit overlay on TX I-sample
+                // LSBs (`:1247-1256`).  Gated on
+                // `prn->cw.cw_enable && j == 1` (j=1 = IQ pair
+                // only).  When active, the entire 16-bit sample
+                // is REPLACED with the CW state word — TX
+                // I-sample LSBs are overwritten on the wire.
+                // Preserved verbatim per Rule 24 — the HL2
+                // gateware reads these bits as CW state during
+                // CW transmit.
+                //
+                // Bit-source shifts mirror the reference
+                // verbatim: NO pre-mask with `& 0x01` is applied
+                // to the individual `cwx_ptt`/`dot`/`dash`/`cwx`
+                // fields before shifting.  The final mask
+                // (`& 0x0F` HL2 / `& 0x07` non-HL2) cleans up
+                // the result.  If a future caller stuffs
+                // multi-bit values into those fields the
+                // intermediate bits overlap exactly as they
+                // would in the reference (preserved defect).
+                if (auto* p = prn; p && p->cw.cw_enable && j == 1) {
+                    if (hpsdrModel == HPSDRModel::HERMESLITE) {
+                        temp = static_cast<int16_t>(
+                            (p->tx[0].cwx_ptt << 3 |
+                             p->tx[0].dot     << 2 |
+                             p->tx[0].dash    << 1 |
+                             p->tx[0].cwx)
+                            & 0b00001111);
+                    } else {
+                        temp = static_cast<int16_t>(
+                            (p->tx[0].dot  << 2 |
+                             p->tx[0].dash << 1 |
+                             p->tx[0].cwx)
+                            & 0b00000111);
+                    }
                 }
 
                 // BE pack into out_buf_ (`:1257-1258`).
