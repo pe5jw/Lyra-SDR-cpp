@@ -1035,30 +1035,30 @@ byte-identical to the reference for all §4a-scope cases.
 
 ---
 
-**OPERATOR SIGN-OFF (awaiting your review):**
+**OPERATOR SIGN-OFF:**
 
-- [ ] §4a architecture lock Q1–Q5 reviewed + confirmed (switch
+- [x] §4a architecture lock Q1–Q5 reviewed + confirmed (switch
       style, eager presence, inline family branches, single
       mutex, once-per-frame advance)
-- [ ] §4a.1 scheduler structure — reference posture preserved
+- [x] §4a.1 scheduler structure — reference posture preserved
       verbatim including the MOX-edge jump, I2C overlay, and the
       no-advance-on-I2C cursor behavior
-- [ ] §4a.2 mutex idiom accepted (`std::mutex` ↔ `CRITICAL_SECTION`,
+- [x] §4a.2 mutex idiom accepted (`std::mutex` ↔ `CRITICAL_SECTION`,
       same as §1.11)
-- [ ] §4a.3 case 0 — every C-byte bit-position verbatim from
+- [x] §4a.3 case 0 — every C-byte bit-position verbatim from
       `networkproto1.c:948-970`
-- [ ] §4a.4 case 2 — verbatim from `:982-993`
-- [ ] §4a.5 case 3 — verbatim from `:995-1010` including all
+- [x] §4a.4 case 2 — verbatim from `:982-993`
+- [x] §4a.5 case 3 — verbatim from `:995-1010` including all
       three nddc-conditional branches preserved
-- [ ] §4a.6 out-of-scope cases land as `assert(false)` placeholders
+- [x] §4a.6 out-of-scope cases land as `assert(false)` placeholders
       with eager compile-time presence; FrameComposer stays
       WIRE-INERT until §7 `Ep2SendThread` ships
-- [ ] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
+- [x] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
       matching this checkpoint (scheduler + cases 0/2/3; cases 1
       and 4-18 as `assert(false)` placeholders)
 
-Signed: _______________ Date: _______________
+Signed: N8SDR        Date: 2026-06-05
 
 ---
 
-*Last updated: 2026-06-05 — §4a FrameComposer scheduler + RX-essential cases REWRITTEN per Rule 24 source-verification (post-2026-06-05 XmitBit-finding + scope corrections: case 1 is TX VFO not RX1, removed Q1/Q2 deviations).*
+*Last updated: 2026-06-05 — §4a FrameComposer signed + populated (commit lands separately); Rule-24-verified verbatim from `networkproto1.c:869-1191` cases 0 / 2 / 3 + scheduler structure (MOX-edge jump + I2C overlay + post-switch packet packing).*
