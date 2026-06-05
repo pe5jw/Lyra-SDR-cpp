@@ -73,8 +73,6 @@ qt_add_executable(lyra
     src/wire/Ep6RecvThread.cpp
     src/wire/Ep2SendThread.h
     src/wire/Ep2SendThread.cpp
-    src/wire/DdcMap.h
-    src/wire/DdcMap.cpp
     src/wire/OutboundRing.h
     src/wire/ForceCandC.h
     src/wire/ForceCandC.cpp

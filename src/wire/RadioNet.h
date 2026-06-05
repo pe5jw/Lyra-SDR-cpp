@@ -491,12 +491,15 @@ extern RadioNet* prn;
 // ===== §3.4 — Dispatch-relevant runtime globals =====
 //
 // Reference-verbatim globals consumed at use sites by the wire-
-// send thread (MOX-bit emission), the DDC routing matrix
-// (`DdcMap` per-(mox, ps_armed, hw) selection), the family /
-// wire-protocol dispatch (`FrameComposer` per-HPSDRModel + per-
-// RadioProtocol branches), and the per-radio-class static
-// dispatch parameters consumed by the C&C round-robin
-// (`FrameComposer` case-0 + case-N branches).
+// send thread (MOX-bit emission), the EP6-recv thread's inline
+// per-`nddc` DDC routing switch (matches the reference's
+// `MetisReadThreadMainLoop_HL2:544-558` literal switch — no
+// separate DdcMap class per the locked 2026-06-05 "do as the
+// reference does" discipline), the family / wire-protocol
+// dispatch (`FrameComposer` per-HPSDRModel + per-RadioProtocol
+// branches), and the per-radio-class static dispatch parameters
+// consumed by the C&C round-robin (`FrameComposer` case-0 +
+// case-N branches).
 //
 // No struct wrapper — Lyra reads these the same way the
 // reference does: scattered globals at use sites (signed §3

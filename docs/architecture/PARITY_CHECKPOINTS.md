@@ -819,9 +819,15 @@ behavior against actual hardware, NOT against agent inference.
   locked "do as the reference does, scattered branches" on
   2026-06-05 for consistency with §3.  Each consumer's §N
   checkpoint documents the per-family branches it carries.
-- **Per-family DDC routing matrix** (the per-(mox, ps_armed,
-  hpsdrModel) dispatch function) — lands with `DdcMap`'s §N
-  entry.
+- **Per-family DDC routing matrix** — same locked decision as
+  §3-DispatchState + §4-Capabilities (operator 2026-06-05): the
+  reference's `MetisReadThreadMainLoop_HL2:544-558` does this
+  as an INLINE `switch (nddc)` block inside the EP6 read loop.
+  Lyra does the same — no separate `DdcMap` class.  Per-DDC
+  routing lands inline inside §5 `Ep6RecvThread`'s read-loop
+  body.  The original `DdcMap` deferral is superseded — same
+  pattern as the §3 DispatchState and §4 Capabilities classes
+  the operator rejected on 2026-06-05.
 - **`Saturn`-specific gateware quirks**, **ANVELINAPRO3
   end_frame=17 case**, etc. — behavior-level work, lands when
   the relevant tester hardware arrives (assert-on-hit until then
