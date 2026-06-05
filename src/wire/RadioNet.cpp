@@ -18,7 +18,9 @@ RadioNet::~RadioNet() = default;
 
 // §1.12 — Global instance pointer.  Owned + assigned by the
 // wire-layer initializer at HL2 session start (Phase 2 wire-up,
-// §10.3 step 14+); stays nullptr until then.
-RadioNet* g_radioNet = nullptr;
+// §10.3 step 14+); stays nullptr until then.  Name mirrors the
+// reference's `RADIONET prn` (network.h:291) verbatim per Rule 1
+// reference-parity grep discipline.
+RadioNet* prn = nullptr;
 
 }  // namespace lyra::wire

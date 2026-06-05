@@ -279,14 +279,15 @@ public:
     RadioNet();
     ~RadioNet();
 
-    // Non-copyable / non-movable — std::mutex members make the
-    // class non-copyable already; this is explicit so a future
-    // reader does not try.  Process-lifetime single instance per
-    // §1.12 (mirrors `RADIONET prn` at network.h:291).
-    RadioNet(const RadioNet&)            = delete;
-    RadioNet& operator=(const RadioNet&) = delete;
-    RadioNet(RadioNet&&)                 = delete;
-    RadioNet& operator=(RadioNet&&)      = delete;
+    // Note: the embedded `std::mutex` members (§1.11) already
+    // make `RadioNet` non-copyable + non-movable by the language
+    // rules.  Process-lifetime single instance via the global
+    // pointer `prn` per §1.12 (mirrors `RADIONET prn` at
+    // network.h:291).  No explicit `= delete` lines — Rule 1
+    // reference parity: the C reference is a plain struct with
+    // no copy-control machinery, and Lyra's non-copyability
+    // emerges from the `std::mutex` translation rather than
+    // from a Lyra-native restriction.
 
     // ===== §1.2 — Top-level state scalars (network.h:68-110) =====
 
@@ -399,6 +400,6 @@ public:
 // (Phase 2 wire-up).  Stays `nullptr` until the HL2 session is
 // constructed.
 
-extern RadioNet* g_radioNet;
+extern RadioNet* prn;
 
 }  // namespace lyra::wire

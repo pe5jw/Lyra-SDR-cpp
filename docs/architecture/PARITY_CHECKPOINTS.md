@@ -270,17 +270,38 @@ existed in the reference; Lyra-native safety addition).
 
 | Aspect | Reference (file:line) | Lyra (proposed) |
 |---|---|---|
-| Type definition | `network.h:56-289` `typedef struct CACHE_ALIGN _radionet { ... } radionet, *RADIONET;` | `class RadioNet { ... };` (already shipped Phase 1 empty skeleton) |
-| Cache alignment | `CACHE_ALIGN` = `__declspec(align(16))` (`network.h:38`) | `alignas(16) class RadioNet { ... };` (or `alignas(std::hardware_destructive_interference_size)` — C++17 idiom; pick the explicit `16` to match the reference verbatim) |
-| Global instance | `network.h:291` `RADIONET prn;` (a global pointer) | `RadioNet* g_radioNet = nullptr;` initialized at HL2 session start (Phase 2 work); access via the global — same pattern as the reference (no singleton wrapper, no smart pointer; one process-lifetime instance owned by the wire-layer init) |
+| Type definition | `network.h:56-289` `typedef struct CACHE_ALIGN _radionet { ... } radionet, *RADIONET;` | `class RadioNet { ... };` |
+| Cache alignment | `CACHE_ALIGN` = `__declspec(align(16))` (`network.h:38`) | `alignas(16) class RadioNet { ... };` (C++23 spelling, same width) |
+| Global instance | `network.h:291` `RADIONET prn;` (a global pointer) | `extern RadioNet* prn;` declared in header; `RadioNet* prn = nullptr;` defined in `.cpp`; assigned at HL2 session start (Phase 2 wire-up).  Name mirrors the reference VERBATIM — critical for cross-reference grep discipline (Thetis uses `prn->*` in hundreds of sites across `networkproto1.c`, `network.c`, `cmaster.c`; future PureSignal port reads `prn->*` extensively, byte-identical names enable line-by-line study). |
 
-**VERDICT:** ✅ **PARITY** on access pattern (global pointer to one
-instance, process-lifetime); ⚠ **ACCEPTABLE DEVIATION** on:
+**VERDICT:** ✅ **PARITY** on access pattern + global instance
+name (`prn` verbatim); ⚠ **ACCEPTABLE DEVIATION** on:
 (a) `struct + typedef` → `class` (C++23 idiom; same memory
-layout); (b) global instance name `prn` → `g_radioNet` (Lyra-
-native naming; `prn` was the reference's terse pointer name,
-not informative in a multi-radio future per Q2); (c) cache-align
-spelling (`__declspec(align(16))` → `alignas(16)`, same width).
+layout); (b) cache-align spelling (`__declspec(align(16))` →
+`alignas(16)`, same width).
+
+**Amendment 2026-06-05 (operator-tightened naming directive):**
+the initial §1.12 draft proposed `g_radioNet` as a Lyra-native
+global name.  Operator directive (2026-06-05): "never deviate
+from reference naming unless absolutely necessary" — the
+cross-reference grep concern (PureSignal/calcc/iqc will read
+`prn->*` across hundreds of sites; symbol mismatch creates
+permanent cognitive friction for every port).  Reverted in
+the shipped `RadioNet.{h,cpp}` to `prn` matching the reference
+verbatim.  Going forward: NO Lyra-native renames on
+reference symbols without an explicit operator-discussed
+necessity.
+
+**§1.12 — `= delete` lines on copy/move:** the initial draft
+included explicit `RadioNet(const RadioNet&) = delete;` etc.
+as Lyra-native safety hardening.  Operator directive
+(2026-06-05): match reference posture — no Lyra-native code
+beyond what parity requires.  The `std::mutex` members (§1.11)
+already make `RadioNet` non-copyable by language rules, so
+removing the explicit deletes does NOT change behavior; only
+removes the Lyra-native commentary lines.  Removed in the
+shipped `RadioNet.h` per Rule 1 + Rule 5 strict reading
+(no safety additions beyond reference parity).
 
 ---
 
@@ -319,7 +340,7 @@ structs / globals, each warranting their own §N entry:
 | §1.9 tx[3] | ✅ PARITY (⚠ inner type name) |
 | §1.10 audio[2] | ✅ PARITY (⚠ inner type name) |
 | §1.11 mutexes | ✅ PARITY (⚠ `CRITICAL_SECTION` → `std::mutex`) |
-| §1.12 global + alignment | ✅ PARITY (⚠ Lyra-native naming) |
+| §1.12 global + alignment | ✅ PARITY (`prn` verbatim, ⚠ only on `class` keyword + `alignas` spelling — C++23 idiom translations) |
 
 **Substantive deviation requiring sign-off:** §1.1 (networking
 infrastructure exclusion).  Already pre-approved by the operator's
@@ -344,4 +365,201 @@ Signed: **N8SDR (Rick Langford)** Date: **2026-06-05**
 
 ---
 
-*Last updated: 2026-06-05 — §1 RadioNet draft for operator review.*
+*Last updated: 2026-06-05 — §2 RbpFilter / RbpFilter2 draft for operator review.*
+
+---
+
+## §2. `RbpFilter` / `RbpFilter2` — Alex filter-board control words
+
+**Scope.** Two C++ classes `lyra::wire::RbpFilter` and
+`lyra::wire::RbpFilter2` (`src/wire/RbpFilter.{h,cpp}`) mirror the
+reference's `_rbpfilter` and `_rbpfilter2` struct + typedef pair at
+`ChannelMaster/network.h:293-389`.  These are the Alex filter-board
+control words — 32-bit packed bitfields driving BPF/LPF selection,
+T/R relay, antenna mux, RX1/RX2 routing, attenuators, preamp,
+front-panel LEDs.  Two distinct types because three bit positions
+have different meanings between Alex0 and Alex1.
+
+### §2.1 Architectural placement (acknowledged deviation from §1)
+
+The reference declares these as **sibling globals** to `prn` (not
+members of `radionet`).  Two separate typedefs with distinct
+struct tags (`_rbpfilter`, `_rbpfilter2`) because the layouts
+differ.  Lyra mirrors this:
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Sibling struct shape (not inside `radionet`) | `network.h:293-389` — two distinct typedefs, NOT members of `_radionet` | `class RbpFilter { ... };` + `class RbpFilter2 { ... };` declared in `src/wire/RbpFilter.{h,cpp}` (sibling to `RadioNet`, NOT a member of it) |
+| Global instance pointers | `network.h:340` `RBPFILTER prbpfilter;` + `:389` `RBPFILTER2 prbpfilter2;` | `extern RbpFilter*  prbpfilter;` + `extern RbpFilter2* prbpfilter2;` declared in header; defined `nullptr` in `.cpp`; assigned at HL2 session start.  **Pointer names mirror the reference VERBATIM** (operator naming directive 2026-06-05 — reference symbols are preserved for grep parity with Thetis source; PureSignal port reads `prbpfilter->*` extensively).  Only the type names PascalCase per §1 convention. |
+| Lifecycle | `netInterface.c:1727-1733` `malloc0` + init `bpfilter=0`, `enable=1`/`enable=2`; `:1807-1808` `_aligned_free` | Constructor sets `bpfilter=0` + `enable` to the matching id (1 vs 2); destruction automatic via RAII when the wire-layer init releases ownership |
+| Coupling to `RadioNet` | Read together by the frame composers (`WriteMainLoop_HL2` reads both `prn->*` and `prbpfilter->*` per case) — separate sources, fanned in at the use site | `Hl2FrameComposer` (later §) takes pointers to BOTH `RadioNet` and `RbpFilter`/`RbpFilter2` — same fan-in pattern |
+
+**VERDICT:** ✅ **PARITY** on shape (sibling structs, NOT members
+of RadioNet; pointer names `prbpfilter`/`prbpfilter2` verbatim);
+⚠ **ACCEPTABLE DEVIATION** on the typedef names only (PascalCase
+per the Q4 convention established in §1 — `rbpfilter` →
+`RbpFilter`, `rbpfilter2` → `RbpFilter2`; reference's `_` prefix
+on the struct tag dropped per C++23 idiom).
+
+---
+
+### §2.2 `RbpFilter` (Alex0) — 32-bit bitfield
+
+`network.h:293-340 / _rbpfilter`.  Four byte rows (bits 0-7,
+8-15, 16-23, 24-31).  Each bit drives a specific Alex0 filter-
+board signal.
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Master alignment + pack | `network.h:293` `#pragma pack(push, 1)` ... `:339 #pragma pack(pop)` | Same `#pragma pack(push, 1)` / `pop` (Q4 byte-for-byte parity); `#pragma warning(disable: 4201)` for the anonymous union to keep the `/W4` build clean |
+| `enable` | `network.h:296` `int enable;` (set to 1 at init per `netInterface.c:1729`) | `int enable{1};` (default-init to the Alex0 id; matches reference's init line) |
+| Union: dword view + bitfield struct view | `network.h:297-337` `union { unsigned bpfilter; struct { ... 32 bits ... }; };` | Same union: `unsigned bpfilter{0};` first member (default-zeros the dword), anonymous struct second member with the 32-bit declaration verbatim |
+| Byte 0 (bits 0-7) | `network.h:300-308` `_rx_yellow_led:1, _13MHz_HPF:1, _20MHz_HPF:1, _6M_preamp:1, _9_5MHz_HPF:1, _6_5MHz_HPF:1, _1_5MHz_HPF:1, :1;` (bit 7 unused) | Same 8 bitfield declarations, same order, same names (underscore-prefix preserved per Rule 1 cross-reference grep) |
+| Byte 1 (bits 8-15) | `network.h:310-317` `_XVTR_Rx_In:1, _Rx_2_In:1 (EXT1), _Rx_1_In:1 (EXT2), _Rx_1_Out:1 (K36 RL17), _Bypass:1, _20_dB_Atten:1, _10_dB_Atten:1 (RX MASTER IN SEL RL22), _rx_red_led:1;` | Same 8 bitfield declarations, comments preserved verbatim (the `RL17`/`RL22` relay designators are the HL2 schematic refs — operator-facing for hardware debug) |
+| Byte 2 (bits 16-23) | `network.h:319-326` `:1, :1, _trx_status:1, _tx_yellow_led:1, _30_20_LPF:1, _60_40_LPF:1, _80_LPF:1, _160_LPF:1;` | Same 8 bitfield declarations (bits 16-17 unused) |
+| Byte 3 (bits 24-31) | `network.h:328-335` `_ANT_1:1, _ANT_2:1, _ANT_3:1, _TR_Relay:1, _tx_red_led:1, _6_LPF:1, _12_10_LPF:1, _17_15_LPF:1;` | Same 8 bitfield declarations |
+
+**VERDICT:** ✅ **PARITY** on bit layout byte-for-byte; ⚠
+**ACCEPTABLE DEVIATION** on the outer typedef name only
+(`rbpfilter` → `RbpFilter`).  The 32 individual bitfield names
+are preserved verbatim — they are the schematic reference
+points and are operator-visible in hardware debug.
+
+---
+
+### §2.3 `RbpFilter2` (Alex1) — 32-bit bitfield, three position differences vs Alex0
+
+`network.h:342-389 / _rbpfilter2`.  Same total bit count (32),
+same byte boundaries, three positions diverge.
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Master alignment + pack | `network.h:342` `#pragma pack(push, 1)` ... `:388 #pragma pack(pop)` | Same |
+| `enable` | `network.h:345` `int enable;` (set to 2 at init per `netInterface.c:1733`) | `int enable{2};` |
+| Byte 0 (bits 0-7) | `network.h:350-357` — IDENTICAL to RbpFilter byte 0 (HPF + 6M preamp) | Same |
+| Byte 1 (bits 8-15) DIVERGES | `network.h:359-366` `_rx2_gnd:1, :1, :1, :1, _Bypass:1, :1, :1, _rx_red_led:1;` (bit 8 = `_rx2_gnd`, NOT `_XVTR_Rx_In`; bits 9-11, 13-14 reserved) | Same 8 bitfield declarations; bit 8 declared as `_rx2_gnd` (the Alex1-specific RX2-GND-on-TX bit per `netInterface.c:659-661`) |
+| Byte 2 (bits 16-23) | `network.h:368-375` — IDENTICAL to RbpFilter byte 2 (trx_status + tx_yellow_led + LPFs) | Same |
+| Byte 3 (bits 24-31) DIVERGES | `network.h:377-384` `_TXANT_1:1, _TXANT_2:1, _TXANT_3:1, _TR_Relay:1, _tx_red_led:1, _6_LPF:1, _12_10_LPF:1, _17_15_LPF:1;` (bits 24-26 are `_TXANT_*` instead of `_ANT_*`) | Same 8 bitfield declarations; bits 24-26 named `_TXANT_1/2/3` (Alex1's TX-antenna mux is independent from Alex0's RX/TX-shared antenna mux) |
+| Bit-inherit relationship vs RbpFilter | `netInterface.c:489-490` and `:695-696`: `prbpfilter2->bpfilter &= 0x0700ffff; prbpfilter2->bpfilter |= prbpfilter->bpfilter & 0xf8ff0000;` — bits 16-23 + 27-31 INHERIT from Alex0 (trx_status, tx_yellow_led, LPFs, TR_Relay, tx_red_led, 6_LPF, 12_10_LPF, 17_15_LPF); bits 0-15 + 24-26 are Alex1-independent | Replicated VERBATIM in the Lyra-native `SetAlexAntennas` / `SetAlexLPF` setters when those land (later §, with the UI-driven config plumbing).  The bit-inherit relationship is data-flow, not type-structure — both classes stay independent at the type level; the copy logic lives in setters. |
+
+**VERDICT:** ✅ **PARITY** on bit layout byte-for-byte; ⚠
+**ACCEPTABLE DEVIATION** on the outer typedef name only
+(`rbpfilter2` → `RbpFilter2`).  Bit-inherit data-flow recorded
+here for Phase-2 setter implementation; not part of the type
+definition.
+
+---
+
+### §2.4 Use-site enumeration (informational, no code in §2)
+
+Recorded so Phase 2 implementers know where the setters and
+readers land.
+
+**Setters (Phase 2 wiring — later §):**
+
+| Reference symbol | File:line | Writes |
+|---|---|---|
+| `SetTRRelay(bit)` | `netInterface.c:376-381` | `prbpfilter->_TR_Relay`, both structs' `_trx_status` |
+| `SetAtten(bits)` | `netInterface.c:425-428` | `prbpfilter->_20_dB_Atten`, `_10_dB_Atten` |
+| `SetAlexAntennas(rx_out, rx_only_ant, trx_ant)` | `netInterface.c:465-495` | `prbpfilter->_Rx_1_Out`, `_10_dB_Atten`, `_Rx_1_In`, `_Rx_2_In`, `_XVTR_Rx_In`, `_ANT_1/2/3` + the bit-inherit copy + `prbpfilter2->_TXANT_1/2/3` |
+| `SetAlexHPF(bits)` | `netInterface.c:609-615` | `prbpfilter->` HPF + Bypass + 6M_preamp (7 bits) |
+| `SetAlex2HPF(bits)` | `netInterface.c:642-648` | `prbpfilter2->` same 7 bits |
+| `SetRX2GroundOnTX(bits)` | `netInterface.c:659-661` | `prbpfilter2->_rx2_gnd` |
+| `SetAlexLPF(bits)` w/ alex2 path | `netInterface.c:695-719` | Both structs' LPF bits + bit-inherit copy |
+
+**Readers (Phase 2 `Hl2FrameComposer` — separate §):**
+
+| Reference case | File:line | Reads |
+|---|---|---|
+| `WriteMainLoop_HL2` case 0 | `networkproto1.c:951-966` | `prbpfilter->_10_dB_Atten`, `_20_dB_Atten`, `_Rx_1_Out`, `_XVTR_Rx_In`, `_Rx_1_In`, `_Rx_2_In`, `_ANT_3`, `_ANT_2` |
+| `WriteMainLoop_HL2` case 10 | `networkproto1.c:1081-1088` | `prbpfilter->` HPFs + Bypass + 6M_preamp + LPFs (14 bits) |
+| `WriteMainLoop_HL2` case 16 | `networkproto1.c:1153-1156` | `prbpfilter2->` HPFs + Bypass + 6M_preamp + `_rx2_gnd` |
+| Generic non-HL2 paths | `networkproto1.c:622-637`, `:752-759`, `:828-831` | Same read patterns (HL2 path is a fork) |
+| P2 framer | `network.c:1028-1037` | Full `bpfilter` dword (32 bits) packed into bytes 1428-1435 |
+
+**VERDICT:** Informational — no Lyra code declared in §2 for the
+setters or readers.  Setters land when the UI/protocol-config
+plumbing arrives (later §); readers land in `Hl2FrameComposer`
+(its own §).  This enumeration is the audit trail so a future
+implementer knows the full surface.
+
+---
+
+### §2.5 Global instance pointers + lifecycle
+
+Same pattern as §1.12 RadioNet (post-correction):
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Alex0 global | `network.h:340` `RBPFILTER prbpfilter;` (declared); `netInterface.c:1727-1729` allocated at init | `extern RbpFilter* prbpfilter;` declared in header; `RbpFilter* prbpfilter = nullptr;` defined in `.cpp`; assigned by wire-layer init at HL2 session start (Phase 2 wire-up).  Name verbatim from the reference. |
+| Alex1 global | `network.h:389` `RBPFILTER2 prbpfilter2;` (declared); `netInterface.c:1731-1733` allocated at init | `extern RbpFilter2* prbpfilter2;` same pattern. Name verbatim from the reference. |
+| Lifetime | `netInterface.c:1807-1808` `_aligned_free` at session teardown | Wire-layer teardown releases ownership; destruction automatic via RAII |
+| Copy / move semantics | Reference is plain C struct (trivially copyable; never copied by any caller) | Lyra C++ class: trivially copyable by default.  NO explicit `= delete` — Rule 1 reference parity, no Lyra-native safety addition (operator directive 2026-06-05: drop safety additions not present in the reference; if a real bug ever surfaces from accidental copying, revisit with operator sign-off then). |
+
+**VERDICT:** ✅ **PARITY** on access pattern + global pointer
+names verbatim from the reference + copy/move semantics (plain
+struct, trivially copyable).  No ⚠ items.
+
+**Amendment 2026-06-05 (operator directive — naming + safety
+discipline):** the initial §2.5 draft proposed `g_rbpFilter1`/
+`g_rbpFilter2` Lyra-native naming AND explicit `= delete`
+non-copyable Lyra-native safety addition.  BOTH dropped per
+the tightened operator directive (cross-reference grep parity;
+no Lyra-native safety additions without explicit operator
+discussion).  Names reverted verbatim; copy semantics match
+the reference's plain-C posture.
+
+---
+
+### §2.6 Out of scope for §2 (deferred)
+
+- **Setter implementations** (`SetTRRelay`, `SetAtten`, etc.)
+  land with the UI/protocol-config plumbing — they're operator-
+  driven actions, not state.  Each setter lands in the
+  appropriate Lyra wire-layer or UI component when those §N
+  entries arrive.
+- **Reader implementations** (the case-by-case bit-emit logic
+  in `Hl2FrameComposer`) — its own §N entry.  §2.4 enumerates
+  the read patterns; the composer's checkpoint will table them
+  byte-by-byte.
+- **Bit-inherit copy logic** (`netInterface.c:489-490` and
+  `:695-696`) — lives in the `SetAlexAntennas` / `SetAlexLPF`
+  setters' Lyra-native equivalents; not part of the data
+  structure declaration.
+
+---
+
+### §2 — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| §2.1 architectural placement | ✅ PARITY + ⚠ inner typedef names |
+| §2.2 RbpFilter byte-for-byte | ✅ PARITY (32 bits, 4 byte rows) |
+| §2.3 RbpFilter2 byte-for-byte | ✅ PARITY (32 bits, 3 position differences from RbpFilter all preserved) |
+| §2.4 use-site enumeration | Informational only — no code in §2 |
+| §2.5 global pointers + lifecycle | ✅ PARITY — pointer names + copy/move semantics verbatim |
+
+**No 🔴 items in §2.**  The §10.2 component split keeps these as
+sibling structs in the `wire/` layer per the locked architecture;
+no new operator-approved deviation needed beyond the §1.1
+networking-exclusion sign-off (which already established the
+wire-layer sibling pattern).
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [ ] §2 reviewed, all rows verdicts confirmed
+- [ ] §2.3 bit-inherit copy logic deferral acknowledged (lands
+      with the setter implementations, not in the type
+      definition)
+- [ ] §2.5 reference-verbatim naming + plain-C copy semantics
+      confirmed (no Lyra-native additions)
+- [ ] Authorized to ship the populated `RbpFilter`/`RbpFilter2`
+      header + CMakeLists.txt update matching this checkpoint
+
+Signed: _______________ Date: _______________
+
+---
+
+*Last updated: 2026-06-05 — §2 RbpFilter / RbpFilter2 draft for operator review.*
