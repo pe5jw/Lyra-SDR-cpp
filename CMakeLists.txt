@@ -71,6 +71,8 @@ qt_add_executable(lyra
     src/wire/FrameComposer.cpp
     src/wire/Ep6RecvThread.h
     src/wire/Ep6RecvThread.cpp
+    src/wire/Router.h
+    src/wire/Router.cpp
     src/wire/Ep2SendThread.h
     src/wire/Ep2SendThread.cpp
     src/wire/OutboundRing.h

@@ -76,4 +76,10 @@ int ApolloFiltSelect = 0;
 int ApolloTuner      = 0;
 int ApolloATU        = 0;
 
+// §5 supplement (added 2026-06-05 per §5 Ep6RecvThread
+// source-verification).  Decimation factor 1 = no decimation;
+// operator/per-family rate setter overwrites at session open.
+int mic_decimation_factor = 1;
+int mic_decimation_count  = 0;
+
 }  // namespace lyra::wire

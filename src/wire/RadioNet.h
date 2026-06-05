@@ -589,4 +589,20 @@ extern int           ApolloFiltSelect;
 extern int           ApolloTuner;
 extern int           ApolloATU;
 
+// §5 supplement (added 2026-06-05 per §5 Ep6RecvThread source-
+// verification).
+//
+// `mic_decimation_factor` (`network.h:507`) — divisor for mic-
+// sample harvest cadence.  Mic samples arrive at the full EP6
+// IQ rate (one per sample slot); the read loop only emits a mic
+// sample every `mic_decimation_factor` slots.  Default 1 = no
+// decimation (all mic samples emitted).  Per-family init / operator
+// rate setter overwrites for non-48k mic rates.
+//
+// `mic_decimation_count` (`network.h:508`) — running counter for
+// the decimator state; cycles 0 .. factor-1.  Updated per sample
+// inside the read loop.
+extern int           mic_decimation_factor;
+extern int           mic_decimation_count;
+
 }  // namespace lyra::wire

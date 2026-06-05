@@ -1812,3 +1812,276 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §4c FrameComposer RX-mirror cases signed + Rule-24 circle-back verified clean; populate commit lands separately.  All 19 FrameComposer cases populated post-commit.*
+
+---
+
+## §5. `Ep6RecvThread` + `Router` — EP6 datagram receive loop + dispatch primitives
+
+**Scope.** The EP6 receive thread: UDP `recvfrom` loop, watchdog,
+per-USB-frame parse (sync-bytes + C0..C4 extraction), I2C readback,
+EP6 telemetry decode (5 status-class switch), per-DDC IQ unpacking,
+**inline `switch (nddc)` DDC routing** (the former §5 DdcMap home —
+collapsed inline per the locked 2026-06-05 discipline), mic
+decimation + harvest, and the `Router` (`xrouter` + `twist`)
+Lyra-native dispatch primitives.
+
+Source mirror: `networkproto1.c::MetisReadThreadMainLoop_HL2`
+(lines 422-586) + `networkproto1.c::MetisReadDirect` (lines
+141-168+) + `networkproto1.c::twist` (lines 263-274) + `router.c::
+xrouter` (line 71+).  HL2 / HL2+ dispatch; ANAN-class branches
+(nddc=2 Hermes-II, nddc=5 Orion) are present in the inline switch
+verbatim from source.
+
+**Locked architecture (Q1–Q5).**  Operator-confirmed 2026-06-05;
+all answers default to "do as the reference does" per the locked
+discipline.
+
+| # | Question | Locked answer |
+|---|---|---|
+| Q1 | Read-loop structure | **Switch-style read loop matching the reference verbatim.**  Lyra implements `Ep6RecvThread::run_loop()` as a near-line-for-line port of `MetisReadThreadMainLoop_HL2`.  Outer `while (io_keep_running)` + WSA-equivalent socket wait + per-USB-frame for-loop + per-DDC iq-unpack + DDC-routing switch + mic harvest.  All structural elements verbatim. |
+| Q2 | `Router` as separate file? | **Yes — `src/wire/Router.{h,cpp}`** as a separate Lyra component, matching the reference's `router.c` / `router.h` file separation.  Implements `xrouter()` + `twist()` as free functions in `lyra::wire::` namespace.  Per the locked discipline (reference has the dispatch primitives in their own file, Lyra does the same). |
+| Q3 | xrouter implementation completeness | **Full reference clone** — including the runtime-configurable callback tables + control word + multi-stream-per-port dispatch.  Per the locked discipline (mirror the reference's complexity even if v0.0.x HL2-RX-only doesn't exercise all paths today).  Pays back when v0.3 PS work re-routes DDC outputs via the control-word mechanism without infrastructure rebuild. |
+| Q4 | Where do `RxBuff` / `TxReadBufp` / `ControlBytesIn` / thread-state live? | **Inside `Ep6RecvThread` as members** — honoring the signed §1.1 networking-infrastructure exclusion from `RadioNet`.  `RxBuff[nddc][]` is per-DDC IQ sample staging; `TxReadBufp[]` is mic sample staging; `ControlBytesIn[5]` is the per-frame C0..C4 buffer.  Same pattern as FrameComposer's `out_control_idx_` / `previous_tx_bit_` (scheduler-internal state). |
+| Q5 | Synchronization | One `std::mutex recv_lock_` member of `Ep6RecvThread` ↔ reference's `prn->rcvpktp1` (the P1 receive critical section from §1.11).  Lock-order acyclic per §15.26 W1.3 / W1.4 lessons. |
+
+**§3 supplement — additional globals surfaced by §5:**
+
+| Global | Reference (file:line) | Lyra | Default |
+|---|---|---|---|
+| `mic_decimation_factor` | `network.h:507` `int mic_decimation_factor;` — divisor for mic-sample harvest cadence (mic comes from EP6 at the full 48 kHz IQ rate; per-family decimator drops to operator-target rate) | `extern int mic_decimation_factor;` | `1` (no decimation; per-family init or operator rate-set overwrites) |
+| `mic_decimation_count` | `network.h:508` `int mic_decimation_count;` — running counter for the decimator state | `extern int mic_decimation_count;` | `0` |
+
+---
+
+### §5.1 Thread lifecycle + UDP recvfrom + watchdog (source: `networkproto1.c:422-463`)
+
+The outer read loop's structural elements.
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Function entry | `void MetisReadThreadMainLoop_HL2(void)` (`:422`) | `void Ep6RecvThread::run_loop()` — runs on the spawned `std::thread`; MMCSS Pro-Audio priority set in the thread-start wrapper |
+| Initial state | `mic_decimation_count = 0; SeqError = 0;` (`:424-425`) | Same — reset both at loop entry |
+| Buffer allocations | `FPGAReadBufp = calloc(1024, 1); FPGAWriteBufp = calloc(1024, 1);` (`:427-428`) | `fpga_read_buf_.resize(1024); fpga_write_buf_.resize(1024);` (`std::vector<unsigned char>` members; same 1024-byte size matching the EP6 datagram + sync overhead) |
+| Priming | `ForceCandCFrame(3);` (`:430`) — 3-frame priming burst before the main loop | Same — invokes `ForceCandC::prime(3)` (§7 component; for §5 this is a stub call) |
+| Event setup | `prn->hDataEvent = WSACreateEvent(); WSAEventSelect(listenSock, prn->hDataEvent, FD_READ);` (`:433-434`) | Lyra-native equivalent — Linux/cross-platform `recvfrom` with `MSG_DONTWAIT` or `poll`-based; Windows-specific `WSAEventSelect` semantics are an OS-platform deviation acceptable per C → C++23 cross-platform port |
+| Main loop | `while (io_keep_running != 0)` (`:439`) | `while (io_keep_running_)` — same; `io_keep_running_` is an `std::atomic<int>` Ep6RecvThread member (instead of file-scope global) |
+| Watchdog | `WSAWaitForMultipleEvents(1, &prn->hDataEvent, FALSE, prn->wdt ? 3000 : WSA_INFINITE, FALSE);` (`:443`).  On timeout: `HaveSync = 0; destroy_pro(prop); prop = NULL; continue;` (`:446-449`) | Same — 3000 ms timeout when `prn->wdt` is set, infinite wait otherwise; on timeout clear `have_sync_` flag + invoke `destroy_pro_stub_()` placeholder + continue.  `destroy_pro` is sync-discovery cleanup; Lyra stubs until discovery component lands. |
+| Network-event enumeration | `WSAEnumNetworkEvents(...); if (events & FD_READ)` (`:453-454`) | Lyra-native `recvfrom` (no need for explicit event enumeration; `poll` or `recvfrom`'s own success indicates data ready) |
+| Read | `MetisReadDirect(FPGAReadBufp);` (`:463`) — UDP `recvfrom` wrapper with seq-number tracking | `metis_read_direct(fpga_read_buf_.data())` Lyra-native equivalent (sub-§5.2) |
+
+**Reference quirk preserved:** the buffers allocated by `calloc(1024, 1)` are 1024 bytes — the EP6 datagram is 1032 bytes (8 header + 2 × 512 USB frames), so the reference's allocation is technically 8 bytes short.  In practice the trailing 8 bytes are the metis/sync header that gets consumed by `MetisReadDirect` before the body is copied into `FPGAReadBufp`.  Lyra uses 1024 bytes verbatim per Rule 24.
+
+**VERDICT:** ✅ **PARITY** — structural elements verbatim from `:422-463`; ⚠ **ACCEPTABLE DEVIATION** on the Windows-specific WSA event machinery → cross-platform `recvfrom`/`poll` (idiom translation, same semantic effect).
+
+---
+
+### §5.2 EP6 frame validation + C0..C4 extraction (source: `:470-476`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Per-USB-frame loop | `for (frame = 0; frame < 2; frame++) { bptr = FPGAReadBufp + 512 * frame; ...` (`:470-472`) | Same — outer for-loop, 2 USB frames per UDP datagram |
+| Sync-bytes validation | `if ((bptr[0] == 0x7f) && (bptr[1] == 0x7f) && (bptr[2] == 0x7f))` (`:473`) | Same — all three `0x7f` bytes required at offsets [0..2]; if invalid, the entire USB frame is silently dropped (matches reference behavior — no error logging on sync-byte mismatch) |
+| C0..C4 extraction | `for (cb = 0; cb < 5; cb++) ControlBytesIn[cb] = bptr[cb + 3];` (`:475-476`) — copies 5 bytes from offsets [3..7] into the `ControlBytesIn[5]` buffer | Same — verbatim 5-byte copy into `control_bytes_in_[5]` member |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:470-476`.
+
+---
+
+### §5.3 I2C readback path (source: `:478-493`)
+
+When C0 bit 7 is set, the EP6 frame is an I2C-readback response (not a normal status frame).  Stores 4 bytes of read data into `prn->i2c.read_data` and sets the `ctrl_read_available` flag.  Reference defect / nuance: when the returned address is `0x3f` (i.e. the gateware's "no response" indicator), the read-error flag is set instead.
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Trigger | `if (ControlBytesIn[0] & 0x80)` (`:478`) | Same |
+| Error-address check | `if (0x3f == prn->i2c.returned_address) { prn->i2c.ctrl_error = 1; }` (`:480-483`) | Same — verbatim |
+| Normal readback | `prn->i2c.read_data[0..3] = ControlBytesIn[1..4]; prn->i2c.ctrl_read_available = 1;` (`:486-491`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:478-493`.
+
+---
+
+### §5.4 EP6 telemetry decode — 5 status-class switch (source: `:494-525`)
+
+The normal-status path (C0 bit 7 clear).  Extracts PTT/dot/dash, then dispatches a `switch (C0 & 0xf8)` for the 5 telemetry-class subdivisions.
+
+**This is the §15.26-history PA-current / PA-volts / supply-volts
+slot-mapping territory** — the operator's PRIOR-PROJECT CORRECTION-3
+work established the correct slot map on his HL2+ AK4951 gateware.
+Per Rule 24 source-read here: the slot map IS the one the
+reference declares; the prior project's empirical-bench finding
+that "PA-current reads n/a on this gateware variant" may STILL
+apply (the gateware doesn't emit `user_adc1` on this rev) — that's
+a HARDWARE finding, NOT a source-decode finding.  Lyra emits the
+exact reference decode; what the gateware delivers in each slot is
+an empirical-bench concern.
+
+| C0 mask | Reference (file:line) | Lyra |
+|---|---|---|
+| PTT / dot / dash always extracted | `prn->ptt_in = ControlBytesIn[0] & 0x1; prn->dash_in = (ControlBytesIn[0] << 1) & 0x1; prn->dot_in = (ControlBytesIn[0] << 2) & 0x1;` (`:496-498`) — **note the `<< 1` / `<< 2` are LEFT shifts then `& 0x1` mask = always 0** (reference defect; the intent was probably `>> 1` / `>> 2` to extract bits 1 and 2.  Preserved verbatim per Rule 24 — Lyra emits the same broken decode the reference does.  Operator-policy work in Task #114 can layer a Lyra-native "actually decode bits 1 and 2 correctly" wrapper if dot/dash via EP6 telemetry is ever wanted; but the locked discipline is "do as the reference does, including bugs.") | Same — verbatim left-shift-then-mask |
+| `0x00` — primary status | `prn->adc[0].adc_overload = ControlBytesIn[1] & 0x01; prn->user_dig_in = ((ControlBytesIn[1] >> 1) & 0xf);` (`:501-504`) — ADC0 overload + user_dig_in 4-bit field | Same |
+| `0x08` — power telemetry I | `prn->tx[0].exciter_power = (CB[1] << 8 \| CB[2]) & 0xffff;` (AIN5 drive power); `prn->tx[0].fwd_power = (CB[3] << 8 \| CB[4]) & 0xffff;` (AIN1 PA coupler).  Plus `PeakFwdPower(prn->tx[0].fwd_power)` (`:506-508`) | Same — verbatim 16-bit MSB-first decode for both fields; `peak_fwd_power_callback_(fwd_power)` is a Lyra-native sink callback (operator-policy hookup deferred to Task #114) |
+| `0x10` — power telemetry II + PA volts | `prn->tx[0].rev_power = (CB[1] << 8 \| CB[2]) & 0xffff;` (AIN2 PA reverse power); `prn->user_adc0 = (CB[3] << 8 \| CB[4]) & 0xffff;` (**AIN3 MKII PA Volts**).  Plus `PeakRevPower(prn->tx[0].rev_power)` (`:510-513`) | Same — verbatim 16-bit decode; `peak_rev_power_callback_` deferred per Task #114 |
+| `0x18` — PA amps + supply volts | `prn->user_adc1 = (CB[1] << 8 \| CB[2]) & 0xffff;` (**AIN4 MKII PA Amps** — the §15.26-corrected slot); `prn->supply_volts = (CB[3] << 8 \| CB[4]) & 0xffff;` (AIN6 Hermes Volts) (`:516-517`) | Same — preserves the §15.26 source-verified slot map.  Empirical: the operator's HL2+ ak4951v4 gateware may NOT emit `user_adc1` on this slot per the prior project's bench finding — that's a hardware-variant concern, NOT a source-decode concern.  Lyra emits the verbatim decode; what's IN the slot is a bench question for the operator at first-RF time. |
+| `0x20` — multi-ADC overload | `prn->adc[0].adc_overload = CB[1] & 1; prn->adc[1].adc_overload = (CB[2] & 1) << 1; prn->adc[2].adc_overload = (CB[3] & 1) << 2;` (`:519-523`) — note the **per-ADC shift** (ADC1 gets bit-1 position, ADC2 gets bit-2) | Same — verbatim shift pattern |
+
+**Reference defects preserved verbatim per Rule 24:**
+1. **`dash_in` / `dot_in` left-shift bug** at `:497-498` — `(CB[0] << 1) & 0x1` always = 0 (left-shift, then mask bit 0 — but the shift moves the source bit OUT of bit 0).  Likely intended `>> 1` / `>> 2`.  Reference has it wrong; Lyra preserves verbatim.  Comment in Lyra code flags it explicitly.
+2. **§15.26 empirical hardware variance** — on the operator's HL2+ ak4951v4, `user_adc1` (PA amps) may not appear at the `0x18` C1:C2 slot per prior-project bench finding.  This is a HARDWARE concern (which gateware variant emits which data); the SOURCE decode in §5.4 is correct against the reference.  Empirical-bench at first-RF time will confirm whether the gateware delivers in the documented slots.
+
+**VERDICT:** ✅ **PARITY** — every byte / every shift / every slot verbatim from `:494-525`; two reference defects preserved verbatim per Rule 24 (dash/dot shift bug, PA-amps slot empirical-variance).
+
+---
+
+### §5.5 Per-DDC IQ unpacking (source: `:527-542`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Samples-per-record | `spr = 504 / (6 * nddc + 2);` (`:527`) — the EP6 USB-frame body is 504 bytes (after the 8-byte sync+C0..C4 prefix); each sample slot is `6 * nddc + 2` bytes (6 bytes per DDC for the IQ pair + 2 mic bytes); spr is how many slots fit | Same — `int spr = 504 / (6 * nddc + 2);` |
+| Per-DDC × per-sample loop | `for (iddc = 0; iddc < nddc; iddc++) { for (isample = 0; isample < spr; isample++) { ... } }` (`:528-541`) | Same — nested loop |
+| Sample byte offset | `int k = 8 + isample * (6 * nddc + 2) + iddc * 6;` (`:532`) — `8` = sync(3) + C0..C4(5); per-sample stride = `6 * nddc + 2`; per-DDC offset within a sample slot = `iddc * 6` | Same — verbatim offset arithmetic |
+| I-sample decode | `RxBuff[iddc][2*isample+0] = const_1_div_2147483648_ * (double)(bptr[k+0] << 24 \| bptr[k+1] << 16 \| bptr[k+2] << 8);` (`:533-536`) — 24-bit BE signed sample left-shifted into the high bits of an int (so the sign bit aligns at position 31), then divided by 2^31 to normalize to [-1.0, +1.0) | Same — `const_1_div_2147483648_` is a Lyra `constexpr double k_i32_to_unit = 1.0 / 2147483648.0;` (reference-verbatim value `1.0 / 2147483648.0` = `2^-31`) |
+| Q-sample decode | Same pattern at offsets `k+3..k+5`, stored at `RxBuff[iddc][2*isample+1]` (`:537-540`) | Same |
+
+**Reference idiom preserved:** the `(byte << 24) | (byte << 16) | (byte << 8)` pattern places the 24-bit signed sample in the high 24 bits of an `int`, leaving the low 8 bits as 0.  When the int is cast to `double` and divided by 2^31, the result is the normalized signed sample.  This is a clean way to handle the sign-extension of 24-bit values in C — Lyra preserves verbatim.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:527-542`.
+
+---
+
+### §5.6 DDC routing — inline `switch (nddc)` (source: `:544-559`)
+
+The former §5 DdcMap home — collapsed inline per the locked
+2026-06-05 "do as the reference does" discipline.
+
+| `nddc` | Reference | Lyra |
+|---|---|---|
+| 2 (Hermes II) | `twist(spr, 0, 1, 0);` (`:547`) — DDC0+DDC1 twist-paired → consumer 0 | Same |
+| 4 (HL2 / HL2+) | `xrouter(0, 0, 0, spr, prn->RxBuff[0]); twist(spr, 2, 3, 1); xrouter(0, 0, 2, spr, prn->RxBuff[1]);` (`:550-552`) — DDC0 → consumer 0 (RX1); DDC2+DDC3 twist-paired → consumer 1 (PS feedback path); DDC1 → consumer 2 (RX2) | Same — verbatim 3-call sequence |
+| 5 (Orion / ANAN P1 5-DDC) | `twist(spr, 0, 1, 0); twist(spr, 3, 4, 1); xrouter(0, 0, 2, spr, prn->RxBuff[2]);` (`:555-557`) | Same |
+
+**Note on consumer-slot semantics:** "consumer 0" = host channel 0 = RX1; "consumer 2" = host channel 2 = RX2; "consumer 1" = the twist-paired output (PS feedback path on HL2 nddc=4, diversity-sync on Hermes II nddc=2 + ANAN P1 nddc=5).  This routing convention is locked across families.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:544-559`.
+
+---
+
+### §5.7 Mic decimation + harvest + delivery (source: `:560-579`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Decimation state | `mic_decimation_count` runs per-sample; when it hits `mic_decimation_factor`, emit a mic sample + reset count (`:566-577`) | Same |
+| Per-sample mic byte offset | `int k = 8 + nddc * 6 + isamp * (2 + nddc * 6);` (`:564`) — per-sample stride is `2 + nddc * 6` (2 mic + nddc IQ); offset into the mic slot is `8 + nddc * 6` (skip sync+C0..C4+per-DDC IQ) | Same |
+| Mic sample decode | `TxReadBufp[2*mic_sample_count+0] = const_1_div_2147483648_ * (double)(bptr[k+0] << 24 \| bptr[k+1] << 16);` (`:570-572`) — note: only TWO bytes consumed (16-bit mic, NOT 24-bit), shifted into the high 16 bits | Same — verbatim |
+| Q channel zeroed | `TxReadBufp[2*mic_sample_count+1] = 0.0;` (`:573`) — mic is real, not complex; Q always zero | Same |
+| Inbound delivery | `Inbound(inid(1, 0), mic_sample_count, prn->TxReadBufp);` (`:579`) — `inid(1, 0)` = stream-class 1 (mic), instance 0 | Lyra-native `inbound_callback_(mic_sample_count, tx_read_buf_.data())` — sink callback set by operator code at session start.  The reference's `Inbound()` is a channel-master buffer push; Lyra's callback is a thinner equivalent (no channel-master scaffolding) |
+
+**VERDICT:** ✅ **PARITY** on every byte; ⚠ **ACCEPTABLE DEVIATION** on the `Inbound`/channel-master scaffolding → Lyra-native callback (the channel-master system is reference-specific and not present in Lyra; equivalent function via sink callback).
+
+---
+
+### §5.8 `Router` — `xrouter` + `twist` Lyra-native (source: `networkproto1.c::twist:263-274` + `router.c::xrouter:71+`)
+
+New file: `src/wire/Router.{h,cpp}`.  Matches the reference's
+`router.{c,h}` separation per the locked discipline.
+
+**`twist(int nsamples, int stream0, int stream1, int source)`**
+— interleaves I/Q from two per-DDC `RxBuff[]` staging buffers
+into a paired-IQ output, then dispatches via `xrouter()`.  Source:
+`networkproto1.c:263-274`.
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Interleave loop | `for (i=0, j=0; i < 2*nsamples; i+=2, j+=4) { RxReadBufp[j+0..1] = RxBuff[stream0][i+0..1]; RxReadBufp[j+2..3] = RxBuff[stream1][i+0..1]; }` (`:266-272`) | Same — verbatim 4-element interleave pattern |
+| Forward to xrouter | `xrouter(0, 0, source, 2 * nsamples, prn->RxReadBufp);` (`:273`) | Same — `xrouter(nullptr, 0, source, 2 * nsamples, rx_read_buf_)` |
+
+**`xrouter(void* ptr, int id, int source, int nsamples, double* data)`**
+— callback-table-driven dispatch primitive.  Source: `router.c:71+`.
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Router selection | `if (ptr == 0) a = prouter[id]; else a = (ROUTER)ptr;` (`:75-76`) — if no explicit router pointer, look up by `id` in the global `prouter[]` array | Same — Lyra's `Router` class has static `instances[]` array indexed by `id`; `nullptr` arg = use default instance |
+| Control word | `ctrl = _InterlockedAnd(&(a->controlword), 0xffffffff);` (`:78`) — atomic read of the runtime control word (used for MOX-PS state-product re-routing in v0.3) | `ctrl = control_word_.load();` (`std::atomic<int>`) |
+| Source-port check | `bport = source; if (bport < a->sources) { ... }` (`:80-82`) | Same |
+| Per-port callback dispatch | `for (i = 0; i < a->ncalls; i++) { switch (a->function[bport][i][ctrl]) { case 1: Inbound(a->callid[bport][i][ctrl], nsamples, data); break; ... } }` (`:84+`) — multi-callback dispatch per port per control word | Same structure — `for` loop over `n_calls_` with per-callback `function_[port][i][ctrl]` dispatch |
+| `Inbound()` call | Reference uses channel-master `Inbound()` to push samples into a CM buffer | Lyra-native sink-callback interface (each consumer registers a `std::function<void(int n, const double*)>` callback; xrouter invokes the registered callback) |
+
+**Setter surface for §5 / Router** — needed for HL2 RX-only wire-inert state:
+- `Router::register_consumer(int port, std::function<void(int, const double*)> cb)` — operator/host code registers a callback for a given consumer slot at session start.
+- `Router::set_control_word(int ctrl)` — operator/host code can re-route consumers via control word changes (v0.3 PS scope).  For §5 wire-inert state, single fixed control word.
+
+**VERDICT:** ✅ **PARITY** on the structural pattern; ⚠ **ACCEPTABLE DEVIATION** on the C-callback-array storage → `std::function` (C++23 idiom translation, same semantic effect).  Wire bytes / dispatch sequence identical.
+
+---
+
+### §5 — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| Q1–Q5 architecture lock | Operator review pending |
+| §5.1 Thread lifecycle + UDP recvfrom + watchdog | ✅ PARITY structural; ⚠ Windows-WSA → cross-platform recvfrom idiom translation |
+| §5.2 Frame validation + C0..C4 extraction | ✅ PARITY verbatim from `:470-476` |
+| §5.3 I2C readback path | ✅ PARITY verbatim from `:478-493` |
+| §5.4 EP6 telemetry decode (5 C0-class switch) | ✅ PARITY verbatim from `:494-525`; two reference defects preserved verbatim per Rule 24 (dash/dot shift, PA-amps slot empirical-variance) |
+| §5.5 Per-DDC IQ unpacking | ✅ PARITY verbatim from `:527-542` |
+| §5.6 DDC routing inline switch (former §5 DdcMap) | ✅ PARITY verbatim from `:544-559` |
+| §5.7 Mic decimation + harvest + delivery | ✅ PARITY on bytes; ⚠ Inbound/channel-master → Lyra-native callback |
+| §5.8 Router (xrouter + twist) | ✅ PARITY on structural pattern; ⚠ C callback-array → `std::function` idiom |
+
+**ZERO 🔴 OPERATOR-APPROVED DEVIATIONS.**  ⚠ ACCEPTABLE
+DEVIATIONS are limited to C → C++23 idiom translations (the
+Windows-WSA → cross-platform recvfrom, channel-master `Inbound`
+→ Lyra-native callback, C callback-array → `std::function`).
+
+---
+
+### §5 — Rule 24 circle-back items
+
+Re-verify before commit:
+
+1. `networkproto1.c:422-463` — thread setup + watchdog structure
+2. `:470-476` — frame validation + C0..C4 extraction
+3. `:478-493` — I2C readback path + 0x3f error case
+4. `:494-525` — telemetry decode (5 C0-class switch); pay extra attention to the dash/dot shift bug + the 0x18 slot map
+5. `:527-542` — IQ unpacking with 24-bit BE shift pattern
+6. `:544-559` — DDC routing switch with per-family branches
+7. `:560-579` — mic decimation + Inbound call
+8. `:263-274` — twist body verbatim
+9. `router.c:71+` — xrouter body (control word + callback dispatch)
+10. `network.h:507-508` — mic_decimation_factor / mic_decimation_count types (both `int`)
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [x] §5 architecture lock Q1–Q5 reviewed + confirmed
+- [x] §3 supplement — 2 new globals (`mic_decimation_factor`,
+      `mic_decimation_count`) accepted
+- [x] §5.1 thread lifecycle — verbatim structural elements
+      from `:422-463`; Windows-WSA → cross-platform recvfrom
+      idiom acceptable
+- [x] §5.2 frame validation + C0..C4 extraction — verbatim
+      from `:470-476`
+- [x] §5.3 I2C readback path — verbatim from `:478-493`
+- [x] §5.4 EP6 telemetry decode — verbatim from `:494-525`
+      including BOTH reference defects preserved per Rule 24
+      ("do as Thetis does, including bugs"): the dash/dot
+      left-shift bug + the PA-amps slot empirical-variance
+- [x] §5.5 per-DDC IQ unpacking — verbatim 24-bit BE shift
+      pattern + 2^-31 normalization
+- [x] §5.6 DDC routing inline switch — verbatim from `:544-559`
+- [x] §5.7 mic decimation + harvest — verbatim from `:560-579`;
+      Inbound → Lyra-native callback acceptable
+- [x] §5.8 Router (`xrouter` + `twist`) — separate file
+      `src/wire/Router.{h,cpp}` matching reference's
+      router.{c,h}
+- [x] Circle-back Rule 24 re-verify executed (zero defects on
+      source-decode side; 2 reference defects flagged +
+      preserved verbatim per discipline)
+- [x] Authorized to populate
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §5 Ep6RecvThread + Router signed; populate commit lands separately.  Single big checkpoint per the locked "reference = make Lyra the same" discipline.*
