@@ -548,4 +548,11 @@ extern int           nddc;
 extern unsigned char SampleRateIn2Bits;
 extern int           P1_en_diversity;
 
+// `P1_adc_cntrl` (`network.h:503`) — per-radio-class ADC-to-DDC
+// routing control word.  Case 4 (frame `0x1c`) writes the low 8
+// bits to C1 and bits 8-9 to C2.  HL2 / HL2+ uses ADC0 for all
+// DDCs (default `0`); per-family init at session start overwrites
+// for ANAN models.  Added 2026-06-05 per §4b-1 source-verification.
+extern int           P1_adc_cntrl;
+
 }  // namespace lyra::wire

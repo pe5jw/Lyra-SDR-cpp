@@ -1062,3 +1062,262 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §4a FrameComposer signed + populated (commit lands separately); Rule-24-verified verbatim from `networkproto1.c:869-1191` cases 0 / 2 / 3 + scheduler structure (MOX-edge jump + I2C overlay + post-switch packet packing).*
+
+---
+
+## §4b-1. `FrameComposer` — simple TX cases (1, 4, 13, 14, 15, 17, 18)
+
+**Scope.** Seven TX-relevant cases that are structurally simple
+(single-field writes, no Apollo bits, no MOX-gated step ATT, no
+per-band HPF/LPF bit unpacking).  Cases 10 / 11 / 12 / 16 (the
+§15.26-history TX-heavyweight cluster) land in **§4b-2**; cases
+5 / 6 / 7 / 8 / 9 (RX-mirror / ANAN-only) land in **§4c**.
+
+Source mirror: `networkproto1.c::WriteMainLoop_HL2` lines
+974-980 (case 1) + 1015-1021 (case 4) + 1127-1149 (cases 13-15)
++ 1162-1176 (cases 17-18).  HL2 / HL2+ dispatch.
+
+**§3 supplement — one more global surfaced by §4b-1:**
+
+`network.h:503` declares `int P1_adc_cntrl;` — read by case 4
+as a per-radio-class ADC routing register.  Same pattern as the
+§3.5 supplemental globals (added 2026-06-05 per Rule 24).  Add
+to `RadioNet.h` extern declarations and `RadioNet.cpp`
+definitions in the §4b-1 code commit.
+
+| Global | Reference (file:line) | Lyra | Default |
+|---|---|---|---|
+| `P1_adc_cntrl` | `network.h:503` `int P1_adc_cntrl;` — per-family ADC-to-DDC routing control word; case 4 writes the low 8 bits to C1, bits 8-9 to C2.  HL2 / HL2+ uses ADC0 for all DDCs (`P1_adc_cntrl = 0` works); per-family init at session start overwrites for ANAN models. | `extern int P1_adc_cntrl;` — type + name verbatim | `0` (HL2 / HL2+; per-family init overrides) |
+
+---
+
+### §4b-1.1 Case 1 — frame `0x02` — TX VFO (source: `networkproto1.c:974-980`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 2;` (`:975`) → `C0 = XmitBit \| 0x02` | Same |
+| C1 / C2 / C3 / C4 | `C1 = (prn->tx[0].frequency >> 24) & 0xff;` … `C4 = (prn->tx[0].frequency) & 0xff;` (`:976-979`) — big-endian 32-bit, MSByte first | Same — verbatim 4-byte BE encoding from `prn->tx[0].frequency` |
+
+**Setter.** `set_tx_freq(int freq_hz)` writes `prn->tx[0].frequency`
+under `cc_lock_`.  The reference has no setter; operator code
+writes directly to `prn->tx[0].frequency`.  Lyra's setter ensures
+the write is sequenced with the per-frame compose-and-emit walk.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:974-980`.
+
+---
+
+### §4b-1.2 Case 4 — frame `0x1c` — ADC assignments + TX step attenuator (source: `networkproto1.c:1015-1021`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x1c;` (`:1016`) → `C0 = XmitBit \| 0x1c` | Same |
+| C1 | `C1 = P1_adc_cntrl & 0xFF;` (`:1017`) — low 8 bits of the ADC-control word | Same |
+| C2 | `C2 = (P1_adc_cntrl >> 8) & 0b0011111111;` (`:1018`) — bits 8-15 of the ADC-control word; the literal mask `0b0011111111` is 10 bits but the destination is `unsigned char` (8 bits), so the mask is effectively `& 0xFF`.  Reference quirk preserved verbatim. | Same — mask preserved verbatim including the wider-than-destination literal |
+| C3 | `C3 = prn->adc[0].tx_step_attn & 0b00011111;` (`:1019`) — 5-bit TX step attenuator (frame 0x1c is the narrow form; the wider 6-bit MOX-gated form is in case 11 / frame 0x14, §4b-2) | Same.  No `31 - x` inversion at the COMPOSER layer — the inversion happens at the SETTER (`set_tx_step_attn_db`, lands with §4b-2 since the setter is shared between case 4 and case 11).  Until §4b-2 ships its setter, `prn->adc[0].tx_step_attn` stays at its zero-initialized value; this case will emit `C3 = 0`. |
+| C4 | `C4 = 0;` (`:1020`) | Same |
+
+**Setter discipline.** Setter `set_tx_step_attn_db(int signed_db)`
+deferred to §4b-2 — it lives WITH case 11's MOX-gated 6-bit form
+because both case 4 and case 11 read the same `prn->adc[0].tx_step_attn`
+field.  Defining the setter in §4b-2 ensures the discipline (signed
+operator-axis input → `(31 - signed_db)` inversion → store) is
+locked alongside the full MOX-gate context.
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1015-1021`.
+
+---
+
+### §4b-1.3 Case 13 — frame `0x1e` — CW enable + sidetone level + RF delay (source: `networkproto1.c:1127-1133`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x1e;` (`:1128`) → `C0 = XmitBit \| 0x1e` | Same |
+| C1 | `C1 = prn->cw.cw_enable;` (`:1129`) — the §1.5 `_cw.mode_control` bitfield bit 1.  Bitfield → `unsigned char` assignment preserves value (0 or 1) | Same |
+| C2 | `C2 = prn->cw.sidetone_level;` (`:1130`) — int field from §1.5 | Same |
+| C3 | `C3 = prn->cw.rf_delay;` (`:1131`) — int field from §1.5 | Same |
+| C4 | `C4 = 0;` (`:1132`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1127-1133`.
+
+---
+
+### §4b-1.4 Case 14 — frame `0x20` — CW hang_delay + sidetone_freq (source: `networkproto1.c:1135-1141`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x20;` (`:1136`) → `C0 = XmitBit \| 0x20` | Same |
+| C1 | `C1 = (prn->cw.hang_delay >> 2) & 0b11111111;` (`:1137`) — upper 8 bits of 10-bit hang_delay | Same |
+| C2 | `C2 = (prn->cw.hang_delay & 0b00000011);` (`:1138`) — lower 2 bits of hang_delay | Same |
+| C3 | `C3 = (prn->cw.sidetone_freq >> 4) & 0b11111111;` (`:1139`) — upper 8 bits of 12-bit sidetone_freq | Same |
+| C4 | `C4 = (prn->cw.sidetone_freq) & 0b00001111;` (`:1140`) — lower 4 bits of sidetone_freq | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1135-1141`.
+
+---
+
+### §4b-1.5 Case 15 — frame `0x22` — EER PWM min / max (source: `networkproto1.c:1143-1149`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x22;` (`:1144`) → `C0 = XmitBit \| 0x22` | Same |
+| C1 | `C1 = (prn->tx[0].epwm_min >> 2) & 0b11111111;` (`:1145`) — upper 8 bits of 10-bit epwm_min | Same |
+| C2 | `C2 = (prn->tx[0].epwm_min & 0b00000011);` (`:1146`) — lower 2 bits | Same |
+| C3 | `C3 = (prn->tx[0].epwm_max >> 2) & 0b11111111;` (`:1147`) — upper 8 bits of 10-bit epwm_max | Same |
+| C4 | `C4 = (prn->tx[0].epwm_max & 0b00000011);` (`:1148`) — lower 2 bits | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1143-1149`.
+
+---
+
+### §4b-1.6 Case 17 — frame `0x2e` — HL2 TX latency + PTT hang (source: `networkproto1.c:1162-1168`)
+
+This is the HL2-enhancement case carrying `prn->tx[0].tx_latency`
+and `prn->tx[0].ptt_hang` — the per-§15.26 "0x2e" register that
+the prior project's CLAUDE.md §15.7 / §15.26 history tuned for
+audio-path latency.  Default values from per-family init.
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x2e;` (`:1163`) → `C0 = XmitBit \| 0x2e` | Same |
+| C1 | `C1 = 0;` (`:1164`) | Same |
+| C2 | `C2 = 0;` (`:1165`) | Same |
+| C3 | `C3 = (prn->tx[0].ptt_hang & 0b00011111);` (`:1166`) — 5-bit PTT hang | Same |
+| C4 | `C4 = (prn->tx[0].tx_latency & 0b01111111);` (`:1167`) — 7-bit TX latency | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1162-1168`.
+
+---
+
+### §4b-1.7 Case 18 — frame `0x74` — reset on disconnect (source: `networkproto1.c:1170-1176`)
+
+The HL2 safety mechanism — when this bit is set, the HL2 gateware
+auto-resets if the host disconnects (e.g. Lyra crashes during TX,
+gateware drops the carrier).  The §15.26 "wedge defect" history
+documented that this bit defaulting to `1` on a Lyra-stop CAUSED
+gateware to interpret clean stop as a disconnect and wedge the
+next session — corrected via the §15.26-resolved default-`0`
+posture.  Default `0` preserved here per the locked posture; the
+field is operator-settable via a setter that lands with §4b-2 (the
+TX-policy setter cluster).
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x74;` (`:1171`) → `C0 = XmitBit \| 0x74` | Same |
+| C1 | `C1 = 0;` (`:1172`) | Same |
+| C2 | `C2 = 0;` (`:1173`) | Same |
+| C3 | `C3 = 0;` (`:1174`) | Same |
+| C4 | `C4 = prn->reset_on_disconnect;` (`:1175`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1170-1176`.
+
+---
+
+### §4b-1.8 New setter — `set_tx_freq(int freq_hz)`
+
+Single new setter introduced by §4b-1 (case 1 above).  Pattern
+matches §4a's `set_rx_freq`:
+
+```cpp
+void FrameComposer::set_tx_freq(int freq_hz) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr) return;
+    prn->tx[0].frequency = freq_hz;
+    // No payload caching — case 1 reads prn->tx[0].frequency
+    // directly at compose time.
+}
+```
+
+**Other setters deferred:** `set_tx_step_attn_db`, the CW config
+setters, the TX-latency / PTT-hang setters, `set_reset_on_disconnect`
+— all land with §4b-2 where the policy disciplines (MOX-gate,
+force-on-keydown, default-OFF safety) get verified together.
+
+---
+
+### §4b-1 — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| §3 supplement — `P1_adc_cntrl` added | ✅ PARITY (verbatim `network.h:503`) |
+| §4b-1.1 case 1 (TX VFO) | ✅ PARITY verbatim from `:974-980` |
+| §4b-1.2 case 4 (TX step attenuator narrow) | ✅ PARITY verbatim from `:1015-1021` |
+| §4b-1.3 case 13 (CW enable + sidetone level + rf_delay) | ✅ PARITY verbatim from `:1127-1133` |
+| §4b-1.4 case 14 (CW hang_delay + sidetone_freq) | ✅ PARITY verbatim from `:1135-1141` |
+| §4b-1.5 case 15 (EER PWM min/max) | ✅ PARITY verbatim from `:1143-1149` |
+| §4b-1.6 case 17 (HL2 TX latency + PTT hang) | ✅ PARITY verbatim from `:1162-1168` |
+| §4b-1.7 case 18 (reset on disconnect) | ✅ PARITY verbatim from `:1170-1176` |
+| §4b-1.8 new setter `set_tx_freq` | ✅ Pattern match with §4a `set_rx_freq` |
+
+**ZERO 🔴 OPERATOR-APPROVED DEVIATIONS. ZERO ⚠ new ACCEPTABLE
+DEVIATIONS** beyond what's already locked.  Wire bytes verbatim
+for all 7 cases.
+
+---
+
+### §4b-1 — Rule 24 circle-back verification
+
+Per the operator directive 2026-06-05: each checkpoint gets a
+second-pass source-line-by-source-line verification before any
+code lands.  The above tables WERE drafted from open source
+reads (Rule 24 in flight), but the circle-back will re-verify
+each row by re-opening the cited lines after operator review
+and before commit.
+
+**Circle-back questions to answer before commit:**
+
+1. Re-open `networkproto1.c:974-980` and confirm case 1 body
+   verbatim matches §4b-1.1 row table.
+2. Re-open `:1015-1021` and confirm the `0b0011111111` 10-bit
+   mask quirk in C2 is preserved (this is the kind of thing a
+   well-meaning C++ port would "clean up" to `0xFF` — Rule 24
+   says don't).
+3. Re-open `:1127-1133` and confirm `prn->cw.cw_enable` is the
+   bitfield (not a separate int).
+4. Re-open `:1135-1149` and confirm the bit-position splits for
+   hang_delay / sidetone_freq / epwm_min / epwm_max are exactly
+   `(>> 2) & 0xff` + `& 0x03` for the 10-bit splits and `(>> 4) &
+   0xff` + `& 0x0f` for the 12-bit sidetone_freq split.
+5. Re-open `:1162-1168` and confirm case 17's 5-bit ptt_hang +
+   7-bit tx_latency widths.
+6. Re-open `:1170-1176` and confirm case 18 reads `prn->reset_on_
+   disconnect` directly into C4 (no width mask — implicit `& 0xFF`
+   from the int-to-char assignment).
+7. Re-open `network.h:503` and confirm `P1_adc_cntrl` is `int`.
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [x] §3 supplement — `P1_adc_cntrl` accepted as additional
+      reference global (`network.h:503`)
+- [x] §4b-1.1 case 1 (TX VFO frame `0x02`) — verbatim from
+      `:974-980`
+- [x] §4b-1.2 case 4 (TX step attenuator narrow, frame `0x1c`)
+      — verbatim from `:1015-1021` including the 10-bit mask
+      quirk in C2 preserved as-is
+- [x] §4b-1.3 case 13 (CW enable + sidetone_level + rf_delay,
+      frame `0x1e`) — verbatim from `:1127-1133`
+- [x] §4b-1.4 case 14 (CW hang_delay + sidetone_freq, frame
+      `0x20`) — verbatim from `:1135-1141`
+- [x] §4b-1.5 case 15 (EER PWM min/max, frame `0x22`) —
+      verbatim from `:1143-1149`
+- [x] §4b-1.6 case 17 (HL2 TX latency + PTT hang, frame `0x2e`)
+      — verbatim from `:1162-1168`
+- [x] §4b-1.7 case 18 (reset_on_disconnect, frame `0x74`) —
+      verbatim from `:1170-1176`
+- [x] §4b-1.8 setter `set_tx_freq` matches §4a `set_rx_freq`
+      pattern
+- [x] Circle-back Rule 24 re-verify executed by implementor
+      against the seven source citations above before commit
+- [x] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
+      with the 7 case bodies + the new setter + add the
+      `P1_adc_cntrl` extern to `RadioNet.h` / definition to
+      `RadioNet.cpp`.  Cases 10 / 11 / 12 / 16 (§4b-2) and
+      cases 5-9 (§4c) remain `assert(false)` placeholders.
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §4b-1 simple TX cases signed + Rule-24 circle-back verified clean; populate commit lands separately.*

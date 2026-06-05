@@ -71,6 +71,11 @@ public:
     // `prn->rx[N].frequency` at use sites in the reference.
     void set_rx_freq(int rx_idx, int freq_hz);
 
+    // §4b-1.8 — Write the TX NCO frequency that case 1 emits
+    // (frame `0x02`).  Writes `prn->tx[0].frequency` under
+    // `cc_lock_`.  No-op if `prn` is nullptr.
+    void set_tx_freq(int freq_hz);
+
 private:
     // Scheduler-internal state — NOT cross-cutting globals.
     // Source mirror: `networkproto1.c:27` (`out_control_idx`),
@@ -89,12 +94,33 @@ private:
     void compose_case_0(unsigned char& C0, unsigned char& C1,
                         unsigned char& C2, unsigned char& C3,
                         unsigned char& C4);
+    void compose_case_1(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
     void compose_case_2(unsigned char& C0, unsigned char& C1,
                         unsigned char& C2, unsigned char& C3,
                         unsigned char& C4);
     void compose_case_3(unsigned char& C0, unsigned char& C1,
                         unsigned char& C2, unsigned char& C3,
                         unsigned char& C4);
+    void compose_case_4(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
+    void compose_case_13(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_14(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_15(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_17(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
+    void compose_case_18(unsigned char& C0, unsigned char& C1,
+                         unsigned char& C2, unsigned char& C3,
+                         unsigned char& C4);
 };
 
 }  // namespace lyra::wire

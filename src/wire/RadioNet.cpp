@@ -57,4 +57,10 @@ int           nddc              = 4;
 unsigned char SampleRateIn2Bits = 0;
 int           P1_en_diversity   = 0;
 
+// §3.5 supplement (added 2026-06-05 per §4b-1 source-verification).
+// `P1_adc_cntrl` — per-family ADC-to-DDC routing.  HL2 / HL2+ uses
+// ADC0 for all DDCs, so default 0 works on the wire (case 4 emits
+// C1=0, C2=0).  ANAN models set non-zero values at session open.
+int P1_adc_cntrl = 0;
+
 }  // namespace lyra::wire

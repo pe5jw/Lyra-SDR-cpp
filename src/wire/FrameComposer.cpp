@@ -37,6 +37,16 @@ void FrameComposer::set_rx_freq(int rx_idx, int freq_hz) {
     // as the reference does (per Q1).
 }
 
+// §4b-1.8 setter — TX NCO freq for case 1.
+void FrameComposer::set_tx_freq(int freq_hz) {
+    std::lock_guard<std::mutex> guard(cc_lock_);
+    if (prn == nullptr)
+        return;
+    prn->tx[0].frequency = freq_hz;
+    // No payload caching — case 1 reads `prn->tx[0].frequency`
+    // directly at compose time.
+}
+
 // =================== §4a.3 case 0 ====================================
 //
 // Source: networkproto1.c:948-970, HL2 dispatch.
@@ -149,6 +159,153 @@ void FrameComposer::compose_case_3(unsigned char& C0, unsigned char& C1,
     C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
     C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
     C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
+// =================== §4b-1.1 case 1 ==================================
+//
+// Source: networkproto1.c:974-980, HL2 dispatch.
+// TX VFO — DDC2/3 mirror it on HL2 nddc=4 (see §4c case 6).
+
+void FrameComposer::compose_case_1(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 2;  // addr 1: C0 |= (addr << 1) → 0x02
+
+    C1 = static_cast<unsigned char>((prn->tx[0].frequency >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((prn->tx[0].frequency >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((prn->tx[0].frequency >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((prn->tx[0].frequency      ) & 0xff);
+}
+
+// =================== §4b-1.2 case 4 ==================================
+//
+// Source: networkproto1.c:1015-1021, HL2 dispatch.
+// ADC assignments (`P1_adc_cntrl`) + TX step attenuator narrow 5-bit
+// form.  The wider 6-bit MOX-gated form lives in case 11 (§4b-2) —
+// both read the same `prn->adc[0].tx_step_attn` field.  No `31 - x`
+// inversion at this layer; the inversion is the setter's job
+// (`set_tx_step_attn_db`, lands with §4b-2).
+//
+// Note on C2: the literal mask `0b0011111111` is 10 bits but the
+// destination is `unsigned char` (8 bits) — the upper 2 bits of
+// the mask are structurally unreachable.  Preserved verbatim per
+// Rule 24 (don't "clean up" reference quirks).
+
+void FrameComposer::compose_case_4(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x1c;  // addr 14 (0x0e in reference comment): C0 |= 0x0e << 1 = 0x1c
+
+    C1 = static_cast<unsigned char>(P1_adc_cntrl & 0xFF);
+    C2 = static_cast<unsigned char>((P1_adc_cntrl >> 8) & 0b0011111111);  // verbatim 10-bit mask
+    C3 = static_cast<unsigned char>(prn->adc[0].tx_step_attn & 0b00011111);
+    C4 = 0;
+}
+
+// =================== §4b-1.3 case 13 =================================
+//
+// Source: networkproto1.c:1127-1133, HL2 dispatch.
+// CW enable bitfield + sidetone level + RF delay.
+
+void FrameComposer::compose_case_13(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x1e;  // addr 15: C0 |= 0x0f << 1 = 0x1e
+
+    // `prn->cw.cw_enable` is a 1-bit bitfield in `_cw.mode_control`
+    // (§1.5).  Bitfield → integer assignment yields 0 or 1.
+    C1 = static_cast<unsigned char>(prn->cw.cw_enable);
+    C2 = static_cast<unsigned char>(prn->cw.sidetone_level);
+    C3 = static_cast<unsigned char>(prn->cw.rf_delay);
+    C4 = 0;
+}
+
+// =================== §4b-1.4 case 14 =================================
+//
+// Source: networkproto1.c:1135-1141, HL2 dispatch.
+// CW hang_delay split 10-bit across C1/C2; CW sidetone_freq split
+// 12-bit across C3/C4.
+
+void FrameComposer::compose_case_14(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x20;  // addr 16: C0 |= 0x10 << 1 = 0x20
+
+    // 10-bit hang_delay: upper 8 in C1, lower 2 in C2
+    C1 = static_cast<unsigned char>((prn->cw.hang_delay >> 2) & 0b11111111);
+    C2 = static_cast<unsigned char>(prn->cw.hang_delay        & 0b00000011);
+
+    // 12-bit sidetone_freq: upper 8 in C3, lower 4 in C4
+    C3 = static_cast<unsigned char>((prn->cw.sidetone_freq >> 4) & 0b11111111);
+    C4 = static_cast<unsigned char>(prn->cw.sidetone_freq        & 0b00001111);
+}
+
+// =================== §4b-1.5 case 15 =================================
+//
+// Source: networkproto1.c:1143-1149, HL2 dispatch.
+// EER PWM min/max — each 10-bit, split across two bytes.
+
+void FrameComposer::compose_case_15(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x22;  // addr 17: C0 |= 0x11 << 1 = 0x22
+
+    // 10-bit epwm_min: upper 8 in C1, lower 2 in C2
+    C1 = static_cast<unsigned char>((prn->tx[0].epwm_min >> 2) & 0b11111111);
+    C2 = static_cast<unsigned char>(prn->tx[0].epwm_min        & 0b00000011);
+
+    // 10-bit epwm_max: upper 8 in C3, lower 2 in C4
+    C3 = static_cast<unsigned char>((prn->tx[0].epwm_max >> 2) & 0b11111111);
+    C4 = static_cast<unsigned char>(prn->tx[0].epwm_max        & 0b00000011);
+}
+
+// =================== §4b-1.6 case 17 =================================
+//
+// Source: networkproto1.c:1162-1168, HL2 dispatch.
+// HL2 TX-latency register — the "0x2e" enhancement.  5-bit PTT hang
+// in C3, 7-bit TX latency (ms) in C4.
+
+void FrameComposer::compose_case_17(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x2e;  // addr 23: C0 |= 0x17 << 1 = 0x2e
+
+    C1 = 0;
+    C2 = 0;
+    C3 = static_cast<unsigned char>(prn->tx[0].ptt_hang   & 0b00011111);  // 5-bit
+    C4 = static_cast<unsigned char>(prn->tx[0].tx_latency & 0b01111111);  // 7-bit
+}
+
+// =================== §4b-1.7 case 18 =================================
+//
+// Source: networkproto1.c:1170-1176, HL2 dispatch.
+// HL2 safety bit — when non-zero the gateware auto-resets on host
+// disconnect.  Per §15.26 history, defaults to 0 to avoid the wedge
+// defect where a clean Lyra stop triggered gateware reset.
+
+void FrameComposer::compose_case_18(unsigned char& C0, unsigned char& C1,
+                                    unsigned char& C2, unsigned char& C3,
+                                    unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x74;  // addr 58: C0 |= 0x3a << 1 = 0x74
+
+    C1 = 0;
+    C2 = 0;
+    C3 = 0;
+    C4 = static_cast<unsigned char>(prn->reset_on_disconnect);
 }
 
 // =================== §4a.1 main scheduler ============================
@@ -274,14 +431,8 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
                     compose_case_0(C0, C1, C2, C3, C4);
                     break;
 
-                case 1:
-                    // TX VFO 0x02 — §4b scope.  This case CANNOT
-                    // fire during §4a wire-inert operation because
-                    // write_main_loop_hl2 is not called yet; the
-                    // assert is a tripwire if anyone wires it in
-                    // before §4b lands.
-                    assert(false && "case 1 (TX VFO frame 0x02) "
-                                    "not yet implemented — see §4b");
+                case 1:  // §4b-1.1 — TX VFO frame 0x02
+                    compose_case_1(C0, C1, C2, C3, C4);
                     break;
 
                 case 2:
@@ -292,14 +443,54 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
                     compose_case_3(C0, C1, C2, C3, C4);
                     break;
 
-                case 4: case 5: case 6: case 7: case 8: case 9:
-                case 10: case 11: case 12: case 13: case 14:
-                case 15: case 16: case 17: case 18:
-                    // §4b (TX att / drive / PA / mic / LNA / HL2
-                    // TX-latency / reset_on_disconnect) + §4c (PS
-                    // / wideband / ANAN-only RX freqs).
-                    assert(false && "case 4-18 not yet implemented "
-                                    "— see §4b / §4c");
+                case 4:  // §4b-1.2 — ADC assignments + TX ATT narrow
+                    compose_case_4(C0, C1, C2, C3, C4);
+                    break;
+
+                case 5: case 6: case 7: case 8: case 9:
+                    // §4c — RX-mirror / ANAN-only cases.  HL2
+                    // uses cases 5/6 as TX-mirror DDC writes; 7-9
+                    // are ANAN-class extra DDCs.
+                    assert(false && "cases 5-9 not yet implemented "
+                                    "— see §4c");
+                    break;
+
+                case 10: case 11: case 12:
+                    // §4b-2 — TX heavyweight cluster (Apollo PA
+                    // bit C2 0x08, drive level, mic + line + LNA,
+                    // MOX-gated step ATT, CW keyer config).  The
+                    // §15.26 history's careful-verification cases.
+                    assert(false && "cases 10-12 not yet implemented "
+                                    "— see §4b-2");
+                    break;
+
+                case 13:  // §4b-1.3 — CW enable + sidetone + rf_delay
+                    compose_case_13(C0, C1, C2, C3, C4);
+                    break;
+
+                case 14:  // §4b-1.4 — CW hang_delay + sidetone_freq
+                    compose_case_14(C0, C1, C2, C3, C4);
+                    break;
+
+                case 15:  // §4b-1.5 — EER PWM min/max
+                    compose_case_15(C0, C1, C2, C3, C4);
+                    break;
+
+                case 16:
+                    // §4b-2 — BPF2 (Alex1 HPFs) + xvtr_enable +
+                    // puresignal_run bit.  Reads `prbpfilter2->*`
+                    // and a `xvtr_enable` global to be added with
+                    // §4b-2's source-verification.
+                    assert(false && "case 16 not yet implemented "
+                                    "— see §4b-2");
+                    break;
+
+                case 17:  // §4b-1.6 — HL2 TX-latency + PTT-hang
+                    compose_case_17(C0, C1, C2, C3, C4);
+                    break;
+
+                case 18:  // §4b-1.7 — reset_on_disconnect
+                    compose_case_18(C0, C1, C2, C3, C4);
                     break;
             }
 
