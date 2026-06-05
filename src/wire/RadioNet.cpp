@@ -25,20 +25,36 @@ RadioNet* prn = nullptr;
 
 // §3.4 — Dispatch-relevant runtime globals.
 //
-// `XmitBit` mirrors the reference name verbatim (network.h:413).
-// Zero at startup; written from the FSM's MOX-edge code in Phase
-// 2 wire-up.  `volatile long` → `std::atomic<long>` idiom
-// translation locked.
+// `XmitBit` mirrors the reference verbatim (`network.h:413`).
+// Reference type is plain `int` (Rule 24 source-verified
+// 2026-06-05); zero at startup; written from the FSM's MOX-edge
+// code in Phase 2 wire-up.  No atomic wrapper — reference posture
+// preserved.
 //
 // `hpsdrModel` defaults to `HERMESLITE` (HL2 / HL2+ — the current
 // Lyra target); replaced at session start by discovery + the
-// per-family capability lookup when ANAN / Atlas / Saturn tester
-// hardware arrives.  `radioProtocol` defaults to `USB` (Protocol
-// 1 — HL2 is P1).  Both variables are renamed from the reference's
-// C-style enum-name shadow per §3.4 (acceptable deviation; role
-// preserved).
-std::atomic<long> XmitBit{0};
-HPSDRModel        hpsdrModel    = HPSDRModel::HERMESLITE;
-RadioProtocol     radioProtocol = RadioProtocol::USB;
+// per-family init when ANAN / Atlas / Saturn tester hardware
+// arrives.  `radioProtocol` defaults to `USB` (Protocol 1 — HL2
+// is P1).  Both variables are renamed from the reference's C-style
+// enum-name shadow per §3.4 (acceptable deviation; role preserved).
+int           XmitBit       = 0;
+HPSDRModel    hpsdrModel    = HPSDRModel::HERMESLITE;
+RadioProtocol radioProtocol = RadioProtocol::USB;
+
+// §3.5 — Supplemental dispatch globals (`network.h:501-506`).
+//
+// `nddc` — per-family DDC count.  HL2 / HL2+ default is 4; per-
+// family init at session start overwrites for non-HL2 families
+// (Hermes II = 2; ANAN 7000DLE = 7; etc.).
+//
+// `SampleRateIn2Bits` — outbound sample-rate 2-bit code (48k=0,
+// 96k=1, 192k=2, 384k=3).  Default 0 = 48k; operator rate setter
+// writes per session.
+//
+// `P1_en_diversity` — diversity-enabled flag (0=off, non-zero=on);
+// HL2 has no diversity feature, default 0 stays.
+int           nddc              = 4;
+unsigned char SampleRateIn2Bits = 0;
+int           P1_en_diversity   = 0;
 
 }  // namespace lyra::wire

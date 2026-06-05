@@ -670,9 +670,17 @@ wire-send thread (MOX-bit emission), the DDC routing matrix
 protocol dispatch.  No struct wrapper — the reference reads these
 as scattered globals at use sites and Lyra does the same.
 
+**Rule 24 correction (2026-06-05).** The original draft of this
+row asserted `XmitBit` was `volatile long`.  Source-line read at
+`network.h:413` + `:505` shows the reference type is plain `int`
+(no `volatile`, no `long`).  The prior shipped declaration
+`std::atomic<long> XmitBit` was a doubly-wrong memory-vs-source
+error (wrong width + wrong synchronization wrapper).  This row
+is corrected to verbatim `int` matching the reference.
+
 | Global | Reference (file:line) | Lyra |
 |---|---|---|
-| MOX bit | `network.h:413` `volatile long XmitBit = 0;` (declared again at `:505` — benign reference defect; Lyra declares once) | `extern std::atomic<long> XmitBit;` — verbatim name; `volatile long` → `std::atomic<long>` idiom translation locked in §1.3 |
+| MOX bit | `network.h:413` `int XmitBit;` (declared again at `:505` — benign reference defect; Lyra declares once) | `extern int XmitBit;` — type + name verbatim; no synchronization wrapper (reference posture preserved) |
 | Active radio model | `network.h:459-477` `enum _HPSDRModel { ... } HPSDRModel;` — variable named `HPSDRModel` shadowing the enum type | `extern HPSDRModel hpsdrModel;` — variable named distinctly from the enum type (C++ does not permit the C-style same-name shadow); the role + reads-at-use-site behavior preserved |
 | Active wire protocol | `network.h:479-483` `enum _RadioProtocol { ... } RadioProtocol;` | `extern RadioProtocol radioProtocol;` — same rename pattern |
 
@@ -696,10 +704,50 @@ discovers a race, atomic wrappers can be added with explicit
 operator sign-off then — NOT a preemptive safety addition per the
 2026-06-05 directive.
 
-**VERDICT:** ✅ **PARITY** on backing global names + access
-pattern (`XmitBit` verbatim, plain reads, no lock); ⚠
-**ACCEPTABLE DEVIATION** on the variable rename for the two
-enum-name shadows only.
+**VERDICT (post-Rule-24 correction):** ✅ **PARITY** on all
+three globals' types + names (`XmitBit` is `int` verbatim;
+plain reads, no lock); ⚠ **ACCEPTABLE DEVIATION** on the
+variable rename for the two enum-name shadows only.
+
+---
+
+### §3.4 supplement — additional dispatch globals (added 2026-06-05 per Rule 24)
+
+`network.h:501-506` declares additional per-radio-class static
+parameters that the C&C round-robin scheduler reads at use sites.
+Missed in the original §3.4 draft; added here as a §3.4-supplement
+under the same locked architecture (no struct wrapper, scattered
+reads at use sites, no synchronization wrapper).  Original §3.5 /
+§3.6 / §3.7 section numbering preserved unchanged — sign-off block
+references at the end of §3 remain valid.
+
+| Global | Reference (file:line) | Lyra | Default |
+|---|---|---|---|
+| `nddc` | `network.h:504` `int nddc;` — per-family DDC count (HL2/HL2+ = 4; Hermes II = 2; ANAN G2 = 4; ANAN 7000DLE = 7).  Read at case-0 `(nddc - 1) << 3`, the MOX-edge `if (nddc == 2)` jump (HL2 = no-op), and the PS/Orion overrides in cases 2 / 3 / 5. | `extern int nddc;` — type + name verbatim | `4` (HL2; per-family init at session open overwrites) |
+| `SampleRateIn2Bits` | `network.h:506` `unsigned char SampleRateIn2Bits;` — outbound 2-bit sample-rate code (48k=0, 96k=1, 192k=2, 384k=3).  Written into case-0 C1. | `extern unsigned char SampleRateIn2Bits;` — verbatim | `0` = 48k; operator rate setter writes per session |
+| `P1_en_diversity` | `network.h:501` `int P1_en_diversity;` — diversity-enabled flag.  When non-zero, RX1+RX2 VFOs lock (case-0 C4 bit 7). | `extern int P1_en_diversity;` — verbatim | `0` (HL2 has no diversity feature) |
+
+**Synchronization.** Same posture as §3.4 — reference reads
+these as plain globals (no mutex); set once per session by per-
+family init code or rare operator setter; word-sized reads on
+x86_64 are the operational guarantee.  No atomic wrapper.
+
+**Other reference globals deferred to later §N entries** (not §3
+scope — they're consumed by later components):
+- `P1_adc_cntrl` (`network.h:503`) — case-4 C1/C2 ADC routing (TX);
+  lands with §4b (FrameComposer TX cases).
+- `PreviousTXBit` (`networkproto1.c:29`) — scheduler-internal
+  edge-detect state; lives inside FrameComposer (§4a.1), NOT a
+  cross-cutting global.
+- `mic_decimation_factor`, `mic_decimation_count` (`network.h:507-
+  508`) — mic-input thread state; lands with the mic-source
+  component's §N entry.
+- `FPGAReadBufp`, `FPGAWriteBufp` (`network.h:498-499`) — wire-
+  layer buffer pointers; land with `Ep2SendThread` + `Ep6RecvThread`
+  §N entries per the §10.2 component split.
+
+**VERDICT:** ✅ **PARITY** on all three names + types; ZERO
+deviations.
 
 ---
 
@@ -760,17 +808,24 @@ behavior against actual hardware, NOT against agent inference.
 
 ### §3.7 Out of scope for §3 (deferred to later sections)
 
-- **`Capabilities`** struct (per-family STATIC data: nddc,
-  has_onboard_codec, default_audio_path, tx_attenuator_range,
-  puresignal_requires_mod, etc.) — its own §N entry.
-- **`nddc`, `P1_en_diversity`, `P1_adc_cntrl`** — per-radio-
-  class static state (set once at session open, not runtime-
-  mutable); belong in `Capabilities`, NOT in this §3 surface.
-- **Per-family DDC routing matrix** (the per-(mox, ps_armed, hw)
-  dispatch function) — lands with `DdcMap`'s §N entry.
+- **Per-family static data** (nddc, has_onboard_codec, default
+  audio path, tx_attenuator_range, puresignal_requires_mod,
+  cwx_ptt_bit_position, pa_enable_uses_apollo_i2c, TR-sequencing
+  defaults, etc.) — lives INLINE at each consumer's use site,
+  matching the reference's posture (per-family `switch
+  (hpsdrModel)` branches at every consumer, magic numbers
+  hardcoded inline with source citations).  NOT a Lyra-native
+  `Capabilities` struct — earlier draft proposed one; operator
+  locked "do as the reference does, scattered branches" on
+  2026-06-05 for consistency with §3.  Each consumer's §N
+  checkpoint documents the per-family branches it carries.
+- **Per-family DDC routing matrix** (the per-(mox, ps_armed,
+  hpsdrModel) dispatch function) — lands with `DdcMap`'s §N
+  entry.
 - **`Saturn`-specific gateware quirks**, **ANVELINAPRO3
   end_frame=17 case**, etc. — behavior-level work, lands when
-  the relevant tester hardware arrives.
+  the relevant tester hardware arrives (assert-on-hit until then
+  per §3.6).
 
 ---
 
@@ -814,3 +869,196 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §3 body reconciled to match shipped code (`f3ccc51`); reference-name leaks scrubbed per Rule 2.*
+
+---
+
+## §4a. `FrameComposer` — round-robin scheduler + RX-essential cases
+
+**Scope.** The C&C round-robin scheduler structure + the three
+RX-essential cases on HL2 (case 0 frame `0x00` general settings;
+case 2 frame `0x04` RX1 / DDC0; case 3 frame `0x06` RX2 / DDC1).
+Case 1 frame `0x02` is **TX VFO** and belongs in **§4b**; cases
+4-18 (TX att, drive, PA, mic, LNA, HL2 TX-latency, reset-on-
+disconnect, PS, ANAN-only RX5/RX6 + per-DDC rates) land in **§4b**
+and **§4c**.
+
+**Source mirror.** `networkproto1.c::WriteMainLoop_HL2` lines
+869-1201, HL2 / HL2+ dispatch.  Generic-P1 (older ANAN / Hermes /
+Orion) and P2 branches land when tester hardware arrives, per
+§3.7 — until then non-HL2 `case`-internal paths `assert(false
+&& "model not yet implemented — needs operator bench verification")`.
+
+**Locked architecture (Q1–Q5).** Operator-confirmed 2026-06-05;
+post-Rule-24 source-verified rewrite.
+
+| # | Question | Locked answer |
+|---|---|---|
+| Q1 | Scheduler structure | **Switch-style per-case dispatch, byte-identical to the reference.**  Lyra implements `compose_and_emit(uint8_t* txbptr)` as a C++ `switch (out_control_idx_)` whose cases each write into `C0..C4` local variables exactly as the reference does (`networkproto1.c:946-1178`).  No data-driven cycle list; no payload map; no helper functions.  ZERO deviation from reference's switch structure. |
+| Q2 | Case population | **Eager.**  All 19 cases (0-18) are compile-time present in the switch, matching the reference's all-cases-in-switch posture.  No lazy slot registration. |
+| Q3 | Per-family branches | **Inline `switch (hpsdrModel)` at each case site** — magic numbers literal, HL2 path implemented, non-HL2 paths `assert(false)`.  No `Capabilities` struct; no helper functions.  Matches the reference's per-case `if (HPSDRModel == ...)` discipline. |
+| Q4 | Synchronization | One `std::mutex cc_lock_` member of `FrameComposer` ↔ reference's `_cc_lock`.  Held during BOTH composition (setter writes to `prn->*` fields are protected by the relevant component's lock, NOT `cc_lock_`) AND the per-frame compose-and-emit walk (the switch body reads from many globals; the lock is held for the duration of the case body + the post-switch `txbptr[3..7] = C0..C4` writes).  Lock-order acyclic per §15.26 W1.3/W1.4 lessons. |
+| Q5 | Cursor advance | **Once per USB frame emit**, identical to the reference (`networkproto1.c:1180-1183`): `if (out_control_idx_ < 18) out_control_idx_++; else out_control_idx_ = 0;`.  Two USB frames per UDP datagram; the `for (txframe = 0; txframe < 2; txframe++)` outer loop in the reference produces two C&C-header advances per datagram. |
+
+---
+
+### §4a.1 Round-robin scheduler structure (source: `networkproto1.c:869-1191`)
+
+| Aspect | Reference (file:line) | Lyra |
+|---|---|---|
+| Function signature | `void WriteMainLoop_HL2(char* bufp)` — `:869` | `void FrameComposer::write_main_loop_hl2(char* bufp);` — name + signature verbatim |
+| Per-call USB-frame count | Outer `for (txframe = 0; txframe < 2; txframe++)` — produces 2 USB frames per UDP datagram (`:878`) | Same — `for (int txframe = 0; txframe < 2; ++txframe)` |
+| Per-USB-frame sync bytes | `txbptr[0] = 0x7f; txbptr[1] = 0x7f; txbptr[2] = 0x7f;` (`:881-883`) | Same — three `0x7f` sync bytes at offsets 0/1/2 |
+| C0 base initialization | `C0 = (unsigned char)XmitBit;` (`:896`) — the MOX bit is bit 0 of C0; the per-case `C0 \|= <addr<<1>` OR's the address bits ABOVE bit 0 | Same — `unsigned char C0 = static_cast<unsigned char>(XmitBit);` BEFORE the per-case switch dispatch |
+| Cursor state | `out_control_idx` global (`:27`); `PreviousTXBit` global (`:29`) for MOX-edge detection | Per-FrameComposer member: `int out_control_idx_ = 0;` and `int previous_tx_bit_ = 0;`.  These are scheduler-internal — NOT cross-cutting globals like the §3.4 / §3.5 set — so they live inside FrameComposer, not as extern declarations. |
+| MOX-edge jump (Hermes II only) | `if (XmitBit != PreviousTXBit) { if (nddc == 2) out_control_idx = 2; PreviousTXBit = XmitBit; }` (`:886-891`) — when MOX changes AND nddc=2 (Hermes II), jump the cursor to case 2 so the next emit is RX1/DDC0 (the Hermes II nddc=2 PS path needs DDC0 retuned to TX freq).  On HL2 (nddc=4) the inner `if (nddc == 2)` is FALSE so this is a no-op for the MOX-edge — but `PreviousTXBit = XmitBit;` still updates. | Same — preserved verbatim including the no-op-on-HL2 behavior.  Code reads `if (XmitBit != previous_tx_bit_) { if (nddc == 2) out_control_idx_ = 2; previous_tx_bit_ = XmitBit; }`. |
+| I2C-transaction overlay (HL2-only) | Lines `:898-943`.  If `prn->i2c.delay` has expired AND `prn->i2c.in_index != prn->i2c.out_index` (a queued I2C transaction is ready), the C0-C4 bytes are OVERRIDDEN with I2C addressing/data bytes and the switch case body does NOT run for this USB frame.  Increments `prn->i2c.out_index`. | Same — preserved verbatim.  The I2C overlay block runs FIRST inside the per-USB-frame loop; only on `else` does control fall through to the switch dispatch (`:944-1178`). |
+| Switch dispatch | `switch (out_control_idx) { case 0: ... case 18: ... }` (`:946-1178`).  19 cases. | Same — `switch (out_control_idx_)` with 19 cases compile-time present.  Per Q2 eager. |
+| Post-switch packet packing | `txbptr[3] = C0; txbptr[4] = C1; txbptr[5] = C2; txbptr[6] = C3; txbptr[7] = C4;` (`:1186-1190`) — writes the 5 C-bytes into offsets 3-7 of the current USB frame buffer | Same — verbatim per-byte assignment |
+| Cursor advance | `if (out_control_idx < 18) out_control_idx++; else out_control_idx = 0;` (`:1180-1183`) — INSIDE the `else` (non-I2C) branch, so a USB frame that emitted I2C bytes does NOT advance the cursor | Same — preserved exactly, including the no-advance-on-I2C-overlay behavior |
+| Post-loop wire transmit | `memcpy(FPGAWriteBufp + 8, bufp, 8 * 63); memcpy(FPGAWriteBufp + 520, bufp + 504, 8 * 63); MetisWriteFrame(0x02, FPGAWriteBufp); ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0); ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);` (`:1194-1200`) | Memcpy + wire-send are wire-thread concerns; they live in `Ep2SendThread` (§7).  FrameComposer's `write_main_loop_hl2` ONLY produces the C&C bytes + sync header into the caller-provided `txbptr`; the EP2 thread handles the LRIQ memcpy + the `sendto`. |
+
+**VERDICT:** ✅ **PARITY** — switch structure, cursor variable +
+edge-detect variable, two-USB-frame loop, sync bytes, C0 base
+init, MOX-edge jump, I2C overlay, post-switch packet packing,
+cursor advance — all verbatim from `networkproto1.c:869-1191`.
+The `MetisWriteFrame` + semaphore releases are split into
+`Ep2SendThread` per the §10.2 component decomposition (no
+behavioral deviation; wire bytes identical).
+
+---
+
+### §4a.2 Mutex discipline
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Lock object | `_cc_lock` (`CRITICAL_SECTION` declared in `_radionet`; lock is process-global) | One `std::mutex cc_lock_` member of `FrameComposer` (process-lifetime singleton) |
+| Held during | The case bodies that read setter-mutable state.  The reference acquires the lock implicitly via the C runtime's lock posture; the setters that write the read state acquire it explicitly. | Held during the entire `write_main_loop_hl2(...)` call AND during all setter methods (`set_rx_freq`, `set_sample_rate_code`, `set_oc_output`, etc.) that mutate state the switch reads. |
+| Lock-order invariant | Reference does not document; Lyra empirical (§15.26 W1.3 / W1.4 lessons) — no nested acquisition of any other wire-layer lock from inside `cc_lock_` | Same discipline — `cc_lock_` is leaf in the lock-order partial order.  Setters must not call other wire-layer methods that would take a second lock |
+
+**VERDICT:** ✅ **PARITY** on scope + held-during; ⚠
+**ACCEPTABLE DEVIATION** on the C → C++23 lock idiom
+(`CRITICAL_SECTION` → `std::mutex`, same as §1.11).
+
+---
+
+### §4a.3 Case 0 — frame `0x00` — general settings (source: `networkproto1.c:948-970`)
+
+The longest case + the only one that reads BOTH `prn->*` AND
+`prbpfilter->*` (the §1 + §2 globals working together).
+Byte-by-byte verbatim from source:
+
+| Byte | Reference (HL2 branch) | Lyra |
+|---|---|---|
+| C0 (post C0 base init) | No `C0 \|= ...` for case 0 — keeps `C0 = XmitBit` from line 896 | Same — case 0 leaves C0 = XmitBit (no addr OR'd in; addr 0 means bits stay 0) |
+| C1 | `C1 = (SampleRateIn2Bits & 3);` (`:949`) — read of the §3.5 `SampleRateIn2Bits` global, masked to bits[1:0] | Same — `C1 = (SampleRateIn2Bits & 3);` |
+| C2 | `C2 = (prn->cw.eer & 1) \| ((prn->oc_output << 1) & 0xFE);` (`:950`) — bit 0 = CW-EER flag from `prn->cw.eer` (the §1.5 mode_control bitfield); bits[7:1] = OC pins from `prn->oc_output` left-shifted by 1 | Same — `C2 = (prn->cw.eer & 1) \| ((prn->oc_output << 1) & 0xFE);` |
+| C3 | `C3 = (prbpfilter->_10_dB_Atten & 1) \| ((prbpfilter->_20_dB_Atten << 1) & 2) \| ((prn->rx[0].preamp << 2) & 0b00000100) \| ((prn->adc[0].dither << 3) & 0b00001000) \| ((prn->adc[0].random << 4) & 0b00010000) \| ((prbpfilter->_Rx_1_Out << 7) & 0b10000000);` (`:951-953`) — six OR'd bitfields from `prbpfilter` + `prn` THEN conditionally `if (_XVTR_Rx_In) C3 \|= 0b01100000; else if (_Rx_1_In) C3 \|= 0b00100000; else if (_Rx_2_In) C3 \|= 0b01000000;` (`:954-959`) | Same — preserved verbatim including the three-way XVTR/Rx_1/Rx_2 conditional |
+| C4 | 3-way conditional first: `if (_ANT_3) C4 = 0b10; else if (_ANT_2) C4 = 0b01; else C4 = 0;` (`:961-966`).  Then OR'd with three things: `C4 \|= 0b00000100;` (duplex bit, `:967`); `C4 \|= (nddc - 1) << 3;` (DDC count, `:968`); `C4 \|= (P1_en_diversity) << 7;` (diversity lock, `:969`) | Same — preserved verbatim.  HL2 with `nddc = 4`, `P1_en_diversity = 0`, `_ANT_2 = _ANT_3 = 0` → C4 = `0 \| 0x04 \| (3<<3) \| 0` = `0x04 \| 0x18` = `0x1C` (the §15.26 locked main-loop value) |
+
+**Cross-reference: priming-path C4 value.**  When `ForceCandCFrames`
+(§8) emits the priming burst of frame 0x00, the same composer
+runs but `prn->reset_on_disconnect` and other state may not be
+populated yet.  The C4 value is still `(0x04) \| ((nddc-1) << 3)
+\| (P1_en_diversity << 7)` — for HL2 with `nddc = 4` and
+`P1_en_diversity = 0` that's still `0x1C`.  The §15.26 history
+mentioning "priming-path C4 = 0x18" appears to refer to a
+DIFFERENT priming variant — to be source-verified when §8
+ForceCandC is drafted; not in §4a scope.
+
+**VERDICT:** ✅ **PARITY** — every bit-position + every input
+source verbatim from `:948-970`.  HL2 family is the only branch
+implemented; non-HL2 dispatch lands at consumer §N entries.
+
+---
+
+### §4a.4 Case 2 — frame `0x04` — RX1 VFO / DDC0 (source: `networkproto1.c:982-993`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 4;` (`:983`) → `C0 = XmitBit \| 0x04` | Same |
+| ddc_freq selection (HL2 / nddc=4 path) | Lines `:984-988`: `if ((nddc == 2) && (XmitBit == 1) && (prn->puresignal_run)) ddc_freq = prn->tx[0].frequency; else ddc_freq = prn->rx[0].frequency;` — on HL2 (nddc=4) the `nddc == 2` is FALSE so `ddc_freq = prn->rx[0].frequency` always | Same — preserved verbatim including the nddc=2-only override (no-op on HL2) |
+| C1 / C2 / C3 / C4 | `C1 = (ddc_freq >> 24) & 0xff; C2 = (ddc_freq >> 16) & 0xff; C3 = (ddc_freq >> 8) & 0xff; C4 = (ddc_freq) & 0xff;` (`:989-992`) — big-endian 32-bit freq, MSByte first | Same — verbatim 4-byte BE encoding |
+
+**VERDICT:** ✅ **PARITY** — every byte verbatim from `:982-993`.
+
+---
+
+### §4a.5 Case 3 — frame `0x06` — RX2 VFO / DDC1 (source: `networkproto1.c:995-1010`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 6;` (`:996`) → `C0 = XmitBit \| 0x06` | Same |
+| ddc_freq selection — 3-way conditional | Lines `:1000-1005`: `if ((nddc == 2) && (XmitBit == 1) && (prn->puresignal_run)) ddc_freq = prn->tx[0].frequency;` else `if (nddc == 5) ddc_freq = prn->rx[0].frequency;` else `ddc_freq = prn->rx[1].frequency;` — three cases: (1) Hermes-II nddc=2 PS-on TX state → DDC1 carries TX freq; (2) Orion / ANAN P1 nddc=5 → DDC1 carries RX1 freq (Orion uses DDC2 for RX2); (3) default HL2 nddc=4 → DDC1 carries RX2 freq from `prn->rx[1].frequency` | Same — preserved verbatim, all three branches present.  HL2 takes path (3). |
+| C1 / C2 / C3 / C4 | `C1 = (ddc_freq >> 24) & 0xff; C2 = (ddc_freq >> 16) & 0xff; C3 = (ddc_freq >> 8) & 0xff; C4 = (ddc_freq) & 0xff;` (`:1006-1009`) | Same — verbatim 4-byte BE encoding |
+
+**VERDICT:** ✅ **PARITY** — every byte verbatim from `:995-1010`,
+including all three nddc-conditional branches.
+
+---
+
+### §4a.6 Non-§4a cases — placeholder (assert-false for HL2-bench until later §)
+
+The §4a scope is cases 0 / 2 / 3 only.  Cases 1, 4-18 land in
+§4b (TX cases) and §4c (PS + ANAN-only).  In the §4a code commit,
+the switch will have all 19 cases compile-time present (per Q2
+eager), but the cases NOT yet in §4a scope will `assert(false &&
+"case N not yet implemented — see §4b/§4c")`.  This is the same
+posture as the family-branch defaults (per Q3) — strict reference-
+parity at compile time, behavior implemented in scope-locked
+phases.  HL2 RX-only operation exercises ONLY cases 0 / 2 / 3 in
+practice (the round-robin still iterates through all 19, so the
+asserts WILL fire on every fourth-or-later USB frame from §4a
+onwards) — the §4a code therefore CANNOT be wired into the EP2
+writer thread until §4b lands.  This is honored by keeping
+FrameComposer WIRE-INERT until §7 `Ep2SendThread` ships.
+
+**VERDICT:** ✅ Architecture-correct — eager case presence per Q2;
+behavior-locked phasing per the §4a/4b/4c split.
+
+---
+
+### §4a — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| Q1–Q5 architecture lock | Operator review pending |
+| §4a.1 Scheduler structure (switch, cursor, MOX-edge jump, I2C overlay, post-switch packing) | ✅ PARITY — verbatim from `networkproto1.c:869-1191` |
+| §4a.2 Mutex discipline | ✅ PARITY on scope; ⚠ `CRITICAL_SECTION` → `std::mutex` idiom |
+| §4a.3 Case 0 (frame 0x00) | ✅ PARITY — every bit-position verbatim from `:948-970` |
+| §4a.4 Case 2 (frame 0x04 RX1/DDC0) | ✅ PARITY — verbatim from `:982-993` |
+| §4a.5 Case 3 (frame 0x06 RX2/DDC1) | ✅ PARITY — verbatim from `:995-1010`, all 3 nddc-conditional branches preserved |
+| §4a.6 Out-of-scope cases (1, 4-18) | ✅ Architecture-correct; `assert(false)` placeholders, eager presence |
+
+**ZERO 🔴 OPERATOR-APPROVED DEVIATIONS.** ZERO ⚠ ACCEPTABLE
+DEVIATIONS beyond the §1.11-locked `std::mutex` idiom.  Wire bytes
+byte-identical to the reference for all §4a-scope cases.
+
+---
+
+**OPERATOR SIGN-OFF (awaiting your review):**
+
+- [ ] §4a architecture lock Q1–Q5 reviewed + confirmed (switch
+      style, eager presence, inline family branches, single
+      mutex, once-per-frame advance)
+- [ ] §4a.1 scheduler structure — reference posture preserved
+      verbatim including the MOX-edge jump, I2C overlay, and the
+      no-advance-on-I2C cursor behavior
+- [ ] §4a.2 mutex idiom accepted (`std::mutex` ↔ `CRITICAL_SECTION`,
+      same as §1.11)
+- [ ] §4a.3 case 0 — every C-byte bit-position verbatim from
+      `networkproto1.c:948-970`
+- [ ] §4a.4 case 2 — verbatim from `:982-993`
+- [ ] §4a.5 case 3 — verbatim from `:995-1010` including all
+      three nddc-conditional branches preserved
+- [ ] §4a.6 out-of-scope cases land as `assert(false)` placeholders
+      with eager compile-time presence; FrameComposer stays
+      WIRE-INERT until §7 `Ep2SendThread` ships
+- [ ] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
+      matching this checkpoint (scheduler + cases 0/2/3; cases 1
+      and 4-18 as `assert(false)` placeholders)
+
+Signed: _______________ Date: _______________
+
+---
+
+*Last updated: 2026-06-05 — §4a FrameComposer scheduler + RX-essential cases REWRITTEN per Rule 24 source-verification (post-2026-06-05 XmitBit-finding + scope corrections: case 1 is TX VFO not RX1, removed Q1/Q2 deviations).*

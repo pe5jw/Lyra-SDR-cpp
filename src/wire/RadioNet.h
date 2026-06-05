@@ -490,34 +490,62 @@ extern RadioNet* prn;
 
 // ===== §3.4 — Dispatch-relevant runtime globals =====
 //
-// Three reference-verbatim globals consumed at use sites by the
-// wire-send thread (MOX-bit emission), the DDC routing matrix
-// (`DdcMap` per-(mox,ps_armed,hw) selection), and the family / wire-
-// protocol dispatch (`FrameComposer` per-HPSDRModel + per-
-// RadioProtocol branches).  No struct wrapper — Lyra reads these
-// the same way the reference does: scattered globals at use sites
-// (signed §3 checkpoint 2026-06-05).
+// Reference-verbatim globals consumed at use sites by the wire-
+// send thread (MOX-bit emission), the DDC routing matrix
+// (`DdcMap` per-(mox, ps_armed, hw) selection), the family /
+// wire-protocol dispatch (`FrameComposer` per-HPSDRModel + per-
+// RadioProtocol branches), and the per-radio-class static
+// dispatch parameters consumed by the C&C round-robin
+// (`FrameComposer` case-0 + case-N branches).
 //
-// `XmitBit` mirrors the reference name verbatim (network.h:413 +
-// :505 — the reference has a benign duplicate declaration; Lyra
-// declares once here).  C `volatile long` → C++23
-// `std::atomic<long>` — same idiom-translation locked for the
-// RadioNet wideband enable in §1.3.  Synchronization posture
-// matches the reference: word-sized atomic reads on x86_64 are the
-// operational guarantee for the model + protocol variables (plain
-// reads in the reference; `std::atomic` wrapper on those is
-// deferred unless a bench race surfaces).
+// No struct wrapper — Lyra reads these the same way the
+// reference does: scattered globals at use sites (signed §3
+// checkpoint 2026-06-05).
+//
+// `XmitBit` mirrors the reference verbatim (`network.h:413` +
+// `:505` — the reference has a benign duplicate declaration; Lyra
+// declares once here).  Reference type is plain `int` (Rule 24
+// source-verified 2026-06-05; the prior `std::atomic<long>`
+// translation was a memory-vs-source error and is corrected by
+// this declaration).  Synchronization posture matches the
+// reference: word-sized reads on x86_64 are the operational
+// guarantee; no atomic wrapper.  If a future bench discovers a
+// race, atomic wrappers can be added with explicit operator sign-
+// off — NOT a preemptive safety addition per the 2026-06-05
+// directive.
 //
 // `hpsdrModel` and `radioProtocol` are renamed from the reference's
 // C-style enum-name shadow (`HPSDRModel HPSDRModel;`) — C++ does
 // not permit a variable named identically to its enum type.  Role
-// + read-at-use-site behavior preserved; the enum value identifiers
-// (`HERMESLITE`, `ANAN_G2`, `USB`, `ETH`, etc.) — the cross-
-// reference grep parity surface that matters for PureSignal — are
-// unchanged.
+// + read-at-use-site behavior preserved.
 
-extern std::atomic<long> XmitBit;
-extern HPSDRModel        hpsdrModel;
-extern RadioProtocol     radioProtocol;
+extern int           XmitBit;
+extern HPSDRModel    hpsdrModel;
+extern RadioProtocol radioProtocol;
+
+// ===== §3.5 — Supplemental dispatch globals =====
+//
+// Additional per-radio-class static parameters declared by the
+// reference at `network.h:501-506` and consumed by the C&C round-
+// robin scheduler.  Set ONCE at session open by per-family init
+// code (HL2 defaults below); read at use sites by FrameComposer.
+//
+// `nddc` is the per-family DDC count (HL2 / HL2+ = 4; ANAN G2 = 4;
+// ANAN 7000DLE = 7; Hermes II = 2 — different gateware-mux
+// behaviors).  Reference reads it in the case-0 `(nddc - 1) << 3`
+// computation + the MOX-edge `if (nddc == 2)` jump + the PS / Orion
+// per-DDC overrides in cases 2 / 3 / 5.
+//
+// `SampleRateIn2Bits` is the 2-bit encoding of the radio's outbound
+// sample rate (48k=0, 96k=1, 192k=2, 384k=3) — written into case-0
+// C1.  Set by the per-session rate setter (operator-driven).
+//
+// `P1_en_diversity` is the diversity-enabled flag — when true, RX1
+// and RX2 VFOs lock together (case-0 C4 bit 7).  HL2 has no
+// diversity feature; default 0 stays.
+
+extern int           nddc;
+extern unsigned char SampleRateIn2Bits;
+extern int           P1_en_diversity;
 
 }  // namespace lyra::wire
