@@ -549,16 +549,16 @@ wire-layer sibling pattern).
 
 **OPERATOR SIGN-OFF:**
 
-- [ ] §2 reviewed, all rows verdicts confirmed
-- [ ] §2.3 bit-inherit copy logic deferral acknowledged (lands
+- [x] §2 reviewed, all rows verdicts confirmed
+- [x] §2.3 bit-inherit copy logic deferral acknowledged (lands
       with the setter implementations, not in the type
       definition)
-- [ ] §2.5 reference-verbatim naming + plain-C copy semantics
+- [x] §2.5 reference-verbatim naming + plain-C copy semantics
       confirmed (no Lyra-native additions)
-- [ ] Authorized to ship the populated `RbpFilter`/`RbpFilter2`
+- [x] Authorized to ship the populated `RbpFilter`/`RbpFilter2`
       header + CMakeLists.txt update matching this checkpoint
 
-Signed: _______________ Date: _______________
+Signed: **N8SDR (Rick Langford)** Date: **2026-06-05**
 
 ---
 
