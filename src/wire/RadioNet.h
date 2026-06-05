@@ -56,6 +56,91 @@ inline constexpr int kMaxAudioStreams = 2;   // MAX_AUDIO_STREAMS
 inline constexpr int kMaxI2cQueue     = 32;  // MAX_I2C_QUEUE
 inline constexpr int kMaxInSeqLog     = 40;  // MAX_IN_SEQ_LOG
 
+// ===== §3 — HPSDR family + protocol enums + dispatch globals =====
+//
+// Three enums + three runtime-mutable globals mirroring the
+// reference's `HPSDRHW` / `HPSDRModel` / `RadioProtocol` enums
+// (network.h:446-483) and the `XmitBit` / `HPSDRModel HPSDRModel;`
+// / `RadioProtocol RadioProtocol;` runtime variables.  Per the
+// signed §3 parity checkpoint (PARITY_CHECKPOINTS.md, 2026-06-05),
+// the architecture is:
+//   - Type-level all-families NOW (verbatim enum values — ANAN /
+//     Atlas / Orion / Saturn / AnvelinaPro3 / RedPitaya all
+//     declared).  Behavior-level HL2-only — other family branches
+//     land as `assert(false && "not yet implemented — needs "
+//     "operator bench verification")` until tester hardware is
+//     available (Q2 / Option A).
+//   - NO Lyra-native `DispatchState` struct grouping.  Reference
+//     reads these as scattered globals at use sites; Lyra does the
+//     same (operator directive 2026-06-05: do as Thetis, eliminates
+//     sync hazard, preserves cross-reference grep parity 100%).
+//   - Globals live in RadioNet.h alongside the existing `prn`
+//     pointer — matches reference placement (network.h holds the
+//     RadioNet equivalent + these enums + globals all in one file).
+//
+// `enum class` (C++23 scoped enum) is an acceptable deviation from
+// the reference's C unscoped `enum` — same memory layout (default
+// underlying type `int`), the scoping prevents implicit-conversion
+// foot-guns the C reference's unscoped enums permit.  All numeric
+// values verbatim from the reference; the `HPSDRModel_` prefix on
+// HPSDRModel values is dropped (redundant under `enum class` — the
+// reference needed it to avoid namespace collision in C unscoped
+// enums; PureSignal cross-reference grep on the value identifier
+// itself (`HERMESLITE`, `ANAN_G2`, etc.) is preserved).
+
+// Gateware-architecture family (network.h:446-457).  Declared but
+// NOT the active dispatch axis in ChannelMaster — runtime dispatch
+// uses `HPSDRModel` (see below).  Kept here for type-level parity
+// per Q2 / Option A.  Note: values 7..9 are reserved in the
+// reference (gap between `HermesLite = 6` and `Saturn = 10`);
+// preserved verbatim.
+enum class HPSDRHW {
+    Atlas       = 0,
+    Hermes      = 1,
+    HermesII    = 2,
+    Angelia     = 3,
+    Orion       = 4,
+    OrionMKII   = 5,
+    HermesLite  = 6,
+    Saturn      = 10,
+    SaturnMKII  = 11,
+};
+
+// Marketed-model identifier (network.h:459-477).  The enum the
+// reference actually dispatches on — `==` comparisons in 8 sites
+// across networkproto1.c / netInterface.c / network.c (HL2-class
+// vs ANAN-class branching).  All 16 values verbatim; the C-style
+// shadow-variable `HPSDRModel HPSDRModel;` becomes a distinctly-
+// named variable below (`hpsdrModel`) since C++ doesn't permit the
+// shadow.
+enum class HPSDRModel {
+    HPSDR        = 0,
+    HERMES       = 1,
+    ANAN10       = 2,
+    ANAN10E      = 3,
+    ANAN100      = 4,
+    ANAN100B     = 5,
+    ANAN100D     = 6,
+    ANAN200D     = 7,
+    ORIONMKII    = 8,
+    ANAN7000D    = 9,
+    ANAN8000D    = 10,
+    ANAN_G2      = 11,
+    ANAN_G2_1K   = 12,
+    ANVELINAPRO3 = 13,
+    HERMESLITE   = 14,
+    REDPITAYA    = 15,
+};
+
+// Active wire protocol (network.h:479-483).  Reference's C-style
+// shadow-variable `RadioProtocol RadioProtocol;` becomes a
+// distinctly-named variable below (`radioProtocol`) under the same
+// rationale as `hpsdrModel`.
+enum class RadioProtocol {
+    USB = 0,   // Protocol USB (P1)
+    ETH = 1,   // Protocol ETH (P2)
+};
+
 // Forward decl — RxState's seq-error linked-list node.
 struct SeqLogSnapshot;
 
@@ -401,5 +486,37 @@ public:
 // constructed.
 
 extern RadioNet* prn;
+
+// ===== §3.4 — Dispatch-relevant runtime globals =====
+//
+// Three reference-verbatim globals consumed at use sites by the
+// wire-send thread (MOX-bit emission), the DDC routing matrix
+// (`DdcMap` per-(mox,ps_armed,hw) selection), and the family / wire-
+// protocol dispatch (`FrameComposer` per-HPSDRModel + per-
+// RadioProtocol branches).  No struct wrapper — Lyra reads these
+// the same way the reference does: scattered globals at use sites
+// (signed §3 checkpoint 2026-06-05).
+//
+// `XmitBit` mirrors the reference name verbatim (network.h:413 +
+// :505 — the reference has a benign duplicate declaration; Lyra
+// declares once here).  C `volatile long` → C++23
+// `std::atomic<long>` — same idiom-translation locked for the
+// RadioNet wideband enable in §1.3.  Synchronization posture
+// matches the reference: word-sized atomic reads on x86_64 are the
+// operational guarantee for the model + protocol variables (plain
+// reads in the reference; `std::atomic` wrapper on those is
+// deferred unless a bench race surfaces).
+//
+// `hpsdrModel` and `radioProtocol` are renamed from the reference's
+// C-style enum-name shadow (`HPSDRModel HPSDRModel;`) — C++ does
+// not permit a variable named identically to its enum type.  Role
+// + read-at-use-site behavior preserved; the enum value identifiers
+// (`HERMESLITE`, `ANAN_G2`, `USB`, `ETH`, etc.) — the cross-
+// reference grep parity surface that matters for PureSignal — are
+// unchanged.
+
+extern std::atomic<long> XmitBit;
+extern HPSDRModel        hpsdrModel;
+extern RadioProtocol     radioProtocol;
 
 }  // namespace lyra::wire

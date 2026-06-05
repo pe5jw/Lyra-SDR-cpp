@@ -7,7 +7,11 @@
 // hit until then per Q2 family-parameterized lock).  Reads from
 // `RadioNet` + `RbpFilter`/`RbpFilter2` + `DispatchState`;
 // emits 8-byte C&C headers into EP2 frames assembled by
-// `Ep2SendThread`.
+// `Ep2SendThread`.  Per-case dispatch axes (MOX / PS-armed /
+// active radio model / active wire protocol) read from the
+// reference-verbatim globals at the use site per signed §3
+// checkpoint (`XmitBit`, `prn->puresignal_run`, `hpsdrModel`,
+// `radioProtocol`).
 //
 // ALL bits source-verified per Phase 0 §8.
 //

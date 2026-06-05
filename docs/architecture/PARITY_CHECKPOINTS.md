@@ -365,10 +365,6 @@ Signed: **N8SDR (Rick Langford)** Date: **2026-06-05**
 
 ---
 
-*Last updated: 2026-06-05 — §2 RbpFilter / RbpFilter2 draft for operator review.*
-
----
-
 ## §2. `RbpFilter` / `RbpFilter2` — Alex filter-board control words
 
 **Scope.** Two C++ classes `lyra::wire::RbpFilter` and
@@ -562,4 +558,268 @@ Signed: **N8SDR (Rick Langford)** Date: **2026-06-05**
 
 ---
 
-*Last updated: 2026-06-05 — §2 RbpFilter / RbpFilter2 draft for operator review.*
+*Last updated: 2026-06-05 — §3 DispatchState + family/protocol enums draft for operator review.*
+
+---
+
+## §3. `DispatchState` + family / protocol enums
+
+**Scope.** Three enums (`HPSDRHW`, `HPSDRModel`, `RadioProtocol`)
+declared verbatim from the reference (`ChannelMaster/network.h:
+446-483`), plus a Lyra-native `DispatchState` struct that groups
+the runtime-mutable dispatch-relevant state into one snapshot
+for consumer-side clarity.
+
+**Architecture lock (operator-confirmed 2026-06-05).**
+
+| Decision | Locked answer |
+|---|---|
+| Family inclusion now or easy-add-later? | **Option A** — type-level all-families now (all enum values verbatim); behavior-level HL2-only (ANAN/Atlas/Saturn paths land when tester hardware arrives — assert-on-hit until then) |
+| All enum values verbatim from reference? | **YES** — `HPSDRHW` 8-value + `HPSDRModel` 16-value + `RadioProtocol` 2-value all declared, ANAN/Atlas/Saturn entries inert in v0.2 |
+| Protocol as 5th DispatchState axis? | **YES** — `{mox, ps_armed, rx2_enabled, hw, protocol}` — operator-confirmed amendment to the §10.2 mapping doc's original 4-axis design |
+
+### §3.1 🔴 Lyra-native organizational struct (operator-approved deviation)
+
+**The reference does NOT have a `DispatchState` struct.**  Thetis
+reads the dispatch-relevant axes as scattered globals at each use
+site:
+
+| Axis | Reference reads |
+|---|---|
+| `mox` | `XmitBit` (`networkproto1.c` ~14 read sites: `:615`, `:656`, `:671`, `:775`, `:896`, `:985`, `:1000`, `:1099`, `:1107`, `:1222`, `:1227`, etc.) |
+| `ps_armed` | `prn->puresignal_run` (already in RadioNet §1.2; `WriteMainLoop_HL2` case-11 + case-16) |
+| `rx2_enabled` | Derived from `nddc>=4` + per-rx enable checks — no single reference global |
+| `hw` | `HPSDRModel == HPSDRModel_HERMESLITE` etc. (`networkproto1.c:252`, `:781`, `:851`, `:1248`, `:1261`; `netInterface.c:628`; `network.c:1004`, `:1440`) |
+| `protocol` | `RadioProtocol == USB` / `== ETH` (~17 sites: `netInterface.c:47`, `:1271`, `:1840-1853`, `network.c:389`, `:896`, `:1048`, `:1164`, etc.) |
+
+**Lyra-native:** group them into one snapshot struct so
+consumers take `const DispatchState&` instead of reading 5
+disparate globals.  Adds NO new state — every backing symbol
+is a reference verbatim global.  Cleaner consumer-side API +
+forward-compat: ANAN/Atlas/Saturn additions don't require
+changing every consumer's grep pattern.
+
+**VERDICT:** 🔴 **OPERATOR-APPROVED DEVIATION** — the struct
+itself is Lyra-native organizational packaging; the operator
+explicitly authorized this at the Option-A confirmation
+(2026-06-05).  Backing globals stay reference-verbatim (`XmitBit`,
+`HPSDRModel`, `RadioProtocol` — see §3.5 for the wire-level
+read mapping).
+
+---
+
+### §3.2 `HPSDRHW` enum (gateware-architecture family)
+
+`network.h:446-457`.  8 values; declared but **not used in
+ChannelMaster wire dispatch** (the runtime dispatch uses
+`HPSDRModel`, see §3.3).  Kept for type-level parity per Q2 /
+Option A.
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Enum type | `network.h:446-457` `enum HPSDRHW { ... };` | `enum class HPSDRHW { ... };` — C++23 idiom (scoped enum prevents implicit conversions) |
+| Atlas | `network.h:448` `Atlas = 0` | `Atlas = 0` |
+| Hermes | `:449` `Hermes = 1` | `Hermes = 1` |
+| HermesII | `:450` `HermesII = 2` | `HermesII = 2` |
+| Angelia | `:451` `Angelia = 3` | `Angelia = 3` |
+| Orion | `:452` `Orion = 4` | `Orion = 4` |
+| OrionMKII | `:453` `OrionMKII = 5` | `OrionMKII = 5` |
+| HermesLite | `:454` `HermesLite = 6` | `HermesLite = 6` |
+| Saturn | `:455` `Saturn = 10` | `Saturn = 10` |
+| SaturnMKII | `:456` `SaturnMKII = 11` | `SaturnMKII = 11` |
+
+Note: the reference's enum has a GAP between value 6 (HermesLite)
+and 10 (Saturn) — values 7-9 are reserved.  Preserved verbatim.
+
+**VERDICT:** ✅ **PARITY** on names + numeric values; ⚠
+**ACCEPTABLE DEVIATION** on `enum class` (scoped) vs C `enum`
+(unscoped) — C++23 idiom, same memory layout (default underlying
+type `int`).
+
+---
+
+### §3.3 `HPSDRModel` enum (marketed-model identifier — the active dispatch axis)
+
+`network.h:459-477`.  16 values.  This is the enum the reference
+actually dispatches on (`==` comparisons in 8 sites listed in
+§3.1).
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Enum type + variable shadow | `network.h:459-477` `enum _HPSDRModel { ... } HPSDRModel;` — declares enum type AND a global variable of that type with the same name (C-style shadow) | `enum class HPSDRModel { ... };` + separate `extern HPSDRModel current_model;` in DispatchState (the variable shadow is C-only; C++23 needs the variable as a distinct declaration with a non-colliding name) |
+| `HPSDRModel_HPSDR` (value 0) | `network.h:461` | `HPSDR = 0` (drop the `HPSDRModel_` prefix — redundant under `enum class`; C-style needed it because the enum was unscoped) |
+| `HERMES` (value 1) | `:462` | `HERMES = 1` |
+| `ANAN10` (value 2) | `:463` | `ANAN10 = 2` |
+| `ANAN10E` (value 3) | `:464` | `ANAN10E = 3` |
+| `ANAN100` (value 4) | `:465` | `ANAN100 = 4` |
+| `ANAN100B` (value 5) | `:466` | `ANAN100B = 5` |
+| `ANAN100D` (value 6) | `:467` | `ANAN100D = 6` |
+| `ANAN200D` (value 7) | `:468` | `ANAN200D = 7` |
+| `ORIONMKII` (value 8) | `:469` | `ORIONMKII = 8` |
+| `ANAN7000D` (value 9) | `:470` | `ANAN7000D = 9` |
+| `ANAN8000D` (value 10) | `:471` | `ANAN8000D = 10` |
+| `ANAN_G2` (value 11) | `:472` | `ANAN_G2 = 11` |
+| `ANAN_G2_1K` (value 12) | `:473` | `ANAN_G2_1K = 12` |
+| `ANVELINAPRO3` (value 13) | `:474` | `ANVELINAPRO3 = 13` |
+| `HERMESLITE` (value 14) | `:475` | `HERMESLITE = 14` |
+| `REDPITAYA` (value 15) | `:476` | `REDPITAYA = 15` |
+
+**VERDICT:** ✅ **PARITY** on numeric values + count (16) + all
+identifier roots; ⚠ **ACCEPTABLE DEVIATION** on:
+(a) `enum class` vs C unscoped enum (same memory layout); (b)
+dropped `HPSDRModel_` prefix on each value (redundant under
+`enum class HPSDRModel`; reference needed the prefix to avoid
+namespace collision in C unscoped enum); (c) the C-style
+variable-shadow-of-enum-name (`HPSDRModel HPSDRModel;` in the
+reference) doesn't translate cleanly to C++23 — the variable
+lives in `DispatchState` as `hw` (different name, same role).
+PureSignal cross-reference grep IS preserved at the value level
+— `HPSDRModel::HERMESLITE` in Lyra grep against `HERMESLITE` in
+reference matches (the value identifier is shared).
+
+---
+
+### §3.4 `RadioProtocol` enum
+
+`network.h:479-483`.  2 values, runtime-mutable variable.
+
+| Aspect | Reference (file:line) | Lyra (proposed) |
+|---|---|---|
+| Enum type + variable shadow | `network.h:479-483` `enum _RadioProtocol { USB = 0, ETH = 1 } RadioProtocol;` | `enum class RadioProtocol { USB = 0, ETH = 1 };` + separate `extern RadioProtocol current_protocol;` (same idiom translation as HPSDRModel) |
+| `USB` (value 0) | `:481` `USB = 0,  // Protocol USB (P1)` | `USB = 0` |
+| `ETH` (value 1) | `:482` `ETH = 1   // Protocol ETH (P2)` | `ETH = 1` |
+
+**VERDICT:** ✅ **PARITY** on names + values; ⚠ **ACCEPTABLE
+DEVIATION** on `enum class` vs C unscoped enum (same idiom-
+translation pattern as §3.2 / §3.3).
+
+---
+
+### §3.5 `DispatchState` struct — 5 axes
+
+5 runtime-mutable axes packaged for clean consumer-side reads.
+Backing for each axis is a reference-verbatim global.
+
+| Axis | Reference symbol (file:line) | Lyra field |
+|---|---|---|
+| `mox` (the wire MOX bit) | `XmitBit` (`network.h:413` — declared again at `:505` as a duplicate; benign reference defect.  Write: `netInterface.c:366`.  Reads: ~14 sites across `networkproto1.c` MOX-gated dispatch.) | `bool mox{false};` — directly mirrors XmitBit (the reference's `int` semantically a bool) |
+| `ps_armed` (PureSignal armed) | `prn->puresignal_run` (already in RadioNet §1.2; `network.h:151`) | `bool ps_armed{false};` — convenience mirror so DispatchState consumers don't reach into `prn->*` for this axis |
+| `rx2_enabled` (RX2 active) | NO single reference global — derived from `nddc>=4` + per-rx enable checks in Thetis | `bool rx2_enabled{false};` — Lyra-native authoritative bool (Phase 2 wire-up sets it when RX2 channel is opened) |
+| `hw` (active radio model) | `HPSDRModel` (the variable shadowing the enum type, `network.h:477`) | `HPSDRModel hw{HPSDRModel::HERMESLITE};` — default HL2; replaced at HL2 session start by discovery + capability lookup |
+| `protocol` (active wire protocol) | `RadioProtocol` (the variable shadowing the enum type, `network.h:483`) | `RadioProtocol protocol{RadioProtocol::USB};` — default P1; replaced at HL2 session start |
+
+**Synchronization.**  Reference treats `XmitBit` + `HPSDRModel` +
+`RadioProtocol` as plain globals (no mutex).  Reads happen from
+multiple threads (wire writer, EP6 reader); writes happen from
+the FSM (XmitBit) or once at session open (HPSDRModel,
+RadioProtocol).  Lyra mirrors this — plain fields, no
+synchronization wrapper.  Word-sized atomic reads on x86_64 are
+the operational guarantee (matches the reference's posture).
+If a future bench discovers a race, atomic wrappers can be added
+with operator sign-off then — NOT a preemptive safety addition
+per the 2026-06-05 directive.
+
+**VERDICT:** ✅ **PARITY** on backing global names + access
+pattern (plain reads, no lock); ⚠ **ACCEPTABLE DEVIATION** on
+struct-grouping (the §3.1 deviation, already operator-approved).
+
+---
+
+### §3.6 Behavior-level scope (Q2 Option A)
+
+**Type surface:** all enum values declared verbatim — covers
+HL2/HL2+, all ANAN variants, Atlas, Hermes, Orion, Saturn,
+AnvelinaPro3, RedPitaya, both protocols.
+
+**Behavior:** HL2/HL2+ paths shipped first.  ANAN/Atlas/Saturn
+dispatch branches in `FrameComposer` / `DdcMap` / future
+components land as:
+
+```cpp
+switch (state.hw) {
+    case HPSDRModel::HERMESLITE:
+    case HPSDRModel::HPSDR:  // (HL2-class)
+        // ... HL2 behavior, fully implemented ...
+        break;
+
+    default:
+        // ANAN / Atlas / Saturn / etc. — type-level supported,
+        // behavior pending tester hardware.
+        assert(false && "model not yet implemented — needs "
+                        "operator bench verification");
+}
+```
+
+Same pattern for `state.protocol`: P1 (USB) shipped; P2 (ETH)
+branch is `assert(false)` until ANAN-G2/7000DLE tester arrives.
+
+**This is the Option-A discipline operationalized.**  The asserts
+fail LOUD if an unsupported family/protocol is accidentally
+selected (e.g. via misconfigured discovery), preventing silent
+mis-dispatch.  When ANAN tester hardware arrives, the operator-
+empirical bench loop kicks in per the locked methodology — write
+behavior against actual hardware, NOT against agent inference.
+
+---
+
+### §3.7 Out of scope for §3 (deferred to later sections)
+
+- **`Capabilities`** struct (per-family STATIC data: nddc,
+  has_onboard_codec, default_audio_path, tx_attenuator_range,
+  puresignal_requires_mod, etc.) — its own §N entry.  §10.2
+  names it `Capabilities` (post-rename, formerly
+  `Hl2Capabilities`).
+- **`nddc`, `P1_en_diversity`, `P1_adc_cntrl`** — per-radio-
+  class static state (set once at session open, not runtime-
+  mutable); belong in `Capabilities`, NOT DispatchState.
+- **Per-family DDC routing matrix** (the `ddc_map(state)`
+  function consuming DispatchState — defers to the §6.7
+  hardware-abstraction discipline) — lands with `DdcMap`'s
+  §N entry.
+- **`Saturn`-specific gateware quirks**, **ANVELINAPRO3
+  end_frame=17 case**, etc. — behavior-level work, lands when
+  the relevant tester hardware arrives.
+
+---
+
+### §3 — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| §3.1 Lyra-native struct grouping | 🔴 OPERATOR-APPROVED DEVIATION (organizational packaging, no new state) |
+| §3.2 HPSDRHW enum | ✅ PARITY + ⚠ `enum class` idiom |
+| §3.3 HPSDRModel enum | ✅ PARITY + ⚠ `enum class` + dropped redundant prefix |
+| §3.4 RadioProtocol enum | ✅ PARITY + ⚠ `enum class` idiom |
+| §3.5 DispatchState struct (5 axes) | ✅ PARITY on backing symbols + plain-field access |
+| §3.6 Behavior scope (HL2-only with assert-on-unsupported) | Type-level all-families per Q2 / Option A locked |
+
+**One substantive deviation (§3.1)** — the Lyra-native struct
+grouping itself.  Operator pre-approved at the Option-A
+confirmation (2026-06-05); restated here for the audit trail.
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [x] §3 reviewed, all rows verdicts confirmed
+- [x] §3.1 / §3.2 / §3.3 enum-class idiom accepted (verbatim
+      values + names; C++23 scoping)
+- [x] §3.4 plain-global access (no atomic/mutex wrapper on
+      `hpsdrModel` / `radioProtocol`) accepted — matches
+      reference posture; `XmitBit` uses `std::atomic<long>`
+      per the locked §1.3 `volatile long` idiom translation;
+      revisit if a real race surfaces on bench
+- [x] §3.5 `ps_armed` / `rx2_enabled` stay read-from-existing-
+      symbols at use sites (no new globals introduced)
+- [x] §3.6 behavior-level HL2-only with `assert(false)` placeholders
+      on unsupported family/protocol branches accepted
+- [x] Authorized to ship the 3 enums + 3 extern variable
+      declarations into `RadioNet.h` (no separate
+      `DispatchState.h`; that empty skeleton is removed)
+      matching this checkpoint
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §3 HPSDR family + protocol enums + dispatch-relevant globals SIGNED.*
