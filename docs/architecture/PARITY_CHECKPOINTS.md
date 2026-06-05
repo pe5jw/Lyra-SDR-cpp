@@ -1639,3 +1639,170 @@ Signed: N8SDR        Date: 2026-06-05
 ---
 
 *Last updated: 2026-06-05 — §4b-2 TX heavyweight cases signed + 2× Rule-24 circle-back verified clean; populate commit lands separately.*
+
+---
+
+## §4c. `FrameComposer` — RX-mirror / ANAN-only cases (5, 6, 7, 8, 9)
+
+**Scope.** The last 5 cases of FrameComposer's 19-case round-robin.
+All 5 are structurally simple — a single 32-bit big-endian
+frequency write to C1-C4 — differing only in WHICH source
+field they read (per-family conditional or fixed source).
+
+| Case | Frame | DDC | HL2 (nddc=4) behavior | Source field |
+|---|---|---|---|---|
+| 5 | `0x08` | DDC2 | TX-mirror (nddc=5 Orion would use rx[3]) | `if (nddc == 5) prn->rx[3].frequency else prn->tx[0].frequency` |
+| 6 | `0x0a` | DDC3 | TX-mirror always | `prn->tx[0].frequency` always |
+| 7 | `0x0c` | DDC4 | TX-mirror (Orion2 PS-feedback use) | `prn->tx[0].frequency` always |
+| 8 | `0x0e` | DDC5 | Unused on HL2; emits rx[0] freq as benign default | `prn->rx[0].frequency` always |
+| 9 | `0x10` | DDC6 | Unused on HL2; emits rx[0] freq as benign default | `prn->rx[0].frequency` always |
+
+Source mirror: `networkproto1.c::WriteMainLoop_HL2` lines
+1023-1034 (case 5), 1036-1044 (case 6), 1046-1054 (case 7),
+1056-1064 (case 8), 1066-1074 (case 9).  Bytes C1-C4 are
+identical big-endian 32-bit splits in all 5 cases; only `C0 |=`
+constant + ddc_freq source vary.
+
+**No new globals.**  All sources already in `prn->*` per §1.
+**No new setters.**  `set_tx_freq` (§4b-1) and `set_rx_freq`
+(§4a) cover all source fields; case 5's nddc=5 path reads
+`prn->rx[3].frequency` which `set_rx_freq(3, hz)` writes.
+
+**HL2 behavior summary:** on HL2 (nddc=4), cases 5/6/7 all emit
+`prn->tx[0].frequency` (TX mirror — the HL2 gateware uses
+DDC2/DDC3/DDC4 to track TX freq for PS feedback purposes per
+CLAUDE.md §3.1).  Cases 8/9 emit `prn->rx[0].frequency` (RX1
+freq as a benign default — DDC5/DDC6 are not used on HL2 but
+the reference emits a real freq anyway to avoid garbage on the
+wire).
+
+---
+
+### §4c.1 Case 5 — frame `0x08` — RX3 VFO (DDC2) (source: `networkproto1.c:1023-1034`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 8;` (`:1024`) → `C0 = XmitBit \| 0x08` | Same |
+| ddc_freq selection | `if (nddc == 5) ddc_freq = prn->rx[3].frequency; else ddc_freq = prn->tx[0].frequency;` (`:1026-1029`) — Orion (nddc=5) → DDC2 carries RX2 freq stored at `rx[3]`; HL2 / Hermes (nddc=2/4) → DDC2 carries TX freq | Same — preserved verbatim including the **`rx[3]` indexing** for Orion (reference comment says "DDC2 is RX2 frequency" but array index is 3; reference quirk preserved — likely a per-family RX-index convention where Orion's "RX2" is stored at array slot 3 for some hardware-driven reason; Rule 24 says don't reinterpret) |
+| C1 / C2 / C3 / C4 | Big-endian 32-bit `ddc_freq` (`:1030-1033`) | Same — `freq_be32(ddc_freq)` 4-byte BE encoding |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1023-1034`.
+
+---
+
+### §4c.2 Case 6 — frame `0x0a` — RX4 VFO (DDC3) (source: `networkproto1.c:1036-1044`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x0a;` (`:1037`) | Same |
+| ddc_freq | `ddc_freq = prn->tx[0].frequency;` (`:1039`) — DDC3 is always TX frequency on all families | Same — unconditional read of `prn->tx[0].frequency` |
+| C1 / C2 / C3 / C4 | Big-endian 32-bit (`:1040-1043`) | Same — 4-byte BE encoding |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1036-1044`.
+
+---
+
+### §4c.3 Case 7 — frame `0x0c` — RX5 VFO (DDC4) (source: `networkproto1.c:1046-1054`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x0c;` (`:1047`) | Same |
+| ddc_freq | `ddc_freq = prn->tx[0].frequency;` (`:1049`) — DDC4 is TX-frequency for Orion2 PS feedback; for other families "not used, so make TX always" per the reference comment | Same — unconditional read of `prn->tx[0].frequency` |
+| C1 / C2 / C3 / C4 | Big-endian 32-bit (`:1050-1053`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1046-1054`.
+
+---
+
+### §4c.4 Case 8 — frame `0x0e` — RX6 VFO (DDC5) (source: `networkproto1.c:1056-1064`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x0e;` (`:1057`) | Same |
+| ddc_freq | `ddc_freq = prn->rx[0].frequency;` (`:1059`) — DDC5 is "not used" per the reference comment; reference emits `rx[0].frequency` as the benign default (a real freq, not garbage) | Same — unconditional read of `prn->rx[0].frequency` |
+| C1 / C2 / C3 / C4 | Big-endian 32-bit (`:1060-1063`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1056-1064`.
+
+---
+
+### §4c.5 Case 9 — frame `0x10` — RX7 VFO (DDC6) (source: `networkproto1.c:1066-1074`)
+
+| Byte | Reference | Lyra |
+|---|---|---|
+| C0 | `C0 \|= 0x10;` (`:1067`) | Same |
+| ddc_freq | `ddc_freq = prn->rx[0].frequency;` (`:1069`) — DDC6 is "not used" per the reference comment; reference emits `rx[0].frequency` as the benign default | Same — unconditional read of `prn->rx[0].frequency` |
+| C1 / C2 / C3 / C4 | Big-endian 32-bit (`:1070-1073`) | Same |
+
+**VERDICT:** ✅ **PARITY** — verbatim from `:1066-1074`.
+
+---
+
+### §4c — Overall verdict
+
+| Section | Verdict |
+|---|---|
+| §4c.1 case 5 (frame `0x08`) | ✅ PARITY verbatim from `:1023-1034`; nddc=5 conditional + Orion `rx[3]` indexing quirk preserved |
+| §4c.2 case 6 (frame `0x0a`) | ✅ PARITY verbatim from `:1036-1044`; always-TX |
+| §4c.3 case 7 (frame `0x0c`) | ✅ PARITY verbatim from `:1046-1054`; always-TX |
+| §4c.4 case 8 (frame `0x0e`) | ✅ PARITY verbatim from `:1056-1064`; always-rx[0] benign default |
+| §4c.5 case 9 (frame `0x10`) | ✅ PARITY verbatim from `:1066-1074`; always-rx[0] benign default |
+
+**ZERO 🔴 OPERATOR-APPROVED DEVIATIONS. ZERO new ⚠ ACCEPTABLE
+DEVIATIONS** beyond what's already locked.  Wire bytes verbatim
+for all 5 cases.
+
+**No new globals, no new setters.**  `set_tx_freq` (§4b-1) and
+`set_rx_freq` (§4a — extended to support `rx_idx=3` for case 5's
+Orion path) cover all source fields.
+
+**With §4c populated, all 19 FrameComposer cases are populated.**
+The `assert(false)` placeholders for cases 5-9 get replaced with
+the new compose helpers.  FrameComposer becomes fully callable
+end-to-end.  Wire-INERT discipline still applies because no
+caller invokes `write_main_loop_hl2` yet — that hookup lands
+with §7 Ep2SendThread.
+
+---
+
+### §4c — Rule 24 circle-back items
+
+Re-verify before commit:
+
+1. `:1023-1034` case 5: confirm `nddc == 5` conditional + `rx[3]` array index in the Orion path
+2. `:1036-1044` case 6: always `tx[0].frequency`
+3. `:1046-1054` case 7: always `tx[0].frequency`
+4. `:1056-1064` case 8: always `rx[0].frequency`
+5. `:1066-1074` case 9: always `rx[0].frequency`
+6. All five cases: `C0 |= <constant>` value matches (0x08, 0x0a, 0x0c, 0x0e, 0x10 respectively) + the 4-byte BE encoding pattern matches §4a / §4b-1 (`(ddc_freq >> N) & 0xff`)
+
+---
+
+**OPERATOR SIGN-OFF:**
+
+- [x] §4c.1 case 5 (frame `0x08` RX3/DDC2) — verbatim from
+      `:1023-1034` including the nddc=5 conditional that reads
+      `prn->rx[3].frequency` (Orion path) and the default
+      `prn->tx[0].frequency` (HL2 / Hermes path)
+- [x] §4c.2 case 6 (frame `0x0a` RX4/DDC3) — verbatim from
+      `:1036-1044`; unconditional TX-freq
+- [x] §4c.3 case 7 (frame `0x0c` RX5/DDC4) — verbatim from
+      `:1046-1054`; unconditional TX-freq
+- [x] §4c.4 case 8 (frame `0x0e` RX6/DDC5) — verbatim from
+      `:1056-1064`; unconditional `rx[0].frequency` benign default
+- [x] §4c.5 case 9 (frame `0x10` RX7/DDC6) — verbatim from
+      `:1066-1074`; unconditional `rx[0].frequency` benign default
+- [x] Circle-back Rule 24 re-verify executed before commit
+      (all 5 cases verified verbatim against source — zero defects)
+- [x] Authorized to populate `src/wire/FrameComposer.{h,cpp}`
+      with 5 new compose helpers + update the switch to call
+      them instead of asserting.  With §4c populated, ALL 19
+      cases are filled — FrameComposer becomes fully callable
+      end-to-end (still wire-inert because no caller hooks it
+      up until §7 Ep2SendThread).
+
+Signed: N8SDR        Date: 2026-06-05
+
+---
+
+*Last updated: 2026-06-05 — §4c FrameComposer RX-mirror cases signed + Rule-24 circle-back verified clean; populate commit lands separately.  All 19 FrameComposer cases populated post-commit.*

@@ -173,6 +173,25 @@ private:
     void compose_case_16(unsigned char& C0, unsigned char& C1,
                          unsigned char& C2, unsigned char& C3,
                          unsigned char& C4);
+
+    // §4c case helpers (RX-mirror / ANAN-only).  All 5 are
+    // structurally simple BE-32 freq writes; only `C0 |=` constant
+    // + ddc_freq source differ.
+    void compose_case_5(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
+    void compose_case_6(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
+    void compose_case_7(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
+    void compose_case_8(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
+    void compose_case_9(unsigned char& C0, unsigned char& C1,
+                        unsigned char& C2, unsigned char& C3,
+                        unsigned char& C4);
 };
 
 }  // namespace lyra::wire

@@ -569,6 +569,114 @@ void FrameComposer::compose_case_16(unsigned char& C0, unsigned char& C1,
     C4 = 0;
 }
 
+// =================== §4c.1 case 5 ====================================
+//
+// Source: networkproto1.c:1023-1034, HL2 dispatch.
+// RX3 VFO / DDC2.  Per-family conditional: nddc=5 (Orion) → DDC2
+// carries RX2 freq stored at `prn->rx[3].frequency` (reference
+// indexing convention — array slot 3 holds Orion's RX2 freq);
+// HL2 / Hermes (nddc=2/4) → DDC2 carries TX freq.
+
+void FrameComposer::compose_case_5(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 8;  // addr 4: C0 |= 0x04 << 1 = 0x08
+
+    int ddc_freq;
+    if (nddc == 5)
+        ddc_freq = prn->rx[3].frequency;  // Orion path (verbatim rx[3])
+    else
+        ddc_freq = prn->tx[0].frequency;  // HL2 / Hermes path
+
+    C1 = static_cast<unsigned char>((ddc_freq >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
+// =================== §4c.2 case 6 ====================================
+//
+// Source: networkproto1.c:1036-1044, HL2 dispatch.
+// RX4 VFO / DDC3 — always TX frequency on all families.
+
+void FrameComposer::compose_case_6(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x0a;  // addr 5: C0 |= 0x05 << 1 = 0x0a
+
+    int ddc_freq = prn->tx[0].frequency;
+    C1 = static_cast<unsigned char>((ddc_freq >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
+// =================== §4c.3 case 7 ====================================
+//
+// Source: networkproto1.c:1046-1054, HL2 dispatch.
+// RX5 VFO / DDC4 — used as TX frequency for Orion2 PS feedback;
+// for other families "not used, so make TX always" per reference
+// comment.
+
+void FrameComposer::compose_case_7(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x0c;  // addr 6: C0 |= 0x06 << 1 = 0x0c
+
+    int ddc_freq = prn->tx[0].frequency;
+    C1 = static_cast<unsigned char>((ddc_freq >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
+// =================== §4c.4 case 8 ====================================
+//
+// Source: networkproto1.c:1056-1064, HL2 dispatch.
+// RX6 VFO / DDC5 — "not used" per reference comment; emits
+// `prn->rx[0].frequency` as the benign default (real freq, not
+// garbage on the wire).
+
+void FrameComposer::compose_case_8(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x0e;  // addr 7: C0 |= 0x07 << 1 = 0x0e
+
+    int ddc_freq = prn->rx[0].frequency;
+    C1 = static_cast<unsigned char>((ddc_freq >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
+// =================== §4c.5 case 9 ====================================
+//
+// Source: networkproto1.c:1066-1074, HL2 dispatch.
+// RX7 VFO / DDC6 — "not used" per reference comment; same benign
+// default pattern as case 8 (emits `prn->rx[0].frequency`).
+
+void FrameComposer::compose_case_9(unsigned char& C0, unsigned char& C1,
+                                   unsigned char& C2, unsigned char& C3,
+                                   unsigned char& C4) {
+    assert(prn != nullptr);
+
+    C0 |= 0x10;  // addr 8: C0 |= 0x08 << 1 = 0x10
+
+    int ddc_freq = prn->rx[0].frequency;
+    C1 = static_cast<unsigned char>((ddc_freq >> 24) & 0xff);
+    C2 = static_cast<unsigned char>((ddc_freq >> 16) & 0xff);
+    C3 = static_cast<unsigned char>((ddc_freq >>  8) & 0xff);
+    C4 = static_cast<unsigned char>((ddc_freq      ) & 0xff);
+}
+
 // =================== §4a.1 main scheduler ============================
 //
 // Source mirror: networkproto1.c::WriteMainLoop_HL2 lines 869-1191.
@@ -708,12 +816,24 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
                     compose_case_4(C0, C1, C2, C3, C4);
                     break;
 
-                case 5: case 6: case 7: case 8: case 9:
-                    // §4c — RX-mirror / ANAN-only cases.  HL2
-                    // uses cases 5/6 as TX-mirror DDC writes; 7-9
-                    // are ANAN-class extra DDCs.
-                    assert(false && "cases 5-9 not yet implemented "
-                                    "— see §4c");
+                case 5:  // §4c.1 — RX3/DDC2 (Orion RX2 or TX-mirror)
+                    compose_case_5(C0, C1, C2, C3, C4);
+                    break;
+
+                case 6:  // §4c.2 — RX4/DDC3 (TX-mirror always)
+                    compose_case_6(C0, C1, C2, C3, C4);
+                    break;
+
+                case 7:  // §4c.3 — RX5/DDC4 (Orion2 PS feedback)
+                    compose_case_7(C0, C1, C2, C3, C4);
+                    break;
+
+                case 8:  // §4c.4 — RX6/DDC5 (unused; rx[0] benign default)
+                    compose_case_8(C0, C1, C2, C3, C4);
+                    break;
+
+                case 9:  // §4c.5 — RX7/DDC6 (unused; rx[0] benign default)
+                    compose_case_9(C0, C1, C2, C3, C4);
                     break;
 
                 case 10:  // §4b-2.1 — drive level + Apollo + mic + HPF/LPF + PA
