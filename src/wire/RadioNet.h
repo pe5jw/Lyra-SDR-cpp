@@ -539,7 +539,7 @@ public:
     std::vector<std::vector<double>> RxBuff;       // per-DDC IQ staging (sized per nddc at session start)
     std::vector<double>              RxReadBufp;   // interleave staging (twist output)
     std::vector<double>              TxReadBufp;   // mic-sample staging (host→radio scratch)
-    std::vector<std::uint8_t>        ReadBufp;     // raw EP6 receive buffer (1024 bytes)
+    std::vector<std::uint8_t>        ReadBufp;     // P2 inbound buffer (HL2 P1 = inert — HL2 uses `FPGAReadBufp` file-scope, not `_radionet`); declared for P2-family forward-compat parity
     std::vector<std::uint8_t>        OutBufp;      // EP2 send buffer (1024 bytes)
     std::vector<double>              outLRbufp;    // LR audio scratch
     std::vector<double>              outIQbufp;    // TX I/Q scratch

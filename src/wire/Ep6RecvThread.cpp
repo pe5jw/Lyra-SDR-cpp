@@ -133,6 +133,18 @@ int g_seq_error = 0;
 // recent USB frame.
 unsigned char g_control_bytes_in[5] = {0, 0, 0, 0, 0};
 
+// Reference: `unsigned char* FPGAReadBufp;` at
+// `network.h:498` (NOT in `_radionet`).  HL2 P1 EP6 raw
+// receive buffer (1024 bytes).  Sized once at start().
+// Sister of `g_fpga_write_bufp` (Ep2SendThread Stage 4C).
+//
+// Stage 4B.1 (sign-off 2026-06-06): corrects a Stage 4B
+// mismapping that put this buffer in `prn->ReadBufp`.  Per
+// reference: `prn->ReadBufp` is the P2 inbound buffer
+// (network.c:667), HL2 P1 uses the separate file-scope
+// `FPGAReadBufp` global.  Lyra now mirrors verbatim.
+std::vector<std::uint8_t> g_fpga_read_bufp;
+
 }  // namespace
 
 // ---- ctor/dtor ----
@@ -169,7 +181,14 @@ void Ep6RecvThread::start(int socket_fd) {
     // §1.1-revert state lifecycle is one-shot at thread start.
     prn->RxBuff.assign(kMaxDdc, std::vector<double>(2 * kMaxSprPerFrame, 0.0));
     prn->TxReadBufp.assign(4 * kMaxSprPerFrame, 0.0);
-    prn->ReadBufp.assign(kEp6DatagramBytes, 0);
+
+    // §1-C Stage 4B.1: HL2 P1 EP6 raw receive buffer is the
+    // reference's file-scope `FPGAReadBufp` (network.h:498) —
+    // NOT `prn->ReadBufp` (which is P2-only).  Sized once
+    // here mirroring reference's `FPGAReadBufp = (unsigned
+    // char*)calloc(1024, sizeof(unsigned char));` at
+    // `networkproto1.c:427`.
+    g_fpga_read_bufp.assign(kEp6DatagramBytes, 0);
 
     // Reset TU-scope seq tracking — sister-pattern of reference
     // re-zeroing `SeqError = 0;` at `networkproto1.c:425`.
@@ -310,12 +329,12 @@ void Ep6RecvThread::run_loop() {
 
         socket_recv_len_t n = ::recv(
             socket_fd_,
-            reinterpret_cast<char*>(prn->ReadBufp.data()),
-            static_cast<socket_recv_size_t>(prn->ReadBufp.size()),
+            reinterpret_cast<char*>(g_fpga_read_bufp.data()),
+            static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
             0);
         if (n <= 0) continue;
         if (static_cast<std::size_t>(n) < kEp6DatagramBytes) continue;
-        process_datagram(prn->ReadBufp.data(),
+        process_datagram(g_fpga_read_bufp.data(),
                          static_cast<std::size_t>(n));
     }
 #else
@@ -326,12 +345,12 @@ void Ep6RecvThread::run_loop() {
         if (prn == nullptr) break;
         socket_recv_len_t n = ::recv(
             socket_fd_,
-            reinterpret_cast<char*>(prn->ReadBufp.data()),
-            static_cast<socket_recv_size_t>(prn->ReadBufp.size()),
+            reinterpret_cast<char*>(g_fpga_read_bufp.data()),
+            static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
             0);
         if (n <= 0) continue;
         if (static_cast<std::size_t>(n) < kEp6DatagramBytes) continue;
-        process_datagram(prn->ReadBufp.data(),
+        process_datagram(g_fpga_read_bufp.data(),
                          static_cast<std::size_t>(n));
     }
 #endif
