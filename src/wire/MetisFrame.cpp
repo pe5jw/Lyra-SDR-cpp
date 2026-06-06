@@ -73,10 +73,13 @@ void metis_wire_bind(int          socket_fd,
 
 int metis_write_frame(int            endpoint,
                       const uint8_t* payload_1024) {
-    if (g_metis_socket_fd < 0 || g_metis_dest_addr == nullptr ||
-        payload_1024 == nullptr) {
-        return -1;
-    }
+    // Caller contract:  `metis_wire_bind()` MUST have been called
+    // first with a valid socket + dest_addr, and `payload_1024`
+    // MUST be a valid 1024-byte buffer.  Reference does NOT
+    // null-check anything here — it would crash on a null
+    // `listenSock` / `prn`.  Lyra preserves the same contract
+    // (no defensive guards; the calling discipline IS the
+    // safety property per "do as reference, period").
 
     std::array<uint8_t, kDatagramBytes> framebuf{};
 

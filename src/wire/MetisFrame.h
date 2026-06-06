@@ -73,8 +73,13 @@ void metis_wire_bind(int          socket_fd,
 //   - 1024-byte payload size + 8-byte header = 1032 bytes
 //     out the door
 //
-// Caller MUST have called `metis_wire_bind()` first; calling
-// without a bound socket returns `-1` immediately (no sendto).
+// Caller MUST have called `metis_wire_bind()` first with a
+// valid socket + dest_addr, and `payload_1024` MUST be a valid
+// 1024-byte buffer.  Reference does NOT null-check inside
+// `MetisWriteFrame` — it would crash on a null `listenSock` /
+// `prn`.  Lyra preserves the same contract verbatim — the
+// calling discipline IS the safety property per "do as
+// reference, period" (operator directive 2026-06-06).
 int  metis_write_frame(int            endpoint,
                        const uint8_t* payload_1024);
 
