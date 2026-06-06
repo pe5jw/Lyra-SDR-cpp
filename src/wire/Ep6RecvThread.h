@@ -1,34 +1,35 @@
 // Lyra — EP6 receive thread (§5 / §10.2 wire layer).
 //
-// std::thread, MMCSS Pro Audio.  recvfrom loop on EP6 socket;
-// parses each datagram, dispatches per-DDC samples to per-stream
-// rings via an INLINE per-`nddc` switch (matches the reference
+// std::thread, MMCSS Pro Audio.  WSAEventSelect-driven event
+// loop on the EP6 socket (per §5.10 / §1-C Stage 4B); parses
+// each datagram, dispatches per-DDC samples to per-stream rings
+// via an INLINE per-`nddc` switch (matches the reference
 // `MetisReadThreadMainLoop_HL2:544-558` switch verbatim — no
-// separate DdcMap class per the locked 2026-06-05 "do as the
-// reference does" discipline; routing instruction matches §1 +
-// §4-Capabilities + §3 DispatchState scattered-inline pattern).
+// separate DdcMap class).
 //
 // Source mirror:
 //   `ChannelMaster/networkproto1.c:422-586`
 //   (MetisReadThreadMainLoop_HL2).
 //
-// Per the signed §5 parity checkpoint, the per-datagram receive
-// buffer `RxBuff[nddc][per-DDC]`, the staging buffer
-// `TxReadBufp`, and the C&C-in byte cache `ControlBytesIn[5]`
-// all live as instance members here (Rule §1.1 networking-buffer
-// exclusion from `RadioNet` — buffers are thread-local to the
-// EP6 reader, never shared).
+// §1-C Stage 4B (sign-off 2026-06-06):  the §1.1 networking-
+// infrastructure exclusion is reverted.  Buffers (`RxBuff`,
+// `TxReadBufp`, `ReadBufp`) live in `prn->...` per the reference
+// (`network.h:60-66`).  The WSA event handle (`hDataEvent`) +
+// `wsaProcessEvents` cache also live in `prn->...` per
+// `network.h:105-106`.  HL2 RX seq tracking (`MetisLastRecvSeq`,
+// `SeqError`) + `ControlBytesIn[5]` live as TU-scope statics in
+// `Ep6RecvThread.cpp` — direct mirror of reference's file-scope
+// globals at `networkproto1.c:26-28` + `network.h:414` (these
+// are NOT in `_radionet`).
 
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <thread>
-#include <vector>
 
 namespace lyra::wire {
 
@@ -99,10 +100,16 @@ public:
     // ---- lifecycle ----
     //
     // `start(socket_fd)` spawns the reader thread.  Caller owns
-    // the socket; the thread reads via recvfrom but does NOT
-    // close it.  `stop()` signals the thread to exit and joins;
-    // safe to call multiple times.  Reader thread sets its own
-    // MMCSS class to Pro Audio (Windows) when available.
+    // the socket; the thread reads via WSAEventSelect +
+    // WSAWaitForMultipleEvents (Win32) per §1-C Stage 4B.  The
+    // wire-layer initializer MUST have set the `prn` global
+    // pointer to a valid `RadioNet` instance before calling
+    // start — buffer + WSA event state lives in `prn->...`.
+    //
+    // `stop()` signals the thread to exit, joins, and frees the
+    // WSA event handle.  Safe to call multiple times.  Reader
+    // thread sets its own MMCSS class to Pro Audio (Windows)
+    // when available.
     void start(int socket_fd);
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
@@ -132,12 +139,11 @@ public:
     void set_mic_sink(Ep6MicSink sink);
     void set_i2c_sink(Ep6I2cSink sink);
 
-    // ---- statistics (diagnostic) ----
-    //
-    // Datagram + sequence-error counters.  Resetable.  Read from
-    // any thread (atomic loads).
-    uint64_t datagrams_received() const { return rx_datagrams_.load(); }
-    uint64_t sequence_errors()    const { return seq_errors_.load(); }
+    // §1-C Stage 4B: diagnostic counter accessors removed.
+    // RX seq tracking + datagram count moved to TU-scope
+    // statics in `Ep6RecvThread.cpp` mirroring reference's
+    // file-scope `MetisLastRecvSeq` + `SeqError` at
+    // `networkproto1.c:26-28` (these are NOT in `_radionet`).
 
 private:
     // Reader-thread entry point.
@@ -155,53 +161,28 @@ private:
     // dispatch when `cc[0] & 0x80` is set (§5.5).
     void decode_status_header(const uint8_t cc[5]);
 
-    // Process one 512-byte USB frame: per-DDC unpack into
-    // `rx_buff_[iddc]`, dispatch via `xrouter`/`twist` per the
-    // `switch(nddc)`, then harvest mic samples and fire the mic
-    // sink.  All flushing is per-USB-frame (mirrors the reference
-    // — `networkproto1.c:470-580` loops `for (frame = 0; frame
-    // < 2; frame++)` and dispatches inside the per-frame body).
-
 private:
     // Socket fd (not owned).
-    int              socket_fd_       = -1;
+    int               socket_fd_       = -1;
 
     // Thread control.
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_request_{false};
     std::unique_ptr<std::thread> thread_;
 
-    // Sequence-tracking.  Reference uses `MetisReadDirect()` to
-    // track + post seq counters externally; Lyra adds a simple
-    // wrap-aware compare for diagnostic counting.
-    uint32_t          last_seq_        = 0;
-    bool              seq_seen_        = false;
+    // §1-C Stage 4B: buffers (rx_buff_ / tx_read_bufp_) and
+    // raw receive buffer + control_bytes_in_ + sequence-tracking
+    // members ALL MOVED.  Reference _radionet fields (RxBuff,
+    // TxReadBufp, ReadBufp) live in `prn->...` per §1-C Stage 4A;
+    // reference file-scope globals (ControlBytesIn, MetisLastRecvSeq,
+    // SeqError) live as TU-scope statics in Ep6RecvThread.cpp
+    // per the §6-B / Stage 4B sister-pattern.
 
-    // ---- staging buffers (§1.1 RadioNet exclusion) ----
-    //
-    // Per-USB-frame staging, sized for the largest spr (samples-
-    // per-DDC-per-frame) any supported nddc produces.  Reference:
-    // `spr = 504 / (6*nddc + 2)`.  At nddc=2 (smallest stride 14),
-    // spr = 36.  We round up to kMaxSprPerFrame=64 for headroom
-    // (covers a hypothetical nddc=1 spr=63).
+    // Reference's `kMaxDdc` / `kMaxSprPerFrame` constants used
+    // by the buffer-sizing at start() time still need scope
+    // here for the per-DDC unpack loop.
     static constexpr int kMaxDdc          = 4;
     static constexpr int kMaxSprPerFrame  = 64;
-
-    // Per-DDC: 2 doubles per sample (I,Q); reference is
-    // `prn->RxBuff[iddc][2*isample + {0,1}]`.
-    std::array<std::vector<double>, kMaxDdc> rx_buff_{};
-
-    // Reference's `prn->TxReadBufp` — single shared scratch buffer
-    // reused by BOTH twist() interleave (4 doubles per sample) AND
-    // mic harvest (2 doubles per sample, I=mic, Q=0).  Sized to
-    // the larger of the two: 4 * kMaxSprPerFrame doubles.  Reused
-    // sequentially within a frame: twist writes (xrouter consumes
-    // inline), then mic writes (mic_sink_ consumes inline) —
-    // exactly the reference's reuse pattern.
-    std::vector<double> tx_read_bufp_{};
-
-    // C&C-in cache (5 bytes); refreshed each USB frame.
-    uint8_t control_bytes_in_[5] = {0, 0, 0, 0, 0};
 
     // ---- sinks ----
     Ep6TelemetrySink                telemetry_sink_;
@@ -209,10 +190,6 @@ private:
     Ep6I2cSink                      i2c_sink_;
     Router*                         router_     = nullptr;
     int                             router_id_  = 0;
-
-    // ---- counters ----
-    std::atomic<uint64_t> rx_datagrams_{0};
-    std::atomic<uint64_t> seq_errors_{0};
 };
 
 }  // namespace lyra::wire
