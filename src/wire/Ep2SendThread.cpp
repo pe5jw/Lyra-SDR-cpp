@@ -233,13 +233,13 @@ bool Ep2SendThread::process_one_pair() {
     // session-open thread BEFORE `Ep2SendThread::start()` spins
     // this thread — the two callers are disjoint in time, no
     // race possible.
-    const int result = metis_write_frame(kEp2Endpoint,
-                                         fpga_write_buf_.data());
-    if (result < 0) {
-        send_errors_.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        datagrams_sent_.fetch_add(1, std::memory_order_relaxed);
-    }
+    // §1-C (2026-06-06): diagnostic `send_errors_` /
+    // `datagrams_sent_` increments removed.  Reference does not
+    // track per-send counters; result is ignored at this site
+    // (mirroring `sendProtocol1Samples` at `:1198` which calls
+    // `MetisWriteFrame(0x02, FPGAWriteBufp);` and discards the
+    // return value).
+    (void) metis_write_frame(kEp2Endpoint, fpga_write_buf_.data());
 
     // §6.8 — producer-side release: signal both LR + IQ producers
     // "buffer consumed, free to refill" (`:1199-1200`).

@@ -69,10 +69,15 @@ public:
     //
     // Each `push_*` blocks on the matching "consumed" semaphore so
     // the producer never overwrites a buffer the consumer has not
-    // yet drained.  Bounded acquire (5 s timeout) avoids permanent
-    // wedge on a dead consumer; on timeout the push is a no-op and
-    // `push_timeouts_*` increments (diagnostic).  Once the buffer
-    // is filled, releases the matching "ready" semaphore.
+    // yet drained.  UNBOUNDED acquire — direct mirror of the
+    // reference's blocking semaphore wait pattern at the producer
+    // side (the reference `Inbound`/`obbuffs` producer blocks
+    // unbounded on the matching `hobbuffsRun[i]` semaphore).  Per
+    // operator directive 2026-06-06 "do as reference, period, NO
+    // PATCHING" the prior bounded 5 s `try_acquire_for` Lyra-native
+    // safety belt (§6-A signed addition) was reverted in §1-C.
+    // Once the buffer is filled, releases the matching "ready"
+    // semaphore.
 
     // Fill the LR audio buffer from `src` (must point to at least
     // `kDoublesPerBuffer` doubles of interleaved L+R audio).
@@ -115,9 +120,11 @@ public:
     // observe a stop flag and exit cleanly.  Idempotent.
     void unblock();
 
-    // ---- Diagnostic counters ----
-    uint64_t push_timeouts_lr() const { return push_timeouts_lr_; }
-    uint64_t push_timeouts_iq() const { return push_timeouts_iq_; }
+    // §1-C (2026-06-06): `push_timeouts_*` diagnostic counters
+    // removed alongside the bounded `try_acquire_for(5s)` revert —
+    // the reference does not track producer-side timeouts (it has
+    // no timeout to track), so neither does Lyra under the strict
+    // "do as reference, period" rule.
 
 private:
     // The two outbound buffers — sized once in the ctor, never
@@ -150,9 +157,6 @@ private:
 
     // Stop flag honored by `wait_pair_ready` for clean shutdown.
     bool stop_request_ = false;
-
-    uint64_t push_timeouts_lr_ = 0;
-    uint64_t push_timeouts_iq_ = 0;
 };
 
 }  // namespace lyra::wire

@@ -66,13 +66,14 @@ public:
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 
-    // ---- Diagnostic counters (read from any thread) ----
-    //
-    // §6-B: `out_seq_num()` accessor removed.  The outbound seq
-    // counter is now TU-scope in `wire/MetisFrame.cpp`; readers
-    // call `lyra::wire::metis_out_seq_num()` directly.
-    uint64_t datagrams_sent()     const { return datagrams_sent_.load(); }
-    uint64_t send_errors()        const { return send_errors_.load(); }
+    // §1-C (2026-06-06): `datagrams_sent()` + `send_errors()`
+    // diagnostic accessors removed.  Reference has no equivalent
+    // aggregate counters in `sendProtocol1Samples` — per the
+    // strict "do as reference, period" directive these Lyra-
+    // native observability additions are reverted.  The
+    // §6-B `out_seq_num()` accessor was already removed (counter
+    // is now TU-scope `lyra::wire::metis_out_seq_num()` in
+    // `wire/MetisFrame.cpp`).
 
 private:
     void run_loop();
@@ -125,10 +126,6 @@ private:
     // frames) handed to `lyra::wire::metis_write_frame`.
     static constexpr int kFpgaPayloadBytes = 1024;
     std::vector<uint8_t> fpga_write_buf_;
-
-    // ---- Diagnostic counters ----
-    std::atomic<uint64_t> datagrams_sent_{0};
-    std::atomic<uint64_t> send_errors_{0};
 };
 
 }  // namespace lyra::wire

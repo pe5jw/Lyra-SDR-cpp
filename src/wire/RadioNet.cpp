@@ -11,8 +11,9 @@ namespace lyra::wire {
 // All members carry in-class default initializers, so the
 // default ctor/dtor do zero work beyond letting C++ value-init
 // each member.  Std::mutex members default-construct via RAII;
-// std::atomic<long> defaults to 0; arrays of sub-structs
-// value-init via each sub-struct's own in-class defaults.
+// `volatile long wb_enable` zero-inits via in-class `{0}`;
+// arrays of sub-structs value-init via each sub-struct's own
+// in-class defaults.
 RadioNet::RadioNet()  = default;
 RadioNet::~RadioNet() = default;
 

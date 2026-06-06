@@ -11,14 +11,15 @@
 
 namespace lyra::wire {
 
-namespace {
-// Bounded acquire timeout on the producer-side push.  Mirrors the
-// safety posture the §15.21 wedged-writer audit added on the EP6
-// side: a dead consumer must not wedge the producer permanently.
-// 5 s is generous (the consumer normally drains in ≤2.625 ms at
-// the HL2 EP2 cadence).
-constexpr std::chrono::seconds kProducerAcquireTimeout{5};
-}  // namespace
+// §1-C (2026-06-06): the bounded `kProducerAcquireTimeout = 5s`
+// + the `try_acquire_for(timeout)` calls in `push_lr`/`push_iq`
+// + the `push_timeouts_*` diagnostic counters were ALL removed.
+// Reference (`networkproto1.c` producer side via `Inbound` /
+// `obbuffs`) uses unbounded blocking — Lyra now matches verbatim
+// per "do as reference, period, NO PATCHING."  The §15.21
+// wedged-consumer safety belt rationale that justified the
+// bound was a Lyra-native deviation with no reference
+// counterpart; reverted.
 
 OutboundRing::OutboundRing()
     : lr_buf_(kDoublesPerBuffer, 0.0),
@@ -37,13 +38,10 @@ OutboundRing::~OutboundRing() {
 void OutboundRing::push_lr(const double* src) {
     if (!src) return;
     // Wait for the consumer to have drained the previous fill (or
-    // the initial signaled state on first call).  Bounded — on
-    // timeout the push is a no-op and the diagnostic counter
-    // increments.
-    if (!lr_consumed_.try_acquire_for(kProducerAcquireTimeout)) {
-        ++push_timeouts_lr_;
-        return;
-    }
+    // the initial signaled state on first call).  UNBOUNDED —
+    // direct mirror of the reference's blocking producer-side
+    // semaphore acquire (`Inbound` / `obbuffs` ring producers).
+    lr_consumed_.acquire();
     {
         std::lock_guard<std::mutex> lk(pair_lock_);
         std::memcpy(lr_buf_.data(), src,
@@ -54,10 +52,8 @@ void OutboundRing::push_lr(const double* src) {
 
 void OutboundRing::push_iq(const double* src) {
     if (!src) return;
-    if (!iq_consumed_.try_acquire_for(kProducerAcquireTimeout)) {
-        ++push_timeouts_iq_;
-        return;
-    }
+    // UNBOUNDED — see push_lr.
+    iq_consumed_.acquire();
     {
         std::lock_guard<std::mutex> lk(pair_lock_);
         std::memcpy(iq_buf_.data(), src,

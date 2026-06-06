@@ -421,10 +421,14 @@ public:
     int wb_update_rate{0};
     int wb_packets_per_frame{0};
 
-    // Reference is `volatile long`; C++23 idiom for the same
-    // intent is `std::atomic<long>` (acceptable deviation per
-    // §1.3 — same semantics correctly expressed).
-    std::atomic<long> wb_enable{0};
+    // Reference is `volatile long` (network.h:160).  Preserved
+    // verbatim per Rule 24 + the operator directive 2026-06-06
+    // ("do as reference, period, NO PATCHING").  The prior
+    // `std::atomic<long>` (§1.3 row sign-off 2026-06-04) was
+    // reverted in §1-C alongside the precedent of the §3
+    // `XmitBit` correction from `std::atomic<long>` back to
+    // plain `int` — same error class.
+    volatile long wb_enable{0};
 
     // ===== §1.4–§1.10 — Sub-structs =====
 
