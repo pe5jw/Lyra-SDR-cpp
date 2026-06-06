@@ -35,12 +35,10 @@ namespace lyra::wire {
 
 class Router;  // forward — Router.h pulled by Ep6RecvThread.cpp.
 
-// Sink for per-stream IQ-pair samples (interleaved I/Q doubles,
-// normalized to ±1.0).  Mirrors the role of the reference's
-// `Inbound()` channel-master push (§5.7 idiom translation —
-// Lyra has no channel-master; sinks register directly).
-using Ep6IqSink = std::function<void(int n_samples,
-                                     const double* iq_pairs)>;
+// §1-C Stage 4F: `Ep6IqSink` typedef removed — declared in
+// the §5 populate but never instantiated as a class member
+// (routing goes through `Router*`/`router_id_` not a per-DDC
+// sink).  Dead-code cleanup.
 
 // Sink for the host-side decoded EP6 telemetry payload.  Fires
 // at most once per EP6 datagram (telemetry classes decoded from
@@ -162,8 +160,11 @@ private:
     void decode_status_header(const uint8_t cc[5]);
 
 private:
-    // Socket fd (not owned).
-    int               socket_fd_       = -1;
+    // §1-C Stage 4F: `socket_fd_` member removed.  Socket
+    // bound TU-scope in `wire/MetisFrame.cpp` via
+    // `metis_wire_bind()` and read via `metis_socket_fd()`
+    // accessor — direct mirror of reference's file-scope
+    // `listenSock` global.  Symmetric with `Ep2SendThread`.
 
     // Thread control.
     std::atomic<bool> running_{false};
@@ -178,10 +179,13 @@ private:
     // SeqError) live as TU-scope statics in Ep6RecvThread.cpp
     // per the §6-B / Stage 4B sister-pattern.
 
-    // Reference's `kMaxDdc` / `kMaxSprPerFrame` constants used
-    // by the buffer-sizing at start() time still need scope
-    // here for the per-DDC unpack loop.
-    static constexpr int kMaxDdc          = 4;
+    // Reference's `MAX_DDC` / max-spr-per-frame constants used
+    // by the buffer-sizing at start() time + the per-DDC
+    // unpack loop.  §1-C Stage 4F: `kMaxDdc` bumped from 4
+    // (HL2-tightened) to 8 to match reference's `MAX_DDC=8`
+    // for future ANAN-family parity (HL2 will still populate
+    // only the first 4 entries since nddc=4 on this hardware).
+    static constexpr int kMaxDdc          = 8;
     static constexpr int kMaxSprPerFrame  = 64;
 
     // ---- sinks ----

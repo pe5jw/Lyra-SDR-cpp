@@ -91,4 +91,14 @@ int  metis_write_frame(int            endpoint,
 // effect of `metis_write_frame`).
 std::uint32_t metis_out_seq_num();
 
+// ---- TU-scope socket accessor ----
+//
+// Returns the bound socket fd, or -1 if `metis_wire_bind()`
+// has not been called.  Direct mirror of reference's file-
+// scope `listenSock` global — both `Ep6RecvThread` and
+// `Ep2SendThread` consume it via this accessor (per §1-C
+// Stage 4F: removed asymmetric `Ep6RecvThread::socket_fd_`
+// member).
+int metis_socket_fd();
+
 }  // namespace lyra::wire

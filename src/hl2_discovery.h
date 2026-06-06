@@ -20,7 +20,7 @@
 //     byte  [9]    = code_version  (gateware major)
 //     byte  [10]   = board_id      (6 = HermesLite family — both
 //                                   HL2 and HL2+ report the same ID)
-//   HL2-specific extras (MI0BOT-fork bytes, present on N8SDR's unit):
+//   HL2-specific extras (HL2-fork bytes, present on N8SDR's unit):
 //     byte  [11]   = ee_config
 //     byte  [12]   = ee_config_reserved
 //     bytes [13..16] = fixed_ip (stored REVERSED on the wire)

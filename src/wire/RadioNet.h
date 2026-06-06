@@ -337,7 +337,7 @@ struct TxState {
     int sampling_rate{0};
 
     // CW state bits (cwx_ptt is the HL2 enhancement,
-    // network.h:264 MI0BOT note).
+    // network.h:264).
     int cwx{0};
     int cwx_ptt{0};
     int dash{0};
@@ -355,8 +355,7 @@ struct TxState {
     int epwm_min{0};
     int pa{0};
 
-    // HL2 enhancements (network.h:276-277 MI0BOT notes;
-    // case-17 register).
+    // HL2 enhancements (network.h:276-277; case-17 register).
     int tx_latency{0};
     int ptt_hang{0};
 
@@ -526,8 +525,14 @@ public:
     // bodies that may continue to own them post-Stage-4D).
 
     // --- Networking config ports (network.h:58-59) ---
-    int p2_custom_port_base{1025};
-    int base_outbound_port{1024};
+    // §1-C Stage 4F: defaults are BSS-zero per reference
+    // (reference `network.h:58-59` declares as plain `int`
+    // with no initializer; HL2 discovery writes 1024/1025 at
+    // session start).  The prior `{1025}`/`{1024}` Lyra-native
+    // convenience defaults were a doctrinal divergence — now
+    // reverted.
+    int p2_custom_port_base{0};
+    int base_outbound_port{0};
 
     // --- Buffer pointers (network.h:60-66) ---
     //

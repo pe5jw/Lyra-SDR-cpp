@@ -138,4 +138,10 @@ std::uint32_t metis_out_seq_num() {
     return g_metis_out_seq_num;
 }
 
+// ---- TU-scope socket accessor ----
+
+int metis_socket_fd() {
+    return g_metis_socket_fd;
+}
+
 }  // namespace lyra::wire

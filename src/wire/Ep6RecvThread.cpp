@@ -19,6 +19,7 @@
 // `prn->wsaProcessEvents` per §1.1 revert).
 
 #include "wire/Ep6RecvThread.h"
+#include "wire/MetisFrame.h"
 #include "wire/RadioNet.h"
 #include "wire/Router.h"
 
@@ -170,7 +171,13 @@ void Ep6RecvThread::start(int socket_fd) {
     // when MetisReadThreadMainLoop_HL2 runs — Lyra mirrors).
     if (prn == nullptr) return;
 
-    socket_fd_     = socket_fd;
+    // §1-C Stage 4F: bind the wire socket TU-scope (idempotent;
+    // safe if Ep2SendThread::start() or session_open has
+    // already bound the same socket).  Mirrors the §6-B
+    // pattern verbatim — single shared `listenSock`-equivalent
+    // in `wire/MetisFrame.cpp`.
+    metis_wire_bind(socket_fd, nullptr, 0);
+
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
 
@@ -211,7 +218,7 @@ void Ep6RecvThread::start(int socket_fd) {
     //     WSAEventSelect(listenSock, prn->hDataEvent, FD_READ);
     prn->hDataEvent = WSACreateEvent();
     if (prn->hDataEvent != WSA_INVALID_EVENT) {
-        WSAEventSelect(static_cast<SOCKET>(socket_fd_),
+        WSAEventSelect(static_cast<SOCKET>(metis_socket_fd()),
                        prn->hDataEvent,
                        FD_READ);
     }
@@ -321,14 +328,14 @@ void Ep6RecvThread::run_loop() {
             continue;
         }
 
-        WSAEnumNetworkEvents(static_cast<SOCKET>(socket_fd_),
+        WSAEnumNetworkEvents(static_cast<SOCKET>(metis_socket_fd()),
                              prn->hDataEvent,
                              &prn->wsaProcessEvents);
         if (!(prn->wsaProcessEvents.lNetworkEvents & FD_READ)) continue;
         if (prn->wsaProcessEvents.iErrorCode[FD_READ_BIT] != 0) break;
 
         socket_recv_len_t n = ::recv(
-            socket_fd_,
+            metis_socket_fd(),
             reinterpret_cast<char*>(g_fpga_read_bufp.data()),
             static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
             0);
@@ -344,7 +351,7 @@ void Ep6RecvThread::run_loop() {
     while (!stop_request_.load(std::memory_order_acquire)) {
         if (prn == nullptr) break;
         socket_recv_len_t n = ::recv(
-            socket_fd_,
+            metis_socket_fd(),
             reinterpret_cast<char*>(g_fpga_read_bufp.data()),
             static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
             0);
