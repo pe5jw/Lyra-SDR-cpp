@@ -59,12 +59,24 @@ carries the **state portion only**.
 | Sequence counter (TX-side, NOT in `_radionet`) | `networkproto1.c:30` `unsigned int MetisOutBoundSeqNum;` — separate file-scope global, NOT inside the `_radionet` struct | Lives in `wire/MetisFrame.cpp` TU-scope `g_metis_out_seq_num` per §6-B (sign-off 2026-06-06) — direct mirror of the reference's file-scope global, callable from both `Ep2SendThread::run_loop` AND `ForceCandC::prime` exactly as the reference's `MetisWriteFrame` is callable from `sendProtocol1Samples` + `ForceCandCFrames`.  §1.1 was originally drafted only for `_radionet`-resident networking infrastructure; the TX-side seq counter is NOT in `_radionet` and was incorrectly extended into §1.1's scope at §6 Q3 sign-off — corrected here. |
 | Networking config ports | `network.h:58-59` `int p2_custom_port_base; int base_outbound_port;` | Lives in `wire/Ep6RecvThread` / `wire/Ep2SendThread` constructors (passed in from HL2 discovery, not session state) |
 
-**VERDICT:** 🔴 **OPERATOR-APPROVED DEVIATION** — these fields are
-PRESENT in `_radionet` but EXCLUDED from `RadioNet` per the §10.2
-component split signed 2026-06-04.  The §10.2 mapping doc names the
-exact destination wire-layer component for each.  No state-bearing
-field is dropped — every field re-homes to a wire-layer component
-that owns it.
+**VERDICT (ORIGINAL — superseded 2026-06-06):** 🔴
+**OPERATOR-APPROVED DEVIATION** — these fields are PRESENT in
+`_radionet` but EXCLUDED from `RadioNet` per the §10.2
+component split signed 2026-06-04.  The §10.2 mapping doc
+names the exact destination wire-layer component for each.
+No state-bearing field is dropped — every field re-homes to a
+wire-layer component that owns it.
+
+**VERDICT (SUPERSEDED — §1-C Stage 4 sign-off 2026-06-06):**
+✅ **PARITY** — §1-C reverted the §1.1 exclusion under
+operator directive "Fix everything to reference — §1.1
+included.  No patching."  All `_radionet` fields now live in
+`RadioNet` as members exactly per the reference.  Wire-layer
+components read from `prn->...`.  See the §1-C entry at the
+end of this document for the full sweep + Stage 4E amendment
+table.  The original 2026-06-04 sign-off cell above is
+preserved as historical audit artifact per the Rule 2
+amendment.
 
 ---
 
@@ -2585,4 +2597,92 @@ Signed: N8SDR        Date: 2026-06-06
 
 ---
 
-*Last updated: 2026-06-06 — §6-B + §7 shipped together.  §6-B parity correction sweep: hoisted `metis_write_frame` to `wire/MetisFrame.{h,cpp}` TU-scope; replaced `Ep2SendThread::out_seq_num_` member + `out_seq_num()` accessor with TU-scope `g_metis_out_seq_num`; replaced `socket_fd_`/`dest_addr_`/`dest_addrlen_` members with TU-scope statics bound via `metis_wire_bind()`; dropped `send_lock_` mutex (no reference counterpart — temporal separation suffices).  §7 ForceCandC populated against `networkproto1.c:106-139` — `prime()` + `prime_pass()` byte-for-byte verbatim with the reference, calling the shared TU `metis_write_frame()`.  Operator directive 2026-06-06: "FIX it so it is like the reference, NO PATCHING."  Wire-inert (Phase 2 step 14 will wire `ForceCandC::prime` into `HL2Stream::session_open`).*
+## §1-C Comprehensive correction sweep — full "do as reference, period" sweep across the TX wire layer
+
+Operator directive 2026-06-06: "Fix everything to reference —
+§1.1 included.  No patching.  Things must be fixed and work
+like the reference does."
+
+Triggered by the post-§6-B comprehensive 6-agent audit
+(2026-06-06 mid-morning) which found §6-Q3/Q5-class signed
+deviations across §1, §3, §5, §6 — most importantly that §1.1
+itself (the signed 🔴 networking-infrastructure exclusion from
+2026-06-04) was a structural deviation of the same class as
+the §6 Q3/Q5 deviations §6-B reverted that same morning.
+Under strict "do as reference, period," §1.1's exclusion of
+`_radionet` networking fields from RadioNet was unjustified;
+the §1-C sweep reverts it.
+
+### Stages (shipped in committable increments, all build-clean)
+
+| Stage | Commit | Scope |
+|---|---|---|
+| **§1-C Stage 1** | `0e2a375` | Small reverts: `wb_enable` `std::atomic<long>` → `volatile long` (matches reference `network.h:160`); OutboundRing bounded `try_acquire_for(5s)` producer push → unbounded `acquire()` (matches reference `Inbound`/`obbuffs` producer pattern); Ep2SendThread `datagrams_sent_`/`send_errors_` diagnostic counters dropped (no reference counterpart) |
+| **§1-C Stage 2A** | `2b78d9e` | Router class → plain struct + free functions (`xrouter`/`register_sink`/`set_control_word`/`set_call_count`/`router_instance`) + file-scope `g_routers[]` array — direct mirror of reference's `ROUTER` typedef'd struct + `router.c` free functions + `prouter[MAX_EXT_ROUTER]` global at `router.c:29-30`.  §5.8 `std::function` callback retained (signed C↔C++23 idiom translation) |
+| **§1-C Stage 3** | `d88ddd6` | OutboundRing wait-all via `std::condition_variable` + 4 `bool` flags + single mutex — replaces 4 `std::binary_semaphore`s + 100 ms polling.  Direct semantic mirror of reference's `WaitForMultipleObjects(2, hsendEventHandles, TRUE, INFINITE)` atomic wait-all at `networkproto1.c:1220`.  Removes 100-200 ms shutdown-latency floor + the §6-A binary_semaphore UB-guard workaround. |
+| **§1-C Stage 4A** | `e157301` | §1.1 networking-infrastructure REVERT — additive field additions to RadioNet: buffer pointers (RxBuff, TxReadBufp, ReadBufp, OutBufp, outLRbufp, outIQbufp), RX seq counters (cc_seq_no, cc_seq_err), thread handles (hReadThreadMain, hWriteThreadMain, hKeepAliveThread), init semaphores (hReadThreadInitSem, hWriteThreadInitSem), outbound sync (cv_outbound + mu_outbound + 4 bool flags + outbound_stop — cv-collapsed mirror of reference's 4-HANDLE pattern), waitable timer (hTimer, liDueTime — Win32, HL2-inert), WSA event (hDataEvent, wsaProcessEvents — Win32), networking ports (p2_custom_port_base, base_outbound_port).  Wire-inert; consumers migrate in 4B/4C/4D. |
+| **§1-C Stage 4B** | `26acea3` | Ep6RecvThread refactor: buffer members `rx_buff_[kMaxDdc]` / `tx_read_bufp_` / `control_bytes_in_[5]` / `last_seq_` / `seq_seen_` / `rx_datagrams_` / `seq_errors_` MIGRATED.  `_radionet` fields → `prn->RxBuff` / `prn->TxReadBufp`.  File-scope-globals (per reference) → TU-scope statics in Ep6RecvThread.cpp (`g_metis_last_recv_seq` / `g_seq_error` / `g_seq_seen` / `g_control_bytes_in[5]`).  Diagnostic counter `rx_datagrams_` dropped (Stage 1 §6.12 precedent).  Replaced `recv()` + timeout poll loop with `WSAEventSelect` + `WSAWaitForMultipleEvents` mechanism reading `prn->hDataEvent` + `prn->wsaProcessEvents` (folds in §5.10 audit fix). |
+| **§1-C Stage 4B.1** | `f1031da` | Correction-of-correction (Rule 24 audit catch): Stage 4B mismapped the HL2 P1 EP6 raw receive buffer to `prn->ReadBufp` — but per reference, `prn->ReadBufp` (network.h:63) is the P2 inbound buffer (used at network.c:667+); HL2 P1 EP6 uses `FPGAReadBufp` (network.h:498) which is file-scope, NOT in `_radionet`.  Added TU-scope `g_fpga_read_bufp` in Ep6RecvThread.cpp as direct file-scope-global mirror; `prn->ReadBufp` stays declared in RadioNet for P2-family forward-compat parity (HL2-inert). |
+| **§1-C Stage 4C** | `1d73bea` | Ep2SendThread refactor: `out_buf_` (1008 LRIQ-packed bytes) → `prn->OutBufp` (IS in `_radionet`, network.h:64).  `fpga_write_buf_` (1024 EP2 payload) → TU-scope `g_fpga_write_bufp` static (reference `FPGAWriteBufp` at network.h:499 is file-scope, NOT in `_radionet` — sister of g_fpga_read_bufp). |
+| **§1-C Stage 4D** | `79fe4ec` | **§1.1 revert COMPLETE.**  OutboundRing class DISSOLVED into namespace-scope free functions (`outbound_init`, `outbound_push_lr`, `outbound_push_iq`, `outbound_wait_pair_ready`, `outbound_lr_buf` / `_mut`, `outbound_iq_buf` / `_mut`, `outbound_notify_consumed_pair`, `outbound_unblock`) operating on `prn->outLRbufp` / `prn->outIQbufp` / `prn->cv_outbound` / `prn->mu_outbound` / 4 bool flags / `prn->outbound_stop`.  Sister-pattern of Stage 2A's Router dissolution.  Constants `kSamplesPerDatagram` / `kDoublesPerBuffer` exposed at namespace scope as `kOutboundSamplesPerDatagram` / `kOutboundDoublesPerBuffer`.  Ep2SendThread loses `OutboundRing* ring_` member + signature param. |
+
+### §6-Q3/Q5-class candidates resolved
+
+| Audit-flagged item | Resolution stage | Status |
+|---|---|---|
+| §1.3 `std::atomic<long> wb_enable` (vs reference `volatile long`) | Stage 1 | ✅ FIXED |
+| §5.9 `class Router` (vs reference free functions + array) | Stage 2A | ✅ FIXED |
+| §5.10 `recv()` + timeout (vs reference `WSAEventSelect`) | Stage 4B | ✅ FIXED |
+| §6.9 OutboundRing sequential `try_acquire_for(100ms)` polling (vs reference `WaitForMultipleObjects(TRUE)` wait-all) | Stage 3 | ✅ FIXED (cv-based wait-all) |
+| §6.10 Bounded `try_acquire_for(5s)` producer push (vs reference unbounded) | Stage 1 | ✅ FIXED |
+| §6.11 / §6.14 OutboundRing unblock() polling-shutdown UB-guard | Stage 3 | ✅ FIXED (cv notify_all subsumes) |
+| §6.12 `datagrams_sent_` / `send_errors_` / `push_timeouts_*` diagnostic counters (no reference counterpart) | Stage 1 + 4B | ✅ FIXED |
+| **§1.1 networking-infrastructure exclusion (THE BIG ONE)** | **Stages 4A-4D** | **✅ FIXED — see §1.1 amendment below** |
+
+### Stage 4E §1.1 verdict amendment
+
+The original §1.1 entry (signed 🔴 OPERATOR-APPROVED DEVIATION
+2026-06-04) is now superseded.  Replacement verdict:
+
+| Aspect | Reference | Lyra (post-§1-C) |
+|---|---|---|
+| `_radionet` fields | `network.h:58-106` (buffer pointers, thread/sem/event handles, RX seq counters, networking ports, WSA event, waitable timer) | All present in `RadioNet` class as members, identical field names, C↔C++23 idiom-translated types (`HANDLE` → `std::thread` / `std::counting_semaphore` for thread-class fields; `volatile long` → `volatile long` preserved verbatim; 4 reference HANDLE pairs collapsed to single `cv` + 4 bool flags per the §1-C Stage 3 design since C++20 `std::counting_semaphore` lacks wait-all primitive) |
+| Reference file-scope globals (NOT in `_radionet`) | `networkproto1.c:26-30` (`SeqError`, `MetisLastRecvSeq`, `MetisOutBoundSeqNum`), `network.h:414` (`ControlBytesIn[5]`), `network.h:498-499` (`FPGAReadBufp`, `FPGAWriteBufp`), `listenSock` | TU-scope statics in the appropriate wire-layer .cpp file: `wire/MetisFrame.cpp` (g_metis_out_seq_num, g_metis_socket_fd + dest), `wire/Ep6RecvThread.cpp` (g_metis_last_recv_seq, g_seq_error, g_seq_seen, g_control_bytes_in, g_fpga_read_bufp), `wire/Ep2SendThread.cpp` (g_fpga_write_bufp) |
+| Wire-layer access pattern | Reference free functions in `networkproto1.c` / `router.c` / `cmaster.c` dereference `prn->...` globals directly | Lyra wire-layer methods/free-functions dereference `prn->...` globals directly + read the TU-scope statics for the non-`_radionet` globals.  No more wire-layer class members duplicating reference state. |
+
+**VERDICT:** ✅ **PARITY** — every reference state-bearing
+field now lives at its correct reference home in Lyra (either
+inside `RadioNet` for `_radionet`-resident fields, or as
+TU-scope statics in the appropriate wire-layer .cpp for
+file-scope globals).  The 2026-06-04 🔴 OPERATOR-APPROVED
+DEVIATION verdict at the top of §1.1 is SUPERSEDED by this
+amendment; the structural deviation it documented no longer
+exists in the shipped code.
+
+### §1-C sign-off
+
+- [x] Source-verified line-by-line vs `network.h:58-106` +
+      `networkproto1.c:26-30, 422-586, 1204-1267` +
+      `router.c:29-156`
+- [x] All 8 audit-flagged §6-Q3/Q5-class candidates fixed
+      (§1.3 wb_enable, §5.9 Router, §5.10 WSAEventSelect,
+      §6.9 wait-all, §6.10 unbounded push, §6.11/6.14
+      shutdown, §6.12 diag counters, §1.1 itself)
+- [x] All `_radionet` fields now in RadioNet as members
+- [x] All reference file-scope globals (NOT in `_radionet`)
+      now as TU-scope statics in the correct wire-layer .cpp
+- [x] Wire-layer class members for reference-state fields
+      all removed (no duplicate copies; single source of
+      truth)
+- [x] §1.1 verdict amended from 🔴 to ✅ PARITY (above)
+- [x] Build green throughout all 8 stages
+- [x] Wire-inert — `HL2Stream::session_open` not yet calling
+      anything (step 14 wire-up next)
+- [x] Stage 4E ships this consolidated §1-C entry +
+      supersedes §1.1 verdict
+
+Signed: N8SDR        Date: 2026-06-06
+
+---
+
+*Last updated: 2026-06-06 — §1-C comprehensive correction sweep COMPLETE.  Twelve commits today across the morning + afternoon: §6-B + §7 + §6-B null-guard nit + 6-agent comprehensive TX audit + §1-C Stages 1, 2A, 3, 4A, 4B, 4B.1, 4C, 4D + this 4E doc consolidation.  §1.1 networking-infrastructure exclusion (signed 🔴 2026-06-04) fully reverted: all `_radionet` fields now in RadioNet; all reference file-scope globals as TU-scope statics in the correct wire-layer .cpp file.  Router + OutboundRing dissolved to free functions (Lyra-native class wrappers had no reference counterpart).  Build clean throughout.  Wire-INERT: nothing in `HL2Stream::session_open` calls the wire-layer components yet — Phase 2 step 14 wire-up next.*
