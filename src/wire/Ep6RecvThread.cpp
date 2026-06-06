@@ -181,13 +181,16 @@ void Ep6RecvThread::start(int socket_fd) {
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
 
-    // Size the §1.1-reverted buffers in RadioNet.  Reference
-    // does this via `calloc` at `networkproto1.c:427-428`
-    // (FPGAReadBufp + FPGAWriteBufp) and inside StartMetis for
-    // `RxBuff[]` / `TxReadBufp`.  Lyra centralizes here so the
-    // §1.1-revert state lifecycle is one-shot at thread start.
-    prn->RxBuff.assign(kMaxDdc, std::vector<double>(2 * kMaxSprPerFrame, 0.0));
-    prn->TxReadBufp.assign(4 * kMaxSprPerFrame, 0.0);
+    // `prn->RxBuff` + `prn->TxReadBufp` allocation moved to
+    // create_rnet() per the 2026-06-06 operator audit (reference
+    // allocates all _radionet buffers in one create_rnet() at
+    // startup — netInterface.c:1600-1604; prior Lyra split was a
+    // §6-Q-class deviation).  Buffers are already sized
+    // (RxBuff = 8 × 128 doubles, TxReadBufp = 1440 doubles) by
+    // the time this thread starts.  The TU-scope FPGA read buffer
+    // below stays here — it mirrors the reference's
+    // file-scope `FPGAReadBufp` global allocated at thread entry
+    // (networkproto1.c:427), NOT inside create_rnet.
 
     // §1-C Stage 4B.1: HL2 P1 EP6 raw receive buffer is the
     // reference's file-scope `FPGAReadBufp` (network.h:498) —

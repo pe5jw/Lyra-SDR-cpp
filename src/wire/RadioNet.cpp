@@ -24,15 +24,175 @@ RadioNet::~RadioNet() = default;
 // reference-parity grep discipline.
 RadioNet* prn = nullptr;
 
-// §1.12 supplement — singleton accessor for the one process-
-// lifetime RadioNet instance.  See RadioNet.h declaration for the
-// full rationale (mirrors reference's "one _radionet pointed at
-// by prn for the lifetime of the audio driver" pattern).  Static
-// init is C++11-thread-safe; HL2Stream::open() calls this once on
-// Step 14 Stage 1 and stores the result in `prn`.
-RadioNet* radio_net() {
-    static RadioNet instance;
-    return &instance;
+// §1.12 supplement — `create_rnet()` allocator.  Direct verbatim
+// mirror of the reference's `create_rnet()` at
+// `netInterface.c:1590-1763`.  See RadioNet.h declaration for the
+// full reference-vs-Lyra-idiom mapping rationale.  Sets the global
+// `prn` (== reference's `prn`) on first call; idempotent on
+// subsequent calls.
+void create_rnet() {
+    if (prn != nullptr) return;  // already allocated
+
+    // `prn = (RADIONET)malloc(sizeof(radionet));`
+    // (netInterface.c:1595)
+    prn = new RadioNet();
+
+    // Scalar field initialization, line-by-line mirror of
+    // netInterface.c:1597-1620 (the post-malloc block under
+    // `if (prn) { ... }`).  Lyra in-class defaults cover any
+    // field the reference writes as 0; we explicitly write the
+    // ones the reference writes to non-zero (or to a value that
+    // doesn't match Lyra's in-class default) for full parity.
+
+    prn->base_outbound_port  = 1024;       // :1598
+    prn->p2_custom_port_base = 1025;       // :1599
+    // :1610 prn->run = 0 — in-class default
+    // :1611 prn->wdt = 0 — in-class default
+    prn->sendHighPriority    = 1;          // :1612 (Lyra default 0)
+    prn->num_adc             = 1;          // :1613 (Lyra default 0)
+    prn->num_dac             = 1;          // :1614 (Lyra default 0)
+    // :1615-1620 ptt_in/dot_in/dash_in/pll_locked/cc_seq_no/
+    //   cc_seq_err = 0 — in-class defaults
+
+    // i2c sub-struct (netInterface.c:1622-1630) — all zero,
+    // covered by Lyra's in-class defaults.  Re-stated here only
+    // if Lyra's in-class default ever drifts non-zero.
+
+    // cw sub-struct (netInterface.c:1632-1639) — all zero EXCEPT
+    // edge_length = 7 (the reference's only non-zero CW field at
+    // create-time).
+    prn->cw.edge_length      = 7;          // :1639 (Lyra default 0)
+
+    // mic sub-struct (netInterface.c:1641-1643)
+    // :1641 mic_control = 0 — in-class default
+    // :1642 line_in_gain = 0 — in-class default
+    prn->mic.spp             = 64;         // :1643 (Lyra default 0)
+
+    // WB chain (netInterface.c:1646-1652)
+    prn->wb_base_dispid          = 32;     // :1646 (Lyra default 0)
+    // :1647 wb_enable = 0 — in-class default
+    prn->wb_samples_per_packet   = 512;    // :1648
+    prn->wb_sample_size          = 16;     // :1649
+    prn->wb_update_rate          = 70;     // :1650
+    prn->wb_packets_per_frame    = 32;     // :1651
+    // :1652 lr_audio_swap = 0 — in-class default
+    // :1653 CATPort = 0 — in-class default
+
+    // ADC array (netInterface.c:1654-1664) — per-element init.
+    // `tx_step_attn = 31` is the only non-default-zero scalar.
+    // The reference also `malloc0(1024*sizeof(double))`'s
+    // `prn->adc[i].wb_buff`; Lyra defers that allocation until WB
+    // is actually wired (currently not in HL2 scope; ANAN
+    // wide-band feature) — reference shape allocates eagerly,
+    // Lyra-native defers via `std::vector` zero-init.  Flag this
+    // as a follow-up §6-Q candidate for the WB bring-up phase;
+    // current HL2 path never reads adc[i].wb_buff.
+    for (int i = 0; i < kMaxAdc; i++) {
+        prn->adc[i].id              = i;
+        // rx_step_attn = 0 — in-class default
+        prn->adc[i].tx_step_attn    = 31;  // :1657
+        // adc_overload/dither/random/wb_seqnum/wb_state = 0 — defaults
+    }
+
+    // RX array (netInterface.c:1666-1692) — per-element init.
+    for (int i = 0; i < kMaxRxStreams; i++) {
+        prn->rx[i].id               = i;
+        // rx_adc/frequency/enable/sync = 0 — in-class defaults
+        prn->rx[i].sampling_rate    = 48;  // :1673
+        prn->rx[i].bit_depth        = 24;  // :1674
+        // preamp/rx_in_seq_no/etc. = 0 — defaults
+        prn->rx[i].spp              = 238; // :1681
+        // snapshots_head/tail/snapshot = NULL — Lyra-native
+        //   snapshot machinery is not present in this layer
+        //   (reference-specific P2 diagnostic) — flag as a
+        //   §6-Q candidate if P2 work brings it in.
+    }
+
+    // TX array (netInterface.c:1694-1715) — per-element init.
+    for (int i = 0; i < kMaxTxStreams; i++) {
+        prn->tx[i].id               = i;
+        // frequency = 0 — in-class default
+        prn->tx[i].sampling_rate    = 192; // :1698
+        // cwx/cwx_ptt/dash/dot/ptt_out/drive_level/phase_shift/
+        //   epwm_max/epwm_min/pa = 0 — defaults
+        prn->tx[i].tx_latency       = 20;  // :1709
+        prn->tx[i].ptt_hang         = 12;  // :1710
+        // mic_in_seq_no etc. = 0 — defaults
+        prn->tx[i].spp              = 240; // :1714
+    }
+
+    // Audio array (netInterface.c:1717-1720)
+    for (int i = 0; i < kMaxAudioStreams; i++) {
+        prn->audio[i].spp           = 64;  // :1719
+    }
+
+    // Final scalars (netInterface.c:1722-1725) — all zero,
+    // covered by Lyra's in-class defaults:
+    // :1722 puresignal_run = 0
+    // :1724 reset_on_disconnect = 0
+    // :1725 swap_audio_channels = 0
+
+    // Reference allocates `prbpfilter` + `prbpfilter2` at
+    // netInterface.c:1727-1733 — Lyra-native filter-band wiring
+    // doesn't go through these structs (`bands.cpp` /
+    // `filter_board.h` Lyra-native path), so the reference's
+    // allocation has no Lyra counterpart at this layer.  Flag
+    // as a §6-Q-class divergence; current HL2 RX/TX path does
+    // not touch these structs.
+
+    // Reference sets thread handles to NULL at :1735-1740.  Lyra
+    // uses `std::thread` + `std::counting_semaphore` with RAII
+    // default-construct (zero-equivalent state).  No-op here.
+
+    // Reference initializes Win32 CRITICAL_SECTIONs at :1742-1747.
+    // Lyra uses `std::mutex` with RAII default-construct.  No-op.
+
+    // ---- Buffer allocations (netInterface.c:1600-1608) ----
+    //
+    // All buffer sizing happens HERE in create_rnet, exactly
+    // mirroring the reference.  Previously (§1-C-signed)
+    // these were split across `outbound_init()` (outLRbufp +
+    // outIQbufp), `Ep6RecvThread::start()` (RxBuff + TxReadBufp),
+    // and `Ep2SendThread::start()` (OutBufp).  The 2026-06-06
+    // operator audit caught the split as a §6-Q-class deviation
+    // from the reference's single-allocation-site pattern; this
+    // create_rnet body consolidates per the operator-locked
+    // "do as reference, period" directive.  See PARITY_CHECKPOINTS
+    // §14 Stage 1 (corrected).
+
+    // `prn->RxBuff = calloc(8, sizeof(double*));`
+    // `for (i = 0; i < 8; i++) prn->RxBuff[i] = calloc(64, 2*sizeof(double));`
+    // (netInterface.c:1600-1602)
+    prn->RxBuff.assign(8, std::vector<double>(64 * 2, 0.0));
+
+    // `prn->RxReadBufp = calloc(1, 2*sizeof(double)*240);`
+    // (netInterface.c:1603) — 480 doubles
+    prn->RxReadBufp.assign(2 * 240, 0.0);
+
+    // `prn->TxReadBufp = calloc(1, 2*sizeof(double)*720);`
+    // (netInterface.c:1604) — 1440 doubles
+    prn->TxReadBufp.assign(2 * 720, 0.0);
+
+    // `prn->ReadBufp = calloc(1, sizeof(unsigned char)*1444);`
+    // (netInterface.c:1605) — 1444 bytes
+    prn->ReadBufp.assign(1444, 0);
+
+    // `prn->OutBufp = calloc(1, sizeof(char)*1440);`
+    // (netInterface.c:1606) — 1440 bytes
+    prn->OutBufp.assign(1440, 0);
+
+    // `prn->outLRbufp = calloc(1, sizeof(double)*1440);`
+    // (netInterface.c:1607) — 1440 doubles
+    prn->outLRbufp.assign(1440, 0.0);
+
+    // `prn->outIQbufp = calloc(1, sizeof(double)*1440);`
+    // (netInterface.c:1608) — 1440 doubles.  Note: reference at
+    // networkproto1.c:1225 reads `outIQbufp + 256` in EER mode
+    // (per `pcm->xmtr[0].peer->run && XmitBit`), which would
+    // overrun a smaller allocation — the 1440-double size is
+    // load-bearing for EER mode, even though current HL2 SSB
+    // bring-up uses only the front 252 doubles.
+    prn->outIQbufp.assign(1440, 0.0);
 }
 
 // §3.4 — Dispatch-relevant runtime globals.

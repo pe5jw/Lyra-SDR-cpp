@@ -635,24 +635,44 @@ public:
 
 extern RadioNet* prn;
 
-// ===== §1.12 supplement — singleton accessor =====
+// ===== §1.12 supplement — `create_rnet()` allocator =====
 //
-// Returns a pointer to the one process-lifetime `RadioNet` instance.
-// First call constructs the static (C++11 guarantees thread-safe
-// init), subsequent calls return the same pointer.  Caller assigns
-// `lyra::wire::prn = lyra::wire::radio_net();` at HL2 session-open
-// (Step 14 Stage 1) so all wire-layer free functions can dereference
-// `prn->...` for the lifetime of the process.  Mirrors the
-// reference's session-startup pattern of one `_radionet` struct
-// pointed at by `prn` for the lifetime of the audio driver (see
-// e.g. `network.c` initialization of the file-scope `_radionet`
-// instance to which `prn` points; reference allocates once at
-// startup and never frees).
+// Direct mirror of the reference's `create_rnet()` at
+// `netInterface.c:1590-1763`:
 //
-// Lifetime: indefinite (static storage duration).  close() does
-// NOT destroy or null `prn` — reference posture is also "prn
-// stays valid between session-close and next session-open."
-RadioNet* radio_net();
+//     prn = (RADIONET)malloc(sizeof(radionet));
+//     if (prn) {
+//         prn->base_outbound_port = 1024;
+//         prn->p2_custom_port_base = 1025;
+//         prn->RxBuff = calloc(8, sizeof(double*));
+//         for (i = 0; i < 8; i++) prn->RxBuff[i] = calloc(64, 2*sizeof(double));
+//         prn->RxReadBufp = calloc(1, 2*sizeof(double)*240);
+//         prn->TxReadBufp = calloc(1, 2*sizeof(double)*720);
+//         prn->ReadBufp   = calloc(1, sizeof(unsigned char)*1444);
+//         prn->OutBufp    = calloc(1, sizeof(char)*1440);
+//         prn->outLRbufp  = calloc(1, sizeof(double)*1440);
+//         prn->outIQbufp  = calloc(1, sizeof(double)*1440);
+//         /* …scalar + per-element struct init… */
+//     }
+//
+// Lyra-native translations (Rule 24-class C↔C++23 idioms only;
+// no behavioral deviation):
+//   - `malloc(sizeof(radionet))` → `new RadioNet()`
+//   - `calloc(N, S)` array buffers → `std::vector::assign(N*…, 0)`
+//   - C struct-array `prn->adc[i].x = v;` → identical syntax
+//     (kept as fixed-size C arrays per the §1-C reverted struct
+//     layout; `adc[MAX_ADC]` / `rx[MAX_RX_STREAMS]` / etc.).
+//
+// **Idempotent** — first call allocates + initializes; subsequent
+// calls return immediately if `prn != nullptr`.  Matches the
+// reference's "call once at startup, never free" posture: the
+// reference's `create_rnet()` is called once in the C# console
+// init path; Lyra calls it from `HL2Stream::open()` (Step 14 Stage 1)
+// guarded against re-entry across stream open/close cycles.
+//
+// Lifetime: heap-allocated; never freed (reference does the same
+// — `prn` lives for the lifetime of the audio driver process).
+void create_rnet();
 
 // ===== §3.4 — Dispatch-relevant runtime globals =====
 //

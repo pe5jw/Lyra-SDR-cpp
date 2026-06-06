@@ -2699,71 +2699,131 @@ translation; reference `function[port][i][ctrl]` + `callid[port][i]
 `port × call_idx × ctrl_word` table).  Standing rule: "do as
 reference, period, NO PATCHING."
 
-### §14 Stage 1 — wire-layer singleton + bind + outbound_init (wire-INERT)
+### §14 Stage 1 — wire-layer `create_rnet()` + bind + outbound_init (wire-INERT)
 
-Insert into `HL2Stream::open()` between the UDP-stats snapshot and
-the `rxWorker_`/`txWorker_` jthread spawns:
-- `lyra::wire::prn = lyra::wire::radio_net();` — assign the
-  process-lifetime singleton (new `radio_net()` accessor added to
-  `RadioNet.{h,cpp}` mirrors the reference's "one `_radionet`
-  pointed at by `prn` for lifetime of the audio driver" pattern).
-- `lyra::wire::metis_wire_bind(socket_, destStorage_, sizeof(sockaddr_in));`
-  — bind the TU-scope socket fd + dest_addr pointer (caller-owned
-  `destStorage_` lives as a 16-byte `std::uint32_t[4]` member on
-  HL2Stream so its lifetime outlives the EP2/EP6 threads).
-- `lyra::wire::outbound_init();` — allocate `prn->outLRbufp` +
-  `outIQbufp` + sync primitives.
+**CORRECTED 2026-06-06** after the operator audit caught the
+initial Stage 1 commit (`9bf963e`) shipping two patches against
+the standing "do as reference, period" rule:
 
-Symmetric teardown in `close()` after the worker joins + socket
-close: `lyra::wire::metis_wire_bind(-1, nullptr, 0);` (clears the
-bind so any stale post-close `metis_write_frame()` fails fast on
-sendto(-1) instead of writing to a closed socket).  `prn` singleton
-stays alive across close/re-open (matches reference posture).
+1. **The singleton itself.** Initial Stage 1 added a `radio_net()`
+   Meyers-singleton accessor returning `&static RadioNet instance`.
+   Reference at `netInterface.c:1595` uses
+   `prn = (RADIONET)malloc(sizeof(radionet));` — heap-allocation,
+   no accessor.  Fix: replaced `radio_net()` with `create_rnet()`
+   doing `prn = new RadioNet();` (C++ equivalent of malloc) +
+   the full per-element scalar/sub-struct/buffer init.
+
+2. **Buffer-init split.** §1-C-signed Lyra spread buffer
+   allocation across three call sites (`outbound_init()` for
+   outLRbufp/outIQbufp; `Ep6RecvThread::start()` for RxBuff /
+   TxReadBufp; `Ep2SendThread::start()` for OutBufp).  Reference
+   allocates ALL `_radionet` buffers in one `create_rnet()` at
+   startup (`netInterface.c:1600-1608`).  Fix: consolidated all
+   buffer allocation into `create_rnet()`; the per-thread sites
+   now allocate only their TU-scope `g_fpga_read_bufp` /
+   `g_fpga_write_bufp` (which the reference itself does at
+   thread entry per `networkproto1.c:427-428`).
+
+3. **Buffer sizes corrected.** `prn->OutBufp` was sized 1008
+   bytes in Lyra (datagram-payload sized) vs reference's 1440
+   bytes (`netInterface.c:1606`).  `prn->outLRbufp` / `outIQbufp`
+   were 252 doubles in Lyra (one-datagram-stereo sized) vs
+   reference's 1440 doubles (`netInterface.c:1607-1608`).  The
+   1440-double outIQbufp size is load-bearing for EER mode
+   (reference's `memcpy(prn->outLRbufp, prn->outIQbufp + 256,
+   ...)` at `networkproto1.c:1225` reads past the 252-double
+   front).  Fix: matched reference sizes in `create_rnet()`.
+
+`HL2Stream::open()` now calls `lyra::wire::create_rnet();`
+(idempotent — first call allocates + initializes, subsequent
+open/close cycles return immediately) followed by
+`lyra::wire::metis_wire_bind(socket_, destStorage_,
+sizeof(sockaddr_in));` and `lyra::wire::outbound_init();`
+(per-session sync-flag reset only — no buffer touch).
+
+Symmetric `lyra::wire::metis_wire_bind(-1, nullptr, 0);`
+teardown in `close()` after worker joins + socket close
+clears the TU-scope bind so any stale post-close
+`metis_write_frame()` fails fast on `sendto(-1)`.  `prn` and
+its allocations persist for process lifetime (matches
+reference's "create_rnet once, never free" posture).
 
 **Reference provenance:**
+- `create_rnet()` body (heap-allocate `_radionet` + all buffers
+  + scalar/sub-struct/per-element init): `netInterface.c:1590-1763`.
 - `prn` non-null contract before session-open body proceeds:
-  `netInterface.c:40` (`if (... || prn == NULL) return 3;`).
-- `prn->hobbuffsRun[0,1]` + `prn->hsendEventHandles[0,1]` semaphore
-  allocation in session-open (= `outbound_init`): `netInterface.c:68-71`.
-- File-scope `listenSock` global = TU-scope socket bound via
-  `metis_wire_bind()`: implicit at every `sendPacket(listenSock,
-  ...)` call site (e.g. `networkproto1.c:55, 89, 234`).
+  `netInterface.c:40`.
+- Per-session semaphore allocation (= Lyra-native bool-flag
+  reset in `outbound_init`): `netInterface.c:68-71`.
+- File-scope `listenSock` bind via `metis_wire_bind`: implicit
+  at every `sendPacket(listenSock, ...)` site (`networkproto1.c:55,
+  89, 234`).
+- TU-scope `FPGAReadBufp` / `FPGAWriteBufp` allocated at thread
+  entry (NOT in create_rnet): `networkproto1.c:427-428`.
 
-**Wire-INERT:** `prn` now non-null, `metis_socket_fd()` returns a
-valid fd, `outbound_init()` populated the LR/IQ buffers — but NO
-new code path reads any of it yet.  `rxWorkerLoop` / `txWorkerLoop`
-remain the live RX/TX path.  Build-clean, no new compile warnings,
-Rule-2 grep clean across the four touched files.
+**Wire-INERT:** `prn` now non-null with all reference-default
+scalar values + reference-sized buffers; `metis_socket_fd()`
+returns a valid fd; outbound sync flags initialized — but NO
+new code path reads any of it yet.  `rxWorkerLoop` /
+`txWorkerLoop` remain the live RX/TX path.  Build clean
+(all 5 touched .cpp files recompiled), no new compile
+warnings, Rule-2 grep clean across the 6 touched files.
 
-**Files touched (Stage 1):**
+**Files touched (Stage 1, corrected):**
 - `src/hl2_stream.h` — added `std::uint32_t destStorage_[4]`
   private member (opaque sockaddr_in buffer; lifetime tied to
   HL2Stream object so the wire layer's caller-owned dest_addr
   pointer remains valid for the life of the EP2/EP6 threads).
 - `src/hl2_stream.cpp` — added 3 wire-layer includes
   (`wire/RadioNet.h`, `wire/MetisFrame.h`, `wire/OutboundRing.h`),
-  added the 3-call wire-layer init block in `open()`, added the
-  symmetric `metis_wire_bind(-1, nullptr, 0)` teardown in `close()`.
-- `src/wire/RadioNet.h` — added `RadioNet* radio_net();` singleton
-  accessor declaration (process-lifetime static).
-- `src/wire/RadioNet.cpp` — added `radio_net()` implementation
-  (C++11-thread-safe static init).
+  added the wire-layer init block in `open()` calling
+  `create_rnet()` + `metis_wire_bind` + `outbound_init`, added
+  the symmetric `metis_wire_bind(-1, nullptr, 0)` teardown in
+  `close()`.
+- `src/wire/RadioNet.h` — added `create_rnet()` declaration
+  (replaces the initial `radio_net()` accessor).
+- `src/wire/RadioNet.cpp` — added `create_rnet()` implementation
+  mirroring `netInterface.c:1590-1763` verbatim: `prn = new
+  RadioNet();`, all scalar/sub-struct init line-by-line cited,
+  all buffer allocations (RxBuff/RxReadBufp/TxReadBufp/ReadBufp/
+  OutBufp/outLRbufp/outIQbufp) at reference-faithful sizes.
+- `src/wire/OutboundRing.cpp` — removed buffer-allocation from
+  `outbound_init()`; now per-session sync-flag reset only
+  (matches reference's `netInterface.c:68-71` semaphore-init
+  posture, Lyra-native bool-flag equivalent).
+- `src/wire/Ep6RecvThread.cpp` — removed `prn->RxBuff` +
+  `prn->TxReadBufp` sizing from `start()`; `g_fpga_read_bufp`
+  sizing stays (TU-scope mirror of reference's `FPGAReadBufp`
+  allocated at thread entry, `networkproto1.c:427`).
+- `src/wire/Ep2SendThread.cpp` — removed `prn->OutBufp` sizing
+  from `start()`; `g_fpga_write_bufp` sizing stays (TU-scope
+  mirror of reference's `FPGAWriteBufp`, `networkproto1.c:428`).
 
 **VERDICT:** ⏳ **PARITY — pending bench gate**
 
-**Bench gate:** build-clean (done) + 60s RX soak side-by-side with
-HEAD comparing EP2 send rate + EP6 recv rate + seq-error counter
-within ±0.1%.  Operator confirms on dummy-load bench; no HL2
-hardware interaction differs from HEAD (this stage is wire-INERT,
-zero new wire bytes go out).
+**Bench gate:** build-clean (done) + 60s RX soak side-by-side
+with HEAD comparing EP2 send rate + EP6 recv rate + seq-error
+counter within ±0.1%.  Operator confirms on dummy-load bench;
+no HL2 hardware interaction differs from HEAD (this stage is
+wire-INERT, zero new wire bytes go out).
 
-**Rollback risk:** tiny.  Three new calls + one symmetric teardown;
-revert by removing the wire-layer block from `open()` + the
-`metis_wire_bind(-1, ...)` call from `close()` + the 4 lines of
-member/includes/singleton.
+**Rollback risk:** small.  Allocation consolidated into one
+new function + 3 sites simplified.  Revert path: drop
+`create_rnet()` body, restore the buffer .assign() calls in
+the three thread/init sites + the destStorage_ +
+metis_wire_bind / outbound_init block in `open()`.
+
+**Audit gap surfaced + corrected:** the original §1-C audit
+verified field LOCATIONS (where state lives) and CALLBACK
+SHAPES (dispatch semantics) but did NOT audit ALLOCATION
+PATTERNS (heap vs static, where buffers get sized, single vs
+multi call-site allocation).  This stage's correction
+introduced an explicit pre-write reference grep gate for
+every new function + every new allocation in future stages,
+with file:line citation in the implementation comment.
 
 Signed: _____         Date: __________
 
 ---
 
-*Last updated: 2026-06-06 — §14 Stage 1 SHIPPED (wire-layer singleton + bind + outbound_init wired into `HL2Stream::open()`, wire-INERT).  Build clean (`RadioNet.cpp.obj` + `hl2_stream.cpp.obj` recompiled, no new warnings, Rule-2 grep clean across touched files); operator bench gate pending.  Earlier today: §1-C comprehensive correction sweep COMPLETE (twelve commits across the morning + afternoon: §6-B + §7 + §6-B null-guard nit + 6-agent comprehensive TX audit + §1-C Stages 1, 2A, 3, 4A, 4B, 4B.1, 4C, 4D + 4E doc consolidation; §1.1 networking-infrastructure exclusion fully reverted; Router + OutboundRing dissolved to free functions; build clean throughout).*
+*Last updated: 2026-06-06 — §14 Stage 1 CORRECTED + SHIPPED.  Operator audit caught the initial Stage 1 commit (`9bf963e`) shipping a Meyers-singleton patch (`radio_net()` returning `&static RadioNet`) against the standing "do as reference, period" rule + a §6-Q-class miss in the §1-C audit (buffer allocation split across 3 sites vs reference's single `create_rnet()` allocator).  Correction commit replaces `radio_net()` with `create_rnet()` mirroring `netInterface.c:1590-1763` verbatim (heap-allocate via `new RadioNet()`, all scalar + sub-struct + buffer init in one place, reference-faithful buffer sizes 1440 bytes / 1440 doubles).  Buffer init removed from `outbound_init` / `Ep6RecvThread::start` / `Ep2SendThread::start` (now only the TU-scope `g_fpga_read_bufp` / `g_fpga_write_bufp` mirrors stay at thread entry, per `networkproto1.c:427-428`).  Methodology tightened: every new function + new allocation in future stages now requires a pre-write reference grep with file:line cited in the implementation comment.  Earlier today: §1-C comprehensive correction sweep COMPLETE (twelve commits across the morning + afternoon; §1.1 networking-infrastructure exclusion fully reverted; Router + OutboundRing dissolved to free functions; build clean throughout).*

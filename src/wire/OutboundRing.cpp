@@ -21,11 +21,21 @@ namespace lyra::wire {
 void outbound_init() {
     if (prn == nullptr) return;
     std::lock_guard<std::mutex> lk(prn->mu_outbound);
-    prn->outLRbufp.assign(kOutboundDoublesPerBuffer, 0.0);
-    prn->outIQbufp.assign(kOutboundDoublesPerBuffer, 0.0);
+    // outLRbufp / outIQbufp allocation moved to create_rnet()
+    // per the 2026-06-06 operator audit (reference allocates ALL
+    // buffers in one `create_rnet()` at startup —
+    // `netInterface.c:1607-1608`; prior Lyra split was a §6-Q-
+    // class deviation).  Buffers are already sized 1440 doubles
+    // by create_rnet by the time we get here; only the per-
+    // session sync-flag reset stays in outbound_init.
+    //
     // Initial state: consumer blocked (ready=false), producer
     // signaled (consumed=true so first push doesn't block) —
-    // matches reference first-iteration behavior.
+    // matches reference first-iteration behavior (the reference
+    // creates the semaphores fresh per StartAudioNative at
+    // netInterface.c:68-71 with initial counts ready-to-fill = 1
+    // and ready-to-send = 0; Lyra's bool-flag equivalent gets
+    // the same initial state here per session).
     prn->lr_ready     = false;
     prn->iq_ready     = false;
     prn->lr_consumed  = true;

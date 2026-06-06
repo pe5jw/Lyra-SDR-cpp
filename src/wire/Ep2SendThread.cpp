@@ -92,13 +92,16 @@ void Ep2SendThread::start(int                socket_fd,
     // wire-up) has already bound the same values.
     metis_wire_bind(socket_fd, dest_addr, dest_addrlen);
 
-    // §1-C Stage 4C: size both outbound buffers at thread start
-    // — mirrors reference's `prn->OutBufp = (char*)malloc(...)`
-    // + `FPGAWriteBufp = (char*)calloc(1024, sizeof(char));` at
-    // `networkproto1.c:428`.  `prn->OutBufp` lives in
-    // `_radionet`; `g_fpga_write_bufp` is TU-scope per the
-    // reference's file-scope global pattern.
-    prn->OutBufp.assign(kLriqBytesPerDatagram, 0);
+    // `prn->OutBufp` allocation moved to create_rnet() per the
+    // 2026-06-06 operator audit (reference allocates ALL
+    // _radionet buffers in one create_rnet() at startup —
+    // netInterface.c:1606 sizes OutBufp to 1440 bytes; prior
+    // Lyra split was a §6-Q-class deviation, and the Lyra-side
+    // size was undersized at 1008 vs reference 1440).
+    // `g_fpga_write_bufp` stays here — it's the TU-scope mirror
+    // of the reference's file-scope `FPGAWriteBufp` global
+    // allocated at thread entry (networkproto1.c:428), NOT
+    // inside create_rnet.
     g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
 
     stop_request_.store(false, std::memory_order_release);

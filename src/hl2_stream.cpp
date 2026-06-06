@@ -668,26 +668,39 @@ void HL2Stream::open(const QString &ip) {
     // auto-connect without a Discover (read in main()).
     QSettings().setValue(QStringLiteral("radio/lastIp"), ip);
 
-    // Step 14 Stage 1 — wire-layer singleton + bind + outbound init.
+    // Step 14 Stage 1 — wire-layer init.  Reference-faithful per
+    // the 2026-06-06 operator audit that caught the prior
+    // `radio_net()` Meyers-singleton patch + the buffer-init split
+    // across three call sites.  Now: ALL allocation lives in
+    // `create_rnet()` per the reference's single allocator at
+    // `netInterface.c:1590-1763`; per-session work here is just
+    // wire-bind + sync-flag reset.
     //
     // Reference provenance:
-    //   - prn non-null contract before session-open body proceeds:
-    //     netInterface.c:40  (`if (... || prn == NULL) return 3;`)
-    //   - prn->hobbuffsRun[0,1] + prn->hsendEventHandles[0,1] semaphore
-    //     allocation in session-open (= lyra::wire::outbound_init):
-    //     netInterface.c:68-71
-    //   - file-scope listenSock global bound at session-open (= the
-    //     TU-scope socket fd set by lyra::wire::metis_wire_bind):
-    //     implicit at every sendPacket(listenSock, ...) call site
-    //     (e.g. networkproto1.c:55, 89, 234)
+    //   - `create_rnet()` allocator (heap-allocates `_radionet`
+    //     struct + all buffers + scalar/sub-struct init):
+    //     netInterface.c:1590-1763.  Called once by C# console
+    //     init in the reference; Lyra calls from open() with an
+    //     idempotent guard so re-open doesn't re-allocate.
+    //   - `prn` non-null contract before session-open body proceeds:
+    //     netInterface.c:40 (`if (... || prn == NULL) return 3;`).
+    //   - `prn->hsendEventHandles[0,1]` + `prn->hobbuffsRun[0,1]`
+    //     per-session semaphore allocation (= Lyra-native
+    //     bool-flag reset in `outbound_init`):
+    //     netInterface.c:68-71.
+    //   - file-scope `listenSock` global bound at session-open
+    //     (= TU-scope socket fd set by `metis_wire_bind`):
+    //     implicit at every `sendPacket(listenSock, ...)` call site
+    //     (e.g. networkproto1.c:55, 89, 234).
     //
-    // Wire-INERT: these three calls populate the new wire-layer state
-    // but no new code path reads it yet.  rxWorkerLoop/txWorkerLoop
-    // remain the live RX/TX path until step 14 stages 2-6 retire them.
-    // Idempotent on re-open — metis_wire_bind overwrites prior values,
-    // outbound_init returns early if prn->outLRbufp is already sized.
+    // Wire-INERT: these three calls populate the new wire-layer
+    // state but no new code path reads it yet.  rxWorkerLoop /
+    // txWorkerLoop remain the live RX/TX path until step 14
+    // stages 2-6 retire them.
     {
-        lyra::wire::prn = lyra::wire::radio_net();
+        lyra::wire::create_rnet();  // idempotent; first call
+                                    // allocates + initializes,
+                                    // subsequent calls no-op.
         sockaddr_in d{};
         d.sin_family = AF_INET;
         d.sin_port   = htons(kRadioPort);
@@ -696,7 +709,7 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::metis_wire_bind(static_cast<int>(socket_),
                                     destStorage_,
                                     sizeof(d));
-        lyra::wire::outbound_init();
+        lyra::wire::outbound_init();  // per-session sync-flag reset
     }
 
     // Spawn RX first so it's already listening when TX sends START.
