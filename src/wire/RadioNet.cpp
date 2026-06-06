@@ -24,6 +24,17 @@ RadioNet::~RadioNet() = default;
 // reference-parity grep discipline.
 RadioNet* prn = nullptr;
 
+// §1.12 supplement — singleton accessor for the one process-
+// lifetime RadioNet instance.  See RadioNet.h declaration for the
+// full rationale (mirrors reference's "one _radionet pointed at
+// by prn for the lifetime of the audio driver" pattern).  Static
+// init is C++11-thread-safe; HL2Stream::open() calls this once on
+// Step 14 Stage 1 and stores the result in `prn`.
+RadioNet* radio_net() {
+    static RadioNet instance;
+    return &instance;
+}
+
 // §3.4 — Dispatch-relevant runtime globals.
 //
 // `XmitBit` mirrors the reference verbatim (`network.h:413`).

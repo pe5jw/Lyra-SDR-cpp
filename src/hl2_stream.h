@@ -1073,6 +1073,17 @@ private:
     void applyLnaGainNoPersist(int db);
 
     SocketHandle         socket_ = kInvalidSocket;
+    // Step 14 Stage 1 — sockaddr_in storage for lyra::wire::metis_wire_bind().
+    // The wire layer stores the dest_addr POINTER caller-owned (see
+    // wire/MetisFrame.h:43-49); its target must outlive the EP2/EP6
+    // threads.  Holding the bytes here ties their lifetime to the
+    // HL2Stream object.  Opaque 16-byte buffer keeps winsock2.h out of
+    // this header (mirror of the existing SocketHandle pattern at line
+    // 88-92).  sockaddr_in is 16 bytes (2 sin_family + 2 sin_port + 4
+    // sin_addr + 8 sin_zero) on every Windows/POSIX target; 4-byte
+    // alignment (uint32_t array) satisfies its strictest field
+    // (uint32_t sin_addr).  The .cpp reinterpret_casts to sockaddr_in.
+    std::uint32_t        destStorage_[4] = {};
     std::jthread         rxWorker_;
     std::jthread         txWorker_;
     std::atomic<bool>    running_{false};

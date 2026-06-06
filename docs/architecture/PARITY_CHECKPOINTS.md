@@ -2685,4 +2685,85 @@ Signed: N8SDR        Date: 2026-06-06
 
 ---
 
-*Last updated: 2026-06-06 — §1-C comprehensive correction sweep COMPLETE.  Twelve commits today across the morning + afternoon: §6-B + §7 + §6-B null-guard nit + 6-agent comprehensive TX audit + §1-C Stages 1, 2A, 3, 4A, 4B, 4B.1, 4C, 4D + this 4E doc consolidation.  §1.1 networking-infrastructure exclusion (signed 🔴 2026-06-04) fully reverted: all `_radionet` fields now in RadioNet; all reference file-scope globals as TU-scope statics in the correct wire-layer .cpp file.  Router + OutboundRing dissolved to free functions (Lyra-native class wrappers had no reference counterpart).  Build clean throughout.  Wire-INERT: nothing in `HL2Stream::session_open` calls the wire-layer components yet — Phase 2 step 14 wire-up next.*
+## §14 Step 14 — Phase 2 wire-up into `HL2Stream::open()`
+
+Operator-locked plan in `docs/architecture/STEP14_PLAN.md` (8 stages,
+2 bench-critical commits).  Three operator corrections folded
+2026-06-06: priming pass INSIDE `Ep6RecvThread::run_loop` per
+reference order; chunk granularity = 2×19 samples per datagram per
+reference per-USB-frame xrouter dispatch; single `MetisOutBoundSeqNum`
+across priming + steady-state.  §5.8 Router callback shape verified
+SAFE-AS-IS for PureSignal compatibility (signed C↔C++23 idiom
+translation; reference `function[port][i][ctrl]` + `callid[port][i]
+[ctrl]` collapse into one `std::function` closure preserving the
+`port × call_idx × ctrl_word` table).  Standing rule: "do as
+reference, period, NO PATCHING."
+
+### §14 Stage 1 — wire-layer singleton + bind + outbound_init (wire-INERT)
+
+Insert into `HL2Stream::open()` between the UDP-stats snapshot and
+the `rxWorker_`/`txWorker_` jthread spawns:
+- `lyra::wire::prn = lyra::wire::radio_net();` — assign the
+  process-lifetime singleton (new `radio_net()` accessor added to
+  `RadioNet.{h,cpp}` mirrors the reference's "one `_radionet`
+  pointed at by `prn` for lifetime of the audio driver" pattern).
+- `lyra::wire::metis_wire_bind(socket_, destStorage_, sizeof(sockaddr_in));`
+  — bind the TU-scope socket fd + dest_addr pointer (caller-owned
+  `destStorage_` lives as a 16-byte `std::uint32_t[4]` member on
+  HL2Stream so its lifetime outlives the EP2/EP6 threads).
+- `lyra::wire::outbound_init();` — allocate `prn->outLRbufp` +
+  `outIQbufp` + sync primitives.
+
+Symmetric teardown in `close()` after the worker joins + socket
+close: `lyra::wire::metis_wire_bind(-1, nullptr, 0);` (clears the
+bind so any stale post-close `metis_write_frame()` fails fast on
+sendto(-1) instead of writing to a closed socket).  `prn` singleton
+stays alive across close/re-open (matches reference posture).
+
+**Reference provenance:**
+- `prn` non-null contract before session-open body proceeds:
+  `netInterface.c:40` (`if (... || prn == NULL) return 3;`).
+- `prn->hobbuffsRun[0,1]` + `prn->hsendEventHandles[0,1]` semaphore
+  allocation in session-open (= `outbound_init`): `netInterface.c:68-71`.
+- File-scope `listenSock` global = TU-scope socket bound via
+  `metis_wire_bind()`: implicit at every `sendPacket(listenSock,
+  ...)` call site (e.g. `networkproto1.c:55, 89, 234`).
+
+**Wire-INERT:** `prn` now non-null, `metis_socket_fd()` returns a
+valid fd, `outbound_init()` populated the LR/IQ buffers — but NO
+new code path reads any of it yet.  `rxWorkerLoop` / `txWorkerLoop`
+remain the live RX/TX path.  Build-clean, no new compile warnings,
+Rule-2 grep clean across the four touched files.
+
+**Files touched (Stage 1):**
+- `src/hl2_stream.h` — added `std::uint32_t destStorage_[4]`
+  private member (opaque sockaddr_in buffer; lifetime tied to
+  HL2Stream object so the wire layer's caller-owned dest_addr
+  pointer remains valid for the life of the EP2/EP6 threads).
+- `src/hl2_stream.cpp` — added 3 wire-layer includes
+  (`wire/RadioNet.h`, `wire/MetisFrame.h`, `wire/OutboundRing.h`),
+  added the 3-call wire-layer init block in `open()`, added the
+  symmetric `metis_wire_bind(-1, nullptr, 0)` teardown in `close()`.
+- `src/wire/RadioNet.h` — added `RadioNet* radio_net();` singleton
+  accessor declaration (process-lifetime static).
+- `src/wire/RadioNet.cpp` — added `radio_net()` implementation
+  (C++11-thread-safe static init).
+
+**VERDICT:** ⏳ **PARITY — pending bench gate**
+
+**Bench gate:** build-clean (done) + 60s RX soak side-by-side with
+HEAD comparing EP2 send rate + EP6 recv rate + seq-error counter
+within ±0.1%.  Operator confirms on dummy-load bench; no HL2
+hardware interaction differs from HEAD (this stage is wire-INERT,
+zero new wire bytes go out).
+
+**Rollback risk:** tiny.  Three new calls + one symmetric teardown;
+revert by removing the wire-layer block from `open()` + the
+`metis_wire_bind(-1, ...)` call from `close()` + the 4 lines of
+member/includes/singleton.
+
+Signed: _____         Date: __________
+
+---
+
+*Last updated: 2026-06-06 — §14 Stage 1 SHIPPED (wire-layer singleton + bind + outbound_init wired into `HL2Stream::open()`, wire-INERT).  Build clean (`RadioNet.cpp.obj` + `hl2_stream.cpp.obj` recompiled, no new warnings, Rule-2 grep clean across touched files); operator bench gate pending.  Earlier today: §1-C comprehensive correction sweep COMPLETE (twelve commits across the morning + afternoon: §6-B + §7 + §6-B null-guard nit + 6-agent comprehensive TX audit + §1-C Stages 1, 2A, 3, 4A, 4B, 4B.1, 4C, 4D + 4E doc consolidation; §1.1 networking-infrastructure exclusion fully reverted; Router + OutboundRing dissolved to free functions; build clean throughout).*

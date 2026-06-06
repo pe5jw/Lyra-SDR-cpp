@@ -635,6 +635,25 @@ public:
 
 extern RadioNet* prn;
 
+// ===== §1.12 supplement — singleton accessor =====
+//
+// Returns a pointer to the one process-lifetime `RadioNet` instance.
+// First call constructs the static (C++11 guarantees thread-safe
+// init), subsequent calls return the same pointer.  Caller assigns
+// `lyra::wire::prn = lyra::wire::radio_net();` at HL2 session-open
+// (Step 14 Stage 1) so all wire-layer free functions can dereference
+// `prn->...` for the lifetime of the process.  Mirrors the
+// reference's session-startup pattern of one `_radionet` struct
+// pointed at by `prn` for the lifetime of the audio driver (see
+// e.g. `network.c` initialization of the file-scope `_radionet`
+// instance to which `prn` points; reference allocates once at
+// startup and never frees).
+//
+// Lifetime: indefinite (static storage duration).  close() does
+// NOT destroy or null `prn` — reference posture is also "prn
+// stays valid between session-close and next session-open."
+RadioNet* radio_net();
+
 // ===== §3.4 — Dispatch-relevant runtime globals =====
 //
 // Reference-verbatim globals consumed at use sites by the wire-

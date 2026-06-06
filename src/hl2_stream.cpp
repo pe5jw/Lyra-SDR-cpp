@@ -5,6 +5,15 @@
 #include "hl2_stream.h"
 
 #include "bands.h"
+// Step 14 Stage 1 — wire-layer includes for the inert wire-up of
+// prn singleton + metis_wire_bind + outbound_init in open().  See
+// docs/architecture/STEP14_PLAN.md.  These three calls become live
+// callers of the new wire layer for the first time; nothing reads
+// the bound state yet (rxWorkerLoop / txWorkerLoop are still the
+// live RX/TX path until later stages).
+#include "wire/RadioNet.h"      // RadioNet, prn, radio_net()
+#include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
+#include "wire/OutboundRing.h"  // outbound_init
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -659,6 +668,37 @@ void HL2Stream::open(const QString &ip) {
     // auto-connect without a Discover (read in main()).
     QSettings().setValue(QStringLiteral("radio/lastIp"), ip);
 
+    // Step 14 Stage 1 — wire-layer singleton + bind + outbound init.
+    //
+    // Reference provenance:
+    //   - prn non-null contract before session-open body proceeds:
+    //     netInterface.c:40  (`if (... || prn == NULL) return 3;`)
+    //   - prn->hobbuffsRun[0,1] + prn->hsendEventHandles[0,1] semaphore
+    //     allocation in session-open (= lyra::wire::outbound_init):
+    //     netInterface.c:68-71
+    //   - file-scope listenSock global bound at session-open (= the
+    //     TU-scope socket fd set by lyra::wire::metis_wire_bind):
+    //     implicit at every sendPacket(listenSock, ...) call site
+    //     (e.g. networkproto1.c:55, 89, 234)
+    //
+    // Wire-INERT: these three calls populate the new wire-layer state
+    // but no new code path reads it yet.  rxWorkerLoop/txWorkerLoop
+    // remain the live RX/TX path until step 14 stages 2-6 retire them.
+    // Idempotent on re-open — metis_wire_bind overwrites prior values,
+    // outbound_init returns early if prn->outLRbufp is already sized.
+    {
+        lyra::wire::prn = lyra::wire::radio_net();
+        sockaddr_in d{};
+        d.sin_family = AF_INET;
+        d.sin_port   = htons(kRadioPort);
+        ::inet_pton(AF_INET, ip.toLatin1().constData(), &d.sin_addr);
+        std::memcpy(destStorage_, &d, sizeof(d));
+        lyra::wire::metis_wire_bind(static_cast<int>(socket_),
+                                    destStorage_,
+                                    sizeof(d));
+        lyra::wire::outbound_init();
+    }
+
     // Spawn RX first so it's already listening when TX sends START.
     // Native UDP sendto + recvfrom on one socket from different
     // threads is documented thread-safe at the OS level.
@@ -761,6 +801,15 @@ void HL2Stream::close() {
         ::closesocket(static_cast<SOCKET>(socket_));
         socket_ = kInvalidSocket;
     }
+
+    // Step 14 Stage 1 — wire-layer bind teardown.  Clear the TU-scope
+    // socket fd + dest pointer so any post-close call into
+    // metis_write_frame() fails fast (sendto on -1) instead of writing
+    // to a stale closed handle.  prn singleton stays alive — the
+    // reference's prn is also non-null between session-close and the
+    // next session-open (it points at a static _radionet struct), so
+    // operator can re-open cleanly without re-allocating.
+    lyra::wire::metis_wire_bind(-1, nullptr, 0);
 
     statsTimer_.stop();
     autoLnaTimer_.stop();
