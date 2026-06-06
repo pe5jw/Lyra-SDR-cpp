@@ -17,7 +17,7 @@
 // preserves the no-race property).
 
 #include "wire/Ep2SendThread.h"
-#include "wire/FrameComposer.h"
+#include "wire/FrameComposer.h"   // §1-C Stage 4F.2: now provides free `write_main_loop_hl2`
 #include "wire/MetisFrame.h"
 #include "wire/OutboundRing.h"
 #include "wire/RadioNet.h"
@@ -76,8 +76,7 @@ Ep2SendThread::~Ep2SendThread() {
 
 void Ep2SendThread::start(int                socket_fd,
                           const void*        dest_addr,
-                          std::size_t        dest_addrlen,
-                          FrameComposer*     composer) {
+                          std::size_t        dest_addrlen) {
     if (running_.load(std::memory_order_acquire)) return;
 
     // §1-C Stage 4C: `prn` must be valid by session-open contract
@@ -102,7 +101,6 @@ void Ep2SendThread::start(int                socket_fd,
     prn->OutBufp.assign(kLriqBytesPerDatagram, 0);
     g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
 
-    composer_      = composer;
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
     thread_ = std::make_unique<std::thread>([this] { this->run_loop(); });
@@ -153,8 +151,9 @@ void Ep2SendThread::run_loop() {
 // ---- per-iteration body (mirrors :1218-1265) ----
 
 bool Ep2SendThread::process_one_pair() {
-    if (!composer_) return false;
-    // §1-C Stage 4C: prn must be valid (assigned at start()).
+    // §1-C Stage 4C/4F.2: prn must be valid (assigned at
+    // start()); no more `composer_` member to check (dissolved
+    // into namespace-scope free functions).
     if (prn == nullptr) return false;
 
     // §6.2 — wait for BOTH lr_ready + iq_ready (`:1220`).
@@ -221,7 +220,9 @@ bool Ep2SendThread::process_one_pair() {
     // of the 1024-byte buffer.  Body LRIQ at [8..511] + [520..1023]
     // is filled by the memcpy below.
     if (hpsdrModel == HPSDRModel::HERMESLITE) {
-        composer_->write_main_loop_hl2(
+        // §1-C Stage 4F.2: free function (FrameComposer
+        // dissolved).
+        write_main_loop_hl2(
             reinterpret_cast<char*>(g_fpga_write_bufp.data()));
     } else {
         // FIXME (Task #114 / non-HL2 hardware availability): the

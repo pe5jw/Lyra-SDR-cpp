@@ -36,8 +36,6 @@
 
 namespace lyra::wire {
 
-class FrameComposer;  // fwd — included only in cpp
-
 class Ep2SendThread {
 public:
     Ep2SendThread();
@@ -52,17 +50,19 @@ public:
     //   - `socket_fd` : the bound UDP socket (caller-owned)
     //   - `dest_addr` / `dest_addrlen` : the radio's `sockaddr`
     //     (caller-owned; lifetime must outlive this thread)
-    //   - `composer`  : reference to the live FrameComposer that
-    //     fills the per-USB-frame C&C header bytes
     //
     // §1-C Stage 4D: the `OutboundRing* ring` param removed —
-    // the dissolved OutboundRing now operates via namespace-
-    // scope free functions on `prn->...` state.  Caller is
-    // responsible for `outbound_init()` at session-open.
+    // dissolved into namespace-scope free functions.
+    // §1-C Stage 4F.2: the `FrameComposer* composer` param
+    // removed — FrameComposer class dissolved into namespace-
+    // scope free functions; the wire-egress thread calls
+    // `write_main_loop_hl2()` directly.
+    //
+    // Caller is responsible for `outbound_init()` at session-
+    // open.
     void start(int                socket_fd,
                const void*        dest_addr,
-               std::size_t        dest_addrlen,
-               FrameComposer*     composer);
+               std::size_t        dest_addrlen);
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 
@@ -101,10 +101,10 @@ private:
     // members + the `send_lock_` mutex are deleted per the same
     // reference-fidelity sweep.
 
-    // Non-owning reference to the cross-thread collaborator.
-    // §1-C Stage 4D: `OutboundRing* ring_` removed — dissolved
-    // into free functions in `wire/OutboundRing.{h,cpp}`.
-    FrameComposer*    composer_      = nullptr;
+    // §1-C Stage 4D + 4F.2: collaborator members removed —
+    // OutboundRing + FrameComposer both dissolved into
+    // namespace-scope free functions in their respective .cpp
+    // files.  Ep2SendThread is now a pure thread orchestrator.
 
     // Thread control.
     std::atomic<bool> running_{false};

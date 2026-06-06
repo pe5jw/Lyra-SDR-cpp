@@ -1,15 +1,16 @@
 // Lyra — C&C frame composer.  See FrameComposer.h.
 //
 // Source mirror: `networkproto1.c::WriteMainLoop_HL2`
-// (lines 869-1191).  Case bodies for §4a-scope cases 0 / 2 / 3
-// are byte-by-byte verbatim per the signed §4a parity checkpoint.
-// Cases 1 (TX VFO — §4b) and 4-18 (TX att, drive, PA, mic, LNA,
-// PS, ANAN-only) compile-time present per Q2 eager but
-// `assert(false …)` placeholders until §4b / §4c populate.
+// (lines 869-1191).  All 19 cases populated.
 //
-// WIRE-INERT — not called from anywhere yet (§7 `Ep2SendThread`
-// will wire it in once §4b lands the remaining MOX-edge-relevant
-// cases).
+// §1-C Stage 4F.2 (sign-off 2026-06-06): the `FrameComposer`
+// class was dissolved into namespace-scope free functions
+// operating on TU-scope statics here (mirroring the reference's
+// `WriteMainLoop_HL2` free function + file-scope
+// `out_control_idx` / `PreviousTXBit` globals).
+//
+// Sister-pattern of §1-C Stage 2A (Router) + Stage 4D
+// (OutboundRing) dissolutions.
 
 #include "wire/FrameComposer.h"
 #include "wire/RadioNet.h"
@@ -20,13 +21,27 @@
 
 namespace lyra::wire {
 
-FrameComposer::FrameComposer()  = default;
-FrameComposer::~FrameComposer() = default;
+// ---- TU-scope state (§1-C Stage 4F.2) ----
+//
+// Direct mirrors of reference's file-scope globals:
+//   `out_control_idx` at `networkproto1.c:27`
+//   `PreviousTXBit`   at `networkproto1.c:29`
+// Plus a Lyra-native concurrency guard (Q4 signed) — the
+// reference is single-threaded I/O so it doesn't need one;
+// Lyra's §10.2 component split puts setters on UI/control
+// threads and the scheduler walk on the wire-egress thread,
+// so the mutex coordinates cross-thread access to the C&C
+// register state in `prn->...`.
+namespace {
+int        g_out_control_idx = 0;
+int        g_previous_tx_bit = 0;
+std::mutex g_cc_lock;
+}  // namespace
 
 // =================== §4a setters =====================================
 
-void FrameComposer::set_rx_freq(int rx_idx, int freq_hz) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_rx_freq(int rx_idx, int freq_hz) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (rx_idx < 0 || rx_idx >= kMaxRxStreams)
         return;
     if (prn == nullptr)
@@ -38,8 +53,8 @@ void FrameComposer::set_rx_freq(int rx_idx, int freq_hz) {
 }
 
 // §4b-1.8 setter — TX NCO freq for case 1.
-void FrameComposer::set_tx_freq(int freq_hz) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_tx_freq(int freq_hz) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (prn == nullptr)
         return;
     prn->tx[0].frequency = freq_hz;
@@ -50,8 +65,8 @@ void FrameComposer::set_tx_freq(int freq_hz) {
 // =================== §4b-2.5 setters =================================
 
 // §4b-2.5 — Write `prn->tx[0].drive_level` (case 10 C1).
-void FrameComposer::set_drive_level(int level) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_drive_level(int level) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (prn == nullptr)
         return;
     prn->tx[0].drive_level = level;
@@ -60,8 +75,8 @@ void FrameComposer::set_drive_level(int level) {
 // §4b-2.5 — Write `prn->tx[0].pa` (case 10 C3 bit 7, legacy path).
 // Apollo-modded HL2+ PA enable is via `ApolloTuner` C2 bit 3
 // (Task #114); this setter only touches the legacy bit.
-void FrameComposer::set_pa_on(bool on) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_pa_on(bool on) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (prn == nullptr)
         return;
     prn->tx[0].pa = on ? 1 : 0;
@@ -70,8 +85,8 @@ void FrameComposer::set_pa_on(bool on) {
 // §4b-2.5 — TX step attenuator setter with HL2-family branching.
 // Source-verified `console.cs:10657-10663`: HL2 applies the
 // (31 - signed_db) inversion; non-HL2 families use the raw value.
-void FrameComposer::set_tx_step_attn_db(int signed_db) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_tx_step_attn_db(int signed_db) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (prn == nullptr)
         return;
 
@@ -98,8 +113,8 @@ void FrameComposer::set_tx_step_attn_db(int signed_db) {
 }
 
 // §4b-2.5 — RX step attenuator setter (no inversion, any family).
-void FrameComposer::set_rx_step_attn_db(int signed_db, int adc_idx) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void set_rx_step_attn_db(int signed_db, int adc_idx) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
     if (prn == nullptr)
         return;
     if (adc_idx < 0 || adc_idx >= kMaxAdc)
@@ -111,7 +126,7 @@ void FrameComposer::set_rx_step_attn_db(int signed_db, int adc_idx) {
 //
 // Source: networkproto1.c:948-970, HL2 dispatch.
 
-void FrameComposer::compose_case_0([[maybe_unused]] unsigned char& C0,
+void compose_case_0([[maybe_unused]] unsigned char& C0,
                                    unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
@@ -173,7 +188,7 @@ void FrameComposer::compose_case_0([[maybe_unused]] unsigned char& C0,
 // PS-on TX state where it carries TX frequency.  On HL2 nddc=4 the
 // nddc==2 branch is a structural no-op (preserved verbatim).
 
-void FrameComposer::compose_case_2(unsigned char& C0, unsigned char& C1,
+void compose_case_2(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -200,7 +215,7 @@ void FrameComposer::compose_case_2(unsigned char& C0, unsigned char& C1,
 //   (2) Orion / ANAN P1 nddc=5 → DDC1 = RX1 freq;
 //   (3) default HL2 nddc=4 → DDC1 = RX2 freq.
 
-void FrameComposer::compose_case_3(unsigned char& C0, unsigned char& C1,
+void compose_case_3(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -226,7 +241,7 @@ void FrameComposer::compose_case_3(unsigned char& C0, unsigned char& C1,
 // Source: networkproto1.c:974-980, HL2 dispatch.
 // TX VFO — DDC2/3 mirror it on HL2 nddc=4 (see §4c case 6).
 
-void FrameComposer::compose_case_1(unsigned char& C0, unsigned char& C1,
+void compose_case_1(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -253,7 +268,7 @@ void FrameComposer::compose_case_1(unsigned char& C0, unsigned char& C1,
 // the mask are structurally unreachable.  Preserved verbatim per
 // Rule 24 (don't "clean up" reference quirks).
 
-void FrameComposer::compose_case_4(unsigned char& C0, unsigned char& C1,
+void compose_case_4(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -271,7 +286,7 @@ void FrameComposer::compose_case_4(unsigned char& C0, unsigned char& C1,
 // Source: networkproto1.c:1127-1133, HL2 dispatch.
 // CW enable bitfield + sidetone level + RF delay.
 
-void FrameComposer::compose_case_13(unsigned char& C0, unsigned char& C1,
+void compose_case_13(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -292,7 +307,7 @@ void FrameComposer::compose_case_13(unsigned char& C0, unsigned char& C1,
 // CW hang_delay split 10-bit across C1/C2; CW sidetone_freq split
 // 12-bit across C3/C4.
 
-void FrameComposer::compose_case_14(unsigned char& C0, unsigned char& C1,
+void compose_case_14(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -313,7 +328,7 @@ void FrameComposer::compose_case_14(unsigned char& C0, unsigned char& C1,
 // Source: networkproto1.c:1143-1149, HL2 dispatch.
 // EER PWM min/max — each 10-bit, split across two bytes.
 
-void FrameComposer::compose_case_15(unsigned char& C0, unsigned char& C1,
+void compose_case_15(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -335,7 +350,7 @@ void FrameComposer::compose_case_15(unsigned char& C0, unsigned char& C1,
 // HL2 TX-latency register — the "0x2e" enhancement.  5-bit PTT hang
 // in C3, 7-bit TX latency (ms) in C4.
 
-void FrameComposer::compose_case_17(unsigned char& C0, unsigned char& C1,
+void compose_case_17(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -355,7 +370,7 @@ void FrameComposer::compose_case_17(unsigned char& C0, unsigned char& C1,
 // disconnect.  Per §15.26 history, defaults to 0 to avoid the wedge
 // defect where a clean Lyra stop triggered gateware reset.
 
-void FrameComposer::compose_case_18(unsigned char& C0, unsigned char& C1,
+void compose_case_18(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -374,7 +389,7 @@ void FrameComposer::compose_case_18(unsigned char& C0, unsigned char& C1,
 // Drive level + Apollo PA / filter / tuner / ATU bits + mic_boost
 // + line_in + per-band HPF/LPF + legacy PA bit.
 
-void FrameComposer::compose_case_10(unsigned char& C0, unsigned char& C1,
+void compose_case_10(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -435,7 +450,7 @@ void FrameComposer::compose_case_10(unsigned char& C0, unsigned char& C1,
 // `prn->adc[0].tx_step_attn` is set to the protective value
 // (Task #114 ATT-on-TX policy).
 
-void FrameComposer::compose_case_11(unsigned char& C0, unsigned char& C1,
+void compose_case_11(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -483,7 +498,7 @@ void FrameComposer::compose_case_11(unsigned char& C0, unsigned char& C1,
 //   - No explicit `& 0x1F` mask on `adc[1].rx_step_attn` RX branch
 //   - No `& 1` mask on `strict_spacing` (harmless — 1-bit bitfield)
 
-void FrameComposer::compose_case_12(unsigned char& C0, unsigned char& C1,
+void compose_case_12(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -538,7 +553,7 @@ void FrameComposer::compose_case_12(unsigned char& C0, unsigned char& C1,
 // preserved per Rule 24 (harmless because `_rx2_gnd` is a 1-bit
 // bitfield in §2 RbpFilter2).
 
-void FrameComposer::compose_case_16(unsigned char& C0, unsigned char& C1,
+void compose_case_16(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
     assert(prn != nullptr);
@@ -577,7 +592,7 @@ void FrameComposer::compose_case_16(unsigned char& C0, unsigned char& C1,
 // indexing convention — array slot 3 holds Orion's RX2 freq);
 // HL2 / Hermes (nddc=2/4) → DDC2 carries TX freq.
 
-void FrameComposer::compose_case_5(unsigned char& C0, unsigned char& C1,
+void compose_case_5(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -601,7 +616,7 @@ void FrameComposer::compose_case_5(unsigned char& C0, unsigned char& C1,
 // Source: networkproto1.c:1036-1044, HL2 dispatch.
 // RX4 VFO / DDC3 — always TX frequency on all families.
 
-void FrameComposer::compose_case_6(unsigned char& C0, unsigned char& C1,
+void compose_case_6(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -622,7 +637,7 @@ void FrameComposer::compose_case_6(unsigned char& C0, unsigned char& C1,
 // for other families "not used, so make TX always" per reference
 // comment.
 
-void FrameComposer::compose_case_7(unsigned char& C0, unsigned char& C1,
+void compose_case_7(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -643,7 +658,7 @@ void FrameComposer::compose_case_7(unsigned char& C0, unsigned char& C1,
 // `prn->rx[0].frequency` as the benign default (real freq, not
 // garbage on the wire).
 
-void FrameComposer::compose_case_8(unsigned char& C0, unsigned char& C1,
+void compose_case_8(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -663,7 +678,7 @@ void FrameComposer::compose_case_8(unsigned char& C0, unsigned char& C1,
 // RX7 VFO / DDC6 — "not used" per reference comment; same benign
 // default pattern as case 8 (emits `prn->rx[0].frequency`).
 
-void FrameComposer::compose_case_9(unsigned char& C0, unsigned char& C1,
+void compose_case_9(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
     assert(prn != nullptr);
@@ -691,8 +706,8 @@ void FrameComposer::compose_case_9(unsigned char& C0, unsigned char& C1,
 //     overlay frames)
 //   - Post-switch packet packing into txbptr[3..7]
 
-void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
-    std::lock_guard<std::mutex> guard(cc_lock_);
+void write_main_loop_hl2(char* txbptr_base) {
+    std::lock_guard<std::mutex> guard(g_cc_lock);
 
     // Reference defensively assumes prn / prbpfilter are non-null;
     // the §10.2 component split says the wire-layer initializer
@@ -712,15 +727,15 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
         txbptr[2] = 0x7f;
 
         // MOX-edge jump (networkproto1.c:886-891).  On HL2 nddc=4
-        // the `if (nddc == 2)` is FALSE so out_control_idx_ stays
-        // put — but previous_tx_bit_ still updates.  Preserved
+        // the `if (nddc == 2)` is FALSE so g_out_control_idx stays
+        // put — but g_previous_tx_bit still updates.  Preserved
         // verbatim including the no-op-on-HL2 behavior so ANAN
         // tester hardware (nddc=2 Hermes II) gets the same logic
         // when its branch lands.
-        if (XmitBit != previous_tx_bit_) {
+        if (XmitBit != g_previous_tx_bit) {
             if (nddc == 2)
-                out_control_idx_ = 2;
-            previous_tx_bit_ = XmitBit;
+                g_out_control_idx = 2;
+            g_previous_tx_bit = XmitBit;
         }
 
         // C0 base init — MOX bit goes to C0 bit 0
@@ -787,7 +802,7 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
             // Advance queue out-index
             prn->i2c.out_index = next;
 
-            // NB: I2C-overlay frames do NOT advance out_control_idx_.
+            // NB: I2C-overlay frames do NOT advance g_out_control_idx.
             // The else-branch below does that on non-I2C frames.
         } else {
             // Normal switch dispatch (networkproto1.c:946-1178).
@@ -795,7 +810,7 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
             // §4a-scope: cases 0 / 2 / 3 implemented.  Cases 1
             // (TX VFO) and 4-18 are `assert(false)` placeholders
             // until §4b / §4c populate.
-            switch (out_control_idx_) {
+            switch (g_out_control_idx) {
                 case 0:
                     compose_case_0(C0, C1, C2, C3, C4);
                     break;
@@ -876,10 +891,10 @@ void FrameComposer::write_main_loop_hl2(char* txbptr_base) {
             // Cursor advance — networkproto1.c:1180-1183.  Stays
             // INSIDE the else-branch so I2C-overlay frames do NOT
             // advance the round-robin.
-            if (out_control_idx_ < 18)
-                out_control_idx_++;
+            if (g_out_control_idx < 18)
+                g_out_control_idx++;
             else
-                out_control_idx_ = 0;
+                g_out_control_idx = 0;
         }
 
         // Post-switch packet packing — networkproto1.c:1186-1190.
