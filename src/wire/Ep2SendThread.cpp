@@ -1,15 +1,24 @@
 // Lyra — EP2 send thread implementation.  See Ep2SendThread.h.
 //
 // Mirrors `ChannelMaster/networkproto1.c::sendProtocol1Samples`
-// (`:1204-1267`) + `MetisWriteFrame` (`:216-237`) verbatim per
-// the signed §6 parity checkpoint.  All reference quirks
-// (floor/ceil sign-split quantization, HL2 4-bit / non-HL2 3-bit
-// CW state-bit overlay on TX I-LSBs, post-increment BE seq pack,
-// MOX-off IQ zeroing as host-side defense-in-depth) are
-// preserved per Rule 24.
+// (`:1204-1267`) verbatim per the signed §6 parity checkpoint.
+// All reference quirks (floor/ceil sign-split quantization, HL2
+// 4-bit / non-HL2 3-bit CW state-bit overlay on TX I-LSBs,
+// MOX-off IQ zeroing as host-side defense-in-depth) are preserved
+// per Rule 24.
+//
+// §6-B (sign-off 2026-06-06): the `metis_write_frame` wire-emit
+// primitive + the outbound seq counter + the bound socket/dest
+// all moved to `wire/MetisFrame.{h,cpp}` TU-scope — direct mirror
+// of the reference's file-scope `MetisWriteFrame` + the file-
+// scope `MetisOutBoundSeqNum` global + the file-scope `listenSock`
+// global.  The §6 Q5 `send_lock_` is removed (no reference
+// counterpart; temporal separation between priming and main-send
+// preserves the no-race property).
 
 #include "wire/Ep2SendThread.h"
 #include "wire/FrameComposer.h"
+#include "wire/MetisFrame.h"
 #include "wire/OutboundRing.h"
 #include "wire/RadioNet.h"
 
@@ -24,29 +33,14 @@
   #ifndef NOMINMAX
     #define NOMINMAX
   #endif
-  #include <winsock2.h>
+  #include <windows.h>   // required for avrt.h prerequisites (HANDLE/DWORD/BOOL)
   #include <avrt.h>
   #pragma comment(lib, "avrt.lib")
-  using socket_send_len_t  = int;
-  using socket_send_size_t = int;
-#else
-  #include <sys/socket.h>
-  #include <unistd.h>
-  using socket_send_len_t  = ssize_t;
-  using socket_send_size_t = size_t;
 #endif
 
 namespace lyra::wire {
 
-// ---- constants mirroring the reference layout ----
 namespace {
-// EP2 outbound datagram: 8-byte HPSDR header + 1024-byte payload.
-// Reference: `unsigned char framebuf[1032];` at
-// `networkproto1.c:218-220`.
-constexpr std::size_t kHpsdrHeaderBytes = 8;
-constexpr std::size_t kEp2DatagramBytes =
-    kHpsdrHeaderBytes + 1024;  // 1032
-
 // EP2 endpoint identifier.  Reference: `MetisWriteFrame(0x02,
 // FPGAWriteBufp);` at `:1198`.
 constexpr int kEp2Endpoint = 0x02;
@@ -55,69 +49,6 @@ constexpr int kEp2Endpoint = 0x02;
 constexpr int kSampleSlotsPerFrame = 63;       // = 504/8 bytes
 constexpr int kSampleSlotsPerDatagram = 2 * kSampleSlotsPerFrame;  // 126
 constexpr int kLriqBytesPerFrame = 8 * kSampleSlotsPerFrame;       // 504
-
-// ---- metis_write_frame ----
-//
-// Free function mirroring `int MetisWriteFrame(int endpoint, char*
-// bufp)` at `networkproto1.c:216-237`.  Composes the 8-byte HPSDR
-// header (`0xEF 0xFE 0x01 endpoint` + 4-byte BE seqnum), memcpys
-// 1024 bytes of payload, and calls `sendto` on the bound socket.
-// Returns the payload bytes sent (positive) or a negative socket
-// error code.
-//
-// Per the locked §6 Q3 sign-off, this lives in this translation
-// unit's anonymous namespace (not a class member) and uses the
-// caller-supplied `seq_num_ref` reference for the post-increment
-// — `out_seq_num_` is owned by `Ep2SendThread` and threaded
-// through here.
-int metis_write_frame(int                socket_fd,
-                      const void*        dest_addr,
-                      std::size_t        dest_addrlen,
-                      int                endpoint,
-                      const uint8_t*     payload,
-                      std::atomic<uint32_t>& seq_num_ref) {
-    std::array<uint8_t, kEp2DatagramBytes> framebuf{};
-
-    // 4-byte HPSDR sync prefix (`:223-226`).
-    framebuf[0] = 0xEF;
-    framebuf[1] = 0xFE;
-    framebuf[2] = 0x01;
-    framebuf[3] = static_cast<uint8_t>(endpoint);
-
-    // 4-byte outbound sequence number, BE pack (`:221, 227-231`).
-    // Reference uses a cast-to-byte-pointer manual byte-swap that
-    // relies on little-endian host; Lyra uses explicit shifts that
-    // are endian-portable and produce the IDENTICAL 4 wire bytes.
-    // Post-increment ordering (load → write bytes → fetch_add)
-    // preserved verbatim per Rule 24.
-    const uint32_t seq = seq_num_ref.load(std::memory_order_acquire);
-    framebuf[4] = static_cast<uint8_t>((seq >> 24) & 0xff);
-    framebuf[5] = static_cast<uint8_t>((seq >> 16) & 0xff);
-    framebuf[6] = static_cast<uint8_t>((seq >>  8) & 0xff);
-    framebuf[7] = static_cast<uint8_t>( seq        & 0xff);
-    // Post-increment matches reference `++MetisOutBoundSeqNum;`
-    // at `:231`.
-    seq_num_ref.fetch_add(1, std::memory_order_release);
-
-    // Payload copy (`:232`).
-    std::memcpy(framebuf.data() + kHpsdrHeaderBytes, payload, 1024);
-
-    // sendto (`:234`).  Reference uses `sendPacket(...)` which
-    // wraps `sendto` with the configured destination port.
-    const socket_send_len_t result = ::sendto(
-        socket_fd,
-        reinterpret_cast<const char*>(framebuf.data()),
-        static_cast<socket_send_size_t>(kEp2DatagramBytes),
-        0,
-        static_cast<const sockaddr*>(dest_addr),
-        static_cast<int>(dest_addrlen));
-
-    if (result < 0) {
-        return -1;
-    }
-    // Return payload bytes (matches reference `result -= 8;`).
-    return static_cast<int>(result) - static_cast<int>(kHpsdrHeaderBytes);
-}
 }  // namespace
 
 // ---- ctor/dtor ----
@@ -138,9 +69,13 @@ void Ep2SendThread::start(int                socket_fd,
                           FrameComposer*     composer,
                           OutboundRing*      ring) {
     if (running_.load(std::memory_order_acquire)) return;
-    socket_fd_     = socket_fd;
-    dest_addr_     = dest_addr;
-    dest_addrlen_  = dest_addrlen;
+    // §6-B (sign-off 2026-06-06): socket/dest are TU-scope in
+    // `wire/MetisFrame.cpp` (direct mirror of the reference's
+    // file-scope `listenSock` global + `prn->base_outbound_port`).
+    // We forward the caller's values through `metis_wire_bind()` —
+    // idempotent setter; safe if the session-open path (step 14
+    // wire-up) has already bound the same values.
+    metis_wire_bind(socket_fd, dest_addr, dest_addrlen);
     composer_      = composer;
     ring_          = ring;
     stop_request_.store(false, std::memory_order_release);
@@ -288,21 +223,18 @@ bool Ep2SendThread::process_one_pair() {
                 out_buf_.data() + kLriqBytesPerFrame,
                 static_cast<std::size_t>(kLriqBytesPerFrame));
 
-    // §6.9 — submit via metis_write_frame (`:1198`).  Held under
-    // send_lock_ so concurrent sends on the same socket (e.g.,
-    // priming C&C from §7 ForceCandC) cannot interleave.
-    int result = 0;
-    {
-        std::lock_guard<std::mutex> lk(send_lock_);
-        if (socket_fd_ >= 0 && dest_addr_) {
-            result = metis_write_frame(socket_fd_,
-                                       dest_addr_,
-                                       dest_addrlen_,
-                                       kEp2Endpoint,
-                                       fpga_write_buf_.data(),
-                                       out_seq_num_);
-        }
-    }
+    // §6.9 — submit via shared TU-scope `metis_write_frame`
+    // (`networkproto1.c:1198` → `MetisWriteFrame(2, FPGAWriteBufp)`).
+    // §6-B (sign-off 2026-06-06): NO LOCK around this call.
+    // Reference does not lock around `MetisWriteFrame`; the §6
+    // `send_lock_` mutex (Q5 Lyra-native addition) is removed.
+    // Concurrency safety is preserved by TEMPORAL SEPARATION:
+    // §7 `ForceCandC::prime` runs synchronously on the
+    // session-open thread BEFORE `Ep2SendThread::start()` spins
+    // this thread — the two callers are disjoint in time, no
+    // race possible.
+    const int result = metis_write_frame(kEp2Endpoint,
+                                         fpga_write_buf_.data());
     if (result < 0) {
         send_errors_.fetch_add(1, std::memory_order_relaxed);
     } else {

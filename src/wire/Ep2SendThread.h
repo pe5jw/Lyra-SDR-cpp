@@ -11,18 +11,27 @@
 // to fill the C&C bytes in the 2-USB-frame outbound buffer,
 // memcpys the LRIQ payload into the same buffer at offsets [8..511]
 // + [520..1023], and hands the 1024-byte composed payload to the
-// `metis_write_frame(0x02, ...)` free function which prepends the
-// 8-byte HPSDR header + 4-byte BE outbound sequence number and
-// calls `sendto`.
+// `lyra::wire::metis_write_frame(0x02, ...)` free function which
+// prepends the 8-byte HPSDR header + 4-byte BE outbound sequence
+// number (TU-scope `g_metis_out_seq_num` per §6-B) and calls
+// `sendto` on the TU-scope bound socket.
+//
+// §6-B parity correction (sign-off 2026-06-06):  the outbound
+// sequence counter (was `out_seq_num_` member) + the send-lock
+// (was `send_lock_` member) + the socket/dest copies (were
+// `socket_fd_` / `dest_addr_` / `dest_addrlen_` members) all
+// moved to `wire/MetisFrame.{h,cpp}` TU-scope to match the
+// reference's file-scope globals + free-function + no-lock
+// structure verbatim.  This thread's `start()` is now a thin
+// caller of `lyra::wire::metis_wire_bind()` that also stores the
+// `FrameComposer` / `OutboundRing` pointers it needs.
 
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -58,9 +67,12 @@ public:
     bool running() const { return running_.load(std::memory_order_acquire); }
 
     // ---- Diagnostic counters (read from any thread) ----
+    //
+    // §6-B: `out_seq_num()` accessor removed.  The outbound seq
+    // counter is now TU-scope in `wire/MetisFrame.cpp`; readers
+    // call `lyra::wire::metis_out_seq_num()` directly.
     uint64_t datagrams_sent()     const { return datagrams_sent_.load(); }
     uint64_t send_errors()        const { return send_errors_.load(); }
-    uint32_t out_seq_num()        const { return out_seq_num_.load(); }
 
 private:
     void run_loop();
@@ -79,10 +91,14 @@ private:
                            const double* iq_buf);
 
 private:
-    // Owning socket fd is the caller's; we just hold a copy.
-    int               socket_fd_     = -1;
-    const void*       dest_addr_     = nullptr;
-    std::size_t       dest_addrlen_  = 0;
+    // §6-B (sign-off 2026-06-06): socket / dest_addr / dest_addrlen
+    // are NO LONGER stored as members.  Caller passes them to
+    // `start()` which forwards once to `lyra::wire::metis_wire_bind()`;
+    // the TU-scope state in `wire/MetisFrame.cpp` is the single
+    // source of truth — direct mirror of the reference's file-scope
+    // `listenSock` global + `prn->base_outbound_port`.  §6 Q3/Q5
+    // members + the `send_lock_` mutex are deleted per the same
+    // reference-fidelity sweep.
 
     // Non-owning references to the cross-thread collaborators.
     FrameComposer*    composer_      = nullptr;
@@ -92,12 +108,6 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_request_{false};
     std::unique_ptr<std::thread> thread_;
-
-    // Send-side critical section — held across the
-    // `metis_write_frame` `sendto` call so concurrent sends on the
-    // same socket cannot interleave.  Mirrors the reference's
-    // `prn->sndpktp1` (the P1 send critical section).
-    std::mutex send_lock_;
 
     // §6 outbound buffers (§1.1 networking-infrastructure stays
     // out of RadioNet).
@@ -112,17 +122,9 @@ private:
 
     // `fpga_write_buf_` (= reference's `prn->FPGAWriteBufp`): the
     // 1024-byte EP2 payload (sync+C&C+LRIQ packed for both USB
-    // frames) handed to `metis_write_frame`.
+    // frames) handed to `lyra::wire::metis_write_frame`.
     static constexpr int kFpgaPayloadBytes = 1024;
     std::vector<uint8_t> fpga_write_buf_;
-
-    // §6.9 outbound sequence counter.  Per the locked Q3 sign-off
-    // this is encapsulated as a class member rather than the
-    // reference's `MetisOutBoundSeqNum` global — operator-approved
-    // Lyra-native deviation per §1.1 networking-infrastructure
-    // exclusion.  Atomic so diagnostic readers from other threads
-    // observe a coherent value.
-    std::atomic<uint32_t> out_seq_num_{0};
 
     // ---- Diagnostic counters ----
     std::atomic<uint64_t> datagrams_sent_{0};

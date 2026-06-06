@@ -73,6 +73,8 @@ qt_add_executable(lyra
     src/wire/Ep6RecvThread.cpp
     src/wire/Router.h
     src/wire/Router.cpp
+    src/wire/MetisFrame.h
+    src/wire/MetisFrame.cpp
     src/wire/Ep2SendThread.h
     src/wire/Ep2SendThread.cpp
     src/wire/OutboundRing.h

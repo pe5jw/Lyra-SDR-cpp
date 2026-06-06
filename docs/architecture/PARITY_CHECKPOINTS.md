@@ -55,7 +55,8 @@ carries the **state portion only**.
 | Thread / semaphore handles | `network.h:88-97` `HANDLE hReadThreadMain, hReadThreadInitSem, hWriteThreadMain, hWriteThreadInitSem, hsendLRSem, hsendIQSem, hsendEventHandles[2], hobbuffsRun[2], hKeepAliveThread, hTimer;` | Lives in respective threads (`Ep6RecvThread`, `Ep2SendThread`) — each owns its own `std::thread` + condition variables; HL2 P1 has no separate keep-alive thread (`KeepAliveThread` is dead code in the reference HL2 path) |
 | Win32 waitable-timer | `network.h:98` `LARGE_INTEGER liDueTime;` | Lives in `wire/Ep2SendThread` (MMCSS Pro Audio @2 + drift-corrected high-resolution waitable timer per §3 design) |
 | WSA event objects | `network.h:105-106` `WSAEVENT hDataEvent; WSANETWORKEVENTS wsaProcessEvents;` | Lives in `wire/Ep6RecvThread` (Lyra uses `recvfrom` with timeout, NOT WSAEventSelect — Lyra-native socket pattern; equivalent semantics) |
-| Sequence counters | `network.h:86-87` `unsigned int cc_seq_no, cc_seq_err;` | Lives in `wire/Ep6RecvThread` (per-direction seq tracking is a wire-layer concern, not radio state) |
+| Sequence counters (RX-side, IN `_radionet`) | `network.h:86-87` `unsigned int cc_seq_no, cc_seq_err;` | Lives in `wire/Ep6RecvThread` (per-direction seq tracking is a wire-layer concern, not radio state) |
+| Sequence counter (TX-side, NOT in `_radionet`) | `networkproto1.c:30` `unsigned int MetisOutBoundSeqNum;` — separate file-scope global, NOT inside the `_radionet` struct | Lives in `wire/MetisFrame.cpp` TU-scope `g_metis_out_seq_num` per §6-B (sign-off 2026-06-06) — direct mirror of the reference's file-scope global, callable from both `Ep2SendThread::run_loop` AND `ForceCandC::prime` exactly as the reference's `MetisWriteFrame` is callable from `sendProtocol1Samples` + `ForceCandCFrames`.  §1.1 was originally drafted only for `_radionet`-resident networking infrastructure; the TX-side seq counter is NOT in `_radionet` and was incorrectly extended into §1.1's scope at §6 Q3 sign-off — corrected here. |
 | Networking config ports | `network.h:58-59` `int p2_custom_port_base; int base_outbound_port;` | Lives in `wire/Ep6RecvThread` / `wire/Ep2SendThread` constructors (passed in from HL2 discovery, not session state) |
 
 **VERDICT:** 🔴 **OPERATOR-APPROVED DEVIATION** — these fields are
@@ -2416,4 +2417,172 @@ Signed: N8SDR        Date: 2026-06-05
 
 ---
 
-*Last updated: 2026-06-05 — §6-A parity correction sweep — 6 fixes vs `4c580a1` shipped (MMCSS priority drift + per-family dispatch branch + CW bit-source verbatim + CW state per-sample read + binary_semaphore UB guard + Rule 24 inline token).  §7 unblocked.*
+## §6-B Parity correction sweep — TU-scope networking-globals fix (+ §7 ForceCandC enabling)
+
+Operator directive 2026-06-06: "FIX it so it is like the reference,
+NO PATCHING, it must be fixed to perform like the reference does
+period."  §6 Q3 ("`out_seq_num_` encapsulated as `Ep2SendThread`
+member") and §6 Q5 ("`Ep2SendThread::send_lock_` mutex") signed
+2026-06-05 are revisited under the standing "do as reference"
+rule.
+
+**Root finding (Rule 24 source re-read):** `MetisOutBoundSeqNum`
+(`networkproto1.c:30`), `MetisWriteFrame` (`:216-237`), and
+`listenSock` (file-scope) are **NOT** inside the reference's
+`_radionet` struct — they are separate TU-scope file-scope
+globals.  §1.1's "networking infrastructure exclusion" was
+correctly drafted for `_radionet`-resident fields (RxBuff,
+hsendEventHandles, hobbuffsRun, etc.), but was incorrectly
+extended in §6 Q3 to cover the wire-emit primitive's own TU
+globals.  §1.1 stands for `_radionet` fields; the §6 Q3/Q5
+encapsulations of `MetisOutBoundSeqNum` and the added
+`send_lock_` are corrected here to mirror the reference's
+actual TU-scope free-function + globals + no-lock structure.
+
+§1.1 amendment landed in this commit:  the "Sequence counters"
+row was split into RX-side (which IS in `_radionet`, stays in
+`wire/Ep6RecvThread`) and TX-side (which is NOT in `_radionet`,
+moves to `wire/MetisFrame.cpp` TU-scope).
+
+### Fixes applied (all reference-source-verified, Rule 24)
+
+| # | Item | Severity | Source-line |
+|---|------|----------|-------------|
+| 1 | **Hoist `metis_write_frame()` to `wire/MetisFrame.{h,cpp}`** — was a free function in `Ep2SendThread.cpp`'s anonymous namespace, callable only by §6.  Now a TU-scope free function in its own translation unit, callable by §6 (`Ep2SendThread::run_loop`) AND §7 (`ForceCandC::prime` + `prime_pass`) — direct mirror of reference's `MetisWriteFrame(int endpoint, char* bufp)` at `:216-237`, callable from any site in `networkproto1.c` | structural | `:216-237` |
+| 2 | **TU-scope `g_metis_out_seq_num`** — `static std::uint32_t g_metis_out_seq_num{0};` at file scope in `wire/MetisFrame.cpp`.  Replaces `Ep2SendThread::out_seq_num_` member.  Direct mirror of reference's `unsigned int MetisOutBoundSeqNum;` at `:30` (file-scope global in `networkproto1.c`).  Post-increment + BE-pack preserved verbatim from §6.9 reference-source-line.  Type is plain `uint32_t` (not `std::atomic`) — reference is plain `unsigned int`; concurrency safety rests on TEMPORAL SEPARATION (priming completes before main-send spins up), exactly mirroring the reference | structural | `:30, :221-231` |
+| 3 | **TU-scope `g_metis_socket_fd` + `g_metis_dest_addr` + `g_metis_dest_addrlen`** — file-scope statics in `wire/MetisFrame.cpp`.  Bound once at session-open (and idempotently re-bound by `Ep2SendThread::start()` for backward compatibility) via `metis_wire_bind(int socket_fd, const sockaddr* dest, std::size_t dest_len)` setter.  Replaces `Ep2SendThread::socket_fd_` / `dest_addr_` / `dest_addrlen_` members.  Direct mirror of reference's `listenSock` (file-scope) + `prn->base_outbound_port` access pattern at `:234` | structural | `:234` (sendPacket call site) |
+| 4 | **Drop `Ep2SendThread::send_lock_` mutex** — REMOVED.  Reference has NO lock around `MetisWriteFrame` calls (priming + main-loop send are temporally disjoint by design: priming completes synchronously before the send-thread spins up its producer/consumer loop).  Lyra preserves the same temporal property (`ForceCandC::prime()` runs synchronously on the session-open thread BEFORE `Ep2SendThread::start()` is called), so the §6 Q5 mutex was over-engineering with no reference counterpart.  Removed | structural | n/a (reference has none) |
+| 5 | **Drop `Ep2SendThread::out_seq_num_` member + `out_seq_num()` accessor** — REMOVED.  Replaced by fix #2's TU-scope global; diagnostic readers call `lyra::wire::metis_out_seq_num()` directly.  Reference's seq counter is a file-scope global, not a struct member | structural | `:30, :221, :231` |
+| 6 | **§1.1 row "Sequence counters" amendment** — the §1.1 row pointing seq counters to "Ep6RecvThread / Ep2SendThread members" was correct for the RX-side `cc_seq_no` / `cc_seq_err` (which ARE inside `prn->_radionet` at `network.h:86-87`) but incorrect for the TX-side `MetisOutBoundSeqNum` (which is NOT in `_radionet` — it's a separate file-scope global at `:30`).  Amended §1.1 to split the row: RX seq stays in `Ep6RecvThread` per §1.1; TX seq moves to `wire/MetisFrame.cpp` TU-scope per §6-B | doc clarification | `network.h:86-87` vs `networkproto1.c:30` |
+
+### §6 sign-off rows superseded by §6-B
+
+| §6 row | Original status | §6-B status |
+|---|---|---|
+| Q3 — `out_seq_num_` as Ep2SendThread member | signed Lyra-native deviation | **SUPERSEDED** — TU-scope global mirrors reference |
+| Q5 — `send_lock_` mutex | signed Lyra-native deviation | **SUPERSEDED** — no lock, temporal separation mirrors reference |
+| §6-A retained-additions row "`out_seq_num_` encapsulated" | signed | **SUPERSEDED** by fix #2 |
+| §6-A retained-additions row "`send_lock_` mutex" | signed | **SUPERSEDED** by fix #4 |
+| §1.1 row "Sequence counters → wire/Ep6RecvThread" | signed | **AMENDED** — splits RX (stays) vs TX (moves to `wire/MetisFrame.cpp` TU) |
+
+### §6-B sign-off
+
+- [x] Source-verified line-by-line vs `networkproto1.c:30, 216-237`
+- [x] `metis_write_frame()` body unchanged from §6.9 (header + seqnum + memcpy + sendto verbatim)
+- [x] Reference seqnum post-increment + BE-pack idiom preserved
+- [x] No lock — temporal separation contract documented in `wire/MetisFrame.h` header comment
+- [x] §1.1 row amended in PARITY_CHECKPOINTS.md (single-line split: RX vs TX seq counter homes)
+- [x] §7 ForceCandC consumes the same TU primitives via `metis_write_frame()` + the TU globals (no new wire-emit copy)
+- [x] Build green; §5 + §6 send/receive parity unchanged (byte-identical wire output)
+- [x] Authorized to populate (operator directive 2026-06-06 — "FIX it so it is like the reference, NO PATCHING")
+
+Signed: N8SDR        Date: 2026-06-06
+
+---
+
+## §7. `ForceCandC` — startup C&C priming (source: `networkproto1.c:106-139`)
+
+Sends 3 priming C&C frames per VFO (TX freq via case-2, RX1 freq
+via case-4) at HL2Stream session-open, BEFORE `Ep2SendThread`
+starts the main send loop.  Without this, post-priming RX freq
+updates can be missed by HL2 gateware per CLAUDE.md §3.2 (the
+duplex-bit-deferred-to-main-loop nuance).
+
+Reference call site: `MetisReadThreadMainLoop_HL2` at
+`networkproto1.c:430` invokes `ForceCandCFrame(3);` at the TOP of
+the read loop, before the EP6 read loop begins consuming
+datagrams.  Lyra's equivalent: `HL2Stream::session_open()` calls
+`ForceCandC::prime(3, tx_freq, rx_freq)` synchronously, BEFORE
+spinning `Ep2SendThread::start()` and `Ep6RecvThread::start()`
+— wire-up lands in Phase 2 step 14 (next commit).
+
+### §7.1 Buffer layout — 1024-byte zero-filled, two USB frames (source: `networkproto1.c:107-109`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Total buffer | `unsigned char buf[1024]; memset(buf, 0, sizeof(buf));` (`:107, :109`) | Same — `std::array<std::uint8_t, 1024> buf{};` (zero-initialized) |
+| Per-USB-frame size | 512 bytes (frame 0 at 0..511; frame 1 at 512..1023) | Same |
+
+**VERDICT:** ✅ **PARITY**
+
+### §7.2 USB Frame 0 — fixed C&C header (source: `networkproto1.c:111-118`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| `buf[0..2]` sync | `buf[0]=0x7f; buf[1]=0x7f; buf[2]=0x7f;` (`:111-113`) | Same — verbatim |
+| `buf[3]` c0 | `buf[3]=0; /* c0 */` (`:114`) | Same — `buf[3]=0x00;` (frame 0 header byte) |
+| `buf[4]` c1 | `buf[4]=(SampleRateIn2Bits & 3); /* c1 */` (`:115`) | Same — reads `lyra::wire::SampleRateIn2Bits & 0x03` |
+| `buf[5]` c2 | `buf[5]=0; /* c2 */` (`:116`) | Same |
+| `buf[6]` c3 | `buf[6]=0; /* c3 */` (`:117`) | Same |
+| `buf[7]` c4 | `buf[7]=(nddc - 1) << 3;` (`:118`) — **no duplex bit set** (= 0x18 for HL2 nddc=4) | Same — reads `lyra::wire::nddc`, computes `(nddc - 1) << 3`.  **Per CLAUDE.md §3.2: priming explicitly does NOT set the duplex bit (c4 bit 2 = 0); main-loop frame-0 emission DOES set it (c4 = 0x1C).  Reference defect/quirk preserved verbatim per Rule 24** |
+
+**VERDICT:** ✅ **PARITY** — incl. verbatim no-duplex-bit priming quirk
+
+### §7.3 USB Frame 1 — VFO freq slot (source: `networkproto1.c:120-127`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| `buf[512..514]` sync | `buf[512]=0x7f; buf[513]=0x7f; buf[514]=0x7f;` (`:120-122`) | Same — verbatim |
+| `buf[515]` c0 | `buf[515]=c0; /* c0 */` (`:123`) — caller-supplied (2 = TX freq slot, 4 = RX1 freq slot) | Same — caller-supplied `int c0` parameter |
+| `buf[516]` c1 (freq byte 0) | `buf[516]=(vfofreq >> 24) & 0xff;` (`:124`) | Same |
+| `buf[517]` c2 (freq byte 1) | `buf[517]=(vfofreq >> 16) & 0xff;` (`:125`) | Same |
+| `buf[518]` c3 (freq byte 2) | `buf[518]=(vfofreq >> 8) & 0xff;` (`:126`) | Same |
+| `buf[519]` c4 (freq byte 3) | `buf[519]=vfofreq & 0xff;` (`:127`) | Same — BE-pack of 32-bit freq verbatim |
+
+**VERDICT:** ✅ **PARITY**
+
+### §7.4 Send loop — N frames via shared `metis_write_frame` (source: `networkproto1.c:129-131`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Loop | `for (i = 0; i < count; i++) { MetisWriteFrame(2, (char*)buf); }` (`:129-131`) | Same — `for (int i = 0; i < count; ++i) { metis_write_frame(0x02, buf.data()); }` |
+| EP endpoint | `2` (EP2) | Same — `0x02` |
+| Wire primitive | `MetisWriteFrame` — shared with `sendProtocol1Samples` + `WriteMainLoop_HL2`; consumes one `MetisOutBoundSeqNum` per call | Same — `metis_write_frame()` (per §6-B fix #1, TU-scope) shared with `Ep2SendThread::run_loop`; consumes one `g_metis_out_seq_num` per call (per §6-B fix #2) |
+
+**VERDICT:** ✅ **PARITY** — shared wire primitive + shared TU-scope seq counter (per §6-B)
+
+### §7.5 `ForceCandCFrame` priming sequence — TX freq + RX freq + sleeps (source: `networkproto1.c:134-139`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| TX-freq priming pass | `ForceCandCFrames(count, 2, prn->tx[0].frequency);` (`:135`) | Same — `prime_pass(count, 2, tx_freq_hz);` (caller passes `prn->tx[0].frequency` per §7.6) |
+| First sleep | `Sleep(10);` (`:136`) — 10 ms | Same — `std::this_thread::sleep_for(std::chrono::milliseconds(10));` (⚠ idiom translation — Win32 `Sleep` → C++23 portable equivalent; identical 10 ms suspension) |
+| RX1-freq priming pass | `ForceCandCFrames(count, 4, prn->rx[0].frequency);` (`:137`) | Same — `prime_pass(count, 4, rx_freq_hz);` |
+| Second sleep | `Sleep(10);` (`:138`) — 10 ms | Same — `std::this_thread::sleep_for(std::chrono::milliseconds(10));` |
+
+**VERDICT:** ✅ **PARITY** — sequence + sleep timing verbatim
+
+### §7.6 Call-site placement — HL2Stream session-open (source: `networkproto1.c:430`)
+
+| Aspect | Reference | Lyra |
+|---|---|---|
+| Caller | `MetisReadThreadMainLoop_HL2()` (`:422`) | `HL2Stream::session_open()` — Phase 2 step 14 wire-up (next commit) |
+| Position | Top of read loop function, BEFORE EP6 read loop begins (`:430`) | Top of session-open, AFTER socket bind + `metis_wire_bind()`, BEFORE `Ep6RecvThread::start()` AND BEFORE `Ep2SendThread::start()` — same temporal-separation contract preserves the §6-B no-lock invariant |
+| Count argument | `ForceCandCFrame(3);` — 3 frames per pass × 2 passes = 6 datagrams + 20 ms of sleeps | Same — `force_candc_.prime(3, tx_freq, rx_freq);` |
+
+**VERDICT:** ✅ **PARITY**
+
+### Lyra-native additions (acceptable, signed off)
+
+| Item | Note |
+|------|------|
+| `std::this_thread::sleep_for` in lieu of Win32 `Sleep` | ⚠ idiom translation — identical 10 ms suspension semantics; portable C++23 equivalent |
+| `metis_wire_bind()` setter for TU-scope socket/dest globals | §6-B fix #3 — Lyra-native setter; reference initializes its `listenSock` and `prn->base_outbound_port` via the discovery/startup path |
+| `ForceCandC::prime_pass()` exposed as a public method (in addition to `prime()`) | Lyra-native — mirrors the reference's two-function split (`ForceCandCFrames` + `ForceCandCFrame`) for symmetry; identical wire bytes per pass |
+
+### §7 sign-off
+
+- [x] Source-verified line-by-line vs `networkproto1.c:106-139, 430`
+- [x] Buffer layout byte-for-byte verbatim (sync, c0..c4, BE-pack)
+- [x] `c4 = (nddc - 1) << 3` priming form preserved — **no duplex bit set** (CLAUDE.md §3.2 quirk per Rule 24)
+- [x] Two-pass + double-sleep sequence verbatim
+- [x] Shared `metis_write_frame()` + `g_metis_out_seq_num` (per §6-B) — single seq stream across priming + main send
+- [x] Synchronous on session-open thread, BEFORE Ep2SendThread / Ep6RecvThread start (temporal-separation contract preserved)
+- [x] Build green
+- [x] Authorized to populate (operator directive 2026-06-06)
+
+Signed: N8SDR        Date: 2026-06-06
+
+---
+
+*Last updated: 2026-06-06 — §6-B + §7 shipped together.  §6-B parity correction sweep: hoisted `metis_write_frame` to `wire/MetisFrame.{h,cpp}` TU-scope; replaced `Ep2SendThread::out_seq_num_` member + `out_seq_num()` accessor with TU-scope `g_metis_out_seq_num`; replaced `socket_fd_`/`dest_addr_`/`dest_addrlen_` members with TU-scope statics bound via `metis_wire_bind()`; dropped `send_lock_` mutex (no reference counterpart — temporal separation suffices).  §7 ForceCandC populated against `networkproto1.c:106-139` — `prime()` + `prime_pass()` byte-for-byte verbatim with the reference, calling the shared TU `metis_write_frame()`.  Operator directive 2026-06-06: "FIX it so it is like the reference, NO PATCHING."  Wire-inert (Phase 2 step 14 will wire `ForceCandC::prime` into `HL2Stream::session_open`).*
