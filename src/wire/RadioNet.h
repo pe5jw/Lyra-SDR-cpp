@@ -40,9 +40,28 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
 #include <mutex>
+#include <semaphore>
+#include <thread>
+#include <vector>
+
+// §1-C (sign-off 2026-06-06): reverting the §1.1
+// networking-infrastructure exclusion means RadioNet now carries
+// the reference's `HANDLE`/`WSAEVENT`/`LARGE_INTEGER` fields.
+// These are Win32 types; include guards keep the header
+// compilable on non-Win32 hosts (HL2 Lyra is Win32-only today).
+#if defined(_WIN32)
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <winsock2.h>
+#endif
 
 namespace lyra::wire {
 
@@ -480,6 +499,125 @@ public:
     // Phase-2 fills the threads that take more than one of them
     // (FrameComposer / Ep6RecvThread); see PARITY_CHECKPOINTS
     // §1.11 deferral note.
+
+    // ===== §1-C — Networking infrastructure (network.h:58-106) =====
+    //
+    // §1-C Stage 4A (sign-off 2026-06-06): the §1.1
+    // networking-infrastructure exclusion (signed 🔴 2026-06-04)
+    // is REVERTED under operator directive "Fix everything to
+    // reference — §1.1 included."  The fields the reference puts
+    // INSIDE `_radionet` (lines 58-106) are added here as
+    // RadioNet members so the wire-layer components can read
+    // them via `prn->...` exactly as the reference's free
+    // functions read from `prn->...`.
+    //
+    // Stage 4A (this commit) ADDS the fields — wire-inert.
+    // Wire-layer components (Ep6RecvThread, Ep2SendThread,
+    // OutboundRing) still own their copies for now.  Stages
+    // 4B/4C/4D migrate consumers to read from these fields and
+    // drop the duplicate component-class members.
+    //
+    // Reference field names preserved verbatim per Rule 1
+    // grep-parity discipline.  Reference HANDLE / WSAEVENT /
+    // LARGE_INTEGER fields preserved verbatim on Win32; on
+    // non-Win32 hosts they're elided via `#if defined(_WIN32)`
+    // guards (HL2 Lyra is Win32-only today; cross-platform
+    // C++23 idiom translations live in the wire-layer-class
+    // bodies that may continue to own them post-Stage-4D).
+
+    // --- Networking config ports (network.h:58-59) ---
+    int p2_custom_port_base{1025};
+    int base_outbound_port{1024};
+
+    // --- Buffer pointers (network.h:60-66) ---
+    //
+    // Reference uses raw `double*` / `char*` / `unsigned char*`
+    // allocated via `calloc`/`malloc` and stored in the struct.
+    // Lyra mirrors as `std::vector<>` for RAII memory management
+    // — same conceptual storage, no manual `free` (C++23 idiom
+    // translation, no behavior change).
+    std::vector<std::vector<double>> RxBuff;       // per-DDC IQ staging (sized per nddc at session start)
+    std::vector<double>              RxReadBufp;   // interleave staging (twist output)
+    std::vector<double>              TxReadBufp;   // mic-sample staging (host→radio scratch)
+    std::vector<std::uint8_t>        ReadBufp;     // raw EP6 receive buffer (1024 bytes)
+    std::vector<std::uint8_t>        OutBufp;      // EP2 send buffer (1024 bytes)
+    std::vector<double>              outLRbufp;    // LR audio scratch
+    std::vector<double>              outIQbufp;    // TX I/Q scratch
+
+    // --- RX seq counters (network.h:86-87) ---
+    unsigned int cc_seq_no{0};
+    unsigned int cc_seq_err{0};
+
+    // --- Thread handles (network.h:88-96) ---
+    //
+    // Reference: `HANDLE hReadThreadMain`, etc.  Lyra: `std::thread`
+    // (C↔C++23 idiom translation, same C++ pattern as the §1.11
+    // `CRITICAL_SECTION → std::mutex` translation).  Default-init
+    // to "not-yet-started"; wire-layer initializer assigns via
+    // `prn->hReadThreadMain = std::thread([] { ... });` at
+    // session-open.
+    std::thread hReadThreadMain;     // EP6 RX thread (Ep6RecvThread body)
+    std::thread hWriteThreadMain;    // EP2 TX thread (Ep2SendThread body)
+    std::thread hKeepAliveThread;    // P2 keep-alive thread (HL2 P1 = dead code on this path; declared for parity)
+
+    // --- Init semaphores (network.h:89, 91) ---
+    //
+    // Reference: `HANDLE hReadThreadInitSem`, `hWriteThreadInitSem`
+    // — initial-state "not yet ready"; child thread releases after
+    // init completes; parent thread waits to confirm.  Lyra:
+    // `std::counting_semaphore<1>` with initial count 0.
+    std::counting_semaphore<1> hReadThreadInitSem{0};
+    std::counting_semaphore<1> hWriteThreadInitSem{0};
+
+    // --- Outbound producer/consumer sync (network.h:92-95) ---
+    //
+    // Reference has FOUR paired HANDLE fields:
+    //   - hsendLRSem / hsendIQSem (signaling, lines 92-93)
+    //   - hsendEventHandles[2] (consumer wait-all, line 94)
+    //   - hobbuffsRun[2] (consumer-side drained pair, line 95)
+    //
+    // Lyra collapses to ONE `std::condition_variable` + ONE
+    // mutex + FOUR `bool` flags per the §1-C Stage 3 design —
+    // direct C↔C++23 mirror of reference's
+    // `WaitForMultipleObjects(2, hsendEventHandles, TRUE,
+    // INFINITE)` wait-all semantic at `networkproto1.c:1220`
+    // (C++20 `std::counting_semaphore` lacks a native wait-all
+    // primitive so this is the idiomatically-correct equivalent).
+    //
+    // Field naming intentionally Lyra-native (cv_outbound /
+    // mu_outbound / lr_ready / iq_ready / lr_consumed /
+    // iq_consumed / outbound_stop) rather than mirror-named
+    // because the reference's HANDLE field names (hsendLRSem,
+    // hobbuffsRun) describe the Win32 primitive directly and
+    // don't translate idiomatically to the cv predicate model.
+    std::condition_variable cv_outbound;
+    std::mutex              mu_outbound;
+    bool                    lr_ready    {false};
+    bool                    iq_ready    {false};
+    bool                    lr_consumed {true};   // init signaled so first push doesn't block
+    bool                    iq_consumed {true};   // (matches reference first-iteration behavior)
+    bool                    outbound_stop {false};
+
+#if defined(_WIN32)
+    // --- Win32 waitable timer (network.h:97-98) ---
+    //
+    // Reference uses for the EP2 keep-alive cadence.  HL2 P1
+    // path doesn't use a Win32 waitable timer (the cv-based
+    // OutboundRing handshake handles cadence); fields declared
+    // for parity + future P2 work.
+    HANDLE        hTimer    = nullptr;
+    LARGE_INTEGER liDueTime {};
+
+    // --- WSA event for FD_READ (network.h:105-106) ---
+    //
+    // Used by Ep6RecvThread's §5.10 `WSAEventSelect` +
+    // `WSAWaitForMultipleEvents` mechanism (wires up in
+    // Stage 4B).  Initial value `WSA_INVALID_EVENT` =
+    // not-yet-created; created via `WSACreateEvent()` at
+    // session-open.
+    WSAEVENT         hDataEvent     = WSA_INVALID_EVENT;
+    WSANETWORKEVENTS wsaProcessEvents{};
+#endif
 };
 #pragma warning(pop)
 
