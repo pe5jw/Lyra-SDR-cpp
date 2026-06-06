@@ -33,7 +33,6 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
-#include <vector>
 
 namespace lyra::wire {
 
@@ -110,22 +109,24 @@ private:
     std::atomic<bool> stop_request_{false};
     std::unique_ptr<std::thread> thread_;
 
-    // §6 outbound buffers (§1.1 networking-infrastructure stays
-    // out of RadioNet).
+    // §1-C Stage 4C (sign-off 2026-06-06): §1.1 networking-
+    // infrastructure exclusion REVERTED.  The two outbound
+    // buffers move to their reference homes:
     //
-    // `out_buf_` (= reference's `prn->OutBufp`): 1008 bytes (504
-    // bytes per USB frame × 2 frames) of quantized LRIQ output,
-    // filled by `quantize_and_pack` and then memcpy'd into the
-    // 1024-byte FPGA buffer at offsets [8..511] + [520..1023].
-    static constexpr int kLriqBytesPerFrame = 504;  // 63 sample-slots × 8 bytes/slot
-    static constexpr int kLriqBytesPerDatagram = 2 * kLriqBytesPerFrame;  // 1008
-    std::vector<uint8_t> out_buf_;
-
-    // `fpga_write_buf_` (= reference's `prn->FPGAWriteBufp`): the
-    // 1024-byte EP2 payload (sync+C&C+LRIQ packed for both USB
-    // frames) handed to `lyra::wire::metis_write_frame`.
-    static constexpr int kFpgaPayloadBytes = 1024;
-    std::vector<uint8_t> fpga_write_buf_;
+    // - `out_buf_` (1008 bytes of quantized LRIQ output) →
+    //   `prn->OutBufp` — IS in `_radionet` per network.h:64.
+    //   Reference accesses it at networkproto1.c:1257-1258 +
+    //   :1262-1264 (`WriteMainLoop_HL2(prn->OutBufp);`).
+    // - `fpga_write_buf_` (1024-byte EP2 payload) →
+    //   TU-scope `g_fpga_write_bufp` static in Ep2SendThread.cpp.
+    //   Reference `FPGAWriteBufp` (network.h:499) is a
+    //   file-scope global, NOT in `_radionet` — sister-pattern
+    //   of §6-B `g_metis_out_seq_num` + §4B.1 `g_fpga_read_bufp`.
+    //
+    // Constants stay here for the FrameComposer/run-loop math.
+    static constexpr int kLriqBytesPerFrame    = 504;   // 63 slots × 8 bytes
+    static constexpr int kLriqBytesPerDatagram = 1008;  // 2 × 504
+    static constexpr int kFpgaPayloadBytes     = 1024;
 };
 
 }  // namespace lyra::wire

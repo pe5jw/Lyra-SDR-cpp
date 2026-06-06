@@ -49,13 +49,24 @@ constexpr int kEp2Endpoint = 0x02;
 constexpr int kSampleSlotsPerFrame = 63;       // = 504/8 bytes
 constexpr int kSampleSlotsPerDatagram = 2 * kSampleSlotsPerFrame;  // 126
 constexpr int kLriqBytesPerFrame = 8 * kSampleSlotsPerFrame;       // 504
+
+// §1-C Stage 4C (sign-off 2026-06-06): TU-scope file-scope
+// mirror of reference's `char* FPGAWriteBufp;` at
+// `network.h:499` (NOT in `_radionet`).  HL2 P1 EP2 raw send
+// buffer (1024 bytes, 8-byte header NOT included — that
+// header is added by `metis_write_frame()` before sendto).
+// Sister of:
+//   - §6-B `g_metis_out_seq_num` in `wire/MetisFrame.cpp`
+//   - §1-C Stage 4B.1 `g_fpga_read_bufp` in `wire/Ep6RecvThread.cpp`
+// — all three are reference file-scope globals correctly
+// mirrored as TU-scope statics in their respective wire-layer
+// translation units.
+std::vector<std::uint8_t> g_fpga_write_bufp;
 }  // namespace
 
 // ---- ctor/dtor ----
 
-Ep2SendThread::Ep2SendThread()
-    : out_buf_(kLriqBytesPerDatagram, 0),
-      fpga_write_buf_(kFpgaPayloadBytes, 0) {}
+Ep2SendThread::Ep2SendThread() = default;
 
 Ep2SendThread::~Ep2SendThread() {
     stop();
@@ -69,6 +80,12 @@ void Ep2SendThread::start(int                socket_fd,
                           FrameComposer*     composer,
                           OutboundRing*      ring) {
     if (running_.load(std::memory_order_acquire)) return;
+
+    // §1-C Stage 4C: `prn` must be valid by session-open contract
+    // (reference's `prn` is always valid when sendProtocol1Samples
+    // runs — Lyra mirrors).
+    if (prn == nullptr) return;
+
     // §6-B (sign-off 2026-06-06): socket/dest are TU-scope in
     // `wire/MetisFrame.cpp` (direct mirror of the reference's
     // file-scope `listenSock` global + `prn->base_outbound_port`).
@@ -76,6 +93,16 @@ void Ep2SendThread::start(int                socket_fd,
     // idempotent setter; safe if the session-open path (step 14
     // wire-up) has already bound the same values.
     metis_wire_bind(socket_fd, dest_addr, dest_addrlen);
+
+    // §1-C Stage 4C: size both outbound buffers at thread start
+    // — mirrors reference's `prn->OutBufp = (char*)malloc(...)`
+    // + `FPGAWriteBufp = (char*)calloc(1024, sizeof(char));` at
+    // `networkproto1.c:428`.  `prn->OutBufp` lives in
+    // `_radionet`; `g_fpga_write_bufp` is TU-scope per the
+    // reference's file-scope global pattern.
+    prn->OutBufp.assign(kLriqBytesPerDatagram, 0);
+    g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
+
     composer_      = composer;
     ring_          = ring;
     stop_request_.store(false, std::memory_order_release);
@@ -129,6 +156,8 @@ void Ep2SendThread::run_loop() {
 
 bool Ep2SendThread::process_one_pair() {
     if (!ring_ || !composer_) return false;
+    // §1-C Stage 4C: prn must be valid (assigned at start()).
+    if (prn == nullptr) return false;
 
     // §6.2 — wait for BOTH lr_ready_ + iq_ready_ (`:1220`).
     if (!ring_->wait_pair_ready()) {
@@ -180,7 +209,7 @@ bool Ep2SendThread::process_one_pair() {
     }
 
     // §6.6 + §6.7 — float → int16 quantization + CW state-bit
-    // overlay.  Fills `out_buf_` with the 8-bytes-per-sample-slot
+    // overlay.  Fills `prn->OutBufp` with the 8-bytes-per-sample-slot
     // packed format (L_hi L_lo R_hi R_lo I_hi I_lo Q_hi Q_lo).
     quantize_and_pack(lr, iq);
 
@@ -194,7 +223,7 @@ bool Ep2SendThread::process_one_pair() {
     // is filled by the memcpy below.
     if (hpsdrModel == HPSDRModel::HERMESLITE) {
         composer_->write_main_loop_hl2(
-            reinterpret_cast<char*>(fpga_write_buf_.data()));
+            reinterpret_cast<char*>(g_fpga_write_bufp.data()));
     } else {
         // FIXME (Task #114 / non-HL2 hardware availability): the
         // reference's generic `WriteMainLoop` (`networkproto1.c:
@@ -205,22 +234,22 @@ bool Ep2SendThread::process_one_pair() {
         // `FrameComposer::write_main_loop_generic()` lands as a
         // sibling to `write_main_loop_hl2()` and is invoked from
         // this `else` branch.  For now this branch is a
-        // skip-then-send-zero-CC path: the fpga_write_buf_ is
+        // skip-then-send-zero-CC path: the g_fpga_write_bufp is
         // zeroed in-place so the consumer (sendto below) emits a
         // well-formed but inert datagram if the operator ever
         // configures a non-HL2 hpsdrModel in this Lyra build.
         // HL2-only operating point today; non-HL2 never reached.
-        std::fill(fpga_write_buf_.begin(),
-                  fpga_write_buf_.end(),
+        std::fill(g_fpga_write_bufp.begin(),
+                  g_fpga_write_bufp.end(),
                   static_cast<uint8_t>(0));
     }
 
     // LRIQ memcpy (`:1193-1195`) — both USB frames.
-    std::memcpy(fpga_write_buf_.data() + 8,
-                out_buf_.data(),
+    std::memcpy(g_fpga_write_bufp.data() + 8,
+                prn->OutBufp.data(),
                 static_cast<std::size_t>(kLriqBytesPerFrame));
-    std::memcpy(fpga_write_buf_.data() + 520,
-                out_buf_.data() + kLriqBytesPerFrame,
+    std::memcpy(g_fpga_write_bufp.data() + 520,
+                prn->OutBufp.data() + kLriqBytesPerFrame,
                 static_cast<std::size_t>(kLriqBytesPerFrame));
 
     // §6.9 — submit via shared TU-scope `metis_write_frame`
@@ -239,7 +268,7 @@ bool Ep2SendThread::process_one_pair() {
     // (mirroring `sendProtocol1Samples` at `:1198` which calls
     // `MetisWriteFrame(0x02, FPGAWriteBufp);` and discards the
     // return value).
-    (void) metis_write_frame(kEp2Endpoint, fpga_write_buf_.data());
+    (void) metis_write_frame(kEp2Endpoint, g_fpga_write_bufp.data());
 
     // §6.8 — producer-side release: signal both LR + IQ producers
     // "buffer consumed, free to refill" (`:1199-1200`).
@@ -313,12 +342,12 @@ void Ep2SendThread::quantize_and_pack(const double* lr_buf,
                     }
                 }
 
-                // BE pack into out_buf_ (`:1257-1258`).
+                // BE pack into prn->OutBufp (`:1257-1258`).
                 const std::size_t off =
                     static_cast<std::size_t>(8 * i + 4 * j + 2 * k);
-                out_buf_[off + 0] =
+                prn->OutBufp[off + 0] =
                     static_cast<uint8_t>((temp >> 8) & 0xff);
-                out_buf_[off + 1] =
+                prn->OutBufp[off + 1] =
                     static_cast<uint8_t>( temp       & 0xff);
             }
         }
