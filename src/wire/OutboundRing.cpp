@@ -1,130 +1,127 @@
 // Lyra — OutboundRing implementation.  See OutboundRing.h.
 //
-// Producer/consumer handshake mirrors the reference's paired-event
-// + paired-semaphore pattern (`networkproto1.c:1199-1200, 1220`)
-// using C++20 `std::binary_semaphore` primitives.
+// §1-C Stage 3 (sign-off 2026-06-06): producer/consumer
+// handshake reworked from four `std::binary_semaphore`s + 100 ms
+// polling to a single `std::condition_variable` + paired `bool`
+// flags + stop predicate — direct mirror of reference's
+// `WaitForMultipleObjects(2, hsendEventHandles, TRUE, INFINITE)`
+// at `networkproto1.c:1220` (atomic wait-all, no polling, fully
+// interruptible).  All Lyra-native scaffolding (bounded
+// try_acquire_for, polling poll-cadence, binary_semaphore-UB
+// guard, push_timeouts_* counters) is removed.
 
 #include "wire/OutboundRing.h"
 
-#include <chrono>
 #include <cstring>
 
 namespace lyra::wire {
 
-// §1-C (2026-06-06): the bounded `kProducerAcquireTimeout = 5s`
-// + the `try_acquire_for(timeout)` calls in `push_lr`/`push_iq`
-// + the `push_timeouts_*` diagnostic counters were ALL removed.
-// Reference (`networkproto1.c` producer side via `Inbound` /
-// `obbuffs`) uses unbounded blocking — Lyra now matches verbatim
-// per "do as reference, period, NO PATCHING."  The §15.21
-// wedged-consumer safety belt rationale that justified the
-// bound was a Lyra-native deviation with no reference
-// counterpart; reverted.
-
 OutboundRing::OutboundRing()
     : lr_buf_(kDoublesPerBuffer, 0.0),
       iq_buf_(kDoublesPerBuffer, 0.0) {
-    // Semaphore initial counts set via in-class initializers:
-    // lr_ready_/iq_ready_ = 0 (consumer waits for first fill);
-    // lr_consumed_/iq_consumed_ = 1 (producer can do the first
-    // fill without blocking — matches the reference's first-
-    // iteration behavior).
+    // Flag initial state set via in-class default initializers:
+    // lr_ready_/iq_ready_  = false  (consumer waits until first fill)
+    // lr_consumed_/iq_consumed_ = true (producer's first fill doesn't
+    //   block — matches the reference's first-iteration behavior +
+    //   §6's prior binary_sem{1} initialization).
 }
 
 OutboundRing::~OutboundRing() {
     unblock();
 }
 
+// ---- push_lr ----
+//
+// Producer waits for the consumer to have drained the prior fill
+// (lr_consumed_ == true), then copies + sets lr_ready_ + notifies.
+// Direct mirror of reference's `Inbound`/`obbuffs` ring producer
+// pattern (blocking wait on `hobbuffsRun[0]` then refill).
+
 void OutboundRing::push_lr(const double* src) {
     if (!src) return;
-    // Wait for the consumer to have drained the previous fill (or
-    // the initial signaled state on first call).  UNBOUNDED —
-    // direct mirror of the reference's blocking producer-side
-    // semaphore acquire (`Inbound` / `obbuffs` ring producers).
-    lr_consumed_.acquire();
-    {
-        std::lock_guard<std::mutex> lk(pair_lock_);
-        std::memcpy(lr_buf_.data(), src,
-                    kDoublesPerBuffer * sizeof(double));
-    }
-    lr_ready_.release();
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&]{ return lr_consumed_ || stop_request_; });
+    if (stop_request_) return;
+    std::memcpy(lr_buf_.data(), src,
+                kDoublesPerBuffer * sizeof(double));
+    lr_consumed_ = false;
+    lr_ready_    = true;
+    cv_.notify_all();
 }
+
+// ---- push_iq ----
+//
+// Same pattern as push_lr.  Reference's `hobbuffsRun[1]` /
+// `hsendEventHandles[1]` pair.
 
 void OutboundRing::push_iq(const double* src) {
     if (!src) return;
-    // UNBOUNDED — see push_lr.
-    iq_consumed_.acquire();
-    {
-        std::lock_guard<std::mutex> lk(pair_lock_);
-        std::memcpy(iq_buf_.data(), src,
-                    kDoublesPerBuffer * sizeof(double));
-    }
-    iq_ready_.release();
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&]{ return iq_consumed_ || stop_request_; });
+    if (stop_request_) return;
+    std::memcpy(iq_buf_.data(), src,
+                kDoublesPerBuffer * sizeof(double));
+    iq_consumed_ = false;
+    iq_ready_    = true;
+    cv_.notify_all();
 }
+
+// ---- wait_pair_ready ----
+//
+// Consumer blocks until BOTH lr_ready_ AND iq_ready_ are set.
+// Direct mirror of reference's `WaitForMultipleObjects(2,
+// hsendEventHandles, TRUE, INFINITE)` at
+// `networkproto1.c:1220` — atomic wait-all semantic, no
+// polling.  On wake (either pair-ready OR stop), clears the
+// ready flags + returns `!stop_request_`.
+//
+// Note: ready flags are cleared HERE (after the wait-all
+// observes both true), mirroring the reference's auto-reset
+// event semantics — once the consumer acquires both, the
+// "filled" state is consumed and the producer's next fill is
+// gated again by the cleared flags + the consumed-pair release.
 
 bool OutboundRing::wait_pair_ready() {
-    // Wait-all semantic matching the reference's
-    // `WaitForMultipleObjects(2, hsendEventHandles, TRUE,
-    // INFINITE)` at `networkproto1.c:1220`.  Acquired in fixed
-    // order (lr first, then iq) — symmetric with `push_lr`/
-    // `push_iq` which release in the matching order.  The
-    // sequential acquire is equivalent to "wait until BOTH are
-    // signaled" because both semaphores must reach count>=1
-    // before both acquires can complete; the only observable
-    // difference vs the reference is the order in which the
-    // consumer is unblocked once the second signal arrives, and
-    // that order has no protocol effect (both buffers are
-    // consumed before the next datagram).
-    while (true) {
-        // Use a polling acquire so unblock() can wake the consumer
-        // without needing to release the semaphores.  100 ms
-        // polling cadence is below the operator-perceptible
-        // shutdown latency budget; the hot-path acquire is the
-        // bounded `try_acquire_for` below.
-        if (lr_ready_.try_acquire_for(std::chrono::milliseconds(100))) {
-            // Got LR; now wait for IQ.  Loop with unblock check
-            // here too so a stop-during-wait wakes promptly.
-            while (true) {
-                if (iq_ready_.try_acquire_for(std::chrono::milliseconds(100))) {
-                    return true;
-                }
-                if (stop_request_) {
-                    // Release LR back so a future restart can
-                    // re-pair cleanly.  (No-op if the ctor sets
-                    // initial count 0; releasing brings it to 1
-                    // which the next wait then consumes — safe.)
-                    lr_ready_.release();
-                    return false;
-                }
-            }
-        }
-        if (stop_request_) return false;
-    }
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&]{ return (lr_ready_ && iq_ready_) || stop_request_; });
+    if (stop_request_) return false;
+    lr_ready_ = false;
+    iq_ready_ = false;
+    return true;
 }
+
+// ---- notify_consumed_pair ----
+//
+// Consumer side: signals BOTH producers that the buffer pair
+// has been drained and may be refilled.  Direct mirror of
+// reference's paired
+// `ReleaseSemaphore(hobbuffsRun[0/1], 1, 0);` at
+// `networkproto1.c:1199-1200`.
 
 void OutboundRing::notify_consumed_pair() {
-    // Paired release matching the reference's
-    // `ReleaseSemaphore(hobbuffsRun[0], 1, 0);
-    //  ReleaseSemaphore(hobbuffsRun[1], 1, 0);` at
-    // `networkproto1.c:1199-1200`.
-    lr_consumed_.release();
-    iq_consumed_.release();
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        lr_consumed_ = true;
+        iq_consumed_ = true;
+    }
+    cv_.notify_all();
 }
 
+// ---- unblock ----
+//
+// Sets the stop flag + wakes all parties.  Idempotent.
+// Direct mirror of reference's shutdown via `io_keep_running =
+// 0` + handle close (which interrupts WaitForMultipleObjects)
+// — in C++23 we set a flag + notify_all the cv instead.  No
+// UB hazard (the §6-A binary_semaphore::release() UB concern
+// is gone; condition_variable::notify_all is always safe).
+
 void OutboundRing::unblock() {
-    stop_request_ = true;
-    // The consumer's `wait_pair_ready()` polls with
-    // `try_acquire_for(100ms)` and re-checks `stop_request_`
-    // between polls, so the worst-case shutdown latency is one
-    // poll interval (~100 ms — far below operator-perceptible).
-    //
-    // We do NOT call `release()` on `lr_ready_`/`iq_ready_` here.
-    // C++20 `std::binary_semaphore::release()` is UB if the
-    // semaphore is already at max count (`least_max_value == 1`);
-    // if a producer has just released without the consumer having
-    // acquired yet, that precondition is violated and we trigger
-    // implementation-defined behavior.  The poll loop is the
-    // correct shutdown mechanism here.
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        stop_request_ = true;
+    }
+    cv_.notify_all();
 }
 
 }  // namespace lyra::wire
