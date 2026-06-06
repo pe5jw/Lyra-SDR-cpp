@@ -1,96 +1,119 @@
 // Lyra — OutboundRing implementation.  See OutboundRing.h.
 //
-// §1-C Stage 3 (sign-off 2026-06-06): producer/consumer
-// handshake reworked from four `std::binary_semaphore`s + 100 ms
-// polling to a single `std::condition_variable` + paired `bool`
-// flags + stop predicate — direct mirror of reference's
-// `WaitForMultipleObjects(2, hsendEventHandles, TRUE, INFINITE)`
-// at `networkproto1.c:1220` (atomic wait-all, no polling, fully
-// interruptible).  All Lyra-native scaffolding (bounded
-// try_acquire_for, polling poll-cadence, binary_semaphore-UB
-// guard, push_timeouts_* counters) is removed.
+// §1-C Stage 4D: `OutboundRing` class dissolved into namespace-
+// scope free functions operating on `prn->...` (per §1.1
+// networking-infrastructure revert).  Buffers
+// (`prn->outLRbufp` / `prn->outIQbufp`) + sync state
+// (`prn->cv_outbound` / `prn->mu_outbound` / four bool flags +
+// `prn->outbound_stop`) all live in RadioNet — direct mirror
+// of reference's `_radionet` fields at `network.h:65-66, 92-95`.
 
 #include "wire/OutboundRing.h"
+#include "wire/RadioNet.h"
 
 #include <cstring>
+#include <mutex>
 
 namespace lyra::wire {
 
-OutboundRing::OutboundRing()
-    : lr_buf_(kDoublesPerBuffer, 0.0),
-      iq_buf_(kDoublesPerBuffer, 0.0) {
-    // Flag initial state set via in-class default initializers:
-    // lr_ready_/iq_ready_  = false  (consumer waits until first fill)
-    // lr_consumed_/iq_consumed_ = true (producer's first fill doesn't
-    //   block — matches the reference's first-iteration behavior +
-    //   §6's prior binary_sem{1} initialization).
+// ---- outbound_init ----
+
+void outbound_init() {
+    if (prn == nullptr) return;
+    std::lock_guard<std::mutex> lk(prn->mu_outbound);
+    prn->outLRbufp.assign(kOutboundDoublesPerBuffer, 0.0);
+    prn->outIQbufp.assign(kOutboundDoublesPerBuffer, 0.0);
+    // Initial state: consumer blocked (ready=false), producer
+    // signaled (consumed=true so first push doesn't block) —
+    // matches reference first-iteration behavior.
+    prn->lr_ready     = false;
+    prn->iq_ready     = false;
+    prn->lr_consumed  = true;
+    prn->iq_consumed  = true;
+    prn->outbound_stop = false;
 }
 
-OutboundRing::~OutboundRing() {
-    unblock();
-}
-
-// ---- push_lr ----
+// ---- outbound_push_lr ----
 //
 // Producer waits for the consumer to have drained the prior fill
-// (lr_consumed_ == true), then copies + sets lr_ready_ + notifies.
+// (lr_consumed == true), then copies + sets lr_ready + notifies.
 // Direct mirror of reference's `Inbound`/`obbuffs` ring producer
 // pattern (blocking wait on `hobbuffsRun[0]` then refill).
 
-void OutboundRing::push_lr(const double* src) {
-    if (!src) return;
-    std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [&]{ return lr_consumed_ || stop_request_; });
-    if (stop_request_) return;
-    std::memcpy(lr_buf_.data(), src,
-                kDoublesPerBuffer * sizeof(double));
-    lr_consumed_ = false;
-    lr_ready_    = true;
-    cv_.notify_all();
+void outbound_push_lr(const double* src) {
+    if (prn == nullptr || src == nullptr) return;
+    std::unique_lock<std::mutex> lk(prn->mu_outbound);
+    prn->cv_outbound.wait(lk,
+        [&]{ return prn->lr_consumed || prn->outbound_stop; });
+    if (prn->outbound_stop) return;
+    std::memcpy(prn->outLRbufp.data(), src,
+                kOutboundDoublesPerBuffer * sizeof(double));
+    prn->lr_consumed = false;
+    prn->lr_ready    = true;
+    prn->cv_outbound.notify_all();
 }
 
-// ---- push_iq ----
+// ---- outbound_push_iq ----
 //
-// Same pattern as push_lr.  Reference's `hobbuffsRun[1]` /
-// `hsendEventHandles[1]` pair.
+// Same pattern as outbound_push_lr.  Reference's
+// `hobbuffsRun[1]` / `hsendEventHandles[1]` pair.
 
-void OutboundRing::push_iq(const double* src) {
-    if (!src) return;
-    std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [&]{ return iq_consumed_ || stop_request_; });
-    if (stop_request_) return;
-    std::memcpy(iq_buf_.data(), src,
-                kDoublesPerBuffer * sizeof(double));
-    iq_consumed_ = false;
-    iq_ready_    = true;
-    cv_.notify_all();
+void outbound_push_iq(const double* src) {
+    if (prn == nullptr || src == nullptr) return;
+    std::unique_lock<std::mutex> lk(prn->mu_outbound);
+    prn->cv_outbound.wait(lk,
+        [&]{ return prn->iq_consumed || prn->outbound_stop; });
+    if (prn->outbound_stop) return;
+    std::memcpy(prn->outIQbufp.data(), src,
+                kOutboundDoublesPerBuffer * sizeof(double));
+    prn->iq_consumed = false;
+    prn->iq_ready    = true;
+    prn->cv_outbound.notify_all();
 }
 
-// ---- wait_pair_ready ----
+// ---- outbound_wait_pair_ready ----
 //
-// Consumer blocks until BOTH lr_ready_ AND iq_ready_ are set.
+// Consumer blocks until BOTH lr_ready AND iq_ready are set.
 // Direct mirror of reference's `WaitForMultipleObjects(2,
 // hsendEventHandles, TRUE, INFINITE)` at
 // `networkproto1.c:1220` — atomic wait-all semantic, no
 // polling.  On wake (either pair-ready OR stop), clears the
-// ready flags + returns `!stop_request_`.
-//
-// Note: ready flags are cleared HERE (after the wait-all
-// observes both true), mirroring the reference's auto-reset
-// event semantics — once the consumer acquires both, the
-// "filled" state is consumed and the producer's next fill is
-// gated again by the cleared flags + the consumed-pair release.
+// ready flags + returns `!outbound_stop`.
 
-bool OutboundRing::wait_pair_ready() {
-    std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [&]{ return (lr_ready_ && iq_ready_) || stop_request_; });
-    if (stop_request_) return false;
-    lr_ready_ = false;
-    iq_ready_ = false;
+bool outbound_wait_pair_ready() {
+    if (prn == nullptr) return false;
+    std::unique_lock<std::mutex> lk(prn->mu_outbound);
+    prn->cv_outbound.wait(lk, [&]{
+        return (prn->lr_ready && prn->iq_ready) || prn->outbound_stop;
+    });
+    if (prn->outbound_stop) return false;
+    prn->lr_ready = false;
+    prn->iq_ready = false;
     return true;
 }
 
-// ---- notify_consumed_pair ----
+// ---- buffer accessors ----
+//
+// Callers must hold the contract that valid only between a
+// successful `outbound_wait_pair_ready()` and the next
+// `outbound_notify_consumed_pair()`.  No locking here — the
+// consumer holds exclusive access by virtue of the cv
+// handshake.
+
+const double* outbound_lr_buf() {
+    return (prn == nullptr) ? nullptr : prn->outLRbufp.data();
+}
+const double* outbound_iq_buf() {
+    return (prn == nullptr) ? nullptr : prn->outIQbufp.data();
+}
+double* outbound_lr_buf_mut() {
+    return (prn == nullptr) ? nullptr : prn->outLRbufp.data();
+}
+double* outbound_iq_buf_mut() {
+    return (prn == nullptr) ? nullptr : prn->outIQbufp.data();
+}
+
+// ---- outbound_notify_consumed_pair ----
 //
 // Consumer side: signals BOTH producers that the buffer pair
 // has been drained and may be refilled.  Direct mirror of
@@ -98,30 +121,31 @@ bool OutboundRing::wait_pair_ready() {
 // `ReleaseSemaphore(hobbuffsRun[0/1], 1, 0);` at
 // `networkproto1.c:1199-1200`.
 
-void OutboundRing::notify_consumed_pair() {
+void outbound_notify_consumed_pair() {
+    if (prn == nullptr) return;
     {
-        std::lock_guard<std::mutex> lk(mu_);
-        lr_consumed_ = true;
-        iq_consumed_ = true;
+        std::lock_guard<std::mutex> lk(prn->mu_outbound);
+        prn->lr_consumed = true;
+        prn->iq_consumed = true;
     }
-    cv_.notify_all();
+    prn->cv_outbound.notify_all();
 }
 
-// ---- unblock ----
+// ---- outbound_unblock ----
 //
 // Sets the stop flag + wakes all parties.  Idempotent.
-// Direct mirror of reference's shutdown via `io_keep_running =
-// 0` + handle close (which interrupts WaitForMultipleObjects)
-// — in C++23 we set a flag + notify_all the cv instead.  No
-// UB hazard (the §6-A binary_semaphore::release() UB concern
-// is gone; condition_variable::notify_all is always safe).
+// Direct mirror of reference's shutdown via
+// `io_keep_running = 0` + handle close (which interrupts
+// WaitForMultipleObjects) — in C++23 we set a flag +
+// notify_all the cv instead.
 
-void OutboundRing::unblock() {
+void outbound_unblock() {
+    if (prn == nullptr) return;
     {
-        std::lock_guard<std::mutex> lk(mu_);
-        stop_request_ = true;
+        std::lock_guard<std::mutex> lk(prn->mu_outbound);
+        prn->outbound_stop = true;
     }
-    cv_.notify_all();
+    prn->cv_outbound.notify_all();
 }
 
 }  // namespace lyra::wire

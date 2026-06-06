@@ -77,8 +77,7 @@ Ep2SendThread::~Ep2SendThread() {
 void Ep2SendThread::start(int                socket_fd,
                           const void*        dest_addr,
                           std::size_t        dest_addrlen,
-                          FrameComposer*     composer,
-                          OutboundRing*      ring) {
+                          FrameComposer*     composer) {
     if (running_.load(std::memory_order_acquire)) return;
 
     // §1-C Stage 4C: `prn` must be valid by session-open contract
@@ -104,7 +103,6 @@ void Ep2SendThread::start(int                socket_fd,
     g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
 
     composer_      = composer;
-    ring_          = ring;
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
     thread_ = std::make_unique<std::thread>([this] { this->run_loop(); });
@@ -114,7 +112,7 @@ void Ep2SendThread::stop() {
     stop_request_.store(true, std::memory_order_release);
     // Wake the consumer parked in `wait_pair_ready()` so it can
     // observe stop_request_ + exit cleanly.
-    if (ring_) ring_->unblock();
+    outbound_unblock();
     if (thread_ && thread_->joinable()) {
         thread_->join();
     }
@@ -155,18 +153,19 @@ void Ep2SendThread::run_loop() {
 // ---- per-iteration body (mirrors :1218-1265) ----
 
 bool Ep2SendThread::process_one_pair() {
-    if (!ring_ || !composer_) return false;
+    if (!composer_) return false;
     // §1-C Stage 4C: prn must be valid (assigned at start()).
     if (prn == nullptr) return false;
 
-    // §6.2 — wait for BOTH lr_ready_ + iq_ready_ (`:1220`).
-    if (!ring_->wait_pair_ready()) {
-        // unblock() was called — clean shutdown.
+    // §6.2 — wait for BOTH lr_ready + iq_ready (`:1220`).
+    // §1-C Stage 4D: dissolved OutboundRing → free function.
+    if (!outbound_wait_pair_ready()) {
+        // outbound_unblock() was called — clean shutdown.
         return false;
     }
 
-    double* lr = ring_->lr_buf_mut();
-    double* iq = ring_->iq_buf_mut();
+    double* lr = outbound_lr_buf_mut();
+    double* iq = outbound_iq_buf_mut();
 
     // §6.4 — EER mode LR-overwrite-by-IQ (`:1222-1226`).
     //
@@ -193,7 +192,7 @@ bool Ep2SendThread::process_one_pair() {
     // a producer thread races ahead of a PTT-release.  Preserved
     // verbatim per Rule 24.
     if (!XmitBit) {
-        std::fill_n(iq, OutboundRing::kDoublesPerBuffer, 0.0);
+        std::fill_n(iq, kOutboundDoublesPerBuffer, 0.0);
     }
 
     // §6.5 — optional L/R channel swap (`:1231-1239`).  When
@@ -272,7 +271,7 @@ bool Ep2SendThread::process_one_pair() {
 
     // §6.8 — producer-side release: signal both LR + IQ producers
     // "buffer consumed, free to refill" (`:1199-1200`).
-    ring_->notify_consumed_pair();
+    outbound_notify_consumed_pair();
     return true;
 }
 

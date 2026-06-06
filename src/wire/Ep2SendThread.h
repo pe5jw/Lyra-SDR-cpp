@@ -37,7 +37,6 @@
 namespace lyra::wire {
 
 class FrameComposer;  // fwd — included only in cpp
-class OutboundRing;   // fwd — included only in cpp
 
 class Ep2SendThread {
 public:
@@ -55,13 +54,15 @@ public:
     //     (caller-owned; lifetime must outlive this thread)
     //   - `composer`  : reference to the live FrameComposer that
     //     fills the per-USB-frame C&C header bytes
-    //   - `ring`      : reference to the OutboundRing the audio
-    //     mixer + TX-DSP threads push into
+    //
+    // §1-C Stage 4D: the `OutboundRing* ring` param removed —
+    // the dissolved OutboundRing now operates via namespace-
+    // scope free functions on `prn->...` state.  Caller is
+    // responsible for `outbound_init()` at session-open.
     void start(int                socket_fd,
                const void*        dest_addr,
                std::size_t        dest_addrlen,
-               FrameComposer*     composer,
-               OutboundRing*      ring);
+               FrameComposer*     composer);
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 
@@ -100,9 +101,10 @@ private:
     // members + the `send_lock_` mutex are deleted per the same
     // reference-fidelity sweep.
 
-    // Non-owning references to the cross-thread collaborators.
+    // Non-owning reference to the cross-thread collaborator.
+    // §1-C Stage 4D: `OutboundRing* ring_` removed — dissolved
+    // into free functions in `wire/OutboundRing.{h,cpp}`.
     FrameComposer*    composer_      = nullptr;
-    OutboundRing*     ring_          = nullptr;
 
     // Thread control.
     std::atomic<bool> running_{false};
