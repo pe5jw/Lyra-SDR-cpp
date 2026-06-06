@@ -1,103 +1,140 @@
-// Lyra — Router (xrouter + twist) implementation per signed §5.
+// Lyra — Router (xrouter + twist) implementation per signed §5
+// + §1-C Stage 2A (sign-off 2026-06-06).
 //
-// See Router.h for the source-mapping commentary and idiom-
-// translation rationale.  This file mirrors the reference's
-// `router.c` (`xrouter`) + `networkproto1.c:263-274` (`twist`)
-// behavior verbatim.
+// See Router.h for the source-mapping commentary.  This file
+// mirrors the reference's `router.c` structure verbatim:  file-
+// scope `g_routers[]` array (= reference's `prouter[]` at
+// `router.c:30`), free functions for every operation (= reference's
+// `xrouter` / `LoadRouterAll` / `LoadRouterControlBit` /
+// `create_router` / `destroy_router`).  The `class Router` wrapper
+// was Lyra-native scaffolding with no reference counterpart;
+// removed per "do as reference, period, NO PATCHING."
 
 #include "wire/Router.h"
 
-#include <algorithm>
 #include <array>
 
 namespace lyra::wire {
 
-// =================== Global instance registry =====================
+// =================== File-scope router registry ===================
 //
-// Reference: `router.c` keeps an array of Router state pointers
-// (`prouter[id]`) indexed by router-id.  Lyra mirrors the array as
-// a file-scope static initialised lazily.  Slot 0 is the default
-// HL2 RX-route Router instance.
+// Reference: `__declspec(align(16)) ROUTER prouter[MAX_EXT_ROUTER];`
+// at `router.c:30` — array of ROUTER pointers indexed by router-id.
+// Lyra mirrors as a file-scope array of `Router*` (slot 0 is the
+// default HL2 RX-route Router instance).
 
 namespace {
 std::array<Router*, kRouterMaxInstances> g_routers{};
 std::mutex                               g_router_registry_lock;
 
-Router* ensure_registered(int id, Router* self) {
+void registry_register(int id, Router* self) {
     std::lock_guard<std::mutex> lk(g_router_registry_lock);
     if (id >= 0 && id < kRouterMaxInstances && g_routers[id] == nullptr) {
         g_routers[id] = self;
     }
-    return (id >= 0 && id < kRouterMaxInstances) ? g_routers[id] : nullptr;
+}
+
+void registry_unregister(Router* self) {
+    std::lock_guard<std::mutex> lk(g_router_registry_lock);
+    for (auto& slot : g_routers) {
+        if (slot == self) slot = nullptr;
+    }
 }
 }  // namespace
 
+// =================== Router struct lifecycle ======================
+//
+// Ctor auto-registers at slot 0 (Lyra-native RAII convenience over
+// reference's explicit `create_router(0)` call; behavior identical).
+// Dtor unregisters.  Reference equivalents at `router.c:32-50`
+// (`create_router` / `destroy_router`).
+
 Router::Router() {
-    // Auto-register at slot 0 if free (mirrors reference's
-    // `create_router(0, ...)` first-instance behavior).
-    ensure_registered(0, this);
+    registry_register(0, this);
 }
 
 Router::~Router() {
-    std::lock_guard<std::mutex> lk(g_router_registry_lock);
-    for (auto& slot : g_routers) {
-        if (slot == this) slot = nullptr;
-    }
+    registry_unregister(this);
 }
 
-Router* Router::instance(int id) {
+// =================== Free function: router_instance ===============
+//
+// Lyra-native lookup helper for the `prouter[id]` direct-array
+// indexing reference does inline at every `xrouter` call site.
+
+Router* router_instance(int id) {
     std::lock_guard<std::mutex> lk(g_router_registry_lock);
     if (id < 0 || id >= kRouterMaxInstances) return nullptr;
     return g_routers[id];
 }
 
-// =================== Sink table mutation ==========================
+// =================== Free function: register_sink =================
 
-void Router::register_sink(int port,
-                           int call_idx,
-                           int ctrl_word,
-                           RouterSink sink) {
+void register_sink(Router* a,
+                   int port,
+                   int call_idx,
+                   int ctrl_word,
+                   RouterSink sink) {
+    if (a         == nullptr)                              return;
     if (port      < 0 || port      >= kRouterMaxSources)   return;
     if (call_idx  < 0 || call_idx  >= kRouterMaxCalls)     return;
     if (ctrl_word < 0 || ctrl_word >= kRouterMaxCtrlWords) return;
 
-    std::lock_guard<std::mutex> lk(update_lock_);
-    sinks_[port][call_idx][ctrl_word] = std::move(sink);
+    std::lock_guard<std::mutex> lk(a->cs_update);
+    a->sinks[port][call_idx][ctrl_word] = std::move(sink);
 }
 
-void Router::set_control_word(int ctrl) {
+// =================== Free function: set_control_word ==============
+
+void set_control_word(Router* a, int ctrl) {
+    if (a == nullptr) return;
     if (ctrl < 0 || ctrl >= kRouterMaxCtrlWords) return;
-    control_word_.store(ctrl, std::memory_order_release);
+    a->controlword.store(ctrl, std::memory_order_release);
 }
 
-void Router::set_call_count(int n) {
+// =================== Free function: set_call_count ================
+
+void set_call_count(Router* a, int n) {
+    if (a == nullptr) return;
     if (n < 1) n = 1;
     if (n > kRouterMaxCalls) n = kRouterMaxCalls;
-    std::lock_guard<std::mutex> lk(update_lock_);
-    n_calls_ = n;
+    std::lock_guard<std::mutex> lk(a->cs_update);
+    a->ncalls = n;
 }
 
-// =================== Dispatch (reference parity) ==================
+// =================== Free function: xrouter (dispatch) ============
 //
-// Reference `router.c:71` xrouter loop: for (i=0; i<a->ncall; ++i)
-// invoke a->callid[port][i][ctrl] with (nsamples, data).  Lyra
-// mirrors verbatim, replacing the function-pointer-id indirection
-// with a direct std::function call.
+// Reference: `void xrouter(void* ptr, int id, int source, int
+// nsamples, double* data)` at `router.c:71-108`.  Reference's
+// inner loop dispatches via `a->function[port][i][ctrl]` switch
+// (case 1 = Inbound, case 2 = InboundBlock de-interleave); Lyra
+// uses the signed §5.8 `std::function` callback equivalent,
+// invoked at slot `a->sinks[port][i][ctrl]`.
+//
+// Reference does `if (ptr == 0) a = prouter[id]; else a = ptr;`
+// then `EnterCriticalSection(&a->cs_update)` for the dispatch
+// loop.  Lyra mirrors verbatim.
 
-void Router::dispatch(int source, int nsamples, const double* data) {
-    if (source < 0 || source >= kRouterMaxSources) return;
-    if (nsamples <= 0 || data == nullptr) return;
+void xrouter(Router* ptr,
+             int id,
+             int source,
+             int nsamples,
+             const double* data) {
+    Router* a = ptr ? ptr : router_instance(id);
+    if (a == nullptr)                                 return;
+    if (source < 0 || source >= kRouterMaxSources)    return;
+    if (nsamples <= 0 || data == nullptr)             return;
 
-    const int ctrl = control_word_.load(std::memory_order_acquire);
-    if (ctrl < 0 || ctrl >= kRouterMaxCtrlWords) return;
+    const int ctrl = a->controlword.load(std::memory_order_acquire);
+    if (ctrl < 0 || ctrl >= kRouterMaxCtrlWords)      return;
 
     int n_calls;
     std::array<RouterSink, kRouterMaxCalls> snapshot;
     {
-        std::lock_guard<std::mutex> lk(update_lock_);
-        n_calls = n_calls_;
+        std::lock_guard<std::mutex> lk(a->cs_update);
+        n_calls = a->ncalls;
         for (int i = 0; i < n_calls; ++i) {
-            snapshot[i] = sinks_[source][i][ctrl];
+            snapshot[i] = a->sinks[source][i][ctrl];
         }
     }
 
@@ -106,24 +143,12 @@ void Router::dispatch(int source, int nsamples, const double* data) {
     }
 }
 
-// =================== Free functions ===============================
-
-void xrouter(Router* ptr,
-             int id,
-             int source,
-             int nsamples,
-             const double* data) {
-    Router* r = ptr ? ptr : Router::instance(id);
-    if (!r) return;
-    r->dispatch(source, nsamples, data);
-}
-
-// twist: interleave two per-DDC streams into 4-tuples
-// `{s0_I, s0_Q, s1_I, s1_Q}` per sample slot, then dispatch via
-// xrouter.  Mirrors `networkproto1.c:263-274` layout exactly:
-// each source stream supplies IQ pairs (so input stride is 2 doubles
-// per sample for each stream), and the output staging buffer holds
-// `4 * nsamples` doubles total.
+// =================== Free function: twist =========================
+//
+// Reference `networkproto1.c:263-274`: interleave two per-DDC
+// streams into 4-tuples `{s0_I, s0_Q, s1_I, s1_Q}` per sample
+// slot, then dispatch via `xrouter()` with count `2 * nsamples`.
+// Lyra mirrors verbatim (§5-A fix preserved).
 
 void twist(int nsamples,
            const double* stream0_buf,
@@ -149,12 +174,8 @@ void twist(int nsamples,
         staging_buf[4 * s + 3] = stream1_buf[2 * s + 1];
     }
 
-    // Reference dispatches the interleaved 4-tuple output as
-    // `2 * nsamples` "samples" (each twist source contributes
-    // `2 * nsamples` doubles to the staging buffer; the count
-    // matters for downstream sink-side slicing math —
-    // `sps = nsamples / n_streams` etc.).  Source:
-    // `networkproto1.c:273`.
+    // §5-A fix: pass `2 * nsamples` to xrouter, matching reference
+    // `networkproto1.c:273` verbatim.
     xrouter(router_ptr, router_id, source, 2 * nsamples, staging_buf);
 }
 

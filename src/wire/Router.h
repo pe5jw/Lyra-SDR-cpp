@@ -2,32 +2,28 @@
 //
 // Source mirror:
 //   - `ChannelMaster/router.c` + `router.h` — `xrouter` dispatch
-//     primitive with control-word-driven callback table
+//     primitive with control-word-driven callback table.
 //   - `ChannelMaster/networkproto1.c:263-274` — `twist` interleave-
-//     then-xrouter helper
+//     then-xrouter helper.
 //
-// Per the locked 2026-06-05 "do as the reference does" discipline,
-// `Router` lives in its own file (matching `router.c/h` separation
-// in the reference) and implements the structural pattern verbatim:
-// per-port callback table, runtime control word, multi-callback
-// per port.  The HL2 RX-only wire-inert build today exercises only
-// the simplest path (one callback per port, default control word
-// 0); the full control-word complexity pays back when v0.3 PureSignal
-// work re-routes per-DDC output via control-word changes without
-// requiring an infrastructure rewrite.
+// §1-C Stage 2A (sign-off 2026-06-06): refactored from `class
+// Router` (with member methods `dispatch`/`register_sink`/
+// `set_control_word`/`set_call_count`/`instance`) into a **plain
+// data struct + file-scope free functions** — direct mirror of
+// the reference's `ROUTER` typedef'd struct + `xrouter()` /
+// `LoadRouterAll()` / `LoadRouterControlBit()` / `create_router()`
+// / `destroy_router()` / `flush_router()` free functions in
+// `router.c`.  The §5.8 signed deviation (std::function callback
+// in lieu of reference's function-pointer-id) is retained per
+// signed sign-off — that is a genuine C↔C++ idiom translation.
+// What §1-C removes is the gratuitous class wrapper that had no
+// reference counterpart.
 //
-// Idiom translation: the reference's C callback-table is an array
-// of function-pointer ids that index into a global router state
-// (`a->callid[port][i][ctrl]`).  Lyra uses `std::function`-backed
-// sinks indexed by (port, callback_idx, control_word) — same
-// dispatch semantics, C++23 idiom.  Signed ⚠ ACCEPTABLE DEVIATION
-// per §5.8.
-//
-// Also: the reference's terminal dispatch via `Inbound()` (channel-
-// master buffer push) → Lyra's `RouterSink` callback (operator/host
-// registers what to do with the samples).  Lyra does not have a
-// channel-master system; this is the §5.7 "Inbound → Lyra-native
-// callback" idiom translation.
+// File-scope `g_routers[kRouterMaxInstances]` mirrors reference's
+// `prouter[MAX_EXT_ROUTER]` at `router.c:30`.  Lifetime managed
+// via RAII (struct ctor registers, dtor unregisters) — small
+// C++23 convenience over reference's explicit `create_router`/
+// `destroy_router` calls; behaviorally identical.
 
 #pragma once
 
@@ -40,88 +36,64 @@
 namespace lyra::wire {
 
 // Capacity limits for the router callback table.  Sized to cover
-// the reference's largest known per-port callback fan-out + control-
-// word breadth (control-word 0..3 covers the documented MOX × PS
-// state-product axis from the prior project's history).
+// the reference's per-port callback fan-out + control-word
+// breadth.  Reference `router.c:29` uses `MAX_EXT_ROUTER=4`.
 inline constexpr int kRouterMaxSources    = 4;   // ports (DDC consumer slots)
 inline constexpr int kRouterMaxCalls      = 4;   // per-port callback fan-out
 inline constexpr int kRouterMaxCtrlWords  = 4;   // control-word axis breadth
-inline constexpr int kRouterMaxInstances  = 4;   // global instance registry (matches reference's `prouter[]`)
+inline constexpr int kRouterMaxInstances  = 4;   // global instance registry (= MAX_EXT_ROUTER)
 
 // Sink callback signature: receives a sample count + interleaved
-// IQ pair buffer.  Caller must NOT retain the pointer past the
-// callback's return (the underlying buffer is reused on the next
-// EP6 datagram).
+// IQ pair buffer.  §5.8 ⚠ signed acceptable deviation —
+// `std::function` in lieu of reference's `int callid[port][i][ctrl]`
+// function-pointer-id indirection.  C↔C++23 idiom translation.
 using RouterSink = std::function<void(int n_samples, const double* iq_pairs)>;
 
-class Router {
-public:
+// Per-(port × call_idx × control_word) sink table types.
+using RouterPerCtrl = std::array<RouterSink, kRouterMaxCtrlWords>;
+using RouterPerCall = std::array<RouterPerCtrl, kRouterMaxCalls>;
+
+// Plain data struct mirroring reference `ROUTER` typedef
+// (`router.h` / `router.c:30`).  Ctor/dtor handle the
+// `prouter[id]`-equivalent registration.
+struct Router {
     Router();
     ~Router();
 
-    // Global instance registry (mirrors reference's `prouter[id]`
-    // global array).  Returns nullptr if id is out of range.
-    static Router* instance(int id);
+    Router(const Router&)            = delete;
+    Router& operator=(const Router&) = delete;
 
-    // Register a sink callback at the given (port, call_idx, ctrl)
-    // slot.  Operator/host code wires sinks at session start.
-    // No-op if any index is out of range.
-    void register_sink(int port, int call_idx, int ctrl_word, RouterSink sink);
-
-    // Set the runtime control word.  Used by future PS state
-    // transitions to re-route DDC consumers without re-registering
-    // sinks.  Default 0.
-    void set_control_word(int ctrl);
-
-    // Configure the active callback fan-out per port.  Reference
-    // default = 1 (one callback per port).
-    void set_call_count(int n);
-
-    // Dispatch entry point — invokes the registered sink at slot
-    // (port, [0..n_calls-1], control_word) for each active call.
-    // Matches reference `xrouter` semantics from `router.c:71`.
-    void dispatch(int source, int nsamples, const double* data);
-
-private:
-    std::atomic<int> control_word_{0};
-    int              n_calls_{1};
-
-    // Callback table: sinks_[port][call_idx][control_word].
-    using PerCtrl  = std::array<RouterSink, kRouterMaxCtrlWords>;
-    using PerCall  = std::array<PerCtrl,    kRouterMaxCalls>;
-    std::array<PerCall, kRouterMaxSources> sinks_{};
-
-    mutable std::mutex update_lock_;
+    std::atomic<int>                          controlword{0};   // reference name verbatim
+    int                                       ncalls{1};        // reference name verbatim
+    std::array<RouterPerCall, kRouterMaxSources> sinks{};
+    mutable std::mutex                        cs_update;        // reference field name (`a->cs_update` :39)
 };
 
-// =================== Free functions (reference parity) =============
+// =================== File-scope free functions ====================
 //
-// `xrouter()` matches reference signature
-// `void xrouter(void* ptr, int id, int source, int nsamples, double* data)`
-// at `router.c:71`.  Either uses the explicit Router pointer or
-// looks up the default instance by id.
-//
-// Source: `router.c:71-90+`.
+// Direct mirror of `router.c`'s function set.  Replace what was
+// previously `Router::method(...)` member calls.
+
+// `xrouter()` — reference signature
+// `void xrouter(void* ptr, int id, int source, int nsamples,
+//               double* data)` at `router.c:71`.  Looks up by id
+// if `ptr == nullptr`, else uses `ptr` directly — verbatim
+// reference pattern.
 void xrouter(Router* ptr,
              int id,
              int source,
              int nsamples,
              const double* data);
 
-// `twist()` matches reference signature
-// `void twist(int nsamples, int stream0, int stream1, int source)`
-// at `networkproto1.c:263-274`.
-//
+// `twist()` — reference signature mirror at
+// `networkproto1.c:263-274`.  Interleaves two per-DDC streams
+// into 4-tuples `{s0_I, s0_Q, s1_I, s1_Q}` per sample slot,
+// then dispatches via `xrouter()` with count `2 * nsamples`.
 // Reference reads from `prn->RxBuff[stream0/1]` (per-DDC IQ
-// staging) and writes to `prn->RxReadBufp` (interleave staging),
-// then calls `xrouter()` to dispatch.  Lyra takes the per-DDC
-// source buffers + the staging buffer explicitly to honor the
-// §1.1 networking-buffer exclusion from `RadioNet` (buffers live
-// in `Ep6RecvThread` per §5 Q4).
-//
-// Layout: produces 4-tuples `{stream0_I, stream0_Q, stream1_I,
-// stream1_Q}` per sample slot.  Output count is `2 * nsamples`
-// (interleaved IQ-pairs from two source streams).
+// staging) and writes to `prn->RxReadBufp`; Lyra takes the
+// per-DDC source buffers + the staging buffer explicitly per
+// the §1.1 networking-buffer exclusion (revisited in §1-C
+// Stage 4).
 void twist(int nsamples,
            const double* stream0_buf,
            const double* stream1_buf,
@@ -129,5 +101,32 @@ void twist(int nsamples,
            int           source,
            Router*       router_ptr,
            int           router_id);
+
+// `router_instance(id)` — Lyra-native lookup helper mirroring
+// reference's `prouter[id]` direct-array indexing.  Returns
+// nullptr if id is out of range OR the slot is empty.
+Router* router_instance(int id);
+
+// `register_sink()` — sets the callback at the given
+// (port, call_idx, ctrl_word) slot.  Lyra-native equivalent
+// of reference's `LoadRouterAll(...)` bulk-loader; signed §5.7
+// idiom translation (`Inbound`→Lyra-native callback).  No-op
+// if any index is out of range.
+void register_sink(Router* a,
+                   int port,
+                   int call_idx,
+                   int ctrl_word,
+                   RouterSink sink);
+
+// `set_control_word()` — mirrors reference's
+// `LoadRouterControlBit(ptr, id, var_number, bit)` at
+// `router.c:146-155` but settable-as-whole-word instead of
+// bit-by-bit.  No-op if `ctrl` is out of range.
+void set_control_word(Router* a, int ctrl);
+
+// `set_call_count()` — mirrors reference setting `a->ncalls`
+// inside `LoadRouterAll` (router.c:129).  Clamps to
+// `[1, kRouterMaxCalls]`.
+void set_call_count(Router* a, int n);
 
 }  // namespace lyra::wire
