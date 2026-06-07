@@ -1088,44 +1088,36 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
             (static_cast<quint32>(u[5]) << 16) |
             (static_cast<quint32>(u[6]) <<  8) |
              static_cast<quint32>(u[7]);
-        // The HL2 gateware (ak4951v4 variant + every other HL2
-        // gateware that shares this Verilog) implements the EP6
-        // sequence counter as a 20-bit register, NOT 32-bit:
+        // EP6 sequence-number check — verbatim per the reference HL2
+        // read loop (`MetisReadDirect` networkproto1.c:175-194):
         //
-        //   logic [19:0] ep6_seq_no = 20'h0;
-        //   ...
-        //   3'h3: udp_data_next = 8'h00;                       // hi byte
-        //   3'h2: udp_data_next = {4'h00, ep6_seq_no[19:16]};  // hi 4b=0
-        //   3'h1: udp_data_next = ep6_seq_no[15:8];
-        //   3'h0: udp_data_next = ep6_seq_no[7:0];
-        //         ep6_seq_no_next = ep6_seq_no + 'h1;          // wraps 2^20
+        //   seqbytep[3..0] = readbuf[4..7];                 // BE pack
+        //   if (seqnum != (1 + MetisLastRecvSeq)) SeqError += 1;
+        //   MetisLastRecvSeq = seqnum;
         //
-        // (gateware source verified 2026-05-20 — RTL of the HL2+
-        // ak4951v4 variant running on the operator's bench.)
-        //
-        // At ~5053 dg/sec the counter wraps every 207.5 sec
-        // (= 3 min 27 sec).  Treating the sequence as a 32-bit
-        // monotonic field (per the generic HPSDR P1 spec) would
-        // therefore flag every legitimate wrap as a "seq error",
-        // burying real diagnostic value in deterministic noise —
-        // operator HL2+ bench caught this on the first long run
-        // (10 false alarms over 35 min = exactly 10 wraps).  We
-        // mask to 20 bits when computing the next-expected so a
-        // wrap from 0xFFFFF -> 0x00000 produces no false alarm
-        // and every counted seqError is a REAL packet-loss event.
-        // The mask is also forward-safe for the v0.4 ANAN family:
-        // a hypothetical 32-bit-counter radio's wrap is one event
-        // per 2^32 packets ≈ 5 days at typical rates, negligible.
-        constexpr quint32 kSeqMask20 = 0x000FFFFF;
+        // `seqnum` and `MetisLastRecvSeq` are both `unsigned int` /
+        // 32-bit.  Reference does no masking; the wrap at 2^32 is
+        // handled implicitly by unsigned-integer arithmetic (the
+        // increment `1 + MetisLastRecvSeq` wraps along with the
+        // gateware counter so the compare still succeeds on the
+        // wrap boundary).  Per EXECUTION_PLAN.md §3.9-1 revert
+        // (operator-rejected 2026-06-06): an earlier Lyra patch
+        // masked to 20 bits because the HL2+ ak4951v4 RTL exposed
+        // only 20 bits of counter — but the reference treats the
+        // sequence as 32-bit, so Lyra does the same.  If a host
+        // sees a false "seq error" every ~3:27 on this gateware
+        // because of the gateware's 20-bit wrap, that is Rule 18
+        // STOP-AND-ASK: reference says X, bench says Y, operator
+        // decides — NOT a silent Claude-introduced divergence.
 
         if (firstPacket) {
-            expectedSeq = (seq + 1) & kSeqMask20;
+            expectedSeq = seq + 1;
             firstPacket = false;
         } else {
             if (seq != expectedSeq) {
                 seqErrors_.fetch_add(1, std::memory_order_relaxed);
             }
-            expectedSeq = (seq + 1) & kSeqMask20;
+            expectedSeq = seq + 1;
         }
         // Both USB frames must begin 0x7F 0x7F 0x7F.
         if (u[ 8] != 0x7F || u[ 9] != 0x7F || u[ 10] != 0x7F ||
