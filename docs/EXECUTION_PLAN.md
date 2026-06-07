@@ -115,6 +115,22 @@ At the start of every session, Claude reads this file in this order:
 
 Then asks the operator: "What's the focus this session?" before proposing any code.
 
+### Sync the operator-readable copies (DOCX + PDF) each session-start
+
+After any edit to this `EXECUTION_PLAN.md`, regenerate the operator-readable copies:
+
+```
+py -3.14 tools\sync_execution_plan.py --pdf
+```
+
+Produces:
+- `docs/EXECUTION_PLAN.docx` — Word-readable mirror, regenerated from the MD source. Stamped with generation timestamp in the header.
+- `docs/EXECUTION_PLAN.pdf` — paginated PDF mirror. Stamped with generation timestamp + page numbers in the footer.
+
+`EXECUTION_PLAN.md` is the **source of truth**. The DOCX + PDF are auto-generated read-only views — never edit them directly. If they drift from the MD, re-run the sync script.
+
+The sync script is committed at `tools/sync_execution_plan.py`. Requires Python with `python-docx` + `reportlab` (Python 3.14 on this machine has both).
+
 ---
 
 ## 🚨 OPEN STOP-AND-ASK ITEMS (Claude blocks here)
