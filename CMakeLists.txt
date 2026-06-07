@@ -129,8 +129,6 @@ qt_add_executable(lyra
     src/ps/PsFsm.cpp
     src/ps/IqcLifecycle.h
     src/ps/IqcLifecycle.cpp
-    src/mox_edge_fade.h
-    src/mox_edge_fade.cpp
     src/iqstft.h
     src/iqstft.cpp
     src/capturedprofile.h

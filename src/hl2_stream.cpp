@@ -330,12 +330,10 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         QSettings().value(QStringLiteral("tx/trSeq/txStopDelayMs"),
                           kDefaultTxStopDelayMs).toInt(),
         kMinFsmDelayMs, kMaxFsmDelayMs);
-    fade_.setFadeInMs(
-        QSettings().value(QStringLiteral("tx/trSeq/fadeInMs"),
-                          lyra::dsp::MoxEdgeFade::kDefaultFadeInMs).toInt());
-    fade_.setFadeOutMs(
-        QSettings().value(QStringLiteral("tx/trSeq/fadeOutMs"),
-                          lyra::dsp::MoxEdgeFade::kDefaultFadeOutMs).toInt());
+    // §3.9-5 revert: MoxEdgeFade deleted (operator-rejected 2026-06-06).
+    // Reference does not envelope-shape SSB TX I/Q at all — host-side
+    // cos² fade was a Lyra invention.  Hot-switch protection for an
+    // external linear is now rfDelayMs_ ALONE (matches reference).
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     // micGainDb defaults to 0 dB = WDSP unity (no change vs the lyra-
     // cpp ship-no-setters posture at TxChannel::open()).
@@ -1637,21 +1635,18 @@ void HL2Stream::fsmKeydownPostMox() {
     // per send) — coherent.
     mox_.store(true, std::memory_order_release);
 
-    // TX-1 component 7 — bring up the TX-DSP + envelope + injection
-    // gate, all at this same moment (wire MOX bit just went hot).
+    // TX-1 component 7 — bring up the TX-DSP + injection gate at this
+    // same moment (wire MOX bit just went hot).
     //
-    // Reference parity: the verified reference's keydown chain runs
-    // `rf_delay` THEN `SetChannelState(id(1,0), 1, 0)` THEN audio-on
-    // — TX DSP starts AFTER rf_delay.  Lyra moves the TX-on hooks
-    // HERE (before rf_delay) so the WDSP TXA accumulator has the
-    // ~50ms rfDelayMs window to pre-fill the 126-sample EP2 hand-off
-    // buffer (producer needs 2-3 fexchange0 outputs to fill one
-    // wire datagram); otherwise the first SSB datagram after fade
-    // ramps in arrives several ms late and creates a hard step from
-    // silence to a non-zero sample = audible click.  The fade-in
-    // ramps the AMPLITUDE smoothly 0→1 over the rfDelayMs window,
-    // so on-air rise is still cos²-shaped + hot-switch-protected.
-    fade_.notifyMoxState(true);
+    // Reference parity (§3.9-5 revert, operator-rejected 2026-06-06):
+    // the previous Lyra build wrapped this with a cos² MoxEdgeFade
+    // amplitude envelope.  Reference does not envelope-shape SSB TX
+    // I/Q (WDSP TXAUslewCheck returns 0 for SSB modes).  Hot-switch
+    // protection for external linears is `rfDelayMs_` alone (the
+    // reference's mechanism).  The producer still has the rfDelayMs
+    // window to pre-fill its EP2 hand-off buffer; the first SSB
+    // datagram after rf_delay carries WDSP's own settled output
+    // without a host-side amplitude ramp.
     {
         std::function<void()> startFn;
         {
@@ -1699,27 +1694,20 @@ void HL2Stream::fsmKeyupPostSpace() {
         return;
     }
 
-    // TX-1 component 7 — §5.7 keyup ordering invariant:
-    //   (1) MoxEdgeFade fade-out reaches zero
-    //   (2) Clear inject_tx_iq (SSB EP2 branch goes silent)
-    //   (3) Clear wire MOX bit
-    //
-    // Step (1) is started here; we then schedule fsmKeyupFadeOut
-    // after fade_.fadeOutMs() to give the cos² ramp time to reach
-    // zero BEFORE we stop the TX channel (so the gateware DAC sees
-    // a smoothly-faded tail, not a hard chop, on the way out).
-    //
-    // Step (2) is done here-and-now: setInjectTxIq(false) stops the
-    // producer from accumulating new SSB samples.  The fade ramps
-    // existing/in-flight buffer content down to zero independently.
-    fade_.notifyMoxState(false);
+    // §3.9-5 revert (operator-rejected 2026-06-06): MoxEdgeFade
+    // deleted — reference does not envelope-shape SSB TX I/Q.
+    // §15.25 keyup ordering invariant (reference-faithful):
+    //   (1) Clear inject_tx_iq (SSB EP2 branch goes silent)
+    //   (2) Stop TX DSP channel (blocking flush)
+    //   (3) mox_delay sleep (txStopDelayMs_)
+    //   (4) Clear wire MOX bit
+    //   (5) ptt_out_delay sleep
+    //   (6) RX-channel restart
     setInjectTxIq(false);
-
-    QTimer::singleShot(fade_.fadeOutMs(), this,
-                       [this]() { fsmKeyupFadeOut(); });
+    fsmKeyupTxOff();
 }
 
-void HL2Stream::fsmKeyupFadeOut() {
+void HL2Stream::fsmKeyupTxOff() {
     // TX-1 component 7 — fade-out has reached zero; now we can stop
     // the WDSP TXA channel (blocking flush) without any audible chop
     // on the gateware side.  Matches the verified reference's
@@ -1919,28 +1907,6 @@ void HL2Stream::setPttOutDelayMs(int ms) {
     pttOutDelayMs_ = clamped;
     QSettings().setValue(QStringLiteral("tx/trSeq/pttOutDelayMs"), clamped);
     emit pttOutDelayMsChanged(clamped);
-}
-
-void HL2Stream::setFadeInMs(int ms) {
-    // MoxEdgeFade::setFadeInMs clamps internally to [kMinFadeMs,
-    // kMaxFadeMs]; we read back the post-clamp live value to emit +
-    // persist the actual stored quantity (avoids drift if the
-    // operator typed an out-of-range value).
-    const int before = fade_.fadeInMs();
-    fade_.setFadeInMs(ms);
-    const int after  = fade_.fadeInMs();
-    if (after == before) return;
-    QSettings().setValue(QStringLiteral("tx/trSeq/fadeInMs"), after);
-    emit fadeInMsChanged(after);
-}
-
-void HL2Stream::setFadeOutMs(int ms) {
-    const int before = fade_.fadeOutMs();
-    fade_.setFadeOutMs(ms);
-    const int after  = fade_.fadeOutMs();
-    if (after == before) return;
-    QSettings().setValue(QStringLiteral("tx/trSeq/fadeOutMs"), after);
-    emit fadeOutMsChanged(after);
 }
 
 void HL2Stream::setTxStopDelayMs(int ms) {
@@ -2610,18 +2576,14 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // BOTH USB frames so the on-air carrier is continuous.
         const bool emitTone =
             moxBit && tuneEnabled_.load(std::memory_order_relaxed);
-        // TX-1 component 7 — cos² fade is FSM-driven now, not EP2-
-        // packer driven.  The FSM calls fade_.notifyMoxState(true)
-        // at fsmKeydownPostMox (T+15 ms, same moment wire MOX bit
-        // goes hot — but BEFORE rf_delay, so fade-in ramps the
-        // amplitude 0→1 over rfDelayMs to pre-fill the producer's
-        // EP2 hand-off accumulator + provide hot-switch protection
-        // for the external amp).  It calls notifyMoxState(false) at
-        // fsmKeyupPostSpace (T+spaceMoxDelayMs after keyup) so the
-        // fade-out completes BEFORE the wire MOX bit clears (§5.7
-        // keyup ordering invariant) — gateware sees a smoothly-
-        // faded tail, not a hard chop.  EP2 packer just calls
-        // fade_.advance() per LRIQ sample below.
+        // §3.9-5 revert (operator-rejected 2026-06-06): MoxEdgeFade
+        // deleted.  Reference does not envelope-shape SSB TX I/Q
+        // (WDSP TXAUslewCheck returns 0 for SSB modes).  EP2 packer
+        // emits raw TX I/Q samples per the reference's universal
+        // posture: `!XmitBit ⇒ zero`, otherwise pass the modulator
+        // output through unmodified.  Hot-switch protection for an
+        // external linear is rfDelayMs_ (TR sequencing) — same
+        // mechanism the reference uses.
         // Tune carrier = zero-beat at LO (DC injection): a constant
         // value in the I channel produces a pure carrier exactly at
         // TX freq on the air, no audio offset.  Matches the universal
@@ -2636,13 +2598,10 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         // 2-tone test signal for IMD/linearity work (a different
         // feature than TUN).
         //
-        // Component 5a wires the cos² envelope here: the TUN constant
-        // (and the component-6 SSB I/Q below) is multiplied by the
-        // fade coefficient per LRIQ sample.  At operator keydown the
-        // envelope ramps 0 → 1 over fadeInMs; at keyup it ramps
-        // 1 → 0 over fadeOutMs.  When neither TUN nor SSB is active,
-        // txI/txQ stay zero — the fade coefficient still advances
-        // internally so a mid-flight arm sees the correct state.
+        // §3.9-5 revert: no host-side envelope.  TUN carrier is
+        // emitted at constant amplitude per the reference's gen0
+        // posture (a constant DC injection on the I channel); SSB
+        // I/Q passes WDSP TXA's settled output unmodified.
         constexpr float kTuneCarrierFullScale = 0.95f * 32767.0f;
 
         // ── TX-1 component 6: SSB I/Q source pull ────────────────
@@ -2698,26 +2657,24 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
         for (int i = 0; i < 126; ++i) {
             const qint16 L = audio ? audio[i * 2 + 0] : 0;
             const qint16 R = audio ? audio[i * 2 + 1] : 0;
-            const float coef = fade_.advance();
             qint16 txI;
             qint16 txQ;
             if (emitTone) {
-                // TUN priority path — DC carrier × cos² envelope.
+                // TUN priority path — DC carrier.
                 txI = static_cast<qint16>(
-                    kTuneCarrierFullScale * coef + 0.5f);
+                    kTuneCarrierFullScale + 0.5f);
                 txQ = qint16{0};
             } else if (emitSsb) {
-                // SSB I/Q × cos² envelope, quantized via the
-                // reference-faithful symmetric round-to-nearest
-                // (see docs/architecture/tx1_ssb_design.md §5.7
-                // for the verified reference cite):
+                // SSB I/Q, quantized via the reference's symmetric
+                // round-to-nearest (see docs/architecture/
+                // tx1_ssb_design.md §5.7 for the verified cite):
                 //   x >= 0 ? floor(x * 32767 + 0.5) : ceil(x * 32767 - 0.5)
                 // float saturates to qint16 range via clamp to
                 // [-32768, 32767] before the int cast (defensive —
                 // the WDSP TXA chain's ALC should keep output in
                 // [-1, +1) but cap anyway).
-                const float scI = ssbBuf[i].real() * coef * 32767.0f;
-                const float scQ = ssbBuf[i].imag() * coef * 32767.0f;
+                const float scI = ssbBuf[i].real() * 32767.0f;
+                const float scQ = ssbBuf[i].imag() * 32767.0f;
                 const float rndI = scI >= 0.0f ? std::floor(scI + 0.5f)
                                                : std::ceil( scI - 0.5f);
                 const float rndQ = scQ >= 0.0f ? std::floor(scQ + 0.5f)

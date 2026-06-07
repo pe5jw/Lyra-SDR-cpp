@@ -2164,9 +2164,9 @@ QWidget *SettingsDialog::buildTxTab() {
     bodyRow->addLayout(rightCol, 1);
     root->addLayout(bodyRow);
 
-    // Common spin-box bounds — match HL2Stream::kMin/kMaxFsmDelayMs +
-    // MoxEdgeFade::kMin/kMaxFadeMs (deliberately literal here so the
-    // settings UI doesn't have to reach into private class constants).
+    // Common spin-box bounds — match HL2Stream::kMin/kMaxFsmDelayMs
+    // (deliberately literal here so the settings UI doesn't have to
+    // reach into private class constants).
     constexpr int kMinMs = 1;
     constexpr int kMaxMs = 500;
 
@@ -2284,55 +2284,12 @@ QWidget *SettingsDialog::buildTxTab() {
         leftCol->addWidget(grp);   // §15.28 — TIMING column
     }
 
-    // ── Amplitude Envelope group ────────────────────────────────
-    {
-        auto *grp = new QGroupBox(
-            tr("Amplitude Envelope  (cos² fade on TX I/Q)"), page);
-        auto *form = new QFormLayout(grp);
-
-        auto *inSpin = makeSpin(
-            stream_->fadeInMs(), kMinMs, kMaxMs,
-            tr("⚠ HOT-SWITCH PROTECTION — belt-and-suspenders layer on "
-               "top of RF Delay.\n\n"
-               "Cos² amplitude ramp duration when TX I/Q rises from "
-               "zero to full at keydown.  Soft amplitude rise INSIDE "
-               "the RF Delay window — even if RF Delay is right, the "
-               "soft ramp adds redundant protection against any "
-               "residual MOX-bit / relay timing skew.\n\n"
-               "Default 50 ms (matches the default RF Delay so the "
-               "ramp completes exactly when 'RF settled' fires).  "
-               "REDUCING THIS WITHOUT KNOWING YOUR AMP'S SWITCHING "
-               "BEHAVIOUR can expose the PA to hot-switch transients."));
-        connect(inSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-                [this](int v) { stream_->setFadeInMs(v); });
-        connect(stream_, &lyra::ipc::HL2Stream::fadeInMsChanged,
-                inSpin, [inSpin](int v) {
-                    if (inSpin->value() != v) inSpin->setValue(v);
-                });
-        form->addRow(tr("Fade-In Duration:"), inSpin);
-
-        auto *outSpin = makeSpin(
-            stream_->fadeOutMs(), kMinMs, kMaxMs,
-            tr("Cos² amplitude ramp duration when TX I/Q falls from "
-               "full to zero at keyup.\n\n"
-               "MUST be less than or equal to Space MOX Delay above — "
-               "the gateware DAC stops consuming TX I/Q the instant "
-               "the wire MOX bit clears, so a fade-out longer than "
-               "Space MOX Delay gets truncated mid-ramp (audible click).\n\n"
-               "Default 13 ms (matches the default Space MOX Delay).  "
-               "RF going DOWN doesn't damage amps (relay disengages "
-               "cleanly), so this is shorter than Fade-In — purely "
-               "click-prevention on the host → gateware transition."));
-        connect(outSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-                [this](int v) { stream_->setFadeOutMs(v); });
-        connect(stream_, &lyra::ipc::HL2Stream::fadeOutMsChanged,
-                outSpin, [outSpin](int v) {
-                    if (outSpin->value() != v) outSpin->setValue(v);
-                });
-        form->addRow(tr("Fade-Out Duration:"), outSpin);
-
-        leftCol->addWidget(grp);   // §15.28 — TIMING column
-    }
+    // §3.9-5 revert (operator-rejected 2026-06-06): the "Amplitude
+    // Envelope" group + Fade-In / Fade-Out spin boxes were removed.
+    // Reference does not envelope-shape SSB TX I/Q (WDSP TXAUslewCheck
+    // returns 0 for SSB modes).  Hot-switch protection for external
+    // linear amps now relies SOLELY on the RF Delay control above —
+    // matches the reference's mechanism.
 
     // ── Tune (separate TUN drive, Task #74) ─────────────────────
     // Operator-toggled: when on, the TUN button swaps the wire drive
@@ -2785,8 +2742,6 @@ QWidget *SettingsDialog::buildTxTab() {
         stream_->setRfDelayMs(50);
         stream_->setSpaceMoxDelayMs(13);
         stream_->setPttOutDelayMs(5);
-        stream_->setFadeInMs(50);
-        stream_->setFadeOutMs(13);
         stream_->setTxStopDelayMs(10);
     });
     root->addWidget(restoreBtn);

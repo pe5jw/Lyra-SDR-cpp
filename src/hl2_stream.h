@@ -81,8 +81,6 @@
 #include <stop_token>
 #include <vector>
 
-#include "mox_edge_fade.h"
-
 namespace lyra::ipc {
 
 // Platform socket handle, opaque to consumers of this header (we do
@@ -285,8 +283,6 @@ class HL2Stream : public QObject {
     //   rfDelayMs        — wire-MOX hot → "RF settled" emit    (default 50)
     //   spaceMoxDelayMs  — keyup re-key window before MOX-off  (default 13)
     //   pttOutDelayMs    — MOX-off → final cleanup             (default 5)
-    //   fadeInMs         — cos² TX I/Q amplitude rise          (default 50)
-    //   fadeOutMs        — cos² TX I/Q amplitude fall          (default 13)
     //   txStopDelayMs    — TX-stop → wire-MOX-clear in-flight  (default 10)
     //                      Component 7 (reference-faithful match to
     //                      the verified reference's keyup `mox_delay`):
@@ -310,10 +306,6 @@ class HL2Stream : public QObject {
                WRITE setSpaceMoxDelayMs NOTIFY spaceMoxDelayMsChanged)
     Q_PROPERTY(int pttOutDelayMs   READ pttOutDelayMs
                WRITE setPttOutDelayMs   NOTIFY pttOutDelayMsChanged)
-    Q_PROPERTY(int fadeInMs        READ fadeInMs
-               WRITE setFadeInMs        NOTIFY fadeInMsChanged)
-    Q_PROPERTY(int fadeOutMs       READ fadeOutMs
-               WRITE setFadeOutMs       NOTIFY fadeOutMsChanged)
     Q_PROPERTY(int txStopDelayMs   READ txStopDelayMs
                WRITE setTxStopDelayMs   NOTIFY txStopDelayMsChanged)
 
@@ -576,8 +568,6 @@ public:
     int     rfDelayMs()       const { return rfDelayMs_;       }
     int     spaceMoxDelayMs() const { return spaceMoxDelayMs_; }
     int     pttOutDelayMs()   const { return pttOutDelayMs_;   }
-    int     fadeInMs()        const { return fade_.fadeInMs();  }
-    int     fadeOutMs()       const { return fade_.fadeOutMs(); }
     int     txStopDelayMs()   const { return txStopDelayMs_;    }
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     // Getters read the live operator-tuned values (or defaults if
@@ -871,8 +861,6 @@ public slots:
     // (USB pass-through, LSB negate-and-swap), so we always pass
     // positive edges.  No-op if hz<=0 or no TxControl registered.
     void setTxBandpass(int lowHz, int highHz);
-    void setFadeInMs(int ms);
-    void setFadeOutMs(int ms);
     void setTxStopDelayMs(int ms);
 
     // TX-1 component 6 — SSB I/Q injection gate.  See the
@@ -954,8 +942,6 @@ signals:
     void rfDelayMsChanged(int ms);
     void spaceMoxDelayMsChanged(int ms);
     void pttOutDelayMsChanged(int ms);
-    void fadeInMsChanged(int ms);
-    void fadeOutMsChanged(int ms);
     void txStopDelayMsChanged(int ms);
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     void micGainDbChanged(double db);
@@ -1005,11 +991,14 @@ private:
                               //   inject_tx_iq armed (component 7)
     void fsmKeydownSettled(); // after rfDelayMs  — emit moxActiveChanged(true)
     void fsmKeyupPostSpace(); // after spaceMoxDelayMs — fade-out + inject
-                              //   cleared, schedule fsmKeyupFadeOut
+                              //   cleared, schedule fsmKeyupTxOff
                               //   (or collapse-stay-TX if re-keyed)
-    void fsmKeyupFadeOut();   // after fade_.fadeOutMs() — TX channel
-                              //   stopped (blocking flush), schedule
-                              //   fsmKeyupInFlight (component 7 NEW)
+    void fsmKeyupTxOff();     // §3.9-5 revert: TX channel stopped
+                              //   (blocking flush) — reference-faithful
+                              //   keyup with no host-side envelope wait.
+                              //   Schedules fsmKeyupInFlight via the
+                              //   `mox_delay` (txStopDelayMs_) sleep
+                              //   per §15.25 keyup ordering.
     void fsmKeyupInFlight();  // after txStopDelayMs_ — wire MOX bit
                               //   clears (in-flight UDP datagrams
                               //   processed by HL2 by now) (NEW)
@@ -1476,14 +1465,13 @@ private:
     double levelerMaxGainLinear_   = kDefaultLevelerMaxGainLinear;
     int    levelerDecayMs_         = kDefaultLevelerDecayMs;
 
-    // ---- TX-1 component 5a: cos² TX-IQ amplitude envelope ----------
-    // Owned by HL2Stream, lives on the EP2 wire writer thread.  See
-    // mox_edge_fade.h for the design + safety rationale.  Defaults
-    // (50 ms fade-in / 13 ms fade-out, asymmetric) align with the
-    // hot-switch-safe TR-sequencing defaults above so the fade-in
-    // ramp completes exactly when rfDelayMs_ elapses + moxActive_
-    // emits true.
-    lyra::dsp::MoxEdgeFade fade_;
+    // §3.9-5 revert (operator-rejected 2026-06-06): the Lyra-native
+    // cos² SSB envelope shim (MoxEdgeFade) was deleted per Rule 1
+    // (DO AS THE REFERENCE DOES) — reference does not envelope-shape
+    // SSB at all (WDSP TXAUslewCheck at wdsp/TXA.c:819-824 returns 0
+    // for SSB modes; uslew only arms for ammod/fmmod/gen0/gen1).
+    // Hot-switch protection for external linear amps relies solely
+    // on rfDelayMs_ (TR sequencing), matching the reference.
     // ATT-on-TX value (matches operator's working-station config = 31): forces
     // the AD9866 step-att to its 31-dB code on TX, which the encoder
     // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the
