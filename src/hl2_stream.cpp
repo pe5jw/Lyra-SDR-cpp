@@ -917,18 +917,21 @@ void HL2Stream::onStatsTick() {
         // stdout, so a terminal will never show it.)
         // Raw-rotation dump so the ak4951v4 slot map can be read off the
         // operator's hardware.  a0/a8/a10 show both raw 16-bit BE pairs
-        // (C1:C2, C3:C4) of those addresses; a10 C3:C4 is now PA bias
-        // current (re-pointed from the dead 0x18), supplyRaw is 0x00
-        // C1:C2 >>4.  T/V are the confirmed-good decodes.
+        // Diagnostic dump of the reference EP6 slot rotation
+        // (networkproto1.c:498-525).  a8 = (exciter_power, fwd_power),
+        // a10 = (rev_power, user_adc0/PA Volts), a18 = (user_adc1/PA
+        // Amps, supply_volts).  T = NaN (reference has no EP6 temp
+        // slot; HL2 board temp lives on I2C2, out of scope for the
+        // §3.9 slot-map revert).
         const QString s = QStringLiteral(
-            "[telem] a0=(%1,%2) a8=(%3,%4) a10=(%5,%6) "
-            "supplyRaw=%7 | T=%8C V=%9 PA=%10A")
-            .arg(telA0c12Raw_.load()).arg(telA0c34Raw_.load())
-            .arg(telTempRaw_.load()).arg(telFwdRaw_.load())
-            .arg(telRevRaw_.load()).arg(telPaCurRaw_.load())
-            .arg(telSupplyRaw_.load())
+            "[telem] a8=(%1,%2) a10=(%3,%4) a18=(%5,%6) | "
+            "T=%7C V=%8 PAV=%9V PA=%10A")
+            .arg(telExciterRaw_.load()).arg(telFwdRaw_.load())
+            .arg(telRevRaw_.load()).arg(telPaVoltsRaw_.load())
+            .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
             .arg(hl2TempC(), 0, 'f', 1)
             .arg(hl2SupplyV(), 0, 'f', 2)
+            .arg(paVoltsV(), 0, 'f', 2)
             .arg(paCurrentA(), 0, 'f', 2);
         qWarning("%s", qUtf8Printable(s));
     }
@@ -950,21 +953,36 @@ namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 double HL2Stream::hl2TempC() const {
-    const int raw = telTempRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
-    return (3.26 * (raw / 4096.0) - 0.5) / 0.01;
+    // Reference `MetisReadThreadMainLoop_HL2` (networkproto1.c:498-525)
+    // has NO temperature in the EP6 status rotation.  HL2 board temp
+    // is exposed via the on-board I2C2 bus and needs an I2C readback
+    // transaction — out of scope for the §3.9 slot-map revert.
+    // Returning NaN here causes the UI to render "n/a" until I2C2
+    // telemetry is wired (separate work item).
+    return kNaN;
 }
 double HL2Stream::hl2SupplyV() const {
+    // Reference: supply_volts at slot 0x18 C3:C4 (AIN6 Hermes Volts).
+    // Formula: (raw / 4095) * 5 * (23 / 1.1).
     const int raw = telSupplyRaw_.load(std::memory_order_relaxed);
     if (raw < 0) return kNaN;
     return (raw / 4095.0) * 5.0 * (23.0 / 1.1);
 }
 double HL2Stream::paCurrentA() const {
+    // Reference: user_adc1 / "AIN4 MKII PA Amps" at slot 0x18 C1:C2.
+    // Sense-amp formula per the HL2 current-shunt path; magnitude
+    // calibration is operator-bench territory.
     const int raw = telPaCurRaw_.load(std::memory_order_relaxed);
     if (raw < 0) return kNaN;
-    // 0x10 C3:C4 (PA bias current). Sense-amp formula per the HL2
-    // current-shunt path; magnitude pending TX-phase validation.
     return ((3.26 * (raw / 4096.0)) / 50.0) / 0.04 / (1000.0 / 1270.0);
+}
+double HL2Stream::paVoltsV() const {
+    // Reference: user_adc0 / "AIN3 MKII PA Volts" at slot 0x10 C3:C4.
+    // Formula matches the HL2 supply-divider topology — same scale
+    // family as hl2SupplyV(); operator-bench-calibrate per board.
+    const int raw = telPaVoltsRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);
 }
 double HL2Stream::fwdPowerW() const {
     const int raw = telFwdRaw_.load(std::memory_order_relaxed);
@@ -1128,24 +1146,31 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
         totalDg_.fetch_add(1, std::memory_order_relaxed);
         windowDg_.fetch_add(1, std::memory_order_relaxed);
 
-        // ---- ADC-overload telemetry (EP6 status C&C) ---------
+        // ---- EP6 status C&C decode -------------------------------
         // Each USB frame's status bytes sit at frame-offset 3..7
-        // (C0..C4) → absolute offsets 11 and 523.  The gateware
-        // rotates C0's address field (bits [7:3]) through 0x00 /
-        // 0x08 / 0x10 / 0x18; ADC0 overload lives in C1 bit 0 ONLY
-        // at address 0.  At the other addresses C1 carries power /
-        // voltage telemetry whose bit 0 is usually set, so reading
-        // it there reports "always clipping".  Also skip I2C-readback
-        // frames (C0 bit 7).  Store the bit by DIRECT OVERWRITE (most-
-        // recent address-0 frame wins) — NOT a window-OR — so the
-        // 400 ms tick samples it instantaneously, exactly like the
-        // HL2 wire-protocol read-loop reference.
-        // The address field (C0 bits [7:3] = c0 & 0xF8) rotates through
-        // 0x00 / 0x08 / 0x10 / 0x18.  Address 0 carries ADC0 overload
-        // (C1 bit 0); the others carry 12-bit ADC telemetry as two
-        // big-endian byte pairs (C1:C2, C3:C4).  TX-0a decodes those into
-        // raw atomics (direct overwrite, most-recent wins) — RF-safe,
-        // pure read.  I2C-readback frames (C0 bit 7) are skipped.
+        // (C0..C4) → absolute offsets 11 and 523.  Reference
+        // `MetisReadThreadMainLoop_HL2` (networkproto1.c:464-525)
+        // routes by C0[7:3] address bits; the I2C-readback flag
+        // (C0 bit 7) is checked first and skips the address-based
+        // dispatch entirely (:478-493).
+        //
+        // Reference slot map (networkproto1.c:498-525):
+        //   case 0x00: adc_overload = C1 & 0x01;
+        //              user_dig_in  = (C1 >> 1) & 0x0F;
+        //   case 0x08: exciter_power = C1:C2  (AIN5 drive)
+        //              fwd_power     = C3:C4  (AIN1 PA coupler)
+        //   case 0x10: rev_power     = C1:C2  (AIN2)
+        //              user_adc0     = C3:C4  (AIN3 "MKII PA Volts")
+        //   case 0x18: user_adc1     = C1:C2  (AIN4 "MKII PA Amps")
+        //              supply_volts  = C3:C4  (AIN6 Hermes Volts)
+        //   case 0x20: per-ADC overload bits  (not consumed today)
+        //
+        // Per EXECUTION_PLAN.md §3.9-2/3/4 revert (operator-rejected
+        // 2026-06-06): the previous Lyra slot map (temp at 0x08 C1:C2;
+        // PA Amps at 0x10 C3:C4; supply derived from 0x00 C1:C2 >>4;
+        // 0x18 treated as dead) was a fabrication.  Now byte-verbatim
+        // per reference.  Reference has NO temperature in EP6 — HL2
+        // board temp lives on I2C2 and is out of scope for this revert.
         for (int f = 0; f < 2; ++f) {
             const std::uint8_t *st = u + (f == 0 ? 11 : 523);  // C0..C4
             const std::uint8_t c0 = st[0];
@@ -1155,35 +1180,21 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
             const int p12 = (static_cast<int>(st[1]) << 8) | st[2];  // C1:C2
             const int p34 = (static_cast<int>(st[3]) << 8) | st[4];  // C3:C4
             switch (c0 & 0xF8) {
-            case 0x00:  // ADC0 overload (C1 bit 0) + supply volts (C1:C2 >>4)
+            case 0x00:  // adc_overload (C1 bit 0) + user_dig_in (C1[4:1])
                 adcOverloadNow_.store((st[1] & 0x01) != 0,
                                       std::memory_order_relaxed);
-                telA0c12Raw_.store(p12, std::memory_order_relaxed);
-                telA0c34Raw_.store(p34, std::memory_order_relaxed);
-                // Supply (Hermes Volts) lives in this frame's C1:C2 as a
-                // 12-bit value left-shifted into 16 bits on the HL2+
-                // ak4951v4 gateware — recover the raw count with >>4.
-                // Bench-verified: 7680>>4=480 -> (480/4095)*5*(23/1.1)=12.25 V.
-                telSupplyRaw_.store(p12 >> 4, std::memory_order_relaxed);
                 break;
-            case 0x08:  // AIN5 temp (C1:C2) + fwd power AIN1 (C3:C4)
-                telTempRaw_.store(p12, std::memory_order_relaxed);
+            case 0x08:  // exciter_power (C1:C2) + fwd_power (C3:C4)
+                telExciterRaw_.store(p12, std::memory_order_relaxed);
                 telFwdRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x10:  // rev power (C1:C2) + PA bias current (C3:C4)
+            case 0x10:  // rev_power (C1:C2) + user_adc0 / PA Volts (C3:C4)
                 telRevRaw_.store(p12, std::memory_order_relaxed);
-                // PA bias current lives in this slot's C3:C4 (12-bit) on
-                // the HL2+ ak4951v4 gateware (control.v iresp 4-slot
-                // rotation, addr2 C3:C4) — NOT a PA-volts/VDD slot. There
-                // is no PA-volts telemetry on this gateware. Current
-                // magnitude calibration is pending TX-phase validation
-                // (idle bias ~0.2 A, full tune ~1.8 A on a known unit).
-                telPaCurRaw_.store(p34, std::memory_order_relaxed);
+                telPaVoltsRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x18:  // dead/junk on HL2+ ak4951v4 (bench: a18=(0,0);
-                        // gateware addr3 = C1:C2 zero, C3:C4 debug). No
-                        // telemetry — supply is 0x00 C1:C2 >>4, PA current
-                        // is 0x10 C3:C4 above.
+            case 0x18:  // user_adc1 / PA Amps (C1:C2) + supply_volts (C3:C4)
+                telPaCurRaw_.store(p12, std::memory_order_relaxed);
+                telSupplyRaw_.store(p34, std::memory_order_relaxed);
                 break;
             default:
                 break;

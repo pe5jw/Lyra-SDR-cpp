@@ -146,6 +146,7 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double hl2TempC   READ hl2TempC   NOTIFY statsChanged)
     Q_PROPERTY(double hl2SupplyV READ hl2SupplyV NOTIFY statsChanged)
     Q_PROPERTY(double paCurrentA READ paCurrentA NOTIFY statsChanged)
+    Q_PROPERTY(double paVoltsV   READ paVoltsV   NOTIFY statsChanged)
     Q_PROPERTY(double fwdPowerW  READ fwdPowerW  NOTIFY statsChanged)
     Q_PROPERTY(double revPowerW  READ revPowerW  NOTIFY statsChanged)
     // TX-0c-fsm — wire-level MOX state (true once the keydown TR-delay
@@ -536,6 +537,7 @@ public:
     double  hl2TempC()   const;
     double  hl2SupplyV() const;
     double  paCurrentA() const;
+    double  paVoltsV()   const;
     double  fwdPowerW()  const;
     double  revPowerW()  const;
     // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
@@ -1158,19 +1160,30 @@ private:
     // (direct overwrite, most-recent wins), read by the main-thread
     // getters.  −1 = no data yet.  std::atomic<int> is lock-free on
     // x86_64 so the getters take no lock on the hot path.
-    std::atomic<int>     telTempRaw_{-1};      // 0x08 C1:C2 (AIN5)
+    // EP6 status-slot raw atomics, slot map per reference
+    // `MetisReadThreadMainLoop_HL2` (networkproto1.c:498-525).  Per
+    // EXECUTION_PLAN.md §3.9-2/3/4 revert (operator-rejected 2026-06-06),
+    // the previous Lyra-invented slot map (temp at 0x08 C1:C2; PA Amps
+    // at 0x10 C3:C4; supply derived from 0x00 C1:C2 >>4; 0x18 treated as
+    // dead) is reverted to reference-verbatim:
+    //
+    //   slot 0x08 C1:C2 → exciter_power (AIN5 drive)
+    //   slot 0x08 C3:C4 → fwd_power     (AIN1 PA coupler)
+    //   slot 0x10 C1:C2 → rev_power     (AIN2)
+    //   slot 0x10 C3:C4 → user_adc0     (AIN3 "MKII PA Volts")
+    //   slot 0x18 C1:C2 → user_adc1     (AIN4 "MKII PA Amps")
+    //   slot 0x18 C3:C4 → supply_volts  (AIN6 Hermes Volts)
+    //
+    // There is NO temperature slot in HL2 EP6 telemetry per reference.
+    // Board temp on HL2 is exposed via the on-board I2C bus and requires
+    // an I2C2 read transaction — out of scope for this slot-map revert.
+    // hl2TempC() therefore returns NaN until I2C2 telemetry is added.
+    std::atomic<int>     telExciterRaw_{-1};   // 0x08 C1:C2 (AIN5)
     std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 (AIN1)
     std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 (AIN2)
-    std::atomic<int>     telPaCurRaw_{-1};     // 0x10 C3:C4 (PA bias current)
-    std::atomic<int>     telSupplyRaw_{-1};    // 0x00 C1:C2 >>4 (supply V)
-    // Full-rotation probe: addr-0's data pair (C1:C2 / C3:C4).  Addr 0
-    // C1 bit 0 is the ADC-overload flag; the rest of the pair is unused
-    // by the generic map but is the prime suspect for supply volts on
-    // the ak4951v4 gateware (where 0x18 reads 0).  Captured raw for the
-    // LYRA_TELEM_DEBUG dump so the real slot map can be derived from the
-    // operator's hardware rather than assumed.
-    std::atomic<int>     telA0c12Raw_{-1};     // 0x00 C1:C2
-    std::atomic<int>     telA0c34Raw_{-1};     // 0x00 C3:C4
+    std::atomic<int>     telPaVoltsRaw_{-1};   // 0x10 C3:C4 (user_adc0 "PA Volts")
+    std::atomic<int>     telPaCurRaw_{-1};     // 0x18 C1:C2 (user_adc1 "PA Amps")
+    std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (supply_volts)
     bool                 adcOverload_    = false;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;
