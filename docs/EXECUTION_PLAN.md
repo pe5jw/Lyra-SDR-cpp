@@ -389,19 +389,19 @@ If a revert produces wrong telemetry / TX click on N8SDR's HL2+ bench, that is a
 
 | # | Divergence | Reference says (LOCKED — do this) | Lyra current (PATCH — revert) | Status |
 |---|---|---|---|---|
-| §3.9-1 | EP6 seq counter width | 32-bit per `networkproto1.c:191-194` | 20-bit mask `kSeqMask20 = 0x000FFFFF` in `hl2_stream.cpp:1091-1118` | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
-| §3.9-2 | Telemetry slot semantics — case 0x08 C1:C2 | `exciter_power` per `networkproto1.c:506-507` | decoded as `temp` on HL2+ ak4951v4 | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
-| §3.9-3 | Telemetry slot semantics — case 0x10 C3:C4 | `user_adc0` ("AIN3 MKII PA Volts") | decoded as PA current | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
-| §3.9-4 | Telemetry slot semantics — case 0x18 | `user_adc1` (C1:C2) + `supply_volts` (C3:C4) per `networkproto1.c:516-517` | treated as dead/junk | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
-| §3.9-5 | MoxEdgeFade for SSB | WDSP `TXAUslewCheck` at `wdsp/TXA.c:819-824` returns 0 for SSB → **no envelope shaping for SSB** | Lyra-native cos² shim in `src/mox_edge_fade.cpp` (336 LOC + mid-fade reversal math) | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 (SSB gets NO envelope shaping, period) |
+| §3.9-1 | EP6 seq counter width | 32-bit per `networkproto1.c:191-194` | 20-bit mask `kSeqMask20 = 0x000FFFFF` in `hl2_stream.cpp:1091-1118` | ✅ **REVERTED 2026-06-07** — commit `3b7888b` (Task #115) |
+| §3.9-2 | Telemetry slot semantics — case 0x08 C1:C2 | `exciter_power` per `networkproto1.c:506-507` | decoded as `temp` on HL2+ ak4951v4 | ✅ **REVERTED 2026-06-07** — commit `42f66c2` (Task #115) |
+| §3.9-3 | Telemetry slot semantics — case 0x10 C3:C4 | `user_adc0` ("AIN3 MKII PA Volts") | decoded as PA current | ✅ **REVERTED 2026-06-07** — commit `42f66c2` (Task #115) |
+| §3.9-4 | Telemetry slot semantics — case 0x18 | `user_adc1` (C1:C2) + `supply_volts` (C3:C4) per `networkproto1.c:516-517` | treated as dead/junk | ✅ **REVERTED 2026-06-07** — commit `42f66c2` (Task #115) |
+| §3.9-5 | MoxEdgeFade for SSB | WDSP `TXAUslewCheck` at `wdsp/TXA.c:819-824` returns 0 for SSB → **no envelope shaping for SSB** | Lyra-native cos² shim in `src/mox_edge_fade.cpp` (336 LOC + mid-fade reversal math) | ✅ **REVERTED 2026-06-07** — commit `12e7acc` (Task #115). 336 LOC DELETED + FSM rewire + Settings UI removed. Operator confirmed amp-safety call: rfDelayMs_ (50 ms default) is now sole hot-switch protection, matching reference. |
 
-**Action queued (do NOT auto-execute — surface per-stage as the relevant Step 14 stage starts):**
+**All 5 reverts shipped Step 14 Stage 1.5 (pre-Stage-2 pass).** The locations originally tagged Stage 5 / Stage 8 below were preemptive — the LIVE production hl2_stream.cpp carried the patches directly, and reverting in-place restores reference parity for the active code path. The clean `src/wire/Ep6RecvThread.cpp` was already reference-faithful (no §3.9-1 mask, reference-verbatim slot decode) and required no edits.
 
-| # | Where the revert lands | Step 14 stage |
+| # | Where the revert landed | Reference cite |
 |---|---|---|
-| §3.9-1 | `Ep6RecvThread` seq read — use full 32-bit per `networkproto1.c:191-194` | Stage 5 (RX wire-up) |
-| §3.9-2 / §3.9-3 / §3.9-4 | `Ep6RecvThread::decode_status_header` slot map per `networkproto1.c:498-518` (HL2 read loop) | Stage 5 (RX wire-up) |
-| §3.9-5 | DELETE `src/mox_edge_fade.cpp` + its caller; SSB MoxEdge path becomes a no-op per WDSP `TXAUslewCheck` semantics | Stage 8 (TX wire-up) |
+| §3.9-1 | `hl2_stream.cpp` — `expectedSeq = seq + 1` (no mask) | `networkproto1.c:191-194` MetisReadDirect |
+| §3.9-2 / §3.9-3 / §3.9-4 | `hl2_stream.cpp` slot decode + `hl2_stream.h` atomics; `hl2TempC()` returns NaN (HL2 board temp is I2C2, separate work item) | `networkproto1.c:498-525` HL2 read loop |
+| §3.9-5 | `src/mox_edge_fade.{cpp,h}` DELETED; `hl2_stream.cpp` FSM `fsmKeyupTxOff()` reference-faithful keyup; EP2 packer emits raw TX I/Q | `wdsp/TXA.c:819-824` `TXAUslewCheck` returns 0 for SSB |
 
 **Process going forward:** if a 6th genuine bench-vs-reference disagreement surfaces (something the operator WANTS to override the reference on, not just a Claude-invented "smart" divergence), add a new §3.9-N row with `**PENDING SIGN-OFF**`. Sign-off requires the operator to explicitly bless it — same discipline as today, just with the bar that Rule 1 + Rule 5 reject the default. The five rejected above are NOT examples of the mechanism succeeding; they are examples of the mechanism filtering out PATCHES that should never have shipped silently in the live HL2Stream code in the first place.
 
