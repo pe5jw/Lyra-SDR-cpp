@@ -381,17 +381,29 @@ The sync script is committed at `tools/sync_execution_plan.py`. Requires Python 
 
 ## 📊 §3.9 OPERATOR-SIGNED DIVERGENCES REGISTRY
 
-Per Rule 8 — bench-verified gateware-RTL divergences that explicitly deviate from reference source. Each entry needs operator sign-off date.
+Per Rule 29 — bench-verified gateware-RTL divergences that explicitly deviate from reference source. Each entry needs operator sign-off date OR is REJECTED → marked for REVERT TO REFERENCE.
 
-| # | Divergence | Reference says | Lyra (with RTL/file:line provenance) | Operator-signed? |
+**OPERATOR RULING 2026-06-06 — ALL FIVE BELOW REJECTED FOR SIGN-OFF.** None match the locked reference (Thetis 2.10.3.13 + `networkproto1.c`). Per Rule 1 (DO AS THE REFERENCE DOES) and Rule 5 (NO PATCHES), they are reclassified as 🔴 PATCH and queued for REVERT TO REFERENCE during the Step 14 stage work. The §3.9 sign-off mechanism remains in force for **future** genuine bench-vs-reference disagreements the operator chooses to bless — but these 5 are not that.
+
+If a revert produces wrong telemetry / TX click on N8SDR's HL2+ bench, that is a Rule 18 STOP-AND-ASK ("reference says X, bench says Y — operator decides") — NOT a Claude-decided divergence shipped under §3.9 cover.
+
+| # | Divergence | Reference says (LOCKED — do this) | Lyra current (PATCH — revert) | Status |
 |---|---|---|---|---|
-| §3.9-1 | EP6 seq counter width | 32-bit (`networkproto1.c:191-194`) | 20-bit mask `kSeqMask20 = 0x000FFFFF` (HL2+ ak4951v4 RTL: `logic [19:0] ep6_seq_no` per `hl2_stream.cpp:1091-1118` comment block) — operator bench-verified the gateware wraps every ~3:27 min | **PENDING SIGN-OFF** |
-| §3.9-2 | Telemetry slot semantics — case 0x08 C1:C2 | exciter_power (`networkproto1.c:506-507`) | temp on HL2+ ak4951v4 — operator bench-verified | **PENDING SIGN-OFF** |
-| §3.9-3 | Telemetry slot semantics — case 0x10 C3:C4 | user_adc0 ("AIN3 MKII PA Volts" per Thetis HL2 commentary) | PA current — operator bench-verified PA = 1.76 A at full tune vs Thetis 1.8 A anchor (CLAUDE.md §15.26 Correction-3) | **PENDING SIGN-OFF** |
-| §3.9-4 | Telemetry slot semantics — case 0x18 | user_adc1 (C1:C2) + supply_volts (C3:C4) per `networkproto1.c:516-517` | dead/junk on HL2+ ak4951v4 — operator bench-verified (CLAUDE.md §15.26) | **PENDING SIGN-OFF** |
-| §3.9-5 | MoxEdgeFade for SSB | WDSP `TXAUslewCheck` at `wdsp/TXA.c:819-824` returns 0 for SSB → no WDSP envelope at all for SSB | Lyra-native cos² shim in `src/mox_edge_fade.cpp` (336 LOC) — necessary because reference doesn't address SSB envelopes; mid-fade reversal continuity is Lyra-native math | **PENDING SIGN-OFF** |
+| §3.9-1 | EP6 seq counter width | 32-bit per `networkproto1.c:191-194` | 20-bit mask `kSeqMask20 = 0x000FFFFF` in `hl2_stream.cpp:1091-1118` | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
+| §3.9-2 | Telemetry slot semantics — case 0x08 C1:C2 | `exciter_power` per `networkproto1.c:506-507` | decoded as `temp` on HL2+ ak4951v4 | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
+| §3.9-3 | Telemetry slot semantics — case 0x10 C3:C4 | `user_adc0` ("AIN3 MKII PA Volts") | decoded as PA current | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
+| §3.9-4 | Telemetry slot semantics — case 0x18 | `user_adc1` (C1:C2) + `supply_volts` (C3:C4) per `networkproto1.c:516-517` | treated as dead/junk | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 |
+| §3.9-5 | MoxEdgeFade for SSB | WDSP `TXAUslewCheck` at `wdsp/TXA.c:819-824` returns 0 for SSB → **no envelope shaping for SSB** | Lyra-native cos² shim in `src/mox_edge_fade.cpp` (336 LOC + mid-fade reversal math) | 🔴 **REVERT TO REFERENCE** — operator rejected 2026-06-06 (SSB gets NO envelope shaping, period) |
 
-Operator: when ready to sign off on an item, replace `**PENDING SIGN-OFF**` with `**SIGNED {YYYY-MM-DD}**`.
+**Action queued (do NOT auto-execute — surface per-stage as the relevant Step 14 stage starts):**
+
+| # | Where the revert lands | Step 14 stage |
+|---|---|---|
+| §3.9-1 | `Ep6RecvThread` seq read — use full 32-bit per `networkproto1.c:191-194` | Stage 5 (RX wire-up) |
+| §3.9-2 / §3.9-3 / §3.9-4 | `Ep6RecvThread::decode_status_header` slot map per `networkproto1.c:498-518` (HL2 read loop) | Stage 5 (RX wire-up) |
+| §3.9-5 | DELETE `src/mox_edge_fade.cpp` + its caller; SSB MoxEdge path becomes a no-op per WDSP `TXAUslewCheck` semantics | Stage 8 (TX wire-up) |
+
+**Process going forward:** if a 6th genuine bench-vs-reference disagreement surfaces (something the operator WANTS to override the reference on, not just a Claude-invented "smart" divergence), add a new §3.9-N row with `**PENDING SIGN-OFF**`. Sign-off requires the operator to explicitly bless it — same discipline as today, just with the bar that Rule 1 + Rule 5 reject the default. The five rejected above are NOT examples of the mechanism succeeding; they are examples of the mechanism filtering out PATCHES that should never have shipped silently in the live HL2Stream code in the first place.
 
 ---
 
@@ -468,7 +480,7 @@ Per-item checklist:
 - [ ] Pre-write: re-read `Ep6RecvThread::process_datagram` body twice
 - [ ] Expose `Ep6RecvThread::process_datagram()` publicly
 - [ ] Call from `rxWorkerLoop` AFTER existing validation, BEFORE old `iqSink_` dispatch
-- [ ] **AUDIT FOLD §3.9-1:** port 20-bit seq mask into `Ep6RecvThread` (only after operator signs off §3.9-1 above)
+- [ ] **REVERT §3.9-1 (rejected):** Ep6RecvThread reads the full 32-bit seq per `networkproto1.c:191-194` — do NOT port the 20-bit mask. If bench shows wraparound issues on N8SDR's HL2+, STOP-AND-ASK per Rule 18.
 - [ ] Verify Ep6's start() machinery stays dormant in this stage (no second `recvfrom` on shared socket)
 - [ ] Build + Rule 2 + Audit #1 + Audit #2
 - [ ] Operator bench-gate: A/B comparator — seq error rates, per-DDC IQ, mic harvest, telemetry all match
@@ -492,7 +504,7 @@ Per-item checklist:
 ### Stage 5 — Migrate Mic + Telemetry + PTT-In Consumers Off HL2Stream Onto Ep6RecvThread sinks
 Per-item checklist:
 - [ ] Pre-write: re-read `networkproto1.c:478-525` (telemetry decode) twice
-- [ ] **AUDIT FOLD §3.9-2 / §3.9-3 / §3.9-4:** port telemetry slot re-map into `Ep6RecvThread::decode_status_header` (ONLY after operator signs off §3.9-2/3/4 above)
+- [ ] **REVERT §3.9-2 / §3.9-3 / §3.9-4 (rejected):** Ep6RecvThread telemetry decode follows `networkproto1.c:498-518` (HL2 read loop) slot map verbatim — case 0x08 C1:C2 = `exciter_power`, case 0x10 C3:C4 = `user_adc0`, case 0x18 C1:C2 = `user_adc1` + C3:C4 = `supply_volts`. Do NOT carry the HL2+-bench-tuned re-map. If bench shows wrong telemetry values on N8SDR's HL2+, STOP-AND-ASK per Rule 18.
 - [ ] **AUDIT FOLD (real ungated):**
   - [ ] Verify `micDecimationCount` reset at Ep6RecvThread `run_loop` entry (today's Commit B should have this)
   - [ ] Verify `seqErrors` reset at run_loop entry
@@ -544,9 +556,8 @@ Per-item checklist:
 - [ ] Pre-write: re-read `MetisWriteFrame:216-237` + `sendPacket@network.c:1382-1402` twice
 - [ ] HL2Stream::open spawns `Ep2SendThread` instead of `txWorker_` jthread
 - [ ] LRIQ samples flow: HL2Stream audio path → `outbound_push_lr/iq` → Ep2SendThread → MetisFrame
-- [ ] **AUDIT FOLD MoxEdgeFade:** verify cos² envelope output reaches OutboundRing IQ buffer (adapter if needed)
+- [ ] **REVERT §3.9-5 (rejected):** DELETE `src/mox_edge_fade.cpp` + its caller. SSB MoxEdge path becomes a no-op per WDSP `TXAUslewCheck` semantics (`wdsp/TXA.c:819-824` returns 0 for SSB → no envelope shaping). Reference doesn't envelope-shape SSB at all; Lyra mustn't either. If bench shows SSB keydown/keyup clicks on N8SDR's HL2+, STOP-AND-ASK per Rule 18.
 - [ ] **AUDIT FOLD §15.20 host TX-timeout:** verify lyra-cpp equivalent exists; add if missing
-- [ ] **AUDIT FOLD §3.9-5:** MoxEdgeFade Lyra-native shim acknowledged per §3.9-5 sign-off
 - [ ] Delete `HL2Stream::txWorkerLoop` body
 - [ ] Delete `HL2Stream::composeCC` body (replaced by FrameComposer::write_main_loop_hl2)
 - [ ] Build + Rule 2 + Audit #1 + Audit #2
@@ -646,7 +657,8 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 
 - This file IS the source of truth for current state. Read top-to-bottom at session start.
 - Any item with `**PENDING SIGN-OFF**` blocks the stage that depends on it. Surface immediately.
-- §3.9 items: when operator signs off, edit this file with the date + commit hash where the divergence ships, NOT in the §3.9 registry only.
+- Any item marked `🔴 REVERT TO REFERENCE` is a PATCH the operator has rejected sign-off on — it will be reverted as part of the relevant Step 14 stage (see §3.9 registry action-queue table). Do NOT carry rejected divergences forward into shipped code.
+- §3.9 items: when operator signs off a NEW (post-2026-06-06) divergence, edit this file with the date + commit hash where the divergence ships, NOT in the §3.9 registry only. The bar is high: Rule 1 + Rule 5 reject the default; sign-off requires the operator to explicitly bless a bench-verified divergence.
 - If Claude reads a reference body and finds Lyra deviating in a way the existing plan doesn't address → STOP-AND-ASK item added to the "OPEN STOP-AND-ASK" section above, do NOT proceed.
 - Backup bundle naming: `_backups/lyra-YYYY-MM-DD-stage{N}.bundle`.
 - Commit message format: `[Stage {N}.{sub}] {title}\n\nReference: {file:line}\nAudit: #1=PASS #2={result}\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
