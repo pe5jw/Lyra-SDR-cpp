@@ -147,9 +147,15 @@ private:
     // Reader-thread entry point.
     void run_loop();
 
-    // Parse one EP6 datagram (2x 512-byte USB frames per UDP
-    // datagram, per `MetisReadThreadMainLoop_HL2:475+`).
-    void process_datagram(const uint8_t* data, std::size_t size);
+    // Parse one EP6 datagram per the reference's
+    // `MetisReadDirect` + `MetisReadThreadMainLoop_HL2:475+`
+    // split: `raw_header` is the 1032-byte raw recv buffer
+    // (used for BE seq tracking at offsets 4..7); `usb_frames`
+    // is the 1024-byte header-stripped buffer = 2 × 512-byte
+    // USB frames, identical to reference's `FPGAReadBufp`
+    // post-`memcpy(... prn->ReadBufp + 8, 1024);`.
+    void process_datagram(const uint8_t* raw_header,
+                          const uint8_t* usb_frames);
 
     // Parse one 512-byte USB frame (sync + C0-C4 status header
     // + 19 sample slots).

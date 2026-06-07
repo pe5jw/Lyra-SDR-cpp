@@ -17,7 +17,6 @@
 #include "wire/RbpFilter.h"
 
 #include <cassert>
-#include <mutex>
 
 namespace lyra::wire {
 
@@ -26,100 +25,94 @@ namespace lyra::wire {
 // Direct mirrors of reference's file-scope globals:
 //   `out_control_idx` at `networkproto1.c:27`
 //   `PreviousTXBit`   at `networkproto1.c:29`
-// Plus a Lyra-native concurrency guard (Q4 signed) — the
-// reference is single-threaded I/O so it doesn't need one;
-// Lyra's §10.2 component split puts setters on UI/control
-// threads and the scheduler walk on the wire-egress thread,
-// so the mutex coordinates cross-thread access to the C&C
-// register state in `prn->...`.
+//
+// ⚠ Rule 24 — no concurrency guard.  Reference is single-
+// threaded I/O (one wire-egress thread invokes the entire
+// `WriteMainLoop_HL2` walk + all setters happen via the same
+// command surface).  Lyra mirrors that contract verbatim per
+// the operator-locked "do as reference, period" rule
+// (2026-06-06): the wire layer owns these registers; control-
+// thread setters MUST funnel through the same wire-egress
+// thread (e.g. via the command-queue primitive) — they may NOT
+// touch `prn->...` directly.  An earlier `std::mutex g_cc_lock`
+// was a Lyra-native deviation caught by Round-1 audit 2026-06-06
+// and removed.
 namespace {
-int        g_out_control_idx = 0;
-int        g_previous_tx_bit = 0;
-std::mutex g_cc_lock;
+int g_out_control_idx = 0;
+int g_previous_tx_bit = 0;
 }  // namespace
 
 // =================== §4a setters =====================================
+//
+// Reference has NO setter abstraction — operator code in
+// `Console/radio.cs` etc. writes `prn->...` fields directly.  Lyra
+// keeps thin free-function wrappers for the C++23 idiomatic call
+// site but the bodies are reduced to single-line writes that mirror
+// what the reference operator code does literally.  Defensive
+// guards (bounds checks, null checks, extra masks at the field-
+// store level) were Lyra-native additions caught by 2026-06-06
+// TX-Agent-2 setter audit and removed per "do as reference,
+// period."
 
 void set_rx_freq(int rx_idx, int freq_hz) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (rx_idx < 0 || rx_idx >= kMaxRxStreams)
-        return;
-    if (prn == nullptr)
-        return;
     prn->rx[rx_idx].frequency = freq_hz;
-    // No payload caching — the per-frame switch reads
-    // `prn->rx[N].frequency` directly at compose time, exactly
-    // as the reference does (per Q1).
 }
 
-// §4b-1.8 setter — TX NCO freq for case 1.
+// §4b-1.8 — TX NCO freq for case 1.
 void set_tx_freq(int freq_hz) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (prn == nullptr)
-        return;
     prn->tx[0].frequency = freq_hz;
-    // No payload caching — case 1 reads `prn->tx[0].frequency`
-    // directly at compose time.
 }
 
 // =================== §4b-2.5 setters =================================
 
-// §4b-2.5 — Write `prn->tx[0].drive_level` (case 10 C1).
+// §4b-2.5 — `prn->tx[0].drive_level` (case 10 C1).
 void set_drive_level(int level) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (prn == nullptr)
-        return;
     prn->tx[0].drive_level = level;
 }
 
-// §4b-2.5 — Write `prn->tx[0].pa` (case 10 C3 bit 7, legacy path).
+// §4b-2.5 — `prn->tx[0].pa` (case 10 C3 bit 7, legacy path).
 // Apollo-modded HL2+ PA enable is via `ApolloTuner` C2 bit 3
 // (Task #114); this setter only touches the legacy bit.
 void set_pa_on(bool on) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (prn == nullptr)
-        return;
     prn->tx[0].pa = on ? 1 : 0;
 }
 
-// §4b-2.5 — TX step attenuator setter with HL2-family branching.
-// Source-verified `console.cs:10657-10663`: HL2 applies the
-// (31 - signed_db) inversion; non-HL2 families use the raw value.
+// §4b-2.5 — TX step attenuator setter.  HL2 (`console.cs:
+// 10657-10658`): operator code calls `SetTxAttenData(31 -
+// _tx_attenuator_data)` which stores into
+// `prn->adc[0].tx_step_attn`; case 4 then truncates to 5 bits
+// (`networkproto1.c:1019`), case 11 to 6 bits + `0x40` enable
+// (`:1099-1102`).  Lyra mirrors that storage convention at the
+// setter so the wire bytes come out byte-identical to the
+// reference.  Non-HL2 families (ANAN/Orion/RedPitaya) take the
+// raw operator value with NO inversion per the reference C#
+// path — `assert(false)` until tester hardware lands.
 void set_tx_step_attn_db(int signed_db) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (prn == nullptr)
-        return;
-
     int wire_value;
     switch (hpsdrModel) {
         case HPSDRModel::HERMESLITE:
         case HPSDRModel::HPSDR:  // HL2-class
-            // Operator-axis -28..+31 → wire-encoded (31 - x); store
-            // 6-bit (case 11 uses 6-bit + 0x40; case 4 uses 5-bit
-            // truncation from the same field).
-            wire_value = (31 - signed_db) & 0x3F;
+            // Reference HL2 stores `31 - x` raw; wire-site masks
+            // do the truncation (case 4 `& 0x1F`, case 11
+            // `& 0x3F | 0x40`).  No extra setter-level mask.
+            wire_value = 31 - signed_db;
             break;
         default:
-            // ANAN / Orion / RedPitaya: raw value 0..31 → wire 0..31
-            // (non-HL2 families).  ASSERT until tester hardware is
-            // available per §3.6 family-parameterized Option A.
             assert(false && "non-HL2 TX step ATT encoding not yet "
                             "implemented — needs operator bench "
                             "verification");
-            wire_value = signed_db & 0x3F;  // unreachable; compiler-quiet
+            wire_value = signed_db;  // unreachable; compiler-quiet
             break;
     }
     prn->adc[0].tx_step_attn = wire_value;
 }
 
-// §4b-2.5 — RX step attenuator setter (no inversion, any family).
+// §4b-2.5 — RX step attenuator setter.  Reference writes
+// `prn->adc[N].rx_step_attn` raw via operator code; wire-site
+// masks at case 11 (`& 0x3F`), case 12 C1 (no mask on RX branch),
+// case 12 C2 (`& 0x1F`) do the truncation.  No setter-level mask.
 void set_rx_step_attn_db(int signed_db, int adc_idx) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
-    if (prn == nullptr)
-        return;
-    if (adc_idx < 0 || adc_idx >= kMaxAdc)
-        return;
-    prn->adc[adc_idx].rx_step_attn = signed_db & 0x3F;
+    prn->adc[adc_idx].rx_step_attn = signed_db;
 }
 
 // =================== §4a.3 case 0 ====================================
@@ -133,8 +126,6 @@ void compose_case_0([[maybe_unused]] unsigned char& C0,
     // Defensive: §4a-scope is WIRE-INERT; compose_case_0 should
     // never run with null prn / prbpfilter, but assert defensively
     // so a future wire-up that forgets to allocate them fails LOUD.
-    assert(prn != nullptr);
-    assert(prbpfilter != nullptr);
 
     // C0 is unchanged for case 0 — it carries only the XmitBit
     // base set in the caller (no `C0 |= addr` here; addr 0 leaves
@@ -191,7 +182,6 @@ void compose_case_0([[maybe_unused]] unsigned char& C0,
 void compose_case_2(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 4;  // addr 2: C0 |= (addr << 1) → 0x04
 
@@ -218,7 +208,6 @@ void compose_case_2(unsigned char& C0, unsigned char& C1,
 void compose_case_3(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 6;  // addr 3: C0 |= (addr << 1) → 0x06
 
@@ -244,7 +233,6 @@ void compose_case_3(unsigned char& C0, unsigned char& C1,
 void compose_case_1(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 2;  // addr 1: C0 |= (addr << 1) → 0x02
 
@@ -271,7 +259,6 @@ void compose_case_1(unsigned char& C0, unsigned char& C1,
 void compose_case_4(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x1c;  // addr 14 (0x0e in reference comment): C0 |= 0x0e << 1 = 0x1c
 
@@ -289,7 +276,6 @@ void compose_case_4(unsigned char& C0, unsigned char& C1,
 void compose_case_13(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x1e;  // addr 15: C0 |= 0x0f << 1 = 0x1e
 
@@ -310,7 +296,6 @@ void compose_case_13(unsigned char& C0, unsigned char& C1,
 void compose_case_14(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x20;  // addr 16: C0 |= 0x10 << 1 = 0x20
 
@@ -331,7 +316,6 @@ void compose_case_14(unsigned char& C0, unsigned char& C1,
 void compose_case_15(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x22;  // addr 17: C0 |= 0x11 << 1 = 0x22
 
@@ -353,7 +337,6 @@ void compose_case_15(unsigned char& C0, unsigned char& C1,
 void compose_case_17(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x2e;  // addr 23: C0 |= 0x17 << 1 = 0x2e
 
@@ -373,7 +356,6 @@ void compose_case_17(unsigned char& C0, unsigned char& C1,
 void compose_case_18(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x74;  // addr 58: C0 |= 0x3a << 1 = 0x74
 
@@ -392,8 +374,6 @@ void compose_case_18(unsigned char& C0, unsigned char& C1,
 void compose_case_10(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
-    assert(prbpfilter != nullptr);
 
     C0 |= 0x12;  // addr 9: C0 |= 0x09 << 1 = 0x12
 
@@ -453,7 +433,6 @@ void compose_case_10(unsigned char& C0, unsigned char& C1,
 void compose_case_11(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x14;  // addr 10: C0 |= 0x0a << 1 = 0x14
 
@@ -501,7 +480,6 @@ void compose_case_11(unsigned char& C0, unsigned char& C1,
 void compose_case_12(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x16;  // addr 11: C0 |= 0x0b << 1 = 0x16
 
@@ -556,8 +534,6 @@ void compose_case_12(unsigned char& C0, unsigned char& C1,
 void compose_case_16(unsigned char& C0, unsigned char& C1,
                                     unsigned char& C2, unsigned char& C3,
                                     unsigned char& C4) {
-    assert(prn != nullptr);
-    assert(prbpfilter2 != nullptr);
 
     C0 |= 0x24;  // addr 18: C0 |= 0x12 << 1 = 0x24
 
@@ -595,7 +571,6 @@ void compose_case_16(unsigned char& C0, unsigned char& C1,
 void compose_case_5(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 8;  // addr 4: C0 |= 0x04 << 1 = 0x08
 
@@ -619,7 +594,6 @@ void compose_case_5(unsigned char& C0, unsigned char& C1,
 void compose_case_6(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x0a;  // addr 5: C0 |= 0x05 << 1 = 0x0a
 
@@ -640,7 +614,6 @@ void compose_case_6(unsigned char& C0, unsigned char& C1,
 void compose_case_7(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x0c;  // addr 6: C0 |= 0x06 << 1 = 0x0c
 
@@ -661,7 +634,6 @@ void compose_case_7(unsigned char& C0, unsigned char& C1,
 void compose_case_8(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x0e;  // addr 7: C0 |= 0x07 << 1 = 0x0e
 
@@ -681,7 +653,6 @@ void compose_case_8(unsigned char& C0, unsigned char& C1,
 void compose_case_9(unsigned char& C0, unsigned char& C1,
                                    unsigned char& C2, unsigned char& C3,
                                    unsigned char& C4) {
-    assert(prn != nullptr);
 
     C0 |= 0x10;  // addr 8: C0 |= 0x08 << 1 = 0x10
 
@@ -707,14 +678,18 @@ void compose_case_9(unsigned char& C0, unsigned char& C1,
 //   - Post-switch packet packing into txbptr[3..7]
 
 void write_main_loop_hl2(char* txbptr_base) {
-    std::lock_guard<std::mutex> guard(g_cc_lock);
+    // No defensive `assert(prn != nullptr); assert(prbpfilter !=
+    // nullptr);` — reference `WriteMainLoop_HL2` at
+    // `networkproto1.c:869` has no such asserts; caller owns the
+    // precondition.  Earlier Lyra-native asserts caught by
+    // 2026-06-06 TX-Agent-2 S.1 audit and removed per "do as
+    // reference, period."
 
-    // Reference defensively assumes prn / prbpfilter are non-null;
-    // the §10.2 component split says the wire-layer initializer
-    // allocates them before write_main_loop_hl2 is invoked.
-    assert(prn != nullptr);
-    assert(prbpfilter != nullptr);
-
+    // Reference `WriteMainLoop_HL2:873` declares the C0..C4 locals
+    // once at function scope and they retain values across USB-
+    // frame iterations.  Per-case bodies write all 5 bytes; the
+    // outer init covers the (defensive) all-zero start state for
+    // the very first iteration only.
     unsigned char C0 = 0, C1 = 0, C2 = 0, C3 = 0, C4 = 0;
 
     // Outer loop: 2 USB frames per UDP datagram (networkproto1.c:878)
@@ -741,11 +716,15 @@ void write_main_loop_hl2(char* txbptr_base) {
         // C0 base init — MOX bit goes to C0 bit 0
         // (networkproto1.c:896).  Per-case `C0 |= (addr << 1)`
         // OR's the address bits ABOVE bit 0.
+        //
+        // NO per-iteration `C1=C2=C3=C4=0` re-zero — reference
+        // (`:896`) only re-inits C0; C1..C4 inherit their value
+        // from the previous switch case.  Every populated case
+        // 0..18 writes all 4 bytes explicitly so steady-state
+        // wire output is identical, but the contract is
+        // reference-faithful.  Earlier Lyra-native re-zero
+        // caught by 2026-06-06 TX-Agent-2 S.8 audit.
         C0 = static_cast<unsigned char>(XmitBit);
-        C1 = 0;
-        C2 = 0;
-        C3 = 0;
-        C4 = 0;
 
         // I2C-transaction overlay (HL2-only).  Lines 898-943.
         // First leg: decrement delay if non-zero.

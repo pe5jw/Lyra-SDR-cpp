@@ -17,8 +17,35 @@
 // loop replaced with `WSAEventSelect` + `WSAWaitForMultipleEvents`
 // (per `:433-462` reference verbatim, using `prn->hDataEvent` +
 // `prn->wsaProcessEvents` per §1.1 revert).
+//
+// 🔴 Round-1 audit 2026-06-06 corrections (operator-directed):
+//   - `g_fpga_read_bufp` sized 1024 (the USB-frame content only),
+//     NOT 1032 — matches reference `FPGAReadBufp = calloc(1024,…)`
+//     at `networkproto1.c:427` verbatim.  The 8-byte HPSDR header
+//     is stripped via the reference's `MetisReadDirect` pattern:
+//     raw 1032-byte recv goes into `prn->ReadBufp`; `memcpy` 1024
+//     from `prn->ReadBufp + 8` into `g_fpga_read_bufp`.
+//   - All per-thread init (buffer alloc, seq counter reset, mic
+//     decimator reset, `WSACreateEvent`, `WSAEventSelect`,
+//     `ForceCandCFrame(3)` priming, MMCSS Pro Audio + priority-2)
+//     runs at thread ENTRY inside `run_loop()` — matches reference
+//     `MetisReadThreadMainLoop_HL2:423-430` verbatim.  `start()`
+//     spawns the thread + waits on the `hReadThreadInitSem`
+//     handshake; `run_loop()` releases it after init completes.
+//     Matches reference `netInterface.c:60-66` thread-spawn
+//     handshake pattern.
+//   - `AvSetMmThreadPriority(hTask, AVRT_PRIORITY_HIGH)` (= 2)
+//     added after `AvSetMmThreadCharacteristicsW("Pro Audio")` —
+//     matches reference `networkproto1.c:243-244` verbatim.
+//   - `WSASetEvent` on stop DROPPED.  Reference relies on the
+//     `prn->wdt` timeout-based wake (`if(prn->wdt)` → 3000ms,
+//     else WSA_INFINITE) for shutdown wake — `io_keep_running=0`
+//     just makes the loop exit on the next iteration.  Lyra's
+//     `stop_request_` flag does the same; the manual `WSASetEvent`
+//     was a Lyra-native deviation now removed.
 
 #include "wire/Ep6RecvThread.h"
+#include "wire/ForceCandC.h"
 #include "wire/MetisFrame.h"
 #include "wire/RadioNet.h"
 #include "wire/Router.h"
@@ -54,6 +81,14 @@ constexpr std::size_t kHpsdrHeaderBytes = 8;
 constexpr std::size_t kUsbFrameBytes    = 512;
 constexpr std::size_t kEp6DatagramBytes =
     kHpsdrHeaderBytes + 2 * kUsbFrameBytes;  // 1032
+
+// `FPGAReadBufp` size — USB-frame content only, NO 8-byte header.
+// Reference: `FPGAReadBufp = (unsigned char*)calloc(1024,
+// sizeof(unsigned char));` at `networkproto1.c:427`.  The
+// `MetisReadDirect` pattern strips the header via memcpy:
+//   `recv(listenSock, prn->ReadBufp, 1032, 0);`
+//   `memcpy(FPGAReadBufp, prn->ReadBufp + 8, 1024);`
+constexpr std::size_t kFpgaReadBufBytes = 2 * kUsbFrameBytes;  // 1024
 
 // USB frame layout: 3-byte sync + 5-byte C0..C4 status + 504
 // bytes of sample slots.  The reference's per-sample-slot index
@@ -112,18 +147,14 @@ inline double unpack_mic_be(const uint8_t* p) {
 
 // Reference: `int MetisLastRecvSeq = 0;` at
 // `networkproto1.c:28`.  Last received EP6 seq number.
+// Reference seq-check at `:191-194`: `if (seqnum != (1 +
+// MetisLastRecvSeq)) SeqError += 1; MetisLastRecvSeq = seqnum;`
+// — fires on the FIRST frame too (expects seqnum=1 since
+// MetisLastRecvSeq starts at 0; HL2 gateware's first packet IS
+// seqnum=1).  An earlier `g_seq_seen` first-frame-skip flag was
+// a Lyra-native deviation caught by 2026-06-06 TX-Agent A.4
+// audit and removed per "do as reference, period."
 unsigned int g_metis_last_recv_seq = 0;
-
-// Lyra-native sister-flag — reference doesn't need it because
-// MetisLastRecvSeq starts at 0 and a 0-seq incoming datagram
-// either matches (no error) or doesn't (error reported).  Lyra's
-// equivalent: treat the first observed seq as the baseline
-// (no error reported) and start sequence-checking from the
-// second.  Without this flag, the first datagram would always
-// register a spurious seq error.  This is the C↔C++23
-// strict-initialization translation of reference's "first
-// frame is unchecked because there's no prior to compare to."
-bool g_seq_seen = false;
 
 // Reference: `int SeqError = 0;` at `networkproto1.c:26`.
 // Count of EP6 seq errors.
@@ -135,33 +166,44 @@ int g_seq_error = 0;
 unsigned char g_control_bytes_in[5] = {0, 0, 0, 0, 0};
 
 // Reference: `unsigned char* FPGAReadBufp;` at
-// `network.h:498` (NOT in `_radionet`).  HL2 P1 EP6 raw
-// receive buffer (1024 bytes).  Sized once at start().
+// `network.h:498` (NOT in `_radionet`).  HL2 P1 EP6
+// header-stripped USB-frame buffer (1024 bytes = 2 × 512).
+// Sized at thread entry mirroring reference's
+// `FPGAReadBufp = calloc(1024,…)` at `networkproto1.c:427`.
 // Sister of `g_fpga_write_bufp` (Ep2SendThread Stage 4C).
 //
 // Stage 4B.1 (sign-off 2026-06-06): corrects a Stage 4B
 // mismapping that put this buffer in `prn->ReadBufp`.  Per
-// reference: `prn->ReadBufp` is the P2 inbound buffer
-// (network.c:667), HL2 P1 uses the separate file-scope
-// `FPGAReadBufp` global.  Lyra now mirrors verbatim.
+// reference: `prn->ReadBufp` is the inbound 1032-byte raw
+// recv buffer; HL2 P1 separately keeps the 1024-byte
+// header-stripped `FPGAReadBufp` file-scope global.  Lyra
+// now mirrors verbatim.
 std::vector<std::uint8_t> g_fpga_read_bufp;
 
 }  // namespace
 
 // ---- ctor/dtor ----
 
-Ep6RecvThread::Ep6RecvThread() {
-    // §1-C Stage 4B: buffer pre-sizing moved into start() since
-    // the buffers now live in `prn->...` which only becomes
-    // valid after the wire-layer initializer sets the `prn`
-    // global pointer at session-open.
-}
+Ep6RecvThread::Ep6RecvThread() = default;
 
 Ep6RecvThread::~Ep6RecvThread() {
     stop();
 }
 
 // ---- lifecycle ----
+//
+// Reference spawn-side handshake (`netInterface.c:60-66`):
+//
+//     prn->hReadThreadInitSem = CreateSemaphore(NULL, 0, 1, NULL);
+//     prn->hReadThreadMain    = (HANDLE) _beginthreadex(
+//         NULL, 0, MetisReadThreadMainLoop_HL2, NULL, 0, &tid);
+//     WaitForSingleObject(prn->hReadThreadInitSem, INFINITE);
+//     CloseHandle(prn->hReadThreadInitSem);
+//
+// Lyra mirrors via `std::counting_semaphore<1>` on `prn`:
+// `start()` resets it (consumes any leftover release from a prior
+// session via `try_acquire()`), spawns the thread, then
+// `acquire()` blocks until `run_loop()` releases after init.
 
 void Ep6RecvThread::start(int socket_fd) {
     if (running_.load(std::memory_order_acquire)) return;
@@ -171,80 +213,47 @@ void Ep6RecvThread::start(int socket_fd) {
     // when MetisReadThreadMainLoop_HL2 runs — Lyra mirrors).
     if (prn == nullptr) return;
 
-    // §1-C Stage 4F: bind the wire socket TU-scope (idempotent;
-    // safe if Ep2SendThread::start() or session_open has
-    // already bound the same socket).  Mirrors the §6-B
-    // pattern verbatim — single shared `listenSock`-equivalent
-    // in `wire/MetisFrame.cpp`.
-    metis_wire_bind(socket_fd, nullptr, 0);
+    // Socket binding happens ONCE at session-open in
+    // `hl2_stream.cpp`'s wire-layer initializer — reference
+    // binds `listenSock` once at the StartMetis discovery
+    // path (`network.c` file-scope), NOT in each thread's
+    // spawn.  An earlier Lyra-native idempotent re-bind here
+    // was a deviation caught by 2026-06-06 TX-Agent A.3
+    // audit and removed per "do as reference, period."
+    (void) socket_fd;  // socket arg retained for API parity; see comment above.
 
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
 
-    // `prn->RxBuff` + `prn->TxReadBufp` allocation moved to
-    // create_rnet() per the 2026-06-06 operator audit (reference
-    // allocates all _radionet buffers in one create_rnet() at
-    // startup — netInterface.c:1600-1604; prior Lyra split was a
-    // §6-Q-class deviation).  Buffers are already sized
-    // (RxBuff = 8 × 128 doubles, TxReadBufp = 1440 doubles) by
-    // the time this thread starts.  The TU-scope FPGA read buffer
-    // below stays here — it mirrors the reference's
-    // file-scope `FPGAReadBufp` global allocated at thread entry
-    // (networkproto1.c:427), NOT inside create_rnet.
+    // Drain any stale release on `hReadThreadInitSem` left over
+    // from a previous session (e.g. if stop() raced).  Reference
+    // creates a fresh semaphore per session via `CreateSemaphore`
+    // (`netInterface.c:60`); Lyra's persistent `counting_semaphore`
+    // on `prn` requires this drain to match the same semantics.
+    while (prn->hReadThreadInitSem.try_acquire()) { /* drain */ }
 
-    // §1-C Stage 4B.1: HL2 P1 EP6 raw receive buffer is the
-    // reference's file-scope `FPGAReadBufp` (network.h:498) —
-    // NOT `prn->ReadBufp` (which is P2-only).  Sized once
-    // here mirroring reference's `FPGAReadBufp = (unsigned
-    // char*)calloc(1024, sizeof(unsigned char));` at
-    // `networkproto1.c:427`.
-    g_fpga_read_bufp.assign(kEp6DatagramBytes, 0);
-
-    // Reset TU-scope seq tracking — sister-pattern of reference
-    // re-zeroing `SeqError = 0;` at `networkproto1.c:425`.
-    g_metis_last_recv_seq = 0;
-    g_seq_seen            = false;
-    g_seq_error           = 0;
-    std::memset(g_control_bytes_in, 0, sizeof(g_control_bytes_in));
-
-    // Reference re-zeroes `mic_decimation_count` at thread entry
-    // (`networkproto1.c:424`).  Mirror that here so a session
-    // restart starts with a clean decimator phase regardless of
-    // where the previous session ended.
-    mic_decimation_count = 0;
-
-#if defined(_WIN32)
-    // §1-C Stage 4B / §5.10 fix:  set up WSAEventSelect for the
-    // EP6 socket FD_READ notification — direct mirror of
-    // reference `networkproto1.c:433-434`:
-    //     prn->hDataEvent = WSACreateEvent();
-    //     WSAEventSelect(listenSock, prn->hDataEvent, FD_READ);
-    prn->hDataEvent = WSACreateEvent();
-    if (prn->hDataEvent != WSA_INVALID_EVENT) {
-        WSAEventSelect(static_cast<SOCKET>(metis_socket_fd()),
-                       prn->hDataEvent,
-                       FD_READ);
-    }
-#endif
-
+    // Spawn the reader thread; ALL per-thread init now happens
+    // inside `run_loop()` at thread entry, mirroring reference
+    // `MetisReadThreadMainLoop_HL2:423-430` verbatim.
     thread_ = std::make_unique<std::thread>([this] { this->run_loop(); });
+
+    // Wait for `run_loop()` to release the init semaphore.
+    // Reference: `WaitForSingleObject(prn->hReadThreadInitSem,
+    // INFINITE);` at `netInterface.c:65`.
+    prn->hReadThreadInitSem.acquire();
 }
 
 void Ep6RecvThread::stop() {
     stop_request_.store(true, std::memory_order_release);
 
-#if defined(_WIN32)
-    // §1-C Stage 4B / §5.10 fix:  manually signal the WSA event
-    // so the WSAWaitForMultipleEvents in run_loop wakes
-    // immediately + observes stop_request_.  Reference shuts
-    // down via `io_keep_running = 0` + handle close; Lyra
-    // mirrors by setting the event manually (semantically
-    // identical — a "wake the wait" mechanism that doesn't
-    // wait for socket activity).
-    if (prn != nullptr && prn->hDataEvent != WSA_INVALID_EVENT) {
-        WSASetEvent(prn->hDataEvent);
-    }
-#endif
+    // Reference shutdown: `io_keep_running = 0;` makes the loop
+    // exit on its next iteration; the loop wakes naturally via
+    // either the FD_READ event firing OR the `prn->wdt` 3000ms
+    // timeout (whichever the wait was using).  No manual event-
+    // signal is needed — Lyra mirrors verbatim per the
+    // operator-locked "do as reference, period" directive
+    // (2026-06-06).  The earlier `WSASetEvent` was a Lyra-native
+    // deviation caught by Round-1 audit 2026-06-06 and removed.
 
     if (thread_ && thread_->joinable()) {
         thread_->join();
@@ -252,13 +261,15 @@ void Ep6RecvThread::stop() {
     thread_.reset();
     running_.store(false, std::memory_order_release);
 
-#if defined(_WIN32)
-    // Free the WSA event handle now that the thread has joined.
-    if (prn != nullptr && prn->hDataEvent != WSA_INVALID_EVENT) {
-        WSACloseEvent(prn->hDataEvent);
-        prn->hDataEvent = WSA_INVALID_EVENT;
-    }
-#endif
+    // No `WSACloseEvent(prn->hDataEvent)` — reference NEVER
+    // closes `prn->hDataEvent` anywhere in the ChannelMaster
+    // tree (zero `WSACloseEvent` matches).  The handle is
+    // re-created via `WSACreateEvent()` at the top of every
+    // `run_loop()` (mirrors reference `:433`); the prior
+    // handle is replaced (leaks one HANDLE per re-open cycle,
+    // exactly as the reference does).  An earlier Lyra-native
+    // cleanup was a deviation caught by 2026-06-06 TX-Agent
+    // A.1 audit and removed per "do as reference, period."
 }
 
 // ---- sink registration ----
@@ -281,19 +292,89 @@ void Ep6RecvThread::set_i2c_sink(Ep6I2cSink sink) {
 }
 
 // ---- reader thread ----
+//
+// Reference: `MetisReadThreadMainLoop_HL2` at
+// `networkproto1.c:421-586`.  All per-thread init runs at thread
+// entry; the init semaphore release signals the spawner that
+// init is done; only then does the wait loop start.
 
 void Ep6RecvThread::run_loop() {
 #if defined(_WIN32)
-    // MMCSS Pro Audio class — best-effort.  Ignore failure.
-    DWORD mmcss_task = 0;
+    // MMCSS Pro Audio class — best-effort.  Reference:
+    // `AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_task);`
+    // followed by `AvSetMmThreadPriority(hTask,
+    // AVRT_PRIORITY_HIGH);` at `networkproto1.c:243-244`.
+    DWORD  mmcss_task   = 0;
     HANDLE mmcss_handle = AvSetMmThreadCharacteristicsW(L"Pro Audio",
                                                         &mmcss_task);
+    if (mmcss_handle != nullptr) {
+        // AVRT_PRIORITY_HIGH = 2.  Matches reference verbatim.
+        AvSetMmThreadPriority(mmcss_handle, AVRT_PRIORITY_HIGH);
+    }
 #endif
 
+    // ---- Per-thread init (reference :423-430) ----
+    //
+    // Reference:
+    //     SeqError = 0;                                  // :425
+    //     mic_decimation_count = 0;                       // :424
+    //     FPGAReadBufp = (unsigned char*)calloc(1024,...);// :427
+    //     prn->hDataEvent = WSACreateEvent();             // :433
+    //     WSAEventSelect(listenSock,
+    //                    prn->hDataEvent, FD_READ);       // :434
+    //     ForceCandCFrame(3);                             // :430
+    //
+    // All sized + zeroed INSIDE the thread per the operator-
+    // locked "do as reference, period" directive (2026-06-06) —
+    // the prior Lyra split (some init in start() before thread
+    // spawn) was a deviation caught by Round-1 audit.
+
+    // FPGA read buffer — 1024 bytes (header-stripped USB content).
+    // Reference: `FPGAReadBufp = (unsigned char*)calloc(1024,
+    // sizeof(unsigned char));` at `networkproto1.c:427`.
+    g_fpga_read_bufp.assign(kFpgaReadBufBytes, 0);
+
+    // Reset TU-scope seq tracking — reference `SeqError = 0;` at
+    // `networkproto1.c:425` + `MetisLastRecvSeq` init to 0 (so
+    // the first gateware packet, expected seqnum=1, passes the
+    // `seqnum != (1 + MetisLastRecvSeq)` check at `:191-194`).
+    g_metis_last_recv_seq = 0;
+    g_seq_error           = 0;
+    std::memset(g_control_bytes_in, 0, sizeof(g_control_bytes_in));
+
+    // Reference: `mic_decimation_count = 0;` at
+    // `networkproto1.c:424`.
+    mic_decimation_count = 0;
+
 #if defined(_WIN32)
-    // §1-C Stage 4B / §5.10 fix:  WSAWaitForMultipleEvents +
-    // WSAEnumNetworkEvents + recv pattern — direct mirror of
-    // reference `networkproto1.c:439-463`:
+    // WSAEventSelect setup — reference `:433-434`:
+    //     prn->hDataEvent = WSACreateEvent();
+    //     WSAEventSelect(listenSock, prn->hDataEvent, FD_READ);
+    prn->hDataEvent = WSACreateEvent();
+    if (prn->hDataEvent != WSA_INVALID_EVENT) {
+        WSAEventSelect(static_cast<SOCKET>(metis_socket_fd()),
+                       prn->hDataEvent,
+                       FD_READ);
+    }
+#endif
+
+    // C&C priming — reference `ForceCandCFrame(3);` at
+    // `networkproto1.c:430`.  Emits 6 priming datagrams (3 TX-
+    // freq + 3 RX1-freq) with inter-pass sleeps, ensuring the
+    // HL2 gateware has the operator's tuned frequencies before
+    // the EP6 read loop starts consuming sample datagrams.
+    force_candc_frame(3);
+
+    // Init complete — release the spawn-side handshake.
+    // Reference: implicit via `ReleaseSemaphore(prn->
+    // hReadThreadInitSem, 1, NULL);` at the equivalent point
+    // in the C reference (typically after the priming pass).
+    if (prn != nullptr) {
+        prn->hReadThreadInitSem.release();
+    }
+
+#if defined(_WIN32)
+    // ---- Main wait loop (reference :439-463) ----
     //
     //   while (io_keep_running != 0) {
     //     DWORD retVal = WSAWaitForMultipleEvents(1, &prn->hDataEvent,
@@ -320,8 +401,8 @@ void Ep6RecvThread::run_loop() {
         DWORD retVal = WSAWaitForMultipleEvents(1, &prn->hDataEvent,
                                                 FALSE, timeout, FALSE);
 
-        // Check stop after wait wakes (stop() manually signals
-        // the event to break the wait).
+        // Check stop after wait wakes (reference exits on the
+        // next loop iteration when `io_keep_running = 0`).
         if (stop_request_.load(std::memory_order_acquire)) break;
 
         if (retVal == WSA_WAIT_FAILED || retVal == WSA_WAIT_TIMEOUT) {
@@ -337,15 +418,81 @@ void Ep6RecvThread::run_loop() {
         if (!(prn->wsaProcessEvents.lNetworkEvents & FD_READ)) continue;
         if (prn->wsaProcessEvents.iErrorCode[FD_READ_BIT] != 0) break;
 
-        socket_recv_len_t n = ::recv(
-            metis_socket_fd(),
-            reinterpret_cast<char*>(g_fpga_read_bufp.data()),
-            static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
-            0);
-        if (n <= 0) continue;
-        if (static_cast<std::size_t>(n) < kEp6DatagramBytes) continue;
-        process_datagram(g_fpga_read_bufp.data(),
-                         static_cast<std::size_t>(n));
+        // ---- MetisReadDirect-equivalent ----
+        //
+        // Reference body verbatim from `networkproto1.c:141-214`:
+        //
+        //   int MetisReadDirect(unsigned char* bufp) {
+        //     struct indgram { unsigned char readbuf[1074]; } inpacket;
+        //     ...
+        //     EnterCriticalSection(&prn->rcvpktp1);
+        //     rc = recvfrom(listenSock, &inpacket, sizeof(inpacket), 0, ...);
+        //     ...
+        //     if (rc == 1032) {
+        //       if (readbuf[0..2] == EF/FE/01) {
+        //         endpoint = readbuf[3];
+        //         seqbytep[3..0] = readbuf[4..7];   // BE pack into seqnum
+        //         if (endpoint == 6) {
+        //           if (readbuf[8..10] == 7F/7F/7F) HaveSync = 1; else HaveSync = 0;
+        //           memcpy(bufp, readbuf + 8, 1024);
+        //           xpro(prop, seqnum, bufp);       // out-of-order resequencer
+        //           if (seqnum != (1 + MetisLastRecvSeq)) SeqError += 1;
+        //           MetisLastRecvSeq = seqnum;
+        //           LeaveCriticalSection(&prn->rcvpktp1); return 1024;
+        //         }
+        //       }
+        //     }
+        //     LeaveCriticalSection(&prn->rcvpktp1); return 0;
+        //   }
+        //
+        // Lyra mirrors verbatim: LOCAL-stack 1074-byte buffer
+        // (NOT `prn->ReadBufp` — that's the P2 inbound buffer,
+        // unused by HL2 P1 in the reference), `prn->rcvpktp1`
+        // lock held across the entire body, memcpy 1024 from
+        // `readbuf + 8` into `g_fpga_read_bufp` (the file-scope
+        // `FPGAReadBufp` equivalent), then dispatch.
+        //
+        // FIXME (Task #114): `xpro(prop, seqnum, bufp)` out-of-
+        // order resequencer NOT YET PORTED — Lyra processes
+        // datagrams in arrival order without resequencing.
+        // FIXME (Task #114): `bandwidth_monitor_in(rc)` per
+        // `networkproto1.c:170` NOT YET PORTED — Lyra has no
+        // bandwidth-meter subsystem.
+        unsigned char readbuf[1074]{};
+        socket_recv_len_t n = 0;
+        {
+            std::lock_guard<std::mutex> lk(prn->rcvpktp1);
+            n = ::recv(
+                metis_socket_fd(),
+                reinterpret_cast<char*>(readbuf),
+                static_cast<socket_recv_size_t>(sizeof(readbuf)),
+                0);
+            if (n != static_cast<socket_recv_len_t>(kEp6DatagramBytes)) {
+                continue;  // lock released by guard's destructor
+            }
+            // Validate header bytes 0..2 + endpoint 3 + sync 8..10
+            // per reference :174, :181-184.
+            if (readbuf[0] != 0xEF || readbuf[1] != 0xFE ||
+                readbuf[2] != 0x01 || readbuf[3] != 6) {
+                continue;
+            }
+            if (readbuf[8] != 0x7F || readbuf[9] != 0x7F ||
+                readbuf[10] != 0x7F) {
+                continue;  // sync fail; reference logs + sets HaveSync=0
+            }
+            // memcpy `readbuf + 8` (1024 bytes) into FPGAReadBufp
+            // equivalent (reference :189).
+            std::memcpy(g_fpga_read_bufp.data(),
+                        readbuf + kHpsdrHeaderBytes,
+                        kFpgaReadBufBytes);
+            // Per-datagram seq + dispatch lives outside the lock
+            // because process_datagram dispatches to operator
+            // sinks which may take their own locks (Router
+            // mutex, downstream consumer queues).  Reference
+            // does the seq check + MetisLastRecvSeq update
+            // INSIDE the lock (`:191-194`); we mirror that:
+            process_datagram(readbuf, g_fpga_read_bufp.data());
+        }  // rcvpktp1 released here
     }
 #else
     // Non-Win32: fallback to blocking recv loop.  Reference is
@@ -353,59 +500,72 @@ void Ep6RecvThread::run_loop() {
     // concern, deferred.
     while (!stop_request_.load(std::memory_order_acquire)) {
         if (prn == nullptr) break;
-        socket_recv_len_t n = ::recv(
-            metis_socket_fd(),
-            reinterpret_cast<char*>(g_fpga_read_bufp.data()),
-            static_cast<socket_recv_size_t>(g_fpga_read_bufp.size()),
-            0);
-        if (n <= 0) continue;
-        if (static_cast<std::size_t>(n) < kEp6DatagramBytes) continue;
-        process_datagram(g_fpga_read_bufp.data(),
-                         static_cast<std::size_t>(n));
+        unsigned char readbuf[1074]{};
+        socket_recv_len_t n = 0;
+        {
+            std::lock_guard<std::mutex> lk(prn->rcvpktp1);
+            n = ::recv(
+                metis_socket_fd(),
+                reinterpret_cast<char*>(readbuf),
+                static_cast<socket_recv_size_t>(sizeof(readbuf)),
+                0);
+            if (n != static_cast<socket_recv_len_t>(kEp6DatagramBytes)) continue;
+            if (readbuf[0] != 0xEF || readbuf[1] != 0xFE ||
+                readbuf[2] != 0x01 || readbuf[3] != 6) continue;
+            if (readbuf[8] != 0x7F || readbuf[9] != 0x7F ||
+                readbuf[10] != 0x7F) continue;
+            std::memcpy(g_fpga_read_bufp.data(),
+                        readbuf + kHpsdrHeaderBytes,
+                        kFpgaReadBufBytes);
+            process_datagram(readbuf, g_fpga_read_bufp.data());
+        }
     }
 #endif
 
-#if defined(_WIN32)
-    if (mmcss_handle) {
-        AvRevertMmThreadCharacteristics(mmcss_handle);
-    }
-#endif
+    // No `AvRevertMmThreadCharacteristics(mmcss_handle)` —
+    // reference NEVER reverts (zero `AvRevert*` matches in the
+    // entire ChannelMaster tree).  OS reclaims on thread exit.
+    // An earlier Lyra-native cleanup was a deviation caught by
+    // 2026-06-06 TX-Agent C.5 audit and removed per "do as
+    // reference, period."
 }
 
 // ---- per-datagram processing ----
+//
+// `raw_header` points at the start of the 1032-byte recv buffer
+// (used only for BE seq tracking at offsets 4..7).  `usb_frames`
+// points at the 1024-byte header-stripped buffer, identical to
+// the reference's `FPGAReadBufp` post-MetisReadDirect.
 
-void Ep6RecvThread::process_datagram(const uint8_t* data,
-                                     std::size_t   size) {
-    if (size < kEp6DatagramBytes) return;
-
+void Ep6RecvThread::process_datagram(const uint8_t* raw_header,
+                                     const uint8_t* usb_frames) {
     // 4-byte BE sequence at offset 4 of the HPSDR header.
     const uint32_t seq =
-        (static_cast<uint32_t>(data[4]) << 24) |
-        (static_cast<uint32_t>(data[5]) << 16) |
-        (static_cast<uint32_t>(data[6]) <<  8) |
-        (static_cast<uint32_t>(data[7]));
+        (static_cast<uint32_t>(raw_header[4]) << 24) |
+        (static_cast<uint32_t>(raw_header[5]) << 16) |
+        (static_cast<uint32_t>(raw_header[6]) <<  8) |
+        (static_cast<uint32_t>(raw_header[7]));
 
     // §1-C Stage 4B: seq tracking via TU-scope statics
     // mirroring reference's file-scope `MetisLastRecvSeq` /
     // `SeqError` at `networkproto1.c:26-28` (these are NOT in
-    // `_radionet`).  §1-C Stage 1 precedent: diagnostic counters
-    // with no reference counterpart are dropped — `rx_datagrams_`
-    // accordingly removed.
-    if (g_seq_seen) {
-        const uint32_t expected = g_metis_last_recv_seq + 1;
-        if (seq != expected) {
-            ++g_seq_error;
-        }
+    // `_radionet`).  Reference seq-check verbatim from
+    // `MetisReadDirect` at `:191-194`:
+    //     if (seqnum != (1 + MetisLastRecvSeq)) SeqError += 1;
+    //     MetisLastRecvSeq = seqnum;
+    // First frame counts: `MetisLastRecvSeq` inits to 0, expected
+    // first seqnum is 1 (HL2 gateware emits seqnum=1 first), so a
+    // gateware that obeys the contract logs zero seq errors.
+    if (seq != (1u + g_metis_last_recv_seq)) {
+        ++g_seq_error;
     }
     g_metis_last_recv_seq = seq;
-    g_seq_seen            = true;
 
-    // Two USB frames per datagram.  Each frame is dispatched
-    // independently — reference loops `for (frame=0; frame<2;
-    // frame++)` and runs the full unpack→switch→mic harvest
-    // sequence per frame.
-    process_usb_frame(data + kHpsdrHeaderBytes);
-    process_usb_frame(data + kHpsdrHeaderBytes + kUsbFrameBytes);
+    // Two USB frames per datagram, header already stripped.
+    // Reference loops `for (frame=0; frame<2; frame++)` and runs
+    // the full unpack→switch→mic harvest sequence per frame.
+    process_usb_frame(usb_frames);
+    process_usb_frame(usb_frames + kUsbFrameBytes);
 }
 
 // ---- USB frame parsing (mirrors `networkproto1.c:470-580`) ----

@@ -698,17 +698,23 @@ void HL2Stream::open(const QString &ip) {
     // txWorkerLoop remain the live RX/TX path until step 14
     // stages 2-6 retire them.
     {
-        lyra::wire::create_rnet();  // idempotent; first call
-                                    // allocates + initializes,
-                                    // subsequent calls no-op.
-        sockaddr_in d{};
-        d.sin_family = AF_INET;
-        d.sin_port   = htons(kRadioPort);
-        ::inet_pton(AF_INET, ip.toLatin1().constData(), &d.sin_addr);
-        std::memcpy(destStorage_, &d, sizeof(d));
+        lyra::wire::create_rnet();  // first call allocates +
+                                    // initializes; reference is
+                                    // single-call (no idempotency
+                                    // guard), so caller owns the
+                                    // call-once discipline.
+        // Bind the wire socket + extract radio IPv4 (network byte
+        // order) for the per-call sockaddr_in construct in
+        // `send_packet` — matches reference's `MetisAddr` file-
+        // scope global init at the StartMetis discovery path.
+        in_addr ipv4{};
+        ::inet_pton(AF_INET, ip.toLatin1().constData(), &ipv4);
+        // Mirror reference's `prn->base_outbound_port` write at
+        // `netInterface.c:1598` so `send_packet` reads the right
+        // port (1024 default; HL2 P1 EP2 main path).
+        lyra::wire::prn->base_outbound_port = kRadioPort;
         lyra::wire::metis_wire_bind(static_cast<int>(socket_),
-                                    destStorage_,
-                                    sizeof(d));
+                                    ipv4.s_addr);
         lyra::wire::outbound_init();  // per-session sync-flag reset
     }
 
@@ -822,7 +828,7 @@ void HL2Stream::close() {
     // reference's prn is also non-null between session-close and the
     // next session-open (it points at a static _radionet struct), so
     // operator can re-open cleanly without re-allocating.
-    lyra::wire::metis_wire_bind(-1, nullptr, 0);
+    lyra::wire::metis_wire_bind(-1, 0);
 
     statsTimer_.stop();
     autoLnaTimer_.stop();
@@ -2391,15 +2397,19 @@ void HL2Stream::composeCC(int idx, bool mox, std::uint8_t out[5]) const {
         out[1] = static_cast<std::uint8_t>(
             txDriveLevel_.load(std::memory_order_relaxed) & 0xFF);
         const bool pa = paOn_.load(std::memory_order_relaxed);
-        const bool mb = micBoost_.load(std::memory_order_relaxed);
+        const bool micBoost = micBoost_.load(std::memory_order_relaxed);
         // Task #39 — Mic Boost bit (C2 bit 0 / 0x01) per the
         // reference's standard SetMicBoost (networkproto1.c:748-751
         // + network.h:220-221 mic_boost : 1).  +20 dB analog PGA
         // gain in the codec's mic preamp.  Independent of PA — the
         // bits compose freely.  bit 7 (VNA) must remain clear for
         // PA keying (control.v:359).
+        // Local renamed from `mb` → `micBoost` to dissolve the
+        // shadow of the function-scope `mb` (MOX bit captured by
+        // setAddr lambda at line ~2314).  Cosmetic; no wire-byte
+        // change.
         out[2] = static_cast<std::uint8_t>((pa ? 0x08 : 0x00)
-                                           | (mb ? 0x01 : 0x00));
+                                           | (micBoost ? 0x01 : 0x00));
         out[3] = 0x00;
         out[4] = 0x00;
         break;

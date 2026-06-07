@@ -5,6 +5,7 @@
 // but not wired into HL2Stream until §10.3 step 14.
 
 #include "wire/RadioNet.h"
+#include "wire/RbpFilter.h"  // prbpfilter / prbpfilter2 allocator targets
 
 namespace lyra::wire {
 
@@ -31,7 +32,20 @@ RadioNet* prn = nullptr;
 // `prn` (== reference's `prn`) on first call; idempotent on
 // subsequent calls.
 void create_rnet() {
-    if (prn != nullptr) return;  // already allocated
+    // No idempotency guard — reference at netInterface.c:1591-1596
+    // unconditionally `prn = malloc(sizeof(radionet))`; second
+    // call leaks.  Caller (HL2Stream::open) owns the call-once
+    // discipline.  Operator-locked "do as reference, period"
+    // (2026-06-06): no Lyra-native re-entry safety, no defensive
+    // guard — match the reference posture.
+
+    // `bandwidth_monitor_reset();` at netInterface.c:1597.
+    // FIXME (Task #114): Lyra has no bandwidth-meter subsystem
+    // yet; reference's `bandwidth_monitor_reset` zeros per-second
+    // RX/TX byte counters polled by the operator UI.  Stub call
+    // site preserved here (commented) so the eventual port lands
+    // at the reference-faithful location.
+    // bandwidth_monitor_reset();
 
     // `prn = (RADIONET)malloc(sizeof(radionet));`
     // (netInterface.c:1595)
@@ -79,19 +93,19 @@ void create_rnet() {
     // :1653 CATPort = 0 — in-class default
 
     // ADC array (netInterface.c:1654-1664) — per-element init.
-    // `tx_step_attn = 31` is the only non-default-zero scalar.
-    // The reference also `malloc0(1024*sizeof(double))`'s
-    // `prn->adc[i].wb_buff`; Lyra defers that allocation until WB
-    // is actually wired (currently not in HL2 scope; ANAN
-    // wide-band feature) — reference shape allocates eagerly,
-    // Lyra-native defers via `std::vector` zero-init.  Flag this
-    // as a follow-up §6-Q candidate for the WB bring-up phase;
-    // current HL2 path never reads adc[i].wb_buff.
+    // `tx_step_attn = 31` is the only non-default-zero scalar;
+    // `wb_buff = malloc0(1024 * sizeof(double))` is allocated
+    // per element (:1663).  HL2 doesn't currently consume
+    // `wb_buff` (ANAN wide-band feature) but the reference
+    // allocates eagerly for ALL adc[] entries at startup,
+    // regardless of consumer — operator-locked "do as
+    // reference, period" (2026-06-06) requires the same.
     for (int i = 0; i < kMaxAdc; i++) {
         prn->adc[i].id              = i;
         // rx_step_attn = 0 — in-class default
         prn->adc[i].tx_step_attn    = 31;  // :1657
         // adc_overload/dither/random/wb_seqnum/wb_state = 0 — defaults
+        prn->adc[i].wb_buff.assign(1024, 0.0);  // :1663
     }
 
     // RX array (netInterface.c:1666-1692) — per-element init.
@@ -132,13 +146,24 @@ void create_rnet() {
     // :1724 reset_on_disconnect = 0
     // :1725 swap_audio_channels = 0
 
-    // Reference allocates `prbpfilter` + `prbpfilter2` at
-    // netInterface.c:1727-1733 — Lyra-native filter-band wiring
-    // doesn't go through these structs (`bands.cpp` /
-    // `filter_board.h` Lyra-native path), so the reference's
-    // allocation has no Lyra counterpart at this layer.  Flag
-    // as a §6-Q-class divergence; current HL2 RX/TX path does
-    // not touch these structs.
+    // `prbpfilter` + `prbpfilter2` allocation — reference-verbatim
+    // mirror of netInterface.c:1727-1733:
+    //
+    //   prbpfilter = (RBPFILTER)malloc0(sizeof(rbpfilter));
+    //   prbpfilter->bpfilter = 0;
+    //   prbpfilter->enable = 1;
+    //   prbpfilter2 = (RBPFILTER2)malloc0(sizeof(rbpfilter2));
+    //   prbpfilter2->bpfilter = 0;
+    //   prbpfilter2->enable = 2;
+    //
+    // FrameComposer's compose_case_0 / compose_case_10 /
+    // compose_case_16 read these structs and assert non-null
+    // — without create_rnet allocation, the composer asserts
+    // trip on first invocation.  C↔C++23 idiom translation
+    // malloc0 → new (zero-init via class default-ctor).  The
+    // RbpFilter/RbpFilter2 class default-ctors set enable=1/2
+    // via in-class defaults; the explicit assignments below
+    // match the reference's explicit writes verbatim.
 
     // Reference sets thread handles to NULL at :1735-1740.  Lyra
     // uses `std::thread` + `std::counting_semaphore` with RAII
@@ -193,6 +218,14 @@ void create_rnet() {
     // load-bearing for EER mode, even though current HL2 SSB
     // bring-up uses only the front 252 doubles.
     prn->outIQbufp.assign(1440, 0.0);
+
+    // ---- prbpfilter / prbpfilter2 (netInterface.c:1727-1733) ----
+    prbpfilter = new RbpFilter();
+    prbpfilter->bpfilter = 0;  // :1728
+    prbpfilter->enable   = 1;  // :1729
+    prbpfilter2 = new RbpFilter2();
+    prbpfilter2->bpfilter = 0;  // :1732
+    prbpfilter2->enable   = 2;  // :1733
 }
 
 // §3.4 — Dispatch-relevant runtime globals.

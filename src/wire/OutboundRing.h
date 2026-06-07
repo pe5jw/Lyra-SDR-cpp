@@ -89,11 +89,14 @@ double*       outbound_iq_buf_mut();
 // `networkproto1.c:1199-1200`.  No-op if `prn == nullptr`.
 void outbound_notify_consumed_pair();
 
-// Sets `prn->outbound_stop = true` + `notify_all`s the cv so
-// any party (consumer waiting on outbound_wait_pair_ready,
-// producer waiting on lr_consumed/iq_consumed) wakes
-// immediately and observes the flag.  Idempotent.  No-op if
-// `prn == nullptr`.
-void outbound_unblock();
+// No `outbound_unblock()` — reference has no shutdown signal
+// for the EP2 producer/consumer pair (`io_keep_running = 0` +
+// process termination interrupts WaitForMultipleObjects).  Lyra
+// uses bounded `wait_for` poll in `outbound_wait_pair_ready` so
+// the EP2 thread's `stop_request_` is observed within one poll
+// interval (default 100 ms) on shutdown.  An earlier Lyra-
+// native `outbound_unblock` + `outbound_stop` flag was caught
+// by 2026-06-06 TX-Agent C.9 audit and removed per "do as
+// reference, period."
 
 }  // namespace lyra::wire

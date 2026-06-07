@@ -11,10 +11,15 @@
 //   - Q2 — eager case presence: all 19 cases (0-18) in the switch.
 //   - Q3 — per-family branches inline at each case site; HL2 path
 //     implemented, non-HL2 paths `assert(false …)`.
-//   - Q4 — single TU-scope `std::mutex` held during the entire
-//     `write_main_loop_hl2()` walk + during every state-mutating
-//     setter.  (§1-C Stage 4F.2: mutex moved from `cc_lock_`
-//     class member to TU-scope `g_cc_lock` static.)
+//   - Q4 — NO concurrency guard (Round-1 audit 2026-06-06
+//     correction).  Reference is single-threaded I/O — the wire-
+//     egress thread owns the C&C register state and walks the
+//     scheduler; control-thread setters MUST funnel through that
+//     same wire-egress thread via the command-queue primitive,
+//     never touching `prn->...` directly.  An earlier `cc_lock_`
+//     class-member mutex / `g_cc_lock` TU-scope static was a
+//     Lyra-native deviation, removed per "do as reference, period"
+//     (operator-locked 2026-06-06).
 //   - Q5 — cursor advance once per USB frame emit.
 //
 // §1-C Stage 4F.2 (sign-off 2026-06-06): the `FrameComposer`
@@ -27,9 +32,10 @@
 //     (mirror of reference `networkproto1.c:27`)
 //   - `previous_tx_bit_` member → `g_previous_tx_bit` TU-scope
 //     (mirror of reference `networkproto1.c:29 PreviousTXBit`)
-//   - `cc_lock_` mutex → `g_cc_lock` TU-scope static
-//     (Lyra-native concurrency guard — reference single-threaded,
-//     Lyra multi-threaded per §10.2 split; signed Q4)
+//   - `cc_lock_` mutex → REMOVED (reference single-threaded I/O;
+//     control-thread setters funnel through the wire-egress
+//     thread, never touching `prn->...` directly — Round-1 audit
+//     2026-06-06 correction; see Q4)
 //
 // Sister-pattern of §1-C Stage 2A (Router) + Stage 4D (OutboundRing)
 // dissolutions.
@@ -49,18 +55,23 @@ namespace lyra::wire {
 // NOT written here — that's `Ep2SendThread`'s concern.
 //
 // Source mirror: `networkproto1.c::WriteMainLoop_HL2` lines
-// 869-1191.  Holds `g_cc_lock` for the duration of the walk so
-// setter writes (`set_rx_freq` etc.) and the wire-egress thread
-// observe a consistent C&C register snapshot per datagram.
+// 869-1191.  Reference is single-threaded I/O — Lyra mirrors
+// that contract: this function MUST be invoked from the wire-
+// egress thread, and the same thread MUST own all state-mutating
+// setter calls (funneled via the command-queue primitive — see
+// Q4 above).
 void write_main_loop_hl2(char* txbptr_base);
 
 // ===== Setter surface (§4a-scope, §1-C Stage 4F.2: free functions) =====
 //
 // The reference has no setter abstraction — operator code writes
-// directly to `prn->rx[N].frequency` etc.  Lyra adds these setters
-// so the writes go through `g_cc_lock` (Q4 discipline), preserving
-// thread safety the reference's single-threaded I/O posture
-// provided implicitly.
+// directly to `prn->rx[N].frequency` etc. from its single I/O
+// thread.  Lyra adds these typed setters for compile-time
+// per-family branching + bounds checking, but per Q4 they MUST
+// be invoked on the wire-egress thread (control threads enqueue
+// to the command-queue primitive; the egress thread drains the
+// queue and calls these setters between scheduler walks — same
+// single-threaded contract as the reference).
 
 // Write the per-RX NCO frequency that case 2 (RX1) / case 3 (RX2)
 // / case 5 (RX3 mirror) emits.  `rx_idx` is 0-based (0 = RX1,
@@ -68,8 +79,9 @@ void write_main_loop_hl2(char* txbptr_base);
 void set_rx_freq(int rx_idx, int freq_hz);
 
 // §4b-1.8 — Write the TX NCO frequency that case 1 emits
-// (frame `0x02`).  Writes `prn->tx[0].frequency` under
-// `g_cc_lock`.  No-op if `prn` is nullptr.
+// (frame `0x02`).  Writes `prn->tx[0].frequency`.  No-op if
+// `prn` is nullptr.  Must be called from the wire-egress thread
+// (see Q4).
 void set_tx_freq(int freq_hz);
 
 // Write `prn->tx[0].drive_level` (case 10 C1).  Operator-axis

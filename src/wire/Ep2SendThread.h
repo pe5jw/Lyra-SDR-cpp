@@ -46,23 +46,17 @@ public:
 
     // ---- Lifecycle ----
     //
-    // `start()` requires:
-    //   - `socket_fd` : the bound UDP socket (caller-owned)
-    //   - `dest_addr` / `dest_addrlen` : the radio's `sockaddr`
-    //     (caller-owned; lifetime must outlive this thread)
+    // `start()` requires `socket_fd` for parity with the API the
+    // §10.3 step 14 wire-up will call.  The actual socket binding
+    // happens ONCE in the session-open path (hl2_stream.cpp) via
+    // `metis_wire_bind()`; reference does the equivalent once at
+    // StartMetis discovery + never per-thread.  Caller is
+    // responsible for `outbound_init()` at session-open.
     //
-    // §1-C Stage 4D: the `OutboundRing* ring` param removed —
-    // dissolved into namespace-scope free functions.
-    // §1-C Stage 4F.2: the `FrameComposer* composer` param
-    // removed — FrameComposer class dissolved into namespace-
-    // scope free functions; the wire-egress thread calls
-    // `write_main_loop_hl2()` directly.
-    //
-    // Caller is responsible for `outbound_init()` at session-
-    // open.
-    void start(int                socket_fd,
-               const void*        dest_addr,
-               std::size_t        dest_addrlen);
+    // §1-C Stage 4D: `OutboundRing* ring` param removed (free
+    // functions).  §1-C Stage 4F.2: `FrameComposer* composer`
+    // param removed (free functions).
+    void start(int socket_fd);
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 

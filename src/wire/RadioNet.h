@@ -294,7 +294,11 @@ struct AdcState {
     // Wideband dynamic per-ADC (HL2-inert; ANAN-ready).
     int      wb_seqnum{0};
     int      wb_state{0};
-    double*  wb_buff{nullptr};
+    // wb_buff allocated by create_rnet() per reference
+    // netInterface.c:1663 `prn->adc[i].wb_buff = malloc0(
+    // 1024 * sizeof(double))`.  C++23 idiom translation
+    // malloc0 → std::vector; size + zero-fill identical.
+    std::vector<double> wb_buff{};
     uint16_t max_magnitude{0};
     uint16_t max_magnitude_at_overload{0};
 };
@@ -591,17 +595,31 @@ public:
     //
     // Field naming intentionally Lyra-native (cv_outbound /
     // mu_outbound / lr_ready / iq_ready / lr_consumed /
-    // iq_consumed / outbound_stop) rather than mirror-named
-    // because the reference's HANDLE field names (hsendLRSem,
-    // hobbuffsRun) describe the Win32 primitive directly and
-    // don't translate idiomatically to the cv predicate model.
+    // iq_consumed) rather than mirror-named because the
+    // reference's HANDLE field names (hsendLRSem, hobbuffsRun)
+    // describe the Win32 primitive directly and don't translate
+    // idiomatically to the cv predicate model.
+    //
+    // All four flags init `false` per reference `CreateSemaphore
+    // (NULL, 0, 1, NULL)` initial-count-0 at `netInterface.c:
+    // 68-71` (first producer push BLOCKS until consumer first
+    // drains a pair).  An earlier Lyra-native `lr_consumed=true /
+    // iq_consumed=true` "matches reference first-iteration
+    // behavior" claim was wrong and was caught by 2026-06-06
+    // TX-Agent-4 C.109 audit.
     std::condition_variable cv_outbound;
     std::mutex              mu_outbound;
     bool                    lr_ready    {false};
     bool                    iq_ready    {false};
-    bool                    lr_consumed {true};   // init signaled so first push doesn't block
-    bool                    iq_consumed {true};   // (matches reference first-iteration behavior)
-    bool                    outbound_stop {false};
+    bool                    lr_consumed {false};
+    bool                    iq_consumed {false};
+    // No `outbound_stop` flag — reference has no shutdown signal
+    // for the EP2 producer/consumer pair (`io_keep_running = 0` +
+    // process termination interrupts WaitForMultipleObjects).
+    // Lyra uses bounded `wait_for` in `outbound_wait_pair_ready`
+    // for the C++23-idiom equivalent (see OutboundRing.cpp).
+    // An earlier Lyra-native `outbound_stop` was caught by
+    // 2026-06-06 TX-Agent C.9 audit and removed.
 
 #if defined(_WIN32)
     // --- Win32 waitable timer (network.h:97-98) ---
@@ -663,12 +681,16 @@ extern RadioNet* prn;
 //     (kept as fixed-size C arrays per the §1-C reverted struct
 //     layout; `adc[MAX_ADC]` / `rx[MAX_RX_STREAMS]` / etc.).
 //
-// **Idempotent** — first call allocates + initializes; subsequent
-// calls return immediately if `prn != nullptr`.  Matches the
-// reference's "call once at startup, never free" posture: the
-// reference's `create_rnet()` is called once in the C# console
-// init path; Lyra calls it from `HL2Stream::open()` (Step 14 Stage 1)
-// guarded against re-entry across stream open/close cycles.
+// Contract: **call exactly once** at HL2 session start, matching
+// the reference's single call site (`create_rnet()` is called
+// once from the C# console init path; lyra calls from
+// `HL2Stream::open()` first time the stream comes up).  No
+// idempotency guard — matches reference verbatim per the
+// operator-locked "do as reference, period" rule (reference
+// unconditionally `prn = malloc(sizeof(radionet))`; second call
+// would leak the prior allocation).  Caller (HL2Stream::open)
+// owns the call-once discipline + guards against re-entry on
+// re-open cycles externally.
 //
 // Lifetime: heap-allocated; never freed (reference does the same
 // — `prn` lives for the lifetime of the audio driver process).

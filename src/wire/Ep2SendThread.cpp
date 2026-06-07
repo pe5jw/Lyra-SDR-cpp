@@ -74,9 +74,7 @@ Ep2SendThread::~Ep2SendThread() {
 
 // ---- lifecycle ----
 
-void Ep2SendThread::start(int                socket_fd,
-                          const void*        dest_addr,
-                          std::size_t        dest_addrlen) {
+void Ep2SendThread::start(int socket_fd) {
     if (running_.load(std::memory_order_acquire)) return;
 
     // §1-C Stage 4C: `prn` must be valid by session-open contract
@@ -84,13 +82,12 @@ void Ep2SendThread::start(int                socket_fd,
     // runs — Lyra mirrors).
     if (prn == nullptr) return;
 
-    // §6-B (sign-off 2026-06-06): socket/dest are TU-scope in
-    // `wire/MetisFrame.cpp` (direct mirror of the reference's
-    // file-scope `listenSock` global + `prn->base_outbound_port`).
-    // We forward the caller's values through `metis_wire_bind()` —
-    // idempotent setter; safe if the session-open path (step 14
-    // wire-up) has already bound the same values.
-    metis_wire_bind(socket_fd, dest_addr, dest_addrlen);
+    // Socket binding happens ONCE at session-open in
+    // `hl2_stream.cpp`'s wire-layer initializer via
+    // `metis_wire_bind()` — reference binds `listenSock` once at
+    // StartMetis discovery (`network.c` file-scope), NOT in each
+    // thread's spawn.
+    (void) socket_fd;
 
     // `prn->OutBufp` allocation moved to create_rnet() per the
     // 2026-06-06 operator audit (reference allocates ALL
@@ -98,22 +95,34 @@ void Ep2SendThread::start(int                socket_fd,
     // netInterface.c:1606 sizes OutBufp to 1440 bytes; prior
     // Lyra split was a §6-Q-class deviation, and the Lyra-side
     // size was undersized at 1008 vs reference 1440).
-    // `g_fpga_write_bufp` stays here — it's the TU-scope mirror
-    // of the reference's file-scope `FPGAWriteBufp` global
-    // allocated at thread entry (networkproto1.c:428), NOT
-    // inside create_rnet.
-    g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
+    // `g_fpga_write_bufp` is sized inside run_loop() at thread
+    // entry, mirroring the reference's `FPGAWriteBufp = calloc(
+    // 1024,…)` at thread entry in `networkproto1.c:428`.
 
     stop_request_.store(false, std::memory_order_release);
     running_.store(true,  std::memory_order_release);
+
+    // Reference EP2 spawn is fire-and-forget (`netInterface.c:65-66`
+    // creates `hWriteThreadInitSem` via `CreateSemaphore` but
+    // there is ZERO `WaitForSingleObject(hWriteThreadInitSem,…)`
+    // and ZERO `ReleaseSemaphore(hWriteThreadInitSem,…)` anywhere
+    // in the entire ChannelMaster tree).  An earlier Lyra-native
+    // drain+acquire+release handshake was a fabrication caught by
+    // the 2026-06-06 TX-Agent-3 audit and removed per "do as
+    // reference, period."
+
     thread_ = std::make_unique<std::thread>([this] { this->run_loop(); });
 }
 
 void Ep2SendThread::stop() {
     stop_request_.store(true, std::memory_order_release);
-    // Wake the consumer parked in `wait_pair_ready()` so it can
-    // observe stop_request_ + exit cleanly.
-    outbound_unblock();
+    // No explicit wake — `outbound_wait_pair_ready` uses bounded
+    // `wait_for` (100 ms poll); the `run_loop`'s
+    // `while (!stop_request_)` test re-runs at most one poll
+    // interval after this store.  Reference shuts down via
+    // `io_keep_running = 0` + process termination, mirrored
+    // here by the atomic stop flag + bounded-wait poll
+    // (acceptable C++23 idiom translation).
     if (thread_ && thread_->joinable()) {
         thread_->join();
     }
@@ -140,30 +149,42 @@ void Ep2SendThread::run_loop() {
     }
 #endif
 
+    // ---- Per-thread init ----
+    //
+    // Allocate `g_fpga_write_bufp` at thread entry, mirroring the
+    // reference's `FPGAWriteBufp = (char*)calloc(1024,…)` inside
+    // the thread body at `networkproto1.c:428` (sister of the EP6
+    // thread's `FPGAReadBufp = calloc(1024,…)` at `:427`).
+    //
+    // No init-sem release — reference EP2 thread is fire-and-
+    // forget (`netInterface.c:65-66` + `networkproto1.c:1204-1267`:
+    // zero ReleaseSemaphore on hWriteThreadInitSem anywhere).
+    g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
+
     while (!stop_request_.load(std::memory_order_acquire)) {
         if (!process_one_pair()) break;
     }
 
-#if defined(_WIN32)
-    if (mmcss_handle) {
-        AvRevertMmThreadCharacteristics(mmcss_handle);
-    }
-#endif
+    // No `AvRevertMmThreadCharacteristics(mmcss_handle)` —
+    // reference NEVER reverts (zero `AvRevert*` matches in the
+    // entire ChannelMaster tree).  OS reclaims on thread exit.
+    // An earlier Lyra-native cleanup was a deviation caught by
+    // 2026-06-06 TX-Agent C.5 audit and removed per "do as
+    // reference, period."
 }
 
 // ---- per-iteration body (mirrors :1218-1265) ----
 
 bool Ep2SendThread::process_one_pair() {
-    // §1-C Stage 4C/4F.2: prn must be valid (assigned at
-    // start()); no more `composer_` member to check (dissolved
-    // into namespace-scope free functions).
-    if (prn == nullptr) return false;
-
     // §6.2 — wait for BOTH lr_ready + iq_ready (`:1220`).
     // §1-C Stage 4D: dissolved OutboundRing → free function.
+    // Returns false on poll-timeout (no producer activity within
+    // one poll interval); run_loop re-tests stop_request_ and
+    // either calls back in or exits, mirroring reference's
+    // `while (io_keep_running) { WaitForMultipleObjects(..., INFINITE) }`
+    // shutdown via process-termination interrupt.
     if (!outbound_wait_pair_ready()) {
-        // outbound_unblock() was called — clean shutdown.
-        return false;
+        return true;  // poll-timeout; let run_loop re-test stop
     }
 
     double* lr = outbound_lr_buf_mut();

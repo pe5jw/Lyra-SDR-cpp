@@ -1,9 +1,15 @@
 // Lyra — startup C&C priming implementation.  See ForceCandC.h.
 //
-// Reference-verbatim port of `ForceCandCFrames` + `ForceCandCFrame`
-// at `ChannelMaster/networkproto1.c:106-139`.  Every byte position
-// + every loop count + every sleep duration mirrors the reference
-// per Rule 24.
+// Direct mirror of `ForceCandCFrames` + `ForceCandCFrame` at
+// `ChannelMaster/networkproto1.c:106-139`.  Free functions
+// per reference structure — the `class ForceCandC` wrapper was
+// a Lyra-native pattern caught by the 2026-06-06 Round-1 audit
+// and dissolved here (sibling-pattern of §1-C Stage 2A Router,
+// Stage 4D OutboundRing, Stage 4F.2 FrameComposer dissolutions;
+// same operator-locked "do as reference, period" rule).
+//
+// Every byte position + every loop count + every sleep duration
+// mirrors the reference per Rule 24.
 
 #include "wire/ForceCandC.h"
 #include "wire/MetisFrame.h"
@@ -36,26 +42,27 @@ constexpr std::size_t kPrimingBufBytes = 1024;
 constexpr std::size_t kUsbFrameBytes = 512;
 
 // Inter-pass sleep matches reference `Sleep(10);` at
-// `networkproto1.c:136, :138`.  Win32 `Sleep` takes milliseconds;
-// Lyra uses the C++23-portable equivalent — identical 10 ms
-// suspension semantics (⚠ acceptable Lyra-native idiom
-// translation, no behavior change).
+// `networkproto1.c:136, :138`.  Win32 `Sleep` takes
+// milliseconds; Lyra uses the C++23-portable equivalent —
+// identical 10 ms suspension semantics (acceptable C↔C++23
+// idiom translation, no behavior change).
 constexpr std::chrono::milliseconds kInterPassSleep{10};
 }  // namespace
 
-// ---- ctor/dtor ----
-
-ForceCandC::ForceCandC()  = default;
-ForceCandC::~ForceCandC() = default;
-
-// ---- prime_pass ----
+// ---- force_candc_frames ----
 //
 // Reference-verbatim port of `ForceCandCFrames(int count,
 // int c0, int vfofreq)` at `networkproto1.c:106-132`.
 
-void ForceCandC::prime_pass(int count,
-                            int c0,
-                            std::int32_t vfo_freq) {
+void force_candc_frames(int count, int c0, std::int32_t vfo_freq) {
+    // No `if (prn == nullptr) return;` — reference
+    // `ForceCandCFrames` at `networkproto1.c:106-132` has no
+    // such guard.  Caller (`force_candc_frame` below + the
+    // operator code that invokes it from session-open) owns
+    // the precondition.  An earlier Lyra-native defensive
+    // guard was caught by 2026-06-06 TX-Agent A.1 audit and
+    // removed per "do as reference, period."
+
     // Reference: `unsigned char buf[1024]; memset(buf, 0,
     // sizeof(buf));` at `:107, :109`.  Lyra: zero-initialized
     // `std::array`.
@@ -74,11 +81,11 @@ void ForceCandC::prime_pass(int count,
     //   buf[7] = (nddc - 1) << 3;            /* c4 */
     //
     // ⚠ Rule 24 — reference defect preserved verbatim:  the
-    // priming frame-0 c4 byte is `(nddc-1)<<3` with NO duplex bit
-    // set (= 0x18 for HL2 nddc=4).  Main-loop frame-0 emission
-    // sets c4 = 0x1C (bit 2 = duplex; CLAUDE.md §3.2).  HL2
-    // gateware accepts the priming VFO writes regardless; the
-    // duplex bit becomes required only for the post-priming
+    // priming frame-0 c4 byte is `(nddc-1)<<3` with NO duplex
+    // bit set (= 0x18 for HL2 nddc=4).  Main-loop frame-0
+    // emission sets c4 = 0x1C (bit 2 = duplex; CLAUDE.md §3.2).
+    // HL2 gateware accepts the priming VFO writes regardless;
+    // the duplex bit becomes required only for the post-priming
     // main-loop freq updates.
     buf[0] = 0x7f;
     buf[1] = 0x7f;
@@ -129,14 +136,22 @@ void ForceCandC::prime_pass(int count,
     }
 }
 
-// ---- prime ----
+// ---- force_candc_frame ----
 //
 // Reference-verbatim port of `ForceCandCFrame(int count)` at
-// `networkproto1.c:134-139`.
+// `networkproto1.c:134-139`.  No freq args — reads
+// `prn->tx[0].frequency` and `prn->rx[0].frequency` directly
+// from the `prn` global per the reference.
 
-void ForceCandC::prime(int count,
-                       std::int32_t tx_freq_hz,
-                       std::int32_t rx_freq_hz) {
+void force_candc_frame(int count) {
+    // No `if (prn == nullptr) return;` — reference
+    // `ForceCandCFrame` at `networkproto1.c:134-139` has no
+    // such guard; reads `prn->tx[0].frequency` /
+    // `prn->rx[0].frequency` directly.  An earlier Lyra-
+    // native defensive guard was caught by 2026-06-06
+    // TX-Agent A.21 audit and removed per "do as reference,
+    // period."
+
     // Reference (`networkproto1.c:135-138`):
     //   ForceCandCFrames(count, 2, prn->tx[0].frequency);
     //   Sleep(10);
@@ -146,12 +161,12 @@ void ForceCandC::prime(int count,
     // TX freq via case-2 (`c0 = 2`); RX1 freq via case-4
     // (`c0 = 4`).  Two passes with a 10 ms sleep between (and
     // after the second).  The reference's HL2 call site
-    // (`:430`) invokes `ForceCandCFrame(3);` — 3 frames per pass,
-    // 6 datagrams total + 20 ms of sleeps.
-    prime_pass(count, 2, tx_freq_hz);
+    // (`:430`) invokes `ForceCandCFrame(3);` — 3 frames per
+    // pass, 6 datagrams total + 20 ms of sleeps.
+    force_candc_frames(count, 2, prn->tx[0].frequency);
     std::this_thread::sleep_for(kInterPassSleep);
 
-    prime_pass(count, 4, rx_freq_hz);
+    force_candc_frames(count, 4, prn->rx[0].frequency);
     std::this_thread::sleep_for(kInterPassSleep);
 }
 
