@@ -42,20 +42,185 @@ This file is the answer to two operator questions:
 
 These rules supersede any prior pattern. Violations cost real session time and operator trust. Every session begins by reading this section.
 
-### Rule 1 — DO AS THE REFERENCE DOES, PERIOD. NO PATCHING.
-The reference IS the spec. Lyra mirrors the reference byte-for-byte and structure-for-structure within the explicit C↔C++23 idiom translations (Rule 5). Anything Lyra does that the reference does not → PATCH → reverts. Anything the reference does that Lyra omits → MISSING → fix or explicit operator-acknowledged deferral with file:line citation.
+This section consolidates the full Lyra-cpp operating rules:
+- **Rules 1-22** — foundational rules, effective 2026-06-04 (prior locked set, originally `docs/RULES.md` which is local-only and now superseded by this section as the canonical source).
+- **Rule 23** — Amendment 1, parity checkpoint methodology (2026-06-05).
+- **Rule 24** — Always verify against reference (locked 2026-06-05).
+- **Rule 2 Amendment** — Signed sign-off cells exempted (locked 2026-06-05).
+- **Rules 25-30** — 2026-06-06 session additions (audit-driven discipline lock-in).
 
-### Rule 2 — NO PORTING FROM PYTHON-LYRA FOR TX. EVER.
-Python-Lyra TX was broken. It is NOT a valid source for lyra-cpp TX behavior. References to lyra-Python `§15.xx` patterns are HISTORICAL CONTEXT only and may NOT be the basis for any code decision. If the only design source for an item is lyra-Python, that item is **STOP-AND-ASK** territory.
+### Section A. Foundational
 
-### Rule 3 — READ REFERENCE TWICE BEFORE WRITING ANY CODE.
-First read: understand what the reference does. Second read: verify the first reading against the actual bytes/lines (catches misremembering). Write code only AFTER both reads. Quote the exact reference file:line in the code comment so a future reader can verify.
+#### Rule 1 — Reference-parity
+Lyra implements the working reference's architecture (Thetis 2.10.3.13) and mirrors its measurable behaviour. Variations from the reference require explicit Rick + Claude agreement BEFORE any code is written, and are recorded as declared deviations in the design ledger. Silent variations are forbidden.
 
-### Rule 4 — IF UNSURE, STOP AND TALK. NO "PATCH AND CALL IT FIXED."
-If the reference body is ambiguous, missing, or contradicts another reference site → STOP. Surface to operator. Operator decides. No more inventing a "reasonable interpretation" that turns out to be wrong on bench.
+#### Rule 2 — Attribution discipline
+Lyra is an independent C++23 / Qt6 implementation, not a port or fork. Mentions of the working reference (Thetis 2.10.3.13) and other open-source SDR applications used for study, comparison, or inspiration are allowed in specific places only, with one constraint: **the framing must indicate reference / study / inspiration, never code transfer.**
 
-### Rule 5 — ACCEPTABLE C↔C++23 IDIOM TRANSLATIONS (allow-list).
-ONLY the following are auto-acceptable as "C-IDIOM" — anything else is a PATCH unless operator-signed:
+**Canonical operator-facing surface:** the User Guide's "Credits and References" section. The single operator-facing place that names studied applications openly. Existing language is the reference: *"studied for ideas, ballistics, and protocol structure"*, *"No source code was copied"*, *"Lyra implements each idea natively in C++"*.
+
+**Allowed internal-surface mentions:**
+
+- `docs/` comparison dossiers (`docs/THETIS_VS_LYRA_*`, design ledger, architectural mapping docs, **this file**) — for citations where the specific file path matters for the reader to follow the reference.
+- Framing must use: *"similar to"*, *"as done in"*, *"studied from"*, *"see [file:line]"*, *"the architecture used in..."*.
+
+**Names KEPT OUT of:**
+
+- Shipped code
+- Code comments
+- Commit messages
+- Operator-visible UI strings (status bar, dialogs, panels, About dialog, etc.)
+- README
+
+**Forbidden framings — never use these, anywhere:**
+
+- "ported from"
+- "copied from"
+- "based on this code"
+- "stolen from"
+- Anything implying code lineage or that Lyra contains code from another project
+
+**The concern this rule prevents:** any reader concluding *"Lyra contains code from [referenced app]"*. Lyra is original C++23/Qt6 code that mirrors the *architecture* of working open-source SDR applications — that is the message, in all surfaces.
+
+#### Rule 3 — Operator-empirical authority
+When Rick's bench observation contradicts Claude's inference from code reading or documentation, Rick wins. Claude revisits the reading and finds where the model is wrong.
+
+#### Rule 4 — Smallest revertable step → bench → next step
+Never two changes between benches. Each step ships in a state that is bench-validated before the next step starts. The rollback path remains intact at every commit.
+
+#### Rule 5 — No patches; fix to reference behaviour
+Lyra's job is to be the reference's architecture, not to behave like the reference on top of a different architecture. Patching — changing a constant, adding an if-statement, wrapping a handler, or making any local symptom-suppressing change without first asking whether the architecture itself is wrong — is forbidden. See Rule 17 for the catch-myself protocol that enforces this.
+
+### Section B. TX Rip-and-Port — Phase Discipline
+
+#### Rule 6 — Architecture-first, code-second
+Before any code lands for a new component, an architectural mapping document exists. It names every reference component, its Lyra replacement, the threading model, the queue topology, the state machine, and the call sites. Rick signs off on the mapping. Code follows the mapping. No code without prior mapping sign-off.
+
+#### Rule 7 — Delete TX, don't refactor
+Current TX code moves to a `tx-rip-archive` branch and is deleted from `main`. New TX is built from empty files matching the architectural mapping. No code carry-over from the old TX implementation. The old code is preserved in git history for reference; it is not the foundation.
+
+#### Rule 8 — Wire-inert until bench-validated
+New TX ships with HL2 wire output DISABLED. RX remains untouched throughout the TX rebuild — operator does not lose RX capability while TX is being ported. TX wire output activates only after the full chain passes bench validation against measurable reference behaviour.
+
+#### Rule 9 — Bottom-up port, one reference component at a time
+Each component is read from the reference end-to-end first, then ported, then bench-validated, before the next component starts. No parallel multi-component work. No interleaving.
+
+#### Rule 10 — PureSignal-shaped from day one
+The new TX architecture is designed with the sip1 tap point, calcc thread integration, and DDC0+DDC1 state-product routing as first-class concerns from the start — not bolted on later. PureSignal code lands in a later release, but the TX topology is built to receive it without rework.
+
+### Section C. Operating Practice
+
+#### Rule 11 — Reference citation discipline
+For every component about to be ported, Claude READS the reference end-to-end FIRST. Code is then written Lyra-native (C++23 / Qt6 idiomatic — not a C# transliteration). If ANYTHING needs to vary from the reference's structure or behaviour — language idiom mismatch, threading primitive mismatch, any reason at all — Claude STOPS before any code is written, presents the variation with pros and cons, and discusses with Rick. Approved variations are recorded as declared deviations. Unauthorized variations are forbidden.
+
+#### Rule 12 — Commit authorization
+Claude asks Rick before any substantive commit. **Substantive** = touches behaviour, architecture, file structure, or operator-facing surface. **Trivial** = typo in a comment Claude just wrote, build-only path fix, or formatting. When in doubt: ask.
+
+#### Rule 13 — New file creation / green light
+Once Rick signs off on an architectural mapping document, that document is Claude's green light to create the files the document specifies. Per-file approval is not required INSIDE the approved scope. Files OUTSIDE the approved scope require Rick's approval.
+
+#### Rule 14 — Bench-gate protocol
+- Claude verifies what Claude can verify: clean build, log output matches expected reference behaviour, internal sanity checks, build-time and unit-test correctness.
+- Anything requiring HL2-live-RF verification is Rick's: Claude ships in a state Rick can test, Rick benches on actual hardware, Rick reports yes / no working.
+
+#### Rule 15 — "Done" definition
+- **Self-verifiable component** (build + log + reference-matching measurable output) — Claude marks done.
+- **HL2-on-air verification required** — Claude ships wire-inert or bench-staged. Rick verifies. Rick reports yes / no working. The component is "done" only after Rick's yes.
+
+#### Rule 16 — Architectural decision review
+Claude's judgment call when to escalate mid-port. Rick trusts Claude to understand the end-state Lyra is being built toward: RX2-ready, PureSignal-ready, full-duplex-ready, reference-faithful TX path. Claude escalates when uncertain whether a choice fits the end-state.
+
+#### Rule 17 — Catch-myself protocol
+When Claude notices itself about to change a constant, add an if-statement, or wrap a handler to make a symptom go away — Claude STOPS and asks itself:
+
+> *"Why am I doing this when we have a working model to reference from?"*
+
+Then Claude goes back to the reference and finds the architectural fix, not the symptom-suppression. If the honest answer to the question is "because patching is easier here" — Claude tells Rick BEFORE writing anything, and they discuss.
+
+#### Rule 18 — Rule conflict resolution
+When two rules tension each other (for example, Rule 1 reference-parity vs the practical reality that Qt is not C# and something must give), Claude STOPS, presents pros and cons, and Claude + Rick decide together. No silent picking-one-and-moving-on.
+
+### Section D. Documentation Discipline
+
+#### Rule 19 — Design ledger
+Updated at the START of each new component port. Declares intent, reference citations, and any approved variation calls for the component.
+
+#### Rule 20 — Architectural mapping doc and dossier
+Updated as each component completes. Records what shipped, what was bench-confirmed, and what was deferred.
+
+#### Rule 21 — User guide
+Updated only when operator-facing behaviour changes.
+
+#### Rule 22 — Reference notes (`docs/refs/`)
+Updated as Claude reads the reference, BEFORE code is written. Preserves the reading work even if Claude loses context or the session ends.
+
+### Section E. Amendments + Locked Additions
+
+#### Rule 23 — Parity checkpoint (Amendment 1, locked 2026-06-05)
+
+Each new section (one Phase-2+ component, or a natural sub-component when the parent is too large to checkpoint in a single pass) ships a written side-by-side comparison between the reference and Lyra BEFORE code lands. The checkpoint is a hard gate, not a suggestion.
+
+**Format.** Three columns — *Aspect* / *Reference (file:line)* / *Lyra (proposed or shipped)*. One row per field, case, or behavior. Below the table, a single **VERDICT** line carrying one of three values:
+
+- ✅ **PARITY** — byte-for-byte / behavior-for-behavior match.
+- ⚠ **ACCEPTABLE DEVIATION** — different in form, identical in effect (e.g. `std::mutex` vs `CRITICAL_SECTION`, `std::atomic<int>` vs aligned `int`, C++ `enum class` vs C `enum`, PascalCase vs C-style names). Reason stated inline; operator awareness is implicit at sign-off.
+- 🔴 **OPERATOR-APPROVED DEVIATION** — substantive behavior change versus reference. Requires explicit operator sign-off recorded in the row BEFORE code lands. A 🔴 with no sign-off blocks the commit.
+
+**Where it lives.**
+
+- **`docs/architecture/PARITY_CHECKPOINTS.md`** — the tracked ledger. One section per component, commit-ordered. Operator-reviewable artifact that survives session compaction.
+- **Commit message** — every commit that adds Phase-2+ behavior carries a one-line trailer: `Parity-checked: <component> [✅ / ⚠ / 🔴]`.
+
+**What counts as a section.** One Phase-2 component (e.g. `RadioNet` field list = §1, `Hl2FrameComposer` 19-case dispatch = §2, `Ep2SendThread` MMCSS init + send loop = §3). Sub-sections allowed when natural. Each section ships ONCE; a later behavior change inside the same component lands as a delta-checkpoint amendment to the same section, not a re-issue.
+
+**Phase 1 exemption.** Empty skeleton commits (default ctor/dtor only, populated in Phase 2 per the locked mapping doc) do not require a checkpoint — there is no behavior to compare yet. The Phase-2 commit that populates the skeleton carries the §N entry.
+
+**Cross-references.** Rule 23 operationalizes Rule 1 (reference parity) and Rule 17 (catch-yourself protocol). The checkpoint is the artifact the catch-yourself reflex produces.
+
+#### Rule 24 — Always verify against the reference (locked 2026-06-05)
+
+**Before any substantive assertion (parity-checkpoint row, byte-level claim, type claim, bit-position claim) AND before any commit, read the reference source verbatim and diff against the Lyra claim. No memory-based assertions. No agent-confidence-weighted assertions.**
+
+**Why this rule exists.** During §4a-prep on 2026-06-05 the source read revealed (a) `XmitBit` was claimed `volatile long` in signed §3.4 and shipped as `std::atomic<long>` — actual reference type is plain `int`; (b) the §4a draft mapped `case 1 = RX1` — reference shows case 1 is the TX VFO; (c) case-0 byte composition in the draft was materially simpler than the verbatim source. All three were memory-based claims that an earlier audit (which read both source and Lyra) failed to catch because the audit was confidence-weighted, not source-line-weighted. Rule 24 locks the discipline that catches this class of error.
+
+**The discipline.**
+
+1. **For every parity-checkpoint row**: cite the reference by `file:line` AND open that line during drafting. Do NOT rely on memory of "the reference does X" — open the source and read it.
+2. **For every type/bit-position/name claim**: copy the reference line verbatim into the checkpoint's "Reference" column. The Lyra "proposed" column then visibly diffs against it.
+3. **Before every commit that touches Phase-2+ behavior**: re-read the reference sections the commit asserts to mirror, side-by-side with the Lyra code. Surface any discrepancy as a 🔴 DEFECT in the commit's parity row, NOT in a follow-up.
+4. **For prior signed checkpoints discovered to contain a memory-vs-source error**: amend the §N checkpoint with a correction row + re-sign + fix the shipped code in the same commit (the §3.4 `XmitBit` correction on 2026-06-05 is the precedent).
+5. **No exception for "small" claims**: a single-byte / single-bit wrong is still wrong. Rule 24 has no de minimis carve-out.
+
+**What this does NOT mean.**
+
+- It does not mean re-reading every reference line for every commit. It means re-reading the lines the commit asserts to mirror.
+- It does not block memory-based COMMENTARY in chat / docs. It blocks memory-based CLAIMS that land in parity-checkpoint rows or shipped code.
+- It does not require an agent to verify the work. The implementor reads the source directly; agents are optional second opinions.
+
+**Cross-references.** Rule 24 strengthens Rule 1 (reference parity) and Rule 23 (parity-checkpoint methodology). Rule 17 (catch-yourself protocol) is the trigger; Rule 24 is the verification step that catch-yourself produces.
+
+#### Rule 2 Amendment — Signed sign-off cells exempted (locked 2026-06-05)
+
+**Rule 2 (no reference-name leaks in tracked docs) does NOT apply to text inside signed operator sign-off cells in tracked architecture docs.** The signed cell is a historical audit artifact ratified by operator signature at the time of signing; rewriting it to neutral language would alter the historical record.
+
+**Scope of the exemption.**
+- The exemption applies ONLY to text inside the table cells of sign-off rows (e.g. the "Sign-off log" tables in `docs/TX_ARCHITECTURAL_MAPPING.md`, the OPERATOR SIGN-OFF blocks in `docs/architecture/PARITY_CHECKPOINTS.md`).
+- All surrounding doc body, headings, comments outside the signed cells remain subject to Rule 2 scrub.
+- The exemption applies to ALREADY-SIGNED cells. NEW sign-off cells drafted post-2026-06-05 should be written in Rule-2-compliant language at the time of drafting — the exemption is for historical preservation, not for new drafting.
+
+**Why this exemption exists.** During the 2026-06-05 post-§4b-1 audit, a single `PowerSDR` token was found in a 2026-06-04 Phase-0 sign-off cell at `docs/TX_ARCHITECTURAL_MAPPING.md:1821`. The cell records the operator's signed decision to skip a particular reference cross-reference path. Editing the cell post-signature would (a) rewrite the operator's ratified text and (b) erase the audit trail of WHICH decision was approved when. The exemption codifies "historical preservation > Rule 2 purity for signed cells."
+
+**Cross-references.** Rule 2 (no reference-name leaks); Rule 23 (parity-checkpoint methodology — sign-off blocks are integral to checkpoints).
+
+### Section F. 2026-06-06 Session Amendments
+
+These rules were added at the end of a long audit-driven session that exposed multiple PATCH-class deviations the prior rules (1-24) had not specifically caught. They tighten the catch-it-before-it-ships discipline.
+
+#### Rule 25 — NO PORTING FROM PYTHON-LYRA FOR TX. EVER. (locked 2026-06-06)
+Python-Lyra TX was broken. It is NOT a valid source for lyra-cpp TX behavior. References to lyra-Python `§15.xx` patterns in `CLAUDE.md` are HISTORICAL CONTEXT only and may NOT be the basis for any code decision. If the only design source for an item is lyra-Python, that item is **STOP-AND-ASK** territory under Rules 11 + 18.
+
+#### Rule 26 — ACCEPTABLE C↔C++23 IDIOM ALLOW-LIST (locked 2026-06-06)
+Operationalizes Rule 1 / Rule 23 ⚠ ACCEPTABLE DEVIATION classification. ONLY the following auto-acceptable as "C-IDIOM" without operator sign-off — anything else is a 🔴 PATCH:
 - `malloc/calloc` → `std::vector::assign` or `new T()`
 - `memset(p,0,N)` → `std::fill_n` or vector default
 - `CRITICAL_SECTION` + `EnterCriticalSection`/`LeaveCriticalSection` → `std::mutex` + `std::lock_guard`
@@ -70,30 +235,83 @@ ONLY the following are auto-acceptable as "C-IDIOM" — anything else is a PATCH
 - C free function → C++ free function in namespace (no class wrapping unless operator-signed)
 - File-scope global `unsigned int X` (non-atomic) → TU-scope `std::uint32_t X` or atomic; mark in comment which.
 
-### Rule 6 — NOTHING GETS CHECKED OFF WITHOUT 2 INDEPENDENT AUDITS.
+Anything outside this list is a PATCH per Rule 5, requires operator approval per Rules 11 + 18, and is recorded as a 🔴 DEFECT per Rule 23 until signed.
+
+#### Rule 27 — 2-AUDIT GATE PER CHECKBOX (locked 2026-06-06)
 A checkbox in this file is marked complete ONLY after:
-- **Audit #1** — Claude reads reference + Lyra side-by-side line-by-line, produces a CLEAN/PATCH table per the established methodology, file:line cited on BOTH sides.
-- **Audit #2** — Independent re-verification. May be: (a) a fresh background agent, (b) operator bench-verification, (c) Claude re-reads in a fresh session with no prior context. Must produce its OWN file:line-cited table.
-- BOTH audits must report CLEAN (or operator-signed-DEFERRED) for the item before the checkbox is marked.
+- **Audit #1** — Claude reads reference + Lyra side-by-side line-by-line, produces a CLEAN/PATCH table per Rule 23 methodology, file:line cited on BOTH sides per Rule 24.
+- **Audit #2** — Independent re-verification. May be: (a) a fresh background agent, (b) operator bench-verification per Rule 14, (c) Claude re-reads in a fresh session with no prior context. Must produce its OWN file:line-cited table.
+- BOTH audits must report ✅ PARITY (or operator-signed ⚠/🔴 DEFERRED per Rules 11 + 23) for the item before the checkbox is marked.
 
-### Rule 7 — RX-BENCH-PASSING ≠ REFERENCE-FAITHFUL.
-Bench validation is NECESSARY but NOT SUFFICIENT. A stage cannot be marked complete because RX still works. Stage requires BOTH bench-pass AND reference-parity audit pass.
+**Why this rule exists.** The wire-layer audit round on 2026-06-06 caught 19+ PATCH-class items in the LIVE production TX path that earlier single-audit passes had silently classified as CLEAN. The 2-audit gate locks that pattern's prevention.
 
-### Rule 8 — §3.9 OPERATOR-EMPIRICAL DISCIPLINE.
-Bench-verified gateware-RTL divergences (e.g. HL2+ ak4951v4 20-bit seq mask, telemetry slot re-map) outrank source-inference. BUT they must be:
-- Documented in code with explicit RTL/file:line provenance comments
-- Listed in this file's **§3.9 Operator-Signed Divergences** registry
-- Operator-signed before they ship (no Claude-decided "I think this is per §3.9")
+**Cross-references.** Rule 27 operationalizes Rule 23 (parity-checkpoint methodology) with a quantitative gate.
 
-### Rule 9 — BUILD + RULE-2 GREP CLEAN PER COMMIT.
-Every commit:
-- `cmd //c '.\_b.bat'` exits 0 with zero `error C[0-9]+` / `fatal error`
-- Rule 2 forbidden tokens (`Thetis`, `thetis`, `PowerSDR`, `powersdr`, `Console.cs`, `OpenHPSDR`, `openhpsdr`) absent from shipped code (in `src/`, `qml/`); allowed in `docs/`
-- Co-author trailer present
-- Backup bundle `_backups/lyra-<date>-<stage>.bundle` if the commit is bench-gate-eligible
+#### Rule 28 — BENCH ≠ REFERENCE-FAITHFUL (locked 2026-06-06)
+Amplifies Rule 15 ("Done" definition). RX-bench-passing alone is NECESSARY but NOT SUFFICIENT to mark a component done. Done requires BOTH:
+- (a) Bench validation per Rule 14 / 15
+- (b) Reference-parity Audit #1 + Audit #2 pass per Rule 27
 
-### Rule 10 — COMMIT IN STAGES SMALL ENOUGH TO REVERT.
-Each stage of this plan = its own commit. No multi-stage mega-commits. Each commit revertible on bench failure without losing the prior stage's progress.
+**Why this rule exists.** "RX is solid" was claimed multiple times in pre-2026-06-06 sessions based on bench-passing alone. The 2026-06-06 LIVE-C audit found 9 PATCH + 8 MISSING items in the bench-passing RX path. Bench truth and reference truth are independent axes; both must be true.
+
+#### Rule 29 — §3.9 OPERATOR-EMPIRICAL SIGN-OFF REGISTRY (locked 2026-06-06)
+Operationalizes Rule 3 (operator-empirical authority) with an explicit recorded sign-off discipline.
+
+When Claude's reading of the reference and the operator's bench observation diverge AND the operator's bench observation is correct (per Rule 3, Rick wins) — the divergence does NOT silently propagate into shipped code. Instead:
+
+1. The divergence is added to the **§3.9 Operator-Signed Divergences Registry** (section below in this file) with: divergence description, reference-source claim, bench-verified Lyra behavior with RTL/file:line provenance, and a `**PENDING SIGN-OFF**` flag.
+2. Operator replaces `**PENDING SIGN-OFF**` with `**SIGNED {YYYY-MM-DD}**` when explicitly blessing the divergence.
+3. Shipped code carries an inline `// §3.9-N divergence per EXECUTION_PLAN.md — operator-signed {date}` comment cite at the divergence site.
+4. Stages that depend on the divergence are BLOCKED until sign-off.
+
+**Why this rule exists.** Five bench-verified gateware-RTL divergences on the HL2+ ak4951v4 variant (20-bit seq mask, three telemetry slot re-maps, MoxEdgeFade SSB shim) were ambient in the live HL2Stream code without explicit operator sign-off. Stage 5/8 migrations would silently regress operator's bench-verified behavior unless these divergences are signed and intentionally ported forward.
+
+#### Rule 30 — BUILD + RULE-2 GREP CLEAN PER COMMIT (locked 2026-06-06)
+Operationalizes Rule 2 + Rule 14. Every commit:
+- `cmd //c '.\_b.bat'` exits 0 with zero `error C[0-9]+` / `fatal error`.
+- Rule 2 forbidden tokens (`Thetis`, `thetis`, `PowerSDR`, `powersdr`, `Console.cs`, `OpenHPSDR`, `openhpsdr`) absent from shipped code (in `src/`, `qml/`); allowed in `docs/` per Rule 2 internal-surface mention.
+- Co-author trailer present: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+- Backup bundle `_backups/lyra-<date>-<stage>.bundle` if the commit is bench-gate-eligible per Rule 14.
+- Commit message includes reference cites in body for Phase-2+ commits per Rule 24 step 3.
+- Commit body carries `Parity-checked: <component> [✅ / ⚠ / 🔴]` trailer per Rule 23.
+
+---
+
+## 🧾 RULE-INDEX QUICK REFERENCE (cross-reference for code/commit cites)
+
+| Rule | One-line | Section |
+|---|---|---|
+| 1 | Reference-parity (mirror the reference) | A |
+| 2 | Attribution discipline (no reference names in shipped code) | A |
+| 3 | Operator-empirical authority (Rick wins on bench-vs-inference) | A |
+| 4 | Smallest revertable step → bench → next step | A |
+| 5 | No patches; fix to reference behaviour | A |
+| 6 | Architecture-first, code-second (mapping doc before code) | B |
+| 7 | Delete TX, don't refactor | B |
+| 8 | Wire-inert until bench-validated | B |
+| 9 | Bottom-up port, one reference component at a time | B |
+| 10 | PureSignal-shaped from day one | B |
+| 11 | Reference citation discipline (read reference end-to-end first) | C |
+| 12 | Commit authorization (ask before substantive commits) | C |
+| 13 | New file creation green-light (mapping doc unlocks scope) | C |
+| 14 | Bench-gate protocol (Claude self-verifies; Rick HL2-verifies) | C |
+| 15 | "Done" definition (self-verifiable vs HL2-on-air) | C |
+| 16 | Architectural decision review (escalate end-state-relevant calls) | C |
+| 17 | Catch-myself protocol (architectural fix, not patch) | C |
+| 18 | Rule conflict resolution (STOP, pros/cons, joint decide) | C |
+| 19 | Design ledger (start of each component port) | D |
+| 20 | Architectural mapping doc + dossier (end of each component) | D |
+| 21 | User guide (only when operator-facing behaviour changes) | D |
+| 22 | Reference notes `docs/refs/` (read-before-code, preserved) | D |
+| 23 | Parity checkpoint (Amendment 1: 3-col side-by-side gate) | E |
+| 24 | Always verify against reference (source-line-weighted, not memory) | E |
+| 2-A | Signed sign-off cells exempted from Rule 2 scrub | E |
+| 25 | NO porting from Python-Lyra for TX | F |
+| 26 | C↔C++23 idiom allow-list (anything outside = PATCH) | F |
+| 27 | 2-audit gate per checkbox | F |
+| 28 | Bench ≠ reference-faithful (both required for done) | F |
+| 29 | §3.9 operator-empirical sign-off registry | F |
+| 30 | Build + Rule-2 grep clean per commit | F |
 
 ---
 
