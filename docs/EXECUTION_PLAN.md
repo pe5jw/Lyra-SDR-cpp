@@ -397,6 +397,18 @@ If a revert produces wrong telemetry / TX click on N8SDR's HL2+ bench, that is a
 
 **All 5 reverts shipped Step 14 Stage 1.5 (pre-Stage-2 pass).** The locations originally tagged Stage 5 / Stage 8 below were preemptive — the LIVE production hl2_stream.cpp carried the patches directly, and reverting in-place restores reference parity for the active code path. The clean `src/wire/Ep6RecvThread.cpp` was already reference-faithful (no §3.9-1 mask, reference-verbatim slot decode) and required no edits.
 
+**Audit gate status per Rule 27 (2-audit gate):**
+
+| # | Audit #1 (Claude side-by-side parity) | Audit #2 (operator bench-verify on HL2+) |
+|---|---|---|
+| §3.9-1 | ✅ PASS (commit `3b7888b` — file:line cited on both trees in commit message) | ⏳ PENDING — operator next-bench run; verify EP6 seq error counter behaves sensibly (may tick once every ~3:27 min on the ak4951v4 20-bit gateware wrap — that is now the correctly-flagged event, not a false alarm) |
+| §3.9-2 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "T" reads `n/a` (reference has no EP6 temp; HL2 board temp is I2C2, separate future work) |
+| §3.9-3 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "V" + new "PA Volts" Q_PROPERTY behave sensibly on ak4951v4 (may need scale calibration if gateware returns different raw values from generic HL2) |
+| §3.9-4 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "PA" (now reading slot 0x18 C1:C2 = user_adc1 per reference) reads correctly at full tune (~1.8 A reference anchor) |
+| §3.9-5 | ✅ PASS (commit `12e7acc`) | ⏳ PENDING — verify SSB TX keydown/keyup acoustic behavior; rfDelayMs_ alone is sole hot-switch protection going forward (matches reference) |
+
+Per Rule 27 the §3.9-N checkboxes are NOT considered "complete" until both audits pass.  Any FAIL on Audit #2 is a Rule 18 STOP-AND-ASK — surface to operator before any in-place fix.  This file gets updated with "✅ SIGNED {YYYY-MM-DD}" rows when the operator bench-confirms each item.
+
 | # | Where the revert landed | Reference cite |
 |---|---|---|
 | §3.9-1 | `hl2_stream.cpp` — `expectedSeq = seq + 1` (no mask) | `networkproto1.c:191-194` MetisReadDirect |
