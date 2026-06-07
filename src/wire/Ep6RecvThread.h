@@ -87,6 +87,20 @@ using Ep6MicSink = std::function<void(int n_samples,
 using Ep6I2cSink = std::function<void(const uint8_t* bytes,
                                       int n_bytes)>;
 
+// Sink for the HW PTT-in level (C0 bit 0 per `networkproto1.c:496`).
+// Fires at most once per EP6 datagram (one C0 status byte per USB
+// frame; we fire on the SECOND frame so the sink sees the latest
+// level).  Sink receives the level (0 or 1); consumer is
+// responsible for edge-detect + downstream MOX dispatch.  HL2Stream
+// registers this to drive the operator opt-in HW PTT forwarder
+// (mirror of the rxWorkerLoop-based forwarder this layer replaces).
+//
+// Per CLAUDE.md §10 Q#1 the bench-verified discipline is: do NOT
+// auto-key on this level — the N8SDR HL2+/AK4951 unit can carry a
+// non-zero ptt_in at RX rest; the consumer must gate on its
+// `hwPttEnabled` opt-in atomic before acting.
+using Ep6HwPttSink = std::function<void(bool ptt_in)>;
+
 class Ep6RecvThread {
 public:
     Ep6RecvThread();
@@ -131,11 +145,15 @@ public:
     // dropped (no dispatch).
     void set_router(Router* router, int router_id);
 
-    // Telemetry / mic / I2C sinks.  Mic mirrors the reference's
-    // `Inbound(inid(1,0), ...)` (`networkproto1.c:579`).
+    // Telemetry / mic / I2C / HW-PTT sinks.  Mic mirrors the
+    // reference's `Inbound(inid(1,0), ...)` (`networkproto1.c:579`).
+    // HW PTT mirrors reference's `prn->ptt_in = ControlBytesIn[0]
+    // & 0x1` at `networkproto1.c:496` — the sink consumer does its
+    // own opt-in gating + edge detect.
     void set_telemetry_sink(Ep6TelemetrySink sink);
     void set_mic_sink(Ep6MicSink sink);
     void set_i2c_sink(Ep6I2cSink sink);
+    void set_hw_ptt_sink(Ep6HwPttSink sink);
 
     // §1-C Stage 4B: diagnostic counter accessors removed.
     // RX seq tracking + datagram count moved to TU-scope
@@ -198,6 +216,7 @@ private:
     Ep6TelemetrySink                telemetry_sink_;
     Ep6MicSink                      mic_sink_;
     Ep6I2cSink                      i2c_sink_;
+    Ep6HwPttSink                    hw_ptt_sink_;
     Router*                         router_     = nullptr;
     int                             router_id_  = 0;
 };

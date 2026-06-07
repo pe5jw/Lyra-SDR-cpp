@@ -291,6 +291,10 @@ void Ep6RecvThread::set_i2c_sink(Ep6I2cSink sink) {
     i2c_sink_ = std::move(sink);
 }
 
+void Ep6RecvThread::set_hw_ptt_sink(Ep6HwPttSink sink) {
+    hw_ptt_sink_ = std::move(sink);
+}
+
 // ---- reader thread ----
 //
 // Reference: `MetisReadThreadMainLoop_HL2` at
@@ -313,16 +317,52 @@ void Ep6RecvThread::run_loop() {
     }
 #endif
 
+    // ---- Spawn-side handshake release (reference :249) ----
+    //
+    // Reference `MetisReadThreadMain` at `networkproto1.c:240-261`
+    // releases `hReadThreadInitSem` IMMEDIATELY AFTER MMCSS
+    // classification (line 249), BEFORE calling
+    // `MetisReadThreadMainLoop_HL2()` (line 253) — so the
+    // spawn-side `WaitForSingleObject(hReadThreadInitSem,
+    // INFINITE)` at `netInterface.c:63` unblocks AS SOON AS the
+    // thread has elevated priority, and the caller proceeds to
+    // spawn the EP2 writer (`sendProtocol1Samples`,
+    // `netInterface.c:66`) IN PARALLEL with this thread's
+    // priming pass + WSAEventSelect setup.
+    //
+    // This is the LOAD-BEARING release position for PureSignal:
+    // the reference's single shared `MetisOutBoundSeqNum`
+    // counter (`networkproto1.c:30`) is consumed by both the
+    // priming pass (via `MetisWriteFrame`, `:216-237`) and the
+    // EP2 send thread (also via `MetisWriteFrame`), giving a
+    // single continuous outbound seq stream that the HL2
+    // gateware (and PureSignal's calcc/iqc) expect.  Releasing
+    // the sem AFTER priming would imply two separate counters,
+    // which breaks the reference contract.
+    //
+    // Step 14 Stage 2a correction (operator-directed 2026-06-07,
+    // "Make like reference always — PureSignal requires it"):
+    // the prior Lyra position (release AFTER priming +
+    // WSAEventSelect) was a deviation introduced before the
+    // §3.9 audit and is corrected here.
+    if (prn != nullptr) {
+        prn->hReadThreadInitSem.release();
+    }
+
     // ---- Per-thread init (reference :423-430) ----
     //
-    // Reference:
-    //     SeqError = 0;                                  // :425
+    // Reference body of `MetisReadThreadMainLoop_HL2` at
+    // `networkproto1.c:422-586`, the function called by
+    // `MetisReadThreadMain` AFTER the semaphore release above:
+    //
     //     mic_decimation_count = 0;                       // :424
+    //     SeqError = 0;                                  // :425
     //     FPGAReadBufp = (unsigned char*)calloc(1024,...);// :427
+    //     ForceCandCFrame(3);                             // :430
     //     prn->hDataEvent = WSACreateEvent();             // :433
     //     WSAEventSelect(listenSock,
     //                    prn->hDataEvent, FD_READ);       // :434
-    //     ForceCandCFrame(3);                             // :430
+    //     while (io_keep_running != 0) { ... }            // :439+
     //
     // All sized + zeroed INSIDE the thread per the operator-
     // locked "do as reference, period" directive (2026-06-06) —
@@ -346,6 +386,21 @@ void Ep6RecvThread::run_loop() {
     // `networkproto1.c:424`.
     mic_decimation_count = 0;
 
+    // C&C priming — reference `ForceCandCFrame(3);` at
+    // `networkproto1.c:430`.  Emits 6 priming datagrams (3 TX-
+    // freq + 3 RX1-freq) with inter-pass sleeps via the shared
+    // `metis_write_frame()` primitive (which advances the shared
+    // `g_metis_out_seq_num`).  Ensures the HL2 gateware has the
+    // operator's tuned frequencies before the EP6 read loop
+    // starts consuming sample datagrams.
+    //
+    // Note ordering vs WSAEventSelect: reference does priming
+    // (:430) BEFORE WSAEventSelect (:433-434).  Priming sends
+    // EP2 datagrams (host→radio); WSAEventSelect arms the FD_READ
+    // notify for EP6 (radio→host).  No interaction — but match
+    // reference order verbatim.
+    force_candc_frame(3);
+
 #if defined(_WIN32)
     // WSAEventSelect setup — reference `:433-434`:
     //     prn->hDataEvent = WSACreateEvent();
@@ -357,21 +412,6 @@ void Ep6RecvThread::run_loop() {
                        FD_READ);
     }
 #endif
-
-    // C&C priming — reference `ForceCandCFrame(3);` at
-    // `networkproto1.c:430`.  Emits 6 priming datagrams (3 TX-
-    // freq + 3 RX1-freq) with inter-pass sleeps, ensuring the
-    // HL2 gateware has the operator's tuned frequencies before
-    // the EP6 read loop starts consuming sample datagrams.
-    force_candc_frame(3);
-
-    // Init complete — release the spawn-side handshake.
-    // Reference: implicit via `ReleaseSemaphore(prn->
-    // hReadThreadInitSem, 1, NULL);` at the equivalent point
-    // in the C reference (typically after the priming pass).
-    if (prn != nullptr) {
-        prn->hReadThreadInitSem.release();
-    }
 
 #if defined(_WIN32)
     // ---- Main wait loop (reference :439-463) ----
@@ -744,6 +784,21 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
         p->ptt_in  = static_cast<int>(cc[0] & 0x01);
         p->dash_in = static_cast<int>((cc[0] << 1) & 0x01);
         p->dot_in  = static_cast<int>((cc[0] << 2) & 0x01);
+
+        // Forward HW PTT-in level to operator-side consumer
+        // (HL2Stream's hwPttEnabled opt-in forwarder).  Reference
+        // doesn't have an equivalent sink — the C-side consumer
+        // reads `prn->ptt_in` directly elsewhere — but Lyra's
+        // edge-detect + Qt invokeMethod plumbing lives in the
+        // HL2Stream Q_OBJECT side of the operator boundary, so
+        // a callback is the C++ idiom translation.  Fires every
+        // non-I2C status decode (mirrors reference's
+        // unconditional per-frame `prn->ptt_in` write at
+        // `networkproto1.c:496`); the consumer does its own
+        // opt-in gate + edge-detect.
+        if (hw_ptt_sink_) {
+            hw_ptt_sink_(static_cast<bool>(cc[0] & 0x01));
+        }
 
         // ---- 5-class telemetry switch on (cc[0] & 0xf8) ----
         //      Verbatim from `networkproto1.c:499-524`.

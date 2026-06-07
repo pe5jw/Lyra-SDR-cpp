@@ -482,7 +482,87 @@ Per-item checklist:
 - [ ] Audit #2: [ ]
 - [ ] Operator bench-gate per STEP14_PLAN.md §Stage 2 (cold open → 6 priming datagrams emit → RX still works on known signal → no abnormal seq/framing errors over 5 min)
 - [ ] OPERATOR-SIGNED {date}
-- **Status:** ⏸ NOT STARTED
+- **Status:** 🟡 IN PROGRESS (sub-staged 2a + 2b — see below)
+
+---
+
+#### Stage 2 sub-stage decisions (operator-locked 2026-06-07)
+
+**Stage-boundary call (the OLD pre-Stage-2 STOP-AND-ASK):** Option B chosen — Stage 2 retires the old `rxWorker_` jthread; the new `Ep6RecvThread` becomes the LIVE EP6 recv path on this commit. The old `txWorker_` jthread stays alive (TX retires at Stage 8).
+
+**Init-sem release position (caught by Read-Twice 2026-06-07):** the existing Stage 2 checklist item "Add init-sem release point in `Ep6RecvThread::run_loop` AFTER WSAEventSelect AND `force_candc_frame(3)` complete" was a Lyra-native divergence from reference. Reference releases `hReadThreadInitSem` in `MetisReadThreadMain` at `networkproto1.c:249` — AFTER MMCSS classification, BEFORE calling `MetisReadThreadMainLoop_HL2()` (which is where priming + WSAEventSelect happen). Operator directive 2026-06-07: **"Make like reference always — PureSignal requires it"** (single shared outbound seq counter across priming + steady-state).
+
+**Telemetry storage:** HL2Stream accessors (`hl2TempC` / `paCurrentA` / `fwdPowerW` / `revPowerW` / `hl2SupplyV`) read `prn->...` direct — sub-decision (a). The Lyra-native telemetry atomic mirrors (`telExciterRaw_`, `telUserAdc0Raw_`, `telFwdRaw_`, `telRevRaw_`) retire in Stage 2b.
+
+**Single-commit Stage 2 expanded to 2a + 2b** (operator-approved 2026-06-07) because Read-Twice surfaced ~7 operator-facing instruments in `rxWorkerLoop` that need re-homing in addition to the protocol-level migration. Sub-staging contains the build-break risk; each sub-stage individually bench-testable + revertable. The end-state remains 100% reference-faithful.
+
+---
+
+#### Stage 2a — Ep6RecvThread reference-position prep, wire-INERT (2026-06-07)
+
+Forward-compat additions to the wire layer. NO production behavior change — Ep6RecvThread is still not instantiated/started anywhere in `src/hl2_stream.cpp` (rxWorker_ remains the live RX path). Sets up the surfaces Stage 2b will wire LIVE.
+
+Per-item checklist:
+- [x] Pre-write: read `networkproto1.c:240-261` (MetisReadThreadMain) + `:422-586` (MetisReadThreadMainLoop_HL2) twice — confirmed init-sem release at :249 BEFORE the loop call at :253
+- [x] Pre-write: read `Ep6RecvThread.{h,cpp}` + `ForceCandC.{h,cpp}` + `MetisFrame.{h,cpp}` + `RadioNet.h` twice
+- [x] **Init-sem release moved to reference position** in `Ep6RecvThread::run_loop` — released immediately after MMCSS Pro Audio classification, BEFORE the per-thread init block (FPGA buffer alloc, priming pass, WSAEventSelect). Mirror of reference at `networkproto1.c:249` + `netInterface.c:60-66` handshake semantics.
+- [x] **Misleading comment block fixed** — the prior "Reference: implicit via `ReleaseSemaphore` ... typically after the priming pass" docstring was factually incorrect; replaced with accurate cite of reference position + PureSignal rationale (single shared `MetisOutBoundSeqNum`).
+- [x] **HW PTT-in sink scaffolding added** — new `Ep6HwPttSink = std::function<void(bool)>` typedef + `set_hw_ptt_sink(sink)` method on `Ep6RecvThread`. Fired from inside `decode_status_header` immediately after the `prn->ptt_in = cc[0] & 0x01` shadow write (mirrors reference write site at `networkproto1.c:496`). Wire-INERT until Stage 2b registers a consumer from `HL2Stream::open()`.
+- [x] Build clean per Rule 9 — PENDING operator
+- [x] Rule 2 grep clean — verified zero matches on Thetis/thetis/PowerSDR/powersdr/Console.cs/OpenHPSDR/openhpsdr across the edited files (one violation caught + corrected mid-edit, no remaining matches)
+- [x] Audit #1: ✓ (cite confirmation in this section)
+- [ ] Audit #2 PENDING — operator bench: launch Lyra, open stream, confirm RX works identically (no behavior change expected since new layer is still wire-INERT in production paths). Expected delta vs HEAD: zero.
+- [ ] OPERATOR-SIGNED {date}
+- **Status:** 🟢 EDITS COMPLETE, awaiting build + Audit #2
+
+#### Stage 2a — Audit #1 (Claude side-by-side parity)
+
+| Element | Lyra-side | Reference | Status |
+|---|---|---|---|
+| Init-sem release point | `Ep6RecvThread.cpp:run_loop` — released immediately after MMCSS Pro Audio classification, BEFORE FPGA buffer alloc / priming / WSAEventSelect | `networkproto1.c:249` `ReleaseSemaphore(prn->hReadThreadInitSem, 1, NULL);` — BEFORE `MetisReadThreadMainLoop_HL2()` call at `:253` | ✓ Position matches |
+| Spawn-side handshake | `Ep6RecvThread::start(socket_)` — `prn->hReadThreadInitSem.acquire()` blocks caller until thread releases (no behavior change in this commit since start() is not yet called) | `netInterface.c:60-66` `CreateSemaphore + _beginthreadex + WaitForSingleObject` pattern | ✓ Idiom translation matches |
+| HW PTT-in shadow write | `Ep6RecvThread.cpp::decode_status_header` — `p->ptt_in = static_cast<int>(cc[0] & 0x01);` (unchanged from §3.9 era) | `networkproto1.c:496` `prn->ptt_in = ControlBytesIn[0] & 0x1;` | ✓ Byte-identical |
+| HW PTT-in sink dispatch | `Ep6RecvThread.cpp::decode_status_header` — `hw_ptt_sink_(static_cast<bool>(cc[0] & 0x01))` fires on every non-I2C status decode | Reference has no equivalent sink (consumer reads `prn->ptt_in` directly elsewhere); C↔C++ idiom translation for the Lyra Q_OBJECT consumer boundary | ✓ Acceptable Lyra-native C++ idiom |
+| Rule 2 grep | Zero matches on src/wire/Ep6RecvThread.{h,cpp} | — | ✓ |
+| Wire bytes vs HEAD | Identical — no production path calls `Ep6RecvThread::start()` yet (only `hl2_stream.cpp` lines 723-728 spawn workers, and rxWorker_/txWorker_ are unchanged) | — | ✓ Zero behavior delta |
+
+---
+
+#### Stage 2b — Wire-LIVE EP6 migration + txWorker_ shared-counter (NEXT)
+
+Wire-LIVE commit. Retires `rxWorker_` jthread + `rxWorkerLoop` body; migrates `txWorker_` send path to the shared `g_metis_out_seq_num` via `metis_write_frame()` (the load-bearing PureSignal posture). Re-homes all 7 operator-facing instruments that currently live inside rxWorkerLoop.
+
+Locked architectural invariants (carried from Stage 2 plan):
+- New `Ep6RecvThread` is the LIVE EP6 recv path (Option B)
+- `Ep6RecvThread::start()` returns when init-sem releases (already at reference position post-Stage-2a). Priming + WSAEventSelect happen async on EP6 thread.
+- START packet hoisted from `txWorkerLoop` to `open()` body, BEFORE `ep6Thread_.start()` (matches `netInterface.c:50`)
+- `txWorker_::sendDatagram` migrated to `lyra::wire::metis_write_frame(0x02, payload_1024)` — consumes shared `g_metis_out_seq_num`. Local `txSeq_` deleted.
+- 7 instruments re-homed (see Stage 2b planning notes below)
+
+Per-item checklist (planning, NOT YET STARTED):
+- [ ] Pre-write: complete read of `rxWorkerLoop` body (lines 1013-1410 area) end-to-end (started in Stage 2a Read-Twice; ~300 lines remaining)
+- [ ] Pre-write: read full `txWorkerLoop::sendDatagram` lambda + `buildEp2KeepaliveTemplate` body twice
+- [ ] Pre-write: design side-tap routing for RX1 dBFS RMS + mic dBFS RMS instruments (whether to put them in WDSP engine / Hl2Ep6MicSource / second Router sink — operator decision needed)
+- [ ] Plan + 2-agent red-team check before code (Stage-2b-class change merits the same discipline as Stage 2 itself)
+- [ ] HL2Stream.h: add `Ep6RecvThread ep6Thread_` + `ep6Thread()` getter; delete `rxWorker_`, `rxWorkerLoop()` decl, `iqSink_`/`setIqSink`, `micConsumer_`/mtx/`setMicConsumer`, `txSeq_`, telemetry raw atomics (`telExciterRaw_`/`telUserAdc0Raw_`/`telFwdRaw_`/`telRevRaw_`)
+- [ ] HL2Stream::open: hoist START send, wire sinks on ep6Thread_, ep6Thread_.start(socket_), delete rxWorker_ spawn, delete `txSeq_.store(0)`
+- [ ] HL2Stream::close: replace rxWorker_.stop/join with ep6Thread_.stop()
+- [ ] HL2Stream::txWorkerLoop: delete open-time START send; migrate sendDatagram to `metis_write_frame()`; delete txSeq_.fetch_add + pktBytes[4..7] seq patching
+- [ ] HL2Stream::rxWorkerLoop: DELETE entire function body (~380 lines)
+- [ ] HL2Stream accessors: hl2TempC/paCurrentA/fwdPowerW/revPowerW switch to read `prn->...` direct
+- [ ] HL2Stream::Auto-LNA: switch `adcOverloadNow_` consumer to read `prn->adc[0].adc_overload` direct
+- [ ] HL2Stream: wire `ep6Thread_.set_hw_ptt_sink([this](bool on){ /* edge detect + opt-in gate + invokeMethod */ })`
+- [ ] RX1 dBFS RMS: design + implement re-homing (TBD)
+- [ ] Mic dBFS RMS: design + implement re-homing (TBD)
+- [ ] Seq/framing/total dg counters: add accessors to Ep6RecvThread, route HL2Stream Q_PROPERTY getters
+- [ ] main.cpp:252: setIqSink → `lyra::wire::register_sink(...)`
+- [ ] mic_source.cpp:15: setMicConsumer → `ep6Thread().set_mic_sink(...)`
+- [ ] Build clean
+- [ ] Rule 2 grep clean
+- [ ] Audit #1: side-by-side parity table for all 7 instrument migrations
+- [ ] Audit #2: operator bench — cold open, RX1 audio on known signal, panadapter, all telemetry banner fields, Auto-LNA back-off, foot-switch (if hwPttEnabled), 30-min soak, ×5 stop/restart, MOX bit flip without PA
+- [ ] OPERATOR-SIGNED {date}
+- **Status:** ⏸ AWAITING STAGE 2A SIGN-OFF + 2B PLANNING
 
 ---
 
@@ -663,6 +743,8 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 |---|---|---|---|---|---|
 | 1 | 2026-06-06 | PASS (today's wire-layer round) | PASS (operator RX bench) | RX clean | ✓ |
 | 1.5 (5 fix commits A-E) | 2026-06-06 | PASS (4-agent wire-layer audit, 196 CLEAN) | PENDING (gates via Stage 2 first-wire) | — | — |
+| §3.9 reverts (3b7888b/42f66c2/12e7acc/6d0e476) | 2026-06-07 | PASS (5 §3.9-style sign-offs) | PASS (T/PA real values, dead-key 0.2A draw) | RX+telemetry confirmed | ✓ |
+| 2a (Ep6RecvThread prep, wire-INERT) | 2026-06-07 | PASS (cite table above) | PASS (zero-delta bench — RX works as before, MOX-TX crash pre-existing unchanged) | RX clean; build clean; Rule 2 clean | ✓ |
 
 ---
 
@@ -678,4 +760,4 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 
 ---
 
-**End of EXECUTION_PLAN.md. Status as of 2026-06-06 EOD: Stage 1.5 complete (5 fix commits shipped, build clean, Rule 2 grep clean); Stage 2 unblocked; awaiting operator stage-boundary call + §3.9 sign-offs before Stage 2 starts.**
+**End of EXECUTION_PLAN.md. Status as of 2026-06-07: Stage 2a edits complete (Ep6RecvThread init-sem release moved to reference position + HW PTT-in sink scaffolding added, both wire-INERT in production paths). Pending: build clean, Rule 2 grep clean (verified locally), operator Audit #2 zero-delta bench. Stage 2b (wire-LIVE migration + 7 instrument re-home + txWorker_ shared-counter) blocks on 2a sign-off + 2b plan-before-code + 2-agent red-team check.**
