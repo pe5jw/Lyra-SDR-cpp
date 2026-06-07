@@ -745,6 +745,7 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 | 1.5 (5 fix commits A-E) | 2026-06-06 | PASS (4-agent wire-layer audit, 196 CLEAN) | PENDING (gates via Stage 2 first-wire) | — | — |
 | §3.9 reverts (3b7888b/42f66c2/12e7acc/6d0e476) | 2026-06-07 | PASS (5 §3.9-style sign-offs) | PASS (T/PA real values, dead-key 0.2A draw) | RX+telemetry confirmed | ✓ |
 | 2a (Ep6RecvThread prep, wire-INERT) | 2026-06-07 | PASS (cite table above) | PASS (zero-delta bench — RX works as before, MOX-TX crash pre-existing unchanged) | RX clean; build clean; Rule 2 clean | ✓ |
+| 2b1 (operator-facing counter accessors, wire-INERT) | 2026-06-07 | PASS (additive only — 4 free-function accessors at lyra::wire namespace scope mirror reference's `SeqError` file-scope global at `networkproto1.c:26`; total/framing/window are Lyra-native operator UX with no reference equivalent, classified ACCEPTABLE per Rule 26) | PASS (zero-delta bench — RX still operational) | RX clean; build clean; Rule 2 clean | ✓ |
 
 ---
 
@@ -760,4 +761,8 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 
 ---
 
-**End of EXECUTION_PLAN.md. Status as of 2026-06-07: Stage 2a edits complete (Ep6RecvThread init-sem release moved to reference position + HW PTT-in sink scaffolding added, both wire-INERT in production paths). Pending: build clean, Rule 2 grep clean (verified locally), operator Audit #2 zero-delta bench. Stage 2b (wire-LIVE migration + 7 instrument re-home + txWorker_ shared-counter) blocks on 2a sign-off + 2b plan-before-code + 2-agent red-team check.**
+**End of EXECUTION_PLAN.md. Status as of 2026-06-07 EOD: Stage 2a SHIPPED (commit `39f3fa9` — Ep6RecvThread reference-position init-sem release + HW-PTT sink scaffolding). Stage 2b1 SHIPPED — operator-facing counter accessors at `lyra::wire` namespace scope (additive, wire-INERT, operator-confirmed zero-delta).
+
+Stage 2b2 NEXT — the strict-reference strip-out: wire-LIVE EP6 migration; retire `HL2Stream::rxWorker_` + `rxWorkerLoop` body; migrate `txWorker_::sendDatagram` to `metis_write_frame()` (shared `g_metis_out_seq_num`); DELETE Lyra-native duplicate atomics (`telExciterRaw_`/`telFwdRaw_`/`telRevRaw_`/`telUserAdc0Raw_`/`adcOverloadNow_`/`lastPttIn_`/`micDecimationCount_`/`micDecimationFactor_`/`txSeq_`/`seqErrors_`/`framingErrors_`/`totalDg_`/`windowDg_`/`rx1DbFs_`/`micDbFs_`); switch HL2Stream telemetry accessors to read `prn->...` direct; migrate IQ sink to `register_sink` (single call_idx=0 lambda — NO tee, NO Lyra-native `accumulateRx1Rms`; `rx1DbFs` Q_PROPERTY + accumulator DELETED; TciServer migrates to `wdspEngine->audioDbFs()` which is the reference-faithful WDSP RXA_S_PK path); reorder main.cpp aboutToQuit so `stream->close()` runs BEFORE `~Hl2Ep6MicSource`; pin "sinks register before `start()`, never reassigned at runtime" discipline via `assert(!running_)` in setters.
+
+Methodology discipline (operator-locked 2026-06-07): DEFAULT VERDICT = strict reference. Lyra-native preservation is NEVER the default answer. RX options (WDSP NR/AGC/ANF/LMS/NB/SQ/AEPF/captured profile/etc.) STAY (WDSP-backed = reference-equivalent). TX operator-feature suite (Combinator, Plate Reverb, EQ, CFC, speech-enhancement, mic profiles) is where Lyra deliberately differs — strict-reference rule does NOT auto-apply there; WE TALK before any change near those. LNA — flag if anything LNA-related interacts with TX path; WE TALK.**

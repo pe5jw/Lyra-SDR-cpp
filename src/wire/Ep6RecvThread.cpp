@@ -157,8 +157,26 @@ inline double unpack_mic_be(const uint8_t* p) {
 unsigned int g_metis_last_recv_seq = 0;
 
 // Reference: `int SeqError = 0;` at `networkproto1.c:26`.
-// Count of EP6 seq errors.
-int g_seq_error = 0;
+// Count of EP6 seq errors.  Stage 2b: promoted to atomic<int64_t>
+// for safe cross-thread read by the operator-facing `ep6_seq_errors()`
+// accessor.  Reference uses bare `int` with no lock; the QML reader
+// on a separate thread justifies the atomic in Lyra (acceptable
+// C++23 idiom translation per Rule 26).
+std::atomic<std::int64_t> g_seq_error{0};
+
+// ===== Stage 2b — Lyra-native operator UX counters =====
+//
+// These have NO reference equivalent (reference doesn't track
+// per-session framing-error or total-datagram counts as exposed
+// observables — operator UX-only).  Classified ACCEPTABLE
+// LYRA-NATIVE per Rule 26.  Same TU-scope file-scope-global
+// pattern as g_seq_error.  Per-process-lifetime monotonic;
+// re-initialized only at thread entry in run_loop's per-thread
+// init, mirroring reference's `SeqError = 0;` reset at
+// `networkproto1.c:425`.
+std::atomic<std::int64_t> g_total_datagrams  {0};
+std::atomic<std::int64_t> g_framing_errors   {0};
+std::atomic<std::int64_t> g_window_datagrams {0};
 
 // Reference: `unsigned char ControlBytesIn[5];` at
 // `network.h:414`.  Cached C&C-in header bytes from the most
@@ -378,8 +396,18 @@ void Ep6RecvThread::run_loop() {
     // `networkproto1.c:425` + `MetisLastRecvSeq` init to 0 (so
     // the first gateware packet, expected seqnum=1, passes the
     // `seqnum != (1 + MetisLastRecvSeq)` check at `:191-194`).
+    //
+    // Stage 2b: the Lyra-native total/framing/window counters
+    // ALSO reset here — same per-thread-entry pattern as the
+    // reference `SeqError = 0` reset.  These are operator-facing
+    // observables that the QML banner pulls; resetting at thread
+    // start (not at session-stop) matches the reference's
+    // monotonic-across-stop, init-at-thread-entry posture.
     g_metis_last_recv_seq = 0;
-    g_seq_error           = 0;
+    g_seq_error.store      (0, std::memory_order_relaxed);
+    g_total_datagrams.store(0, std::memory_order_relaxed);
+    g_framing_errors.store (0, std::memory_order_relaxed);
+    g_window_datagrams.store(0, std::memory_order_relaxed);
     std::memset(g_control_bytes_in, 0, sizeof(g_control_bytes_in));
 
     // Reference: `mic_decimation_count = 0;` at
@@ -508,16 +536,19 @@ void Ep6RecvThread::run_loop() {
                 static_cast<socket_recv_size_t>(sizeof(readbuf)),
                 0);
             if (n != static_cast<socket_recv_len_t>(kEp6DatagramBytes)) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
                 continue;  // lock released by guard's destructor
             }
             // Validate header bytes 0..2 + endpoint 3 + sync 8..10
             // per reference :174, :181-184.
             if (readbuf[0] != 0xEF || readbuf[1] != 0xFE ||
                 readbuf[2] != 0x01 || readbuf[3] != 6) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
             if (readbuf[8] != 0x7F || readbuf[9] != 0x7F ||
                 readbuf[10] != 0x7F) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
                 continue;  // sync fail; reference logs + sets HaveSync=0
             }
             // memcpy `readbuf + 8` (1024 bytes) into FPGAReadBufp
@@ -525,6 +556,14 @@ void Ep6RecvThread::run_loop() {
             std::memcpy(g_fpga_read_bufp.data(),
                         readbuf + kHpsdrHeaderBytes,
                         kFpgaReadBufBytes);
+            // Stage 2b: per-datagram count for the operator-facing
+            // Hz computation (Lyra-native UX observable).  Both
+            // monotonic and per-stats-tick-drained counters tick
+            // BEFORE dispatch so a slow dispatcher can't lose count
+            // (analog to HEAD's `totalDg_.fetch_add` at the same
+            // position in OLD rxWorkerLoop).
+            g_total_datagrams.fetch_add(1, std::memory_order_relaxed);
+            g_window_datagrams.fetch_add(1, std::memory_order_relaxed);
             // Per-datagram seq + dispatch lives outside the lock
             // because process_datagram dispatches to operator
             // sinks which may take their own locks (Router
@@ -549,14 +588,25 @@ void Ep6RecvThread::run_loop() {
                 reinterpret_cast<char*>(readbuf),
                 static_cast<socket_recv_size_t>(sizeof(readbuf)),
                 0);
-            if (n != static_cast<socket_recv_len_t>(kEp6DatagramBytes)) continue;
+            if (n != static_cast<socket_recv_len_t>(kEp6DatagramBytes)) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             if (readbuf[0] != 0xEF || readbuf[1] != 0xFE ||
-                readbuf[2] != 0x01 || readbuf[3] != 6) continue;
+                readbuf[2] != 0x01 || readbuf[3] != 6) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             if (readbuf[8] != 0x7F || readbuf[9] != 0x7F ||
-                readbuf[10] != 0x7F) continue;
+                readbuf[10] != 0x7F) {
+                g_framing_errors.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             std::memcpy(g_fpga_read_bufp.data(),
                         readbuf + kHpsdrHeaderBytes,
                         kFpgaReadBufBytes);
+            g_total_datagrams.fetch_add(1, std::memory_order_relaxed);
+            g_window_datagrams.fetch_add(1, std::memory_order_relaxed);
             process_datagram(readbuf, g_fpga_read_bufp.data());
         }
     }
@@ -597,7 +647,7 @@ void Ep6RecvThread::process_datagram(const uint8_t* raw_header,
     // first seqnum is 1 (HL2 gateware emits seqnum=1 first), so a
     // gateware that obeys the contract logs zero seq errors.
     if (seq != (1u + g_metis_last_recv_seq)) {
-        ++g_seq_error;
+        g_seq_error.fetch_add(1, std::memory_order_relaxed);
     }
     g_metis_last_recv_seq = seq;
 
@@ -878,6 +928,39 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
         tm.control[3] = cc[4];
         telemetry_sink_(tm);
     }
+}
+
+// ============== Stage 2b — operator-facing counter accessors ==============
+//
+// Free-function accessors at namespace scope; mirror MetisFrame's
+// `metis_out_seq_num()` / `metis_socket_fd()` pattern.  Backing
+// state lives as TU-scope `std::atomic` statics in the anonymous
+// namespace above (`g_seq_error`, `g_total_datagrams`,
+// `g_framing_errors`, `g_window_datagrams`).
+//
+// `ep6_seq_errors()` mirrors reference's `SeqError` (`networkproto1.c:26`)
+// — per-process-lifetime monotonic, re-initialized only at thread entry
+// in `run_loop` (matches reference's `SeqError = 0;` reset at `:425`).
+// The other three are Lyra-native operator UX observables with no
+// reference equivalent (acceptable per Rule 26 idiom space).
+
+std::int64_t ep6_seq_errors() {
+    return g_seq_error.load(std::memory_order_relaxed);
+}
+
+std::int64_t ep6_total_datagrams() {
+    return g_total_datagrams.load(std::memory_order_relaxed);
+}
+
+std::int64_t ep6_framing_errors() {
+    return g_framing_errors.load(std::memory_order_relaxed);
+}
+
+std::int64_t ep6_drain_window_datagrams() {
+    // Atomic exchange-to-0 so the operator stats tick gets the
+    // count since last drain (used to compute Hz over the tick
+    // interval).  Matches HEAD's `windowDg_.exchange(0)` posture.
+    return g_window_datagrams.exchange(0, std::memory_order_relaxed);
 }
 
 }  // namespace lyra::wire

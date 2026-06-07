@@ -155,11 +155,11 @@ public:
     void set_i2c_sink(Ep6I2cSink sink);
     void set_hw_ptt_sink(Ep6HwPttSink sink);
 
-    // §1-C Stage 4B: diagnostic counter accessors removed.
-    // RX seq tracking + datagram count moved to TU-scope
-    // statics in `Ep6RecvThread.cpp` mirroring reference's
-    // file-scope `MetisLastRecvSeq` + `SeqError` at
-    // `networkproto1.c:26-28` (these are NOT in `_radionet`).
+    // Stage 14 Stage 2b — operator-facing counters retire the
+    // HL2Stream::{seqErrors_, framingErrors_, totalDg_, windowDg_}
+    // duplicate atomics.  Accessors live as free functions at
+    // namespace scope below (sibling-pattern of metis_out_seq_num /
+    // metis_socket_fd in wire/MetisFrame.h).
 
 private:
     // Reader-thread entry point.
@@ -220,5 +220,30 @@ private:
     Router*                         router_     = nullptr;
     int                             router_id_  = 0;
 };
+
+// ============== Stage 2b — operator-facing counters ==============
+//
+// Free-function accessors at namespace scope (sibling-pattern of
+// `metis_out_seq_num()` / `metis_socket_fd()` in wire/MetisFrame.h).
+// TU-scope statics in Ep6RecvThread.cpp.  Retires the duplicate
+// `HL2Stream::{seqErrors_, framingErrors_, totalDg_, windowDg_}`
+// atomics — reference has ONE owner per counter (file-scope global),
+// Lyra mirrors that ownership shape.
+//
+// `ep6_seq_errors()` mirrors reference's `SeqError` at
+// `networkproto1.c:26`.  total/framing/window are Lyra-native
+// operator UX observability (no reference equivalent — acceptable
+// Lyra-native per Rule 26 idiom space).  All four counters are
+// per-process-lifetime monotonic (matches reference's
+// `SeqError`/`MetisLastRecvSeq` posture at `networkproto1.c:26-28`
+// — never reset across stop/start; only re-initialized at thread
+// entry in run_loop's per-thread init, mirroring
+// MetisReadThreadMainLoop_HL2:424-425 verbatim).
+
+std::int64_t ep6_seq_errors();
+std::int64_t ep6_total_datagrams();
+std::int64_t ep6_framing_errors();
+// Atomic exchange-to-0 for operator stats tick (Hz computation).
+std::int64_t ep6_drain_window_datagrams();
 
 }  // namespace lyra::wire
