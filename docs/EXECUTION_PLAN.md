@@ -402,12 +402,13 @@ If a revert produces wrong telemetry / TX click on N8SDR's HL2+ bench, that is a
 | # | Audit #1 (Claude side-by-side parity) | Audit #2 (operator bench-verify on HL2+) |
 |---|---|---|
 | §3.9-1 | ✅ PASS (commit `3b7888b` — file:line cited on both trees in commit message) | ⏳ PENDING — operator next-bench run; verify EP6 seq error counter behaves sensibly (may tick once every ~3:27 min on the ak4951v4 20-bit gateware wrap — that is now the correctly-flagged event, not a false alarm) |
-| §3.9-2 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "T" reads `n/a` (reference has no EP6 temp; HL2 board temp is I2C2, separate future work) |
-| §3.9-3 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "V" + new "PA Volts" Q_PROPERTY behave sensibly on ak4951v4 (may need scale calibration if gateware returns different raw values from generic HL2) |
-| §3.9-4 | ✅ PASS (commit `42f66c2`) | ⏳ PENDING — verify banner "PA" (now reading slot 0x18 C1:C2 = user_adc1 per reference) reads correctly at full tune (~1.8 A reference anchor) |
-| §3.9-5 | ✅ PASS (commit `12e7acc`) | ⏳ PENDING — verify SSB TX keydown/keyup acoustic behavior; rfDelayMs_ alone is sole hot-switch protection going forward (matches reference) |
+| §3.9-2/3 | ✅ PASS (commits `42f66c2` slot decode + **`6d0e476`** HL2 reinterpretation per `console.cs:24937-24941`) | ⏳ PENDING (Audit #2 round 2) — Bench 1 (2026-06-07) on `42f66c2` showed T="-" / PA=0.00 / V=0.00, which led to discovering the missing C# reinterpretation layer.  After `6d0e476`: banner T should show real ambient board temp (~25-35°C), PA should show idle bias (~0.2 A; no TX yet so no full-tune values), V should show `n/a` (matches reference — Thetis doesn't display supply on HL2 either). |
+| §3.9-4 | ✅ PASS (commit `42f66c2`) — slot 0x18 decode removed in `6d0e476` per gateware Verilog (`_hl2src/hl2_rtl_control.v:475` "Unused in HL") | ⏳ PENDING with §3.9-2/3 above. |
+| §3.9-5 | ✅ PASS (commit `12e7acc`) | ⏳ DEFERRED — SSB TX acoustic verification requires TX wire-up (Steps 7-10 of STEP14_PLAN.md).  TX subsystem is intentionally non-functional during the wire-layer rebuild (per `main.cpp:549-559`); clicking MOX/TUN today crashes Lyra by design, not from this revert. |
 
 Per Rule 27 the §3.9-N checkboxes are NOT considered "complete" until both audits pass.  Any FAIL on Audit #2 is a Rule 18 STOP-AND-ASK — surface to operator before any in-place fix.  This file gets updated with "✅ SIGNED {YYYY-MM-DD}" rows when the operator bench-confirms each item.
+
+**On the §15.26 "supply at 0x00 C1:C2 >>4" claim:** that was disproven during this Audit #2 cycle via direct read of the operator's gateware Verilog (`_hl2src/hl2_rtl_control.v:472`).  Slot 0x00 C1:C2 carries `dsiq_status + VERSION_MAJOR`, NOT supply.  The 12.3 V Lyra previously displayed was a coincidence of bit patterns scaled through a wrong formula — not a real measurement.  Reference (Thetis) does not display supply voltage on HL2; the status-bar "Volts" label slot is reused to show temperature with a "C" suffix per `console.cs:26758-26761`.  Lyra now matches this.  Future supply telemetry, if wanted, must come from a separate I2C2 readback (not EP6, not §3.9 — its own work item).
 
 | # | Where the revert landed | Reference cite |
 |---|---|---|
