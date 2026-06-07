@@ -916,20 +916,15 @@ void HL2Stream::onStatsTick() {
         // Raw-rotation dump so the ak4951v4 slot map can be read off the
         // operator's hardware.  a0/a8/a10 show both raw 16-bit BE pairs
         // Diagnostic dump of the reference EP6 slot rotation
-        // (networkproto1.c:498-525).  a8 = (exciter_power, fwd_power),
-        // a10 = (rev_power, user_adc0/PA Volts), a18 = (user_adc1/PA
-        // Amps, supply_volts).  T = NaN (reference has no EP6 temp
-        // slot; HL2 board temp lives on I2C2, out of scope for the
-        // §3.9 slot-map revert).
+        // (networkproto1.c:498-525).  Slot 0x18 carries no useful
+        // data per gateware (`_hl2src/hl2_rtl_control.v:475`).  HL2
+        // reinterpretation per `console.cs:24937-24941`: a8 C1:C2 is
+        // temperature, a10 C3:C4 is PA current.
         const QString s = QStringLiteral(
-            "[telem] a8=(%1,%2) a10=(%3,%4) a18=(%5,%6) | "
-            "T=%7C V=%8 PAV=%9V PA=%10A")
+            "[telem] a8=(%1,%2) a10=(%3,%4) | T=%5C PA=%6A")
             .arg(telExciterRaw_.load()).arg(telFwdRaw_.load())
-            .arg(telRevRaw_.load()).arg(telPaVoltsRaw_.load())
-            .arg(telPaCurRaw_.load()).arg(telSupplyRaw_.load())
+            .arg(telRevRaw_.load()).arg(telUserAdc0Raw_.load())
             .arg(hl2TempC(), 0, 'f', 1)
-            .arg(hl2SupplyV(), 0, 'f', 2)
-            .arg(paVoltsV(), 0, 'f', 2)
             .arg(paCurrentA(), 0, 'f', 2);
         qWarning("%s", qUtf8Printable(s));
     }
@@ -951,36 +946,49 @@ namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 double HL2Stream::hl2TempC() const {
-    // Reference `MetisReadThreadMainLoop_HL2` (networkproto1.c:498-525)
-    // has NO temperature in the EP6 status rotation.  HL2 board temp
-    // is exposed via the on-board I2C2 bus and needs an I2C readback
-    // transaction — out of scope for the §3.9 slot-map revert.
-    // Returning NaN here causes the UI to render "n/a" until I2C2
-    // telemetry is wired (separate work item).
-    return kNaN;
+    // HL2 board temperature.  Reference HL2 path (`console.cs:
+    // 24937-24941`) reinterprets the slot-0x08 C1:C2 byte (which the
+    // reference C atomic calls `tx[0].exciter_power`) as raw temp on
+    // HL2.  Formula per `console.cs:25079`:
+    //   T_C = (3.26 * raw/4096 - 0.5) / 0.01
+    // Gateware confirms (Y:/Claude local/_hl2src/hl2_rtl_control.v:
+    // 473): `2'b01: iresp <= {... 4'h0, temperature, 4'h0, fwd_pwr}`
+    // — slot 0x08 C1:C2 carries the on-board temp sensor (MCP9700,
+    // 10 mV/°C, 0.5 V @ 0°C).
+    const int raw = telExciterRaw_.load(std::memory_order_relaxed);
+    if (raw < 0) return kNaN;
+    return (3.26 * (raw / 4096.0) - 0.5) / 0.01;
 }
 double HL2Stream::hl2SupplyV() const {
-    // Reference: supply_volts at slot 0x18 C3:C4 (AIN6 Hermes Volts).
-    // Formula: (raw / 4095) * 5 * (23 / 1.1).
-    const int raw = telSupplyRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
-    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);
+    // Reference does NOT display supply voltage on HL2 per
+    // `console.cs:26758-26761`: the status-bar "Volts" label slot is
+    // reused to show temperature with a "C" suffix.  The C# accessor
+    // `_MKIIPAVolts` is fed from `_voltsQueue` which is NEVER enqueued
+    // on HL2 (`console.cs:24937-24941` HL2 branch only enqueues amps +
+    // temp, not volts).  The HL2 gateware does not place supply in
+    // the iresp 4-slot rotation either (`_hl2src/hl2_rtl_control.v:
+    // 471-476` — slot 0x00 carries dsiq_status+VERSION_MAJOR; slot
+    // 0x18 is "Unused in HL").
+    //
+    // Lyra mirrors this: V returns NaN on HL2; UI shows "n/a".  If
+    // supply telemetry is wanted later, it has to come from a separate
+    // I2C readback transaction (separate work item, not §3.9 / not
+    // EP6).
+    return kNaN;
 }
 double HL2Stream::paCurrentA() const {
-    // Reference: user_adc1 / "AIN4 MKII PA Amps" at slot 0x18 C1:C2.
-    // Sense-amp formula per the HL2 current-shunt path; magnitude
-    // calibration is operator-bench territory.
-    const int raw = telPaCurRaw_.load(std::memory_order_relaxed);
+    // HL2 PA bias current.  Reference HL2 path (`console.cs:24937-
+    // 24941`) reinterprets the slot-0x10 C3:C4 byte (which the
+    // reference C atomic calls `user_adc0`) as raw PA current on HL2.
+    // Formula per `console.cs:25121-25131`:
+    //   amps = ((3.26 * raw/4096) / 50) / 0.04 / (1000/1270)
+    // Gateware confirms (`_hl2src/hl2_rtl_control.v:474`): `2'b10:
+    // iresp <= {... 4'h0, rev_pwr, 4'h0, bias_current}` — slot 0x10
+    // C3:C4 carries `bias_current` from the slow_adc ain2 channel
+    // (the sense resistor + INA181 current-shunt path).
+    const int raw = telUserAdc0Raw_.load(std::memory_order_relaxed);
     if (raw < 0) return kNaN;
     return ((3.26 * (raw / 4096.0)) / 50.0) / 0.04 / (1000.0 / 1270.0);
-}
-double HL2Stream::paVoltsV() const {
-    // Reference: user_adc0 / "AIN3 MKII PA Volts" at slot 0x10 C3:C4.
-    // Formula matches the HL2 supply-divider topology — same scale
-    // family as hl2SupplyV(); operator-bench-calibrate per board.
-    const int raw = telPaVoltsRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
-    return (raw / 4095.0) * 5.0 * (23.0 / 1.1);
 }
 double HL2Stream::fwdPowerW() const {
     const int raw = telFwdRaw_.load(std::memory_order_relaxed);
@@ -1183,16 +1191,27 @@ void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
                                       std::memory_order_relaxed);
                 break;
             case 0x08:  // exciter_power (C1:C2) + fwd_power (C3:C4)
+                        // On HL2 the "exciter_power" slot carries temp
+                        // per `console.cs:24937-24941` reinterpretation
+                        // + `_hl2src/hl2_rtl_control.v:473` gateware.
                 telExciterRaw_.store(p12, std::memory_order_relaxed);
                 telFwdRaw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x10:  // rev_power (C1:C2) + user_adc0 / PA Volts (C3:C4)
+            case 0x10:  // rev_power (C1:C2) + user_adc0 (C3:C4)
+                        // On HL2 the "user_adc0" slot carries PA current
+                        // per `console.cs:24937-24941` reinterpretation
+                        // + `_hl2src/hl2_rtl_control.v:474` gateware
+                        // (bias_current from slow_adc ain2).
                 telRevRaw_.store(p12, std::memory_order_relaxed);
-                telPaVoltsRaw_.store(p34, std::memory_order_relaxed);
+                telUserAdc0Raw_.store(p34, std::memory_order_relaxed);
                 break;
-            case 0x18:  // user_adc1 / PA Amps (C1:C2) + supply_volts (C3:C4)
-                telPaCurRaw_.store(p12, std::memory_order_relaxed);
-                telSupplyRaw_.store(p34, std::memory_order_relaxed);
+            case 0x18:  // Slot 0x18 carries no useful data on HL2 per
+                        // `_hl2src/hl2_rtl_control.v:475` ("Unused in HL"
+                        // — `{16'h0, debug}`).  Reference C source
+                        // `networkproto1.c:516-517` decodes nominal
+                        // `user_adc1` / `supply_volts` here but those
+                        // bytes are zeros on this gateware family.
+                        // Skip the decode; no atomic to store.
                 break;
             default:
                 break;

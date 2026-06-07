@@ -144,7 +144,6 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double hl2TempC   READ hl2TempC   NOTIFY statsChanged)
     Q_PROPERTY(double hl2SupplyV READ hl2SupplyV NOTIFY statsChanged)
     Q_PROPERTY(double paCurrentA READ paCurrentA NOTIFY statsChanged)
-    Q_PROPERTY(double paVoltsV   READ paVoltsV   NOTIFY statsChanged)
     Q_PROPERTY(double fwdPowerW  READ fwdPowerW  NOTIFY statsChanged)
     Q_PROPERTY(double revPowerW  READ revPowerW  NOTIFY statsChanged)
     // TX-0c-fsm — wire-level MOX state (true once the keydown TR-delay
@@ -529,7 +528,6 @@ public:
     double  hl2TempC()   const;
     double  hl2SupplyV() const;
     double  paCurrentA() const;
-    double  paVoltsV()   const;
     double  fwdPowerW()  const;
     double  revPowerW()  const;
     // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
@@ -1149,30 +1147,35 @@ private:
     // (direct overwrite, most-recent wins), read by the main-thread
     // getters.  −1 = no data yet.  std::atomic<int> is lock-free on
     // x86_64 so the getters take no lock on the hot path.
-    // EP6 status-slot raw atomics, slot map per reference
-    // `MetisReadThreadMainLoop_HL2` (networkproto1.c:498-525).  Per
-    // EXECUTION_PLAN.md §3.9-2/3/4 revert (operator-rejected 2026-06-06),
-    // the previous Lyra-invented slot map (temp at 0x08 C1:C2; PA Amps
-    // at 0x10 C3:C4; supply derived from 0x00 C1:C2 >>4; 0x18 treated as
-    // dead) is reverted to reference-verbatim:
+    // EP6 status-slot raw atomics, slot map per reference HL2 read
+    // loop (`MetisReadThreadMainLoop_HL2`, networkproto1.c:498-525).
+    // The slot→atomic mapping uses the GENERIC HPSDR atomic names
+    // (exciter_power, user_adc0, etc.) — but on HL2 specifically those
+    // atomics carry DIFFERENT physical quantities, reinterpreted by
+    // the reference's C# consumer layer (`console.cs:24937-24941`):
     //
-    //   slot 0x08 C1:C2 → exciter_power (AIN5 drive)
-    //   slot 0x08 C3:C4 → fwd_power     (AIN1 PA coupler)
-    //   slot 0x10 C1:C2 → rev_power     (AIN2)
-    //   slot 0x10 C3:C4 → user_adc0     (AIN3 "MKII PA Volts")
-    //   slot 0x18 C1:C2 → user_adc1     (AIN4 "MKII PA Amps")
-    //   slot 0x18 C3:C4 → supply_volts  (AIN6 Hermes Volts)
+    //   slot 0x08 C1:C2 → exciter_power  → temperature      (HL2)
+    //   slot 0x08 C3:C4 → fwd_power      → fwd_power
+    //   slot 0x10 C1:C2 → rev_power      → rev_power
+    //   slot 0x10 C3:C4 → user_adc0      → PA current       (HL2)
+    //   slot 0x18      → zeros / debug    (per gateware Verilog
+    //                                      `_hl2src/hl2_rtl_control.v:475`
+    //                                      "Unused in HL")
     //
-    // There is NO temperature slot in HL2 EP6 telemetry per reference.
-    // Board temp on HL2 is exposed via the on-board I2C bus and requires
-    // an I2C2 read transaction — out of scope for this slot-map revert.
-    // hl2TempC() therefore returns NaN until I2C2 telemetry is added.
-    std::atomic<int>     telExciterRaw_{-1};   // 0x08 C1:C2 (AIN5)
-    std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 (AIN1)
-    std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 (AIN2)
-    std::atomic<int>     telPaVoltsRaw_{-1};   // 0x10 C3:C4 (user_adc0 "PA Volts")
-    std::atomic<int>     telPaCurRaw_{-1};     // 0x18 C1:C2 (user_adc1 "PA Amps")
-    std::atomic<int>     telSupplyRaw_{-1};    // 0x18 C3:C4 (supply_volts)
+    // The reference deliberately decodes by the GENERIC slot names,
+    // then reinterprets at the display layer per-model.  Lyra mirrors
+    // this exactly: decode atomics named per the reference C atomics,
+    // then reinterpret in the HL2-specific accessors below.
+    //
+    // Supply voltage is NOT in the HL2 EP6 status rotation per reference.
+    // The reference's status-bar "Volts" label slot (console.cs:26758-
+    // 26761) is REUSED on HL2 to display temperature with a "C" suffix.
+    // Lyra's hl2SupplyV() therefore returns NaN; the UI banner shows
+    // "n/a" for V on HL2, matching reference behavior.
+    std::atomic<int>     telExciterRaw_{-1};   // 0x08 C1:C2 → temp (HL2)
+    std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 → fwd_power
+    std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 → rev_power
+    std::atomic<int>     telUserAdc0Raw_{-1};  // 0x10 C3:C4 → PA current (HL2)
     bool                 adcOverload_    = false;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;
