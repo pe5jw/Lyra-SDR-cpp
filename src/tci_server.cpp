@@ -1581,10 +1581,20 @@ void TciServer::onRunningChanged() {
                                       : QStringLiteral("stop"));
 }
 void TciServer::onSmeterTick() {
-    if (!sensorsEnabled_ || clients_.isEmpty() || !stream_) return;
-    // rx1DbFs is baseband RMS in dBFS; offset to a rough dBm for display.
-    // (A precise S-meter cal arrives with the meters feature.)
-    const double dbfs = stream_->rx1DbFs();
+    if (!sensorsEnabled_ || clients_.isEmpty() || !engine_) return;
+    // Reference-faithful S-meter source: WDSP RXA_S_PK polled at the
+    // operator-UI cadence (matches reference's GetRXAMeter path via
+    // wdsp_engine.h:80 audioDbFs Q_PROPERTY).  Pre-Stage-2b this read
+    // came off a Lyra-native pre-WDSP raw-IQ RMS accumulator on
+    // HL2Stream (rx1DbFs); that accumulator is deleted as part of
+    // Stage 2b strict-reference strip-out — reference has no
+    // pre-DSP instrument here, only the WDSP-derived meter.  The
+    // dBm offset (-30) carries forward unchanged as a coarse stopgap
+    // until per-band cal lands; behavioural note: audioDbFs is
+    // post-AGC, so the TCI client sees the AGC-shaped meter (=
+    // exactly what reference's S-meter does, since reference shows
+    // the same WDSP-derived reading).
+    const double dbfs = engine_->audioDbFs();
     const double dbm = (dbfs <= -199.0) ? -140.0 : dbfs - 30.0;
     broadcast(QStringLiteral("rx_channel_sensors:0,0"),
               QStringLiteral("rx_channel_sensors:0,0,%1")

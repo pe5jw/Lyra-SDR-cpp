@@ -81,6 +81,13 @@
 #include <stop_token>
 #include <vector>
 
+// Step 14 Stage 2b2 — Ep6RecvThread is the live EP6 recv path on
+// HL2Stream's behalf, retiring the OLD rxWorker_ jthread.  Member
+// `ep6Thread_` is declared in the private block below; the include
+// is at namespace-pulling distance so the destructor + getter +
+// open()/close() wiring sites all compile without forward-declaring.
+#include "wire/Ep6RecvThread.h"
+
 namespace lyra::ipc {
 
 // Platform socket handle, opaque to consumers of this header (we do

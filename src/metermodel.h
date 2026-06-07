@@ -1,9 +1,11 @@
 // Lyra — RX signal-strength meter model.
 //
-// Feeds the meter panels (Horizon Arc / Plasma Bar).  Reads the RX1
-// baseband IQ RMS level (HL2Stream::rx1DbFs, pre-DSP so AGC doesn't
-// flatten it), applies an operator calibration trim to land it on the
-// S-unit scale, and derives everything the QML renderers need:
+// Feeds the meter panels (Horizon Arc / Plasma Bar).  Reads the RX
+// S-meter level from the WDSP RXA_S_PK accessor (`WdspEngine::sMeterDbm`
+// — the reference-faithful path, matches the reference's `GetRXAMeter`
+// poll posture exactly).  Applies an operator calibration trim to
+// land it on the S-unit scale, and derives everything the QML
+// renderers need:
 //   • level  — current value, 0..1 along the S1…S9+60 scale (smoothed)
 //   • peak   — peak-hold marker (holds ~0.8 s then decays)
 //   • glow   — phosphor afterglow (trails the DROP, fast decay)

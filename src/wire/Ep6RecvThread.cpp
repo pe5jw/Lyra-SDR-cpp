@@ -50,6 +50,7 @@
 #include "wire/RadioNet.h"
 #include "wire/Router.h"
 
+#include <QtGlobal>   // Q_ASSERT_X (sink-registration-time contract)
 #include <cstring>
 
 #if defined(_WIN32)
@@ -292,24 +293,55 @@ void Ep6RecvThread::stop() {
 
 // ---- sink registration ----
 
+// Stage 2b — sink-registration contract (F1, operator-locked
+// 2026-06-07): sinks MUST be registered BEFORE start() spawns the
+// thread, and MUST NOT be reassigned at runtime.  This mirrors the
+// reference's LoadRouterAll-once-at-session-open pattern (router.c +
+// cmaster.cs:561 — reference reloads its router table ONLY on
+// HPSDRModel change, not at runtime).  The assert() catches a
+// runtime swap attempt in debug builds; release builds rely on the
+// header contract + sink-registration site discipline (single caller
+// per sink, registered from main.cpp wiring before the stream opens).
+//
+// Releasing a sink via `set_*({})` from a destructor is permitted
+// ONLY after the EP6 thread is joined (i.e. running_ == false) —
+// the operator-locked main.cpp aboutToQuit ordering (Stage 2b)
+// guarantees `stream->close()` runs BEFORE any sink-owning object
+// is destructed, so this assert never trips on the legitimate
+// teardown path either.
+namespace {
+inline void assert_not_running(const std::atomic<bool>& running) {
+    Q_ASSERT_X(!running.load(std::memory_order_acquire),
+               "Ep6RecvThread::set_*_sink",
+               "sinks may not be reassigned while the EP6 thread is "
+               "running — register BEFORE start(); reference posture "
+               "matches LoadRouterAll-once-at-session-open");
+}
+}  // namespace
+
 void Ep6RecvThread::set_router(Router* router, int router_id) {
+    assert_not_running(running_);
     router_    = router;
     router_id_ = router_id;
 }
 
 void Ep6RecvThread::set_telemetry_sink(Ep6TelemetrySink sink) {
+    assert_not_running(running_);
     telemetry_sink_ = std::move(sink);
 }
 
 void Ep6RecvThread::set_mic_sink(Ep6MicSink sink) {
+    assert_not_running(running_);
     mic_sink_ = std::move(sink);
 }
 
 void Ep6RecvThread::set_i2c_sink(Ep6I2cSink sink) {
+    assert_not_running(running_);
     i2c_sink_ = std::move(sink);
 }
 
 void Ep6RecvThread::set_hw_ptt_sink(Ep6HwPttSink sink) {
+    assert_not_running(running_);
     hw_ptt_sink_ = std::move(sink);
 }
 
