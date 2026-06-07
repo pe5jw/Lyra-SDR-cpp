@@ -16,6 +16,28 @@
 
 ---
 
+## 📚 RELATIONSHIP TO `STEP14_PLAN.md`
+
+This document is **ADDED** to the existing `docs/architecture/STEP14_PLAN.md` — not a replacement. The two docs stack:
+
+| Doc | Role |
+|---|---|
+| `docs/architecture/STEP14_PLAN.md` | **Engineering blueprint.** What each of Stages 1-10 technically does — code structure, reference behaviors to mirror, files touched, expected wire effects. Pre-existing, unchanged. The "WHAT." |
+| `docs/EXECUTION_PLAN.md` *(this file)* | **Operating discipline + progress tracking.** Locked rules, pre-write verification protocol, 2-audit gate, §3.9 sign-off registry, per-stage checklists, STOP-AND-ASK queue, verification log. The "HOW we execute + what gates each step." |
+
+For any given stage:
+1. Read `STEP14_PLAN.md §Stage N` — the engineering spec.
+2. Read this file's `§Stage N` checklist — the operational gates.
+3. Follow the Pre-Write Protocol below → write code → Audit #1 → Audit #2 → mark checkbox → commit → re-sync DOCX/PDF.
+
+**No checkbox in this file is marked complete until BOTH the engineering spec (STEP14_PLAN.md §Stage N) is satisfied AND the 2-audit gate (Rule 6 below) is satisfied.** Bench-passing alone is necessary but not sufficient.
+
+This file is the answer to two operator questions:
+- **"What happens before any code is written?"** → Pre-Write Protocol (Verification Protocol §1-6) + Rule 3 (read reference twice) + Rule 4 (STOP-AND-ASK if unsure).
+- **"What happens before anything is confirmed as PARITY-LIKE-REFERENCE?"** → 2-audit gate (Rule 6) + Verification Protocol §10-12 + (for bench-gated stages) operator bench sign-off §14-15.
+
+---
+
 ## 🔒 LOCKED OPERATING RULES — READ AT START OF EVERY SESSION
 
 These rules supersede any prior pattern. Violations cost real session time and operator trust. Every session begins by reading this section.
