@@ -1,4 +1,23 @@
-# LYRA-CPP TX EXECUTION PLAN — Step 14 → Phase 3
+> ⚠ **SUPERSEDED FOR TX WORK (2026-06-08).**  This doc describes
+> the **Step 14 wire-layer rebuild** approach — a partial-rebuild
+> pass where the wire layer was being rewritten Lyra-native in
+> stages.  The current TX direction (as of 2026-06-08) is a
+> **DIRECT PORT of Thetis C source into Lyra-cpp** — see the
+> authoritative new doc:
+>
+> ### ➤ **`docs/THETIS_DIRECT_PORT_PLAN.md`** (active plan)
+>
+> Do NOT mix the two — this doc and the new one describe
+> different approaches.  Some pieces from this doc are SHIPPED
+> in production (Stages 1, 1.5, 2a, 2b1, 2b2 — see verification
+> log below for status) and remain in tree; future TX work
+> follows the direct-port plan instead.  This doc is retained
+> for historical reference + to track what's already shipped
+> from the Step 14 pass.
+
+---
+
+# LYRA-CPP TX EXECUTION PLAN — Step 14 → Phase 3 [SUPERSEDED FOR FUTURE TX WORK — see THETIS_DIRECT_PORT_PLAN.md]
 
 **Branch:** `tx-rebuild`
 **Reference tree:** `D:\sdrprojects\OpenHPSDR-Thetis-2.10.3.13\Project Files\Source\`
