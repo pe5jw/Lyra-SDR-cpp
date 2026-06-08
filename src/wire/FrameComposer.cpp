@@ -13,18 +13,23 @@
 // (OutboundRing) dissolutions.
 
 #include "wire/FrameComposer.h"
+#include "wire/MetisFrame.h"
+#include "wire/OutboundRing.h"
 #include "wire/RadioNet.h"
 #include "wire/RbpFilter.h"
 
 #include <cassert>
+#include <cstring>
+#include <vector>
 
 namespace lyra::wire {
 
-// ---- TU-scope state (§1-C Stage 4F.2) ----
+// ---- TU-scope state (§1-C Stage 4F.2 + §10.2-revert 2026-06-08) ----
 //
-// Direct mirrors of reference's file-scope globals:
+// Direct mirrors of reference file-scope globals:
 //   `out_control_idx` at `networkproto1.c:27`
 //   `PreviousTXBit`   at `networkproto1.c:29`
+//   `FPGAWriteBufp`   at `network.h:499` (NOT in `_radionet`)
 //
 // ⚠ Rule 24 — no concurrency guard.  Reference is single-
 // threaded I/O (one wire-egress thread invokes the entire
@@ -37,9 +42,39 @@ namespace lyra::wire {
 // touch `prn->...` directly.  An earlier `std::mutex g_cc_lock`
 // was a Lyra-native deviation caught by Round-1 audit 2026-06-06
 // and removed.
+//
+// `g_fpga_write_bufp` moved here from `Ep2SendThread.cpp` on
+// 2026-06-08 per operator directive "do as reference, period,
+// NO PATCHING" (Task #121).  Reference allocates `FPGAWriteBufp`
+// at `networkproto1.c:428` inside the EP6 thread init (yes,
+// inside the RX thread — that's where reference puts it);
+// Lyra lazy-inits on first `write_main_loop_hl2` call (sub-µs
+// branch in steady state).  Sister of `g_fpga_read_bufp` in
+// `wire/Ep6RecvThread.cpp` + `g_metis_out_seq_num` in
+// `wire/MetisFrame.cpp` — all three are reference file-scope
+// globals correctly mirrored as TU-scope statics in their
+// respective wire-layer translation units.
 namespace {
 int g_out_control_idx = 0;
 int g_previous_tx_bit = 0;
+
+// Sample-slot counts mirroring the reference per-USB-frame
+// budget.  Reference uses literal `63` / `2 * 63` / `8 * 63`
+// at networkproto1.c:1241 etc.; Lyra centralizes here.
+constexpr int kSampleSlotsPerFrame    = 63;        // = 504/8 bytes
+constexpr int kLriqBytesPerFrame      = 8 * kSampleSlotsPerFrame;  // 504
+constexpr int kLriqBytesPerDatagram   = 2 * kLriqBytesPerFrame;    // 1008
+constexpr std::size_t kFpgaPayloadBytes = 1024;    // 2 × 512-byte USB frames
+
+// EP2 endpoint identifier.  Reference: `MetisWriteFrame(0x02,
+// FPGAWriteBufp);` at `networkproto1.c:1198`.
+constexpr int kEp2Endpoint = 0x02;
+
+// FPGAWriteBufp equivalent — 1024-byte EP2 raw send buffer
+// (8-byte HPSDR header NOT included — added by
+// `metis_write_frame()` before sendto).  Sized + zeroed lazily
+// on first `write_main_loop_hl2` call.
+std::vector<std::uint8_t> g_fpga_write_bufp;
 }  // namespace
 
 // =================== §4a setters =====================================
@@ -677,13 +712,20 @@ void compose_case_9(unsigned char& C0, unsigned char& C1,
 //     overlay frames)
 //   - Post-switch packet packing into txbptr[3..7]
 
-void write_main_loop_hl2(char* txbptr_base) {
+void write_main_loop_hl2(const std::uint8_t* out_bufp) {
     // No defensive `assert(prn != nullptr); assert(prbpfilter !=
     // nullptr);` — reference `WriteMainLoop_HL2` at
     // `networkproto1.c:869` has no such asserts; caller owns the
     // precondition.  Earlier Lyra-native asserts caught by
     // 2026-06-06 TX-Agent-2 S.1 audit and removed per "do as
     // reference, period."
+
+    // Lazy-init the FPGA write buffer (mirrors reference
+    // `FPGAWriteBufp = calloc(1024,…)` at networkproto1.c:428).
+    // One sub-µs `size() != N` branch per call in steady state.
+    if (g_fpga_write_bufp.size() != kFpgaPayloadBytes) {
+        g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
+    }
 
     // Reference `WriteMainLoop_HL2:873` declares the C0..C4 locals
     // once at function scope and they retain values across USB-
@@ -694,7 +736,10 @@ void write_main_loop_hl2(char* txbptr_base) {
 
     // Outer loop: 2 USB frames per UDP datagram (networkproto1.c:878)
     for (int txframe = 0; txframe < 2; ++txframe) {
-        char* txbptr = txbptr_base + 512 * txframe;
+        // Reference `WriteMainLoop_HL2:880`:
+        //     txbptr = FPGAWriteBufp + 512 * txframe;
+        char* txbptr = reinterpret_cast<char*>(
+            g_fpga_write_bufp.data()) + 512 * txframe;
 
         // Sync bytes (networkproto1.c:881-883)
         txbptr[0] = 0x7f;
@@ -884,9 +929,56 @@ void write_main_loop_hl2(char* txbptr_base) {
         txbptr[7] = static_cast<char>(C4);
     }
 
-    // The LRIQ memcpy + MetisWriteFrame + ReleaseSemaphore calls
-    // at networkproto1.c:1194-1200 are EP2-thread concerns — they
-    // land in `Ep2SendThread` (§7) per the §10.2 component split.
+    // ---- LRIQ memcpy + wire send + paired release ----
+    //
+    // Reference `WriteMainLoop_HL2:1192-1200` (the body that
+    // follows the 2-USB-frame composition loop):
+    //
+    //     memcpy(FPGAWriteBufp +   8, bufp,         8 * 63);
+    //     memcpy(FPGAWriteBufp + 520, bufp + 8*63,  8 * 63);
+    //     MetisWriteFrame(0x02, FPGAWriteBufp);
+    //     ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0);
+    //     ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);
+    //
+    // `bufp` is the function parameter (the LRIQ source =
+    // `prn->OutBufp` at the `:1262` call site).  Lyra mirrors
+    // verbatim under the parameter name `out_bufp`.
+    //
+    // §10.2-component-split-revert (2026-06-08, operator
+    // directive Task #121): these calls previously lived in
+    // `Ep2SendThread::process_one_pair` per the 2026-06-04
+    // signed-off §10.2 split.  The strict-fidelity rule "do as
+    // reference, period, NO PATCHING" overrides the prior
+    // sign-off; the calls are now inside this function body
+    // matching reference's monolithic shape.
+
+    // First USB frame LRIQ payload: bytes [8..511] of the FPGA
+    // write buffer ← bytes [0..503] of out_bufp.
+    std::memcpy(g_fpga_write_bufp.data() + 8,
+                out_bufp,
+                static_cast<std::size_t>(kLriqBytesPerFrame));
+
+    // Second USB frame LRIQ payload: bytes [520..1023] of the
+    // FPGA write buffer ← bytes [504..1007] of out_bufp.
+    std::memcpy(g_fpga_write_bufp.data() + 520,
+                out_bufp + kLriqBytesPerFrame,
+                static_cast<std::size_t>(kLriqBytesPerFrame));
+
+    // Wire send.  Reference `:1198`:
+    //     MetisWriteFrame(0x02, FPGAWriteBufp);
+    // Discards return value — reference does the same.  §1-C
+    // (2026-06-06): diagnostic counters removed per "do as
+    // reference, period."
+    (void) metis_write_frame(kEp2Endpoint, g_fpga_write_bufp.data());
+
+    // Paired release.  Reference `:1199-1200`:
+    //     ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0);
+    //     ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);
+    // C++23-idiom equivalent: single `outbound_notify_consumed_pair()`
+    // sets both `lr_consumed`/`iq_consumed` flags + `notify_all`s
+    // the cv (mirrors OutboundRing.cpp:176-183 + the §1-C Stage
+    // 3 design rationale).
+    outbound_notify_consumed_pair();
 }
 
 }  // namespace lyra::wire

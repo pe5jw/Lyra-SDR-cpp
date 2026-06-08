@@ -17,9 +17,8 @@
 // preserves the no-race property).
 
 #include "wire/Ep2SendThread.h"
-#include "wire/FrameComposer.h"   // §1-C Stage 4F.2: now provides free `write_main_loop_hl2`
-#include "wire/MetisFrame.h"
-#include "wire/OutboundRing.h"
+#include "wire/FrameComposer.h"   // write_main_loop_hl2 (full monolithic, includes LRIQ memcpy + wire send + paired release)
+#include "wire/OutboundRing.h"    // outbound_wait_pair_ready + outbound_lr/iq_buf_mut
 #include "wire/RadioNet.h"
 
 #include <algorithm>
@@ -41,27 +40,23 @@
 namespace lyra::wire {
 
 namespace {
-// EP2 endpoint identifier.  Reference: `MetisWriteFrame(0x02,
-// FPGAWriteBufp);` at `:1198`.
-constexpr int kEp2Endpoint = 0x02;
-
 // Sample-slot counts mirroring the per-USB-frame budget.
+// Used by the L/R swap + MOX-edge IQ zero + quantize_and_pack
+// loops in this TU; the LRIQ-byte and FPGA-payload sizing
+// constants moved to FrameComposer.cpp alongside the
+// `g_fpga_write_bufp` static they size (§10.2-revert,
+// 2026-06-08, Task #121, operator directive "do as
+// reference, period").
 constexpr int kSampleSlotsPerFrame = 63;       // = 504/8 bytes
 constexpr int kSampleSlotsPerDatagram = 2 * kSampleSlotsPerFrame;  // 126
-constexpr int kLriqBytesPerFrame = 8 * kSampleSlotsPerFrame;       // 504
 
-// §1-C Stage 4C (sign-off 2026-06-06): TU-scope file-scope
-// mirror of reference's `char* FPGAWriteBufp;` at
-// `network.h:499` (NOT in `_radionet`).  HL2 P1 EP2 raw send
-// buffer (1024 bytes, 8-byte header NOT included — that
-// header is added by `metis_write_frame()` before sendto).
-// Sister of:
-//   - §6-B `g_metis_out_seq_num` in `wire/MetisFrame.cpp`
-//   - §1-C Stage 4B.1 `g_fpga_read_bufp` in `wire/Ep6RecvThread.cpp`
-// — all three are reference file-scope globals correctly
-// mirrored as TU-scope statics in their respective wire-layer
-// translation units.
-std::vector<std::uint8_t> g_fpga_write_bufp;
+// §10.2-revert (2026-06-08, Task #121): `g_fpga_write_bufp`
+// moved to `wire/FrameComposer.cpp` TU-scope — it's
+// `WriteMainLoop_HL2`'s data (reference: file-scope
+// `FPGAWriteBufp` global; Lyra: TU-scope static next to the
+// function that uses it).  Sister of §1-C Stage 4B.1
+// `g_fpga_read_bufp` in `wire/Ep6RecvThread.cpp` + §6-B
+// `g_metis_out_seq_num` in `wire/MetisFrame.cpp`.
 }  // namespace
 
 // ---- ctor/dtor ----
@@ -151,15 +146,20 @@ void Ep2SendThread::run_loop() {
 
     // ---- Per-thread init ----
     //
-    // Allocate `g_fpga_write_bufp` at thread entry, mirroring the
-    // reference's `FPGAWriteBufp = (char*)calloc(1024,…)` inside
-    // the thread body at `networkproto1.c:428` (sister of the EP6
-    // thread's `FPGAReadBufp = calloc(1024,…)` at `:427`).
+    // §10.2-revert (2026-06-08, Task #121): the
+    // `g_fpga_write_bufp.assign(1024, 0)` allocation moved to
+    // FrameComposer.cpp's lazy-init inside `write_main_loop_hl2`
+    // (mirrors reference: the FPGAWriteBufp buffer lives next to
+    // the function that uses it, not in the EP2 thread that
+    // calls it).  Reference allocates `FPGAWriteBufp = calloc(
+    // 1024,…)` inside MetisReadThreadMainLoop_HL2 at
+    // `networkproto1.c:428` — the EP6 RX thread, not the EP2 TX
+    // thread.  Lyra's lazy-init on first call achieves the same
+    // effect with cleaner ownership.
     //
     // No init-sem release — reference EP2 thread is fire-and-
     // forget (`netInterface.c:65-66` + `networkproto1.c:1204-1267`:
     // zero ReleaseSemaphore on hWriteThreadInitSem anywhere).
-    g_fpga_write_bufp.assign(kFpgaPayloadBytes, 0);
 
     while (!stop_request_.load(std::memory_order_acquire)) {
         if (!process_one_pair()) break;
@@ -235,68 +235,42 @@ bool Ep2SendThread::process_one_pair() {
     // packed format (L_hi L_lo R_hi R_lo I_hi I_lo Q_hi Q_lo).
     quantize_and_pack(lr, iq);
 
-    // §6.8 — compose C&C bytes into the FPGA write buffer.
-    // Per-family dispatch matches the reference's
-    // `if (HPSDRModel == HPSDRModel_HERMESLITE) WriteMainLoop_HL2
-    // else WriteMainLoop;` branch at `networkproto1.c:1261-1264`.
+    // ---- Compose + send the EP2 datagram ----
     //
-    // FrameComposer fills offsets [0..7] + [512..519] (sync + C&C)
-    // of the 1024-byte buffer.  Body LRIQ at [8..511] + [520..1023]
-    // is filled by the memcpy below.
+    // Per-family dispatch matches reference's
+    // `if (HPSDRModel == HPSDRModel_HERMESLITE) WriteMainLoop_HL2
+    // else WriteMainLoop;` at `networkproto1.c:1261-1264`.
+    //
+    // §10.2-revert (2026-06-08, Task #121, operator directive
+    // "do as reference, period, NO PATCHING"):
+    // `write_main_loop_hl2(prn->OutBufp.data())` is now the
+    // FULL MONOLITHIC equivalent of reference
+    // `WriteMainLoop_HL2(prn->OutBufp)` at `:1262` — it composes
+    // sync + C&C bytes into its own TU-scope FPGA write buffer,
+    // memcpys the LRIQ payload from the supplied source pointer
+    // into the same buffer at offsets [8..511] + [520..1023],
+    // calls `metis_write_frame(0x02, ...)`, then signals the
+    // paired release.  All of that lives inside that one call;
+    // this site is a thin caller matching reference's thin call
+    // site exactly.
     if (hpsdrModel == HPSDRModel::HERMESLITE) {
-        // §1-C Stage 4F.2: free function (FrameComposer
-        // dissolved).
-        write_main_loop_hl2(
-            reinterpret_cast<char*>(g_fpga_write_bufp.data()));
+        write_main_loop_hl2(prn->OutBufp.data());
     } else {
-        // FIXME (Task #114 / non-HL2 hardware availability): the
-        // reference's generic `WriteMainLoop` (`networkproto1.c:
-        // 588-866`) handles the non-HL2 (ANAN-class) per-family
-        // C&C composition.  Lyra has no ANAN P1 hardware
+        // FIXME (Task #119 / non-HL2 hardware availability): the
+        // reference's generic `WriteMainLoop(prn->OutBufp)` at
+        // `:1264` handles the non-HL2 (ANAN-class) per-family
+        // C&C composition AND its own LRIQ memcpy + wire send +
+        // paired release.  Lyra has no ANAN P1 hardware
         // available to bench-verify a port, so the generic
         // emit-path is deferred — when ANAN P1 hardware arrives,
-        // `FrameComposer::write_main_loop_generic()` lands as a
-        // sibling to `write_main_loop_hl2()` and is invoked from
-        // this `else` branch.  For now this branch is a
-        // skip-then-send-zero-CC path: the g_fpga_write_bufp is
-        // zeroed in-place so the consumer (sendto below) emits a
-        // well-formed but inert datagram if the operator ever
-        // configures a non-HL2 hpsdrModel in this Lyra build.
-        // HL2-only operating point today; non-HL2 never reached.
-        std::fill(g_fpga_write_bufp.begin(),
-                  g_fpga_write_bufp.end(),
-                  static_cast<uint8_t>(0));
+        // `write_main_loop_generic()` lands as a sibling to
+        // `write_main_loop_hl2()` and is invoked from this
+        // `else` branch.  For now this branch is a no-send skip:
+        // no datagram leaves the host on non-HL2 hardware until
+        // a verified emit path lands.  HL2-only operating point
+        // today; non-HL2 never reached.
     }
 
-    // LRIQ memcpy (`:1193-1195`) — both USB frames.
-    std::memcpy(g_fpga_write_bufp.data() + 8,
-                prn->OutBufp.data(),
-                static_cast<std::size_t>(kLriqBytesPerFrame));
-    std::memcpy(g_fpga_write_bufp.data() + 520,
-                prn->OutBufp.data() + kLriqBytesPerFrame,
-                static_cast<std::size_t>(kLriqBytesPerFrame));
-
-    // §6.9 — submit via shared TU-scope `metis_write_frame`
-    // (`networkproto1.c:1198` → `MetisWriteFrame(2, FPGAWriteBufp)`).
-    // §6-B (sign-off 2026-06-06): NO LOCK around this call.
-    // Reference does not lock around `MetisWriteFrame`; the §6
-    // `send_lock_` mutex (Q5 Lyra-native addition) is removed.
-    // Concurrency safety is preserved by TEMPORAL SEPARATION:
-    // §7 `ForceCandC::prime` runs synchronously on the
-    // session-open thread BEFORE `Ep2SendThread::start()` spins
-    // this thread — the two callers are disjoint in time, no
-    // race possible.
-    // §1-C (2026-06-06): diagnostic `send_errors_` /
-    // `datagrams_sent_` increments removed.  Reference does not
-    // track per-send counters; result is ignored at this site
-    // (mirroring `sendProtocol1Samples` at `:1198` which calls
-    // `MetisWriteFrame(0x02, FPGAWriteBufp);` and discards the
-    // return value).
-    (void) metis_write_frame(kEp2Endpoint, g_fpga_write_bufp.data());
-
-    // §6.8 — producer-side release: signal both LR + IQ producers
-    // "buffer consumed, free to refill" (`:1199-1200`).
-    outbound_notify_consumed_pair();
     return true;
 }
 

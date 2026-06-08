@@ -107,22 +107,21 @@ private:
 
     // §1-C Stage 4C (sign-off 2026-06-06): §1.1 networking-
     // infrastructure exclusion REVERTED.  The two outbound
-    // buffers move to their reference homes:
+    // buffers live at their reference homes:
     //
-    // - `out_buf_` (1008 bytes of quantized LRIQ output) →
-    //   `prn->OutBufp` — IS in `_radionet` per network.h:64.
-    //   Reference accesses it at networkproto1.c:1257-1258 +
-    //   :1262-1264 (`WriteMainLoop_HL2(prn->OutBufp);`).
-    // - `fpga_write_buf_` (1024-byte EP2 payload) →
-    //   TU-scope `g_fpga_write_bufp` static in Ep2SendThread.cpp.
-    //   Reference `FPGAWriteBufp` (network.h:499) is a
-    //   file-scope global, NOT in `_radionet` — sister-pattern
-    //   of §6-B `g_metis_out_seq_num` + §4B.1 `g_fpga_read_bufp`.
-    //
-    // Constants stay here for the FrameComposer/run-loop math.
-    static constexpr int kLriqBytesPerFrame    = 504;   // 63 slots × 8 bytes
-    static constexpr int kLriqBytesPerDatagram = 1008;  // 2 × 504
-    static constexpr int kFpgaPayloadBytes     = 1024;
+    // - `prn->OutBufp` (1024 bytes of quantized LRIQ output) —
+    //   IS in `_radionet` per network.h:64.  Reference accesses
+    //   it at networkproto1.c:1257-1258 + :1262-1264
+    //   (`WriteMainLoop_HL2(prn->OutBufp);`).
+    // - `g_fpga_write_bufp` (1024-byte EP2 payload) — moved to
+    //   `wire/FrameComposer.cpp` TU-scope (2026-06-08, Task #121,
+    //   operator directive "do as reference, period").
+    //   Reference `FPGAWriteBufp` (network.h:499) is a file-
+    //   scope global, NOT in `_radionet` — sister-pattern of
+    //   §6-B `g_metis_out_seq_num` + §4B.1 `g_fpga_read_bufp`.
+    //   It lives next to the function that uses it (FrameComposer
+    //   in Lyra, networkproto1.c in reference) — both are
+    //   `WriteMainLoop_HL2`'s data.
 };
 
 }  // namespace lyra::wire

@@ -46,21 +46,41 @@
 
 namespace lyra::wire {
 
-// ---- Scheduler: write_main_loop_hl2 ----
+// ---- write_main_loop_hl2 ----
 //
-// Compose one EP2 UDP datagram's worth of sync bytes + C&C bytes.
-// Caller-owned buffer at least 1024 bytes (two USB frames @ 512
-// bytes each).  Writes sync bytes at offsets [0..2] and C0..C4
-// at offsets [3..7] of each USB frame.  Body LRIQ samples are
-// NOT written here — that's `Ep2SendThread`'s concern.
+// MONOLITHIC reference-faithful equivalent of
+// `WriteMainLoop_HL2(char* bufp)` (`networkproto1.c:869-1200`).
+// Composes ALL of the wire-egress steps inside one function body
+// matching the reference: 2-USB-frame sync + C&C bytes built
+// into the TU-scope FPGA write buffer, LRIQ payload memcpy'd
+// from the caller-supplied `out_bufp` (= reference's
+// `prn->OutBufp` at the `:1262` call site) into the same FPGA
+// write buffer at offsets [8..511] + [520..1023], then
+// `metis_write_frame(0x02, ...)` + paired `outbound_notify_
+// consumed_pair()` (the C++23-idiom equivalent of reference's
+// `MetisWriteFrame + ReleaseSemaphore(hobbuffsRun[0/1])` at
+// `:1198-1200`).
 //
-// Source mirror: `networkproto1.c::WriteMainLoop_HL2` lines
-// 869-1191.  Reference is single-threaded I/O — Lyra mirrors
-// that contract: this function MUST be invoked from the wire-
-// egress thread, and the same thread MUST own all state-mutating
-// setter calls (funneled via the command-queue primitive — see
-// Q4 above).
-void write_main_loop_hl2(char* txbptr_base);
+// Parameter `out_bufp` is the **LRIQ source** (matching reference
+// parameter name `bufp` at `:869` — what the caller passes as
+// `prn->OutBufp`), NOT the FPGA write destination.  The
+// destination FPGAWriteBufp equivalent is a TU-scope static in
+// FrameComposer.cpp, mirroring reference's file-scope global.
+//
+// Reference is single-threaded I/O — Lyra mirrors that contract:
+// this function MUST be invoked from the wire-egress thread, and
+// the same thread MUST own all state-mutating setter calls
+// (funneled via the command-queue primitive — see Q4 above).
+//
+// §10.2-component-split-revert note (2026-06-08, operator
+// directive "do as reference, period, NO PATCHING"): the prior
+// Lyra structural split (write_main_loop_hl2 ONLY composed C&C;
+// LRIQ memcpy + metis_write_frame + paired release lived in
+// Ep2SendThread::process_one_pair) was a Lyra-native deviation
+// from the reference's monolithic shape.  The §10.2 sign-off
+// 2026-06-04 was reversed under the strict-fidelity rule; this
+// function is now the full reference-faithful equivalent.
+void write_main_loop_hl2(const std::uint8_t* out_bufp);
 
 // ===== Setter surface (§4a-scope, §1-C Stage 4F.2: free functions) =====
 //
