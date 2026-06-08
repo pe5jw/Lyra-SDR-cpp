@@ -14,21 +14,23 @@
 //
 // ---------------------------------------------------------------
 //
-// **Stage B.3 (THIS COMMIT) — DSP hot path.**  Adds the bodies
-// of xMixAudio (aamix.c:237-278) + upslew (aamix.c:280-343) +
-// downslew (aamix.c:345-420) + xaamix (aamix.c:423-459) +
-// flush_mix_ring (aamix.c:461-469).  Mixer can now mix.  Still
-// wire-inert (no consumer constructs the AAMix or pushes samples
-// to it — the cmaster pump wire-up lands in Stage D).
+// **Stage B.4 (THIS COMMIT) — threading + slew orchestration.**
+// Adds mix_main (aamix.c:32-49) + start_mixthread (aamix.c:51-55)
+// + close_mixer (aamix.c:471-491) + open_mixer (aamix.c:493-505)
+// + restores the `start_mixthread(a)` call in create_aamix that
+// Stage B.2 deferred + adds the thread-stop sequence to
+// destroy_aamix that Stage B.2 deferred.  Mixer is now fully
+// self-driving: mix_main wakes on the AND-wait, calls xaamix,
+// invokes the Outbound callback, loops.  open_mixer / close_mixer
+// orchestrate the slewed-shutdown / slewed-startup cycle that
+// SetAAudioMixState{,s} use to add/remove streams cleanly.
+// Still wire-inert (no consumer constructs the AAMix yet; the
+// cmaster pump wire-up lands in Stage D).
 //
-// **Already shipped in Stage B.2**: create_aaslew, destroy_aaslew,
-// flush_aaslew, create_aamix, destroy_aamix.
-//
-// **Deliberately deferred to Stage B.4**:
-//   - mix_main thread entry (aamix.c:32-49)
-//   - start_mixthread (aamix.c:51-55)
-//   - close_mixer (aamix.c:471-491)
-//   - open_mixer (aamix.c:493-505)
+// **Already shipped in Stages B.2-B.3**: create_aaslew,
+// destroy_aaslew, flush_aaslew, create_aamix, destroy_aamix
+// (B.2); xMixAudio, upslew, downslew, xaamix, flush_mix_ring
+// (B.3).
 //
 // **Deliberately deferred to Stage B.5**:
 //   - 10 property setters (SetAAudioMix*, SetAAudioRing*,
@@ -43,8 +45,24 @@
 #include <cmath>
 #include <cstring>
 #include <numbers>
+#include <thread>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <avrt.h>     // AvSetMmThreadCharacteristics + AvSetMmThreadPriority
+#  pragma comment(lib, "avrt.lib")
+#endif
 
 namespace lyra::wdsp {
+
+// Forward declaration so create_aamix can call start_mixthread
+// (defined further down in the file alongside the other Stage B.4
+// threading bodies).  xaamix is already declared in AAMix.h
+// (public API); flush_mix_ring is declared with its definition.
+static void start_mixthread(AAMix* a);
 
 // Reference aamix.c:30 — `__declspec (align (16)) AAMIX
 // paamix[MAX_EXT_AAMIX]`.  Process-lifetime central pointer bank.
@@ -324,10 +342,12 @@ AAMix* create_aamix(
     a->run.fetch_or(1u, std::memory_order_release);
 
     // Reference aamix.c:204 — `if (a->nactive) start_mixthread(a)`.
-    // Stage B.2 defers thread launch to Stage B.4.  The AAMix is
-    // fully populated; mix_main does not run.
-    //
-    // STAGE B.4 PENDING: if (a->nactive > 0) start_mixthread(a);
+    // Stage B.4 restored: if any input is marked active in the
+    // initial mask, spin up mix_main immediately so the mixer is
+    // self-driving as soon as data starts flowing.
+    if (a->nactive > 0) {
+        start_mixthread(a);
+    }
 
     // Reference aamix.c:205 — paamix[id] publication.
     if (a->id >= 0 && a->id < MAX_EXT_AAMIX) {
@@ -377,14 +397,28 @@ void destroy_aamix(AAMix* ptr, int id)
     }
     if (a == nullptr) return;
 
-    // STAGE B.4 PENDING (reference aamix.c:215-218):
-    //   a->run.fetch_and(~1u, std::memory_order_release);
-    //   for (int i = 0; i < a->ninputs; ++i)
-    //       a->Ready[i]->release();  // wake mix_main
-    //   std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    //   // (mix_thread.request_stop() + join via jthread RAII)
-    //
-    // At Stage B.2 the thread never started; skipping is safe.
+    // Reference aamix.c:215-218 — thread-stop dance.
+    //   1. Clear run bit so mix_main's while-check exits next iter.
+    //   2. Release every per-input Ready semaphore once to unblock
+    //      mix_main if it is parked inside the AND-wait
+    //      (sequential acquire loop) waiting on a stream that has
+    //      no producer running.
+    //   3. Reference uses Sleep(2) as a "thread should be dead by
+    //      now" grace period; Lyra-cpp uses request_stop() + the
+    //      explicit join() below for deterministic teardown
+    //      (the std::jthread dtor would join implicitly anyway
+    //      via RAII when `delete a` runs, but joining BEFORE the
+    //      resampler destruction avoids any race where the dying
+    //      thread last-touches the resampler handles we're about
+    //      to destroy).
+    a->run.fetch_and(~1u, std::memory_order_release);
+    for (int i = 0; i < a->ninputs; ++i) {
+        if (a->Ready[i]) a->Ready[i]->release();
+    }
+    if (a->mix_thread.joinable()) {
+        a->mix_thread.request_stop();
+        a->mix_thread.join();
+    }
 
     // Reference aamix.c:219-226 — destroy per-input WDSP resamplers.
     // RAII auto-cleans std::vector resampbuff[]; std::mutex cs_in[];
@@ -767,7 +801,7 @@ void xaamix(AAMix* a)
 // timeout (loop exits).  Lyra-cpp uses try_acquire_for(1 ms)
 // which returns true on acquire / false on timeout — same
 // semantics, inverted boolean.
-[[maybe_unused]] static void flush_mix_ring(AAMix* a, int stream)
+static void flush_mix_ring(AAMix* a, int stream)
 {
     // Reference aamix.c:463 — memset ring (size = rsize complex
     // = 2*rsize doubles).
@@ -786,6 +820,275 @@ void xaamix(AAMix* a)
     if (a->wdsp != nullptr && a->rsmp[stream] != nullptr &&
         a->wdsp->api().flush_resample != nullptr) {
         a->wdsp->api().flush_resample(a->rsmp[stream]);
+    }
+}
+
+// =========================================================================
+// Threading + slew orchestration — reference aamix.c:32-55 + :471-505.
+// =========================================================================
+
+// Reference aamix.c:32-49 — mix_main(pargs).
+//
+// The mixer thread entry.  Win32 MMCSS Pro Audio characteristic is
+// requested (falls back to THREAD_PRIORITY_HIGHEST) so the mixer
+// gets scheduled ahead of background work — same posture as the
+// reference + the Lyra-cpp TxDspWorker convention.
+//
+// Loop:
+//   while (run bit set AND no stop request):
+//     AND-wait: acquire every active Ready semaphore in sequence
+//       (the sequential-acquire equivalent of
+//       WaitForMultipleObjects(nactive, Aready, TRUE, INFINITE)).
+//     If stop requested after the wait, exit (close_mixer /
+//       destroy_aamix release every Ready semaphore once to
+//       unblock parked acquires before clearing run / stop).
+//     Call xaamix(a) to mix-and-output into a->out.
+//     Invoke the operator-supplied Outbound callback with the
+//       fresh output frame.
+//
+// Reference uses _endthread() at loop exit; std::jthread handles
+// thread teardown via the function's natural return.
+static void mix_main(std::stop_token st, AAMix* a)
+{
+#ifdef _WIN32
+    // Reference aamix.c:34-37.
+    DWORD taskIndex = 0;
+    HANDLE hTask = AvSetMmThreadCharacteristics(L"Pro Audio", &taskIndex);
+    if (hTask != nullptr) {
+        AvSetMmThreadPriority(hTask, AVRT_PRIORITY_HIGH);
+    } else {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+#endif
+
+    // Reference aamix.c:41-47 — main loop.
+    while (!st.stop_requested() &&
+           (a->run.load(std::memory_order_acquire) & 1u) != 0u) {
+        // AND-wait: acquire each active Ready semaphore.  The
+        // reference uses one WaitForMultipleObjects call with
+        // TRUE (= AND) and INFINITE; the sequential-acquire loop
+        // is semantically equivalent — every element must be
+        // ready before xaamix can produce one output frame, and
+        // any ordering of permit grants yields the same outcome.
+        const int n = a->nactive;
+        for (int i = 0; i < n; ++i) {
+            if (a->aready[i] != nullptr) {
+                a->aready[i]->acquire();
+            }
+        }
+
+        // Re-check stop + run after the (potentially long) wait
+        // so close_mixer / destroy_aamix can wake the thread by
+        // releasing semaphores AND clearing run / requesting stop.
+        if (st.stop_requested() ||
+            (a->run.load(std::memory_order_acquire) & 1u) == 0u) {
+            break;
+        }
+
+        // Reference aamix.c:44 — pump body.
+        xaamix(a);
+
+        // Reference aamix.c:45 — operator-supplied output dispatch.
+        if (a->Outbound) {
+            a->Outbound(a->outbound_id, a->outsize, a->out.data());
+        }
+    }
+
+#ifdef _WIN32
+    if (hTask != nullptr) AvRevertMmThreadCharacteristics(hTask);
+#endif
+    // jthread joins on natural return; no _endthread() needed.
+}
+
+// Reference aamix.c:51-55 — start_mixthread(a).
+//
+// Spawns mix_main as a std::jthread member of the AAMix.  The
+// reference uses _beginthread (which returns a HANDLE the
+// reference discards); Lyra-cpp stores the jthread so destroy_aamix
+// + close_mixer can request_stop() + join() deterministically.
+static void start_mixthread(AAMix* a)
+{
+    // Ensure a stale dead thread is joined before reusing the
+    // slot (defensive — open_mixer also runs through here on
+    // every SetAAudioMixState toggle).
+    if (a->mix_thread.joinable()) {
+        a->mix_thread.request_stop();
+        a->mix_thread.join();
+    }
+    a->mix_thread = std::jthread(mix_main, a);
+}
+
+// Reference aamix.c:471-491 — close_mixer(a).
+//
+// Slewed-shutdown half of the SetAAudioMixState{,s} +
+// SetAAudioRing{In,Out}size + SetAAudioOutRate atomic
+// "close-edit-open" sequence.  Steps (reference comments
+// preserved verbatim in the inline annotations):
+//
+//   1. Set slew.dflag so the next xaamix invocation triggers
+//      downslew over the output buffer.
+//   2. Block on slew.dwait until downslew completes (or timeout
+//      if no data is flowing — the dtimeout was computed in
+//      create_aaslew as 1000ms*(tdelaydown+tslewdown)+2).
+//   3. Clear slew.dflag so a stale dflag can't trigger downslew
+//      again on the first frame after the eventual re-open.
+//   4. Clear accept bits on all inputs — gates the xMixAudio
+//      entry point so no fresh samples reach the rings during
+//      the close window.
+//   5. Sleep(1) — grace period for any xMixAudio caller that
+//      has passed the accept-bit check and is on its way into
+//      cs_in[stream]; let them reach the lock.
+//   6. Take cs_in[i] on every input — blocks until any
+//      in-flight xMixAudio call finishes its ring write.  These
+//      locks are HELD across close_mixer's return; open_mixer
+//      releases them.
+//   7. Take cs_out — blocks the mixer thread at the top of
+//      xaamix (xaamix's first line takes cs_out).  Held across
+//      close_mixer's return; open_mixer releases.
+//   8. Sleep(25) — wait for the mixer thread to actually arrive
+//      at the top of its main loop where the cs_out gate is.
+//   9. Clear run bit (the "trap" the reference comment names).
+//  10. Release Ready[i] semaphores once each — wakes mix_main
+//      from the AND-wait so it can proceed to the trap.
+//  11. Release cs_out — lets the mixer thread pass into xaamix,
+//      where the cleared run bit returns immediately.
+//  12. Sleep(2) — wait for the mixer thread to exit.  Lyra-cpp
+//      adds a deterministic join() instead of relying on Sleep,
+//      while preserving the reference's Sleep(2) as a guard
+//      bound just in case.
+//  13. flush_mix_ring on every input to zero the rings + drain
+//      Ready semaphore permits + flush the WDSP resampler.
+//
+// **Lock-without-release pattern**: steps 6-7 take std::mutex
+// locks that step 5+6 of open_mixer release.  This is the only
+// place in the entire AAMix port that uses raw lock()/unlock()
+// instead of scoped_lock; the close-edit-open atom requires the
+// locks to straddle a function boundary.  The reference uses
+// CRITICAL_SECTION the same way (Enter in close, Leave in open).
+//
+// **[Lyra-native] join-vs-Sleep**: reference Sleep(2) is replaced
+// by explicit request_stop() + join() so destruction order is
+// deterministic.  Sleep(2) is kept as a safety guard in case a
+// future implementation regression breaks the join() invariant
+// — operationally a no-op when join() succeeds.
+void close_mixer(AAMix* a)
+{
+    // 1-3: downslew + wait + clear flag.
+    a->slew.dflag.fetch_or(1u, std::memory_order_release);
+    if (a->slew.dwait) {
+        (void)a->slew.dwait->try_acquire_for(
+            std::chrono::milliseconds(a->slew.dtimeout));
+    }
+    a->slew.dflag.fetch_and(~1u, std::memory_order_release);
+
+    // 4: shut accept gates on all inputs.
+    for (int i = 0; i < a->ninputs; ++i) {
+        a->accept[i].fetch_and(~1u, std::memory_order_release);
+    }
+
+    // 5: grace period for xMixAudio callers past the gate.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+    // 6: take cs_in[i] for every input — held across return.
+    for (int i = 0; i < a->ninputs; ++i) {
+        a->cs_in[i].lock();
+    }
+
+    // 7: take cs_out — blocks mixer at top of xaamix.  Held
+    // across return.
+    a->cs_out.lock();
+
+    // 8: wait for mixer to arrive at the top of the main loop.
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+    // 9: clear run bit (the trap).
+    a->run.fetch_and(~1u, std::memory_order_release);
+
+    // 10: wake mixer from AND-wait by releasing each Ready once.
+    for (int i = 0; i < a->ninputs; ++i) {
+        if (a->Ready[i]) a->Ready[i]->release();
+    }
+
+    // 11: let mixer pass into xaamix (where the trap returns).
+    a->cs_out.unlock();
+
+    // 12: wait for mixer to die.  Reference uses Sleep(2);
+    // Lyra-cpp does explicit join() for determinism.
+    if (a->mix_thread.joinable()) {
+        a->mix_thread.request_stop();
+        // Wake again in case the thread is parked in the AND-wait
+        // having missed step 10 (race window: thread released
+        // permits but blocked on a different semaphore that has
+        // no producer — open_mixer must arm new producers).  The
+        // jthread::join below will eventually return once
+        // mix_main observes stop_requested after acquiring all
+        // sema permits we've been releasing.
+        for (int i = 0; i < a->ninputs; ++i) {
+            if (a->Ready[i]) a->Ready[i]->release();
+        }
+        a->mix_thread.join();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+    // 13: restore rings to pristine state for the next open.
+    for (int i = 0; i < a->ninputs; ++i) {
+        flush_mix_ring(a, i);
+    }
+}
+
+// Reference aamix.c:493-505 — open_mixer(a).
+//
+// Slewed-startup half of the close-edit-open atom.  Steps:
+//
+//   1. Set slew.uflag so the first output frame after restart
+//      triggers upslew.
+//   2. Set run bit (clear the trap close_mixer set).
+//   3. If any input is active, start a fresh mix_main thread.
+//   4. Release cs_in[i] in reverse order — re-enables xMixAudio
+//      entries.
+//   5. Re-arm accept bits on every input that is in the active
+//      mask, also in reverse order.
+//   6. Block on slew.uwait until upslew completes (or utimeout
+//      if no data is flowing).
+//
+// Reverse-order release of cs_in[i] matches reference aamix.c:
+// 499-503 byte-for-byte; the order does not affect correctness
+// (the locks were taken in forward order in close_mixer; they
+// can be released in any order) but the reference does it
+// reversed and the port preserves the loop direction so a
+// future operator inspecting either source sees the same
+// pattern.
+void open_mixer(AAMix* a)
+{
+    // 1: arm upslew.
+    a->slew.uflag.fetch_or(1u, std::memory_order_release);
+
+    // 2: clear the run-bit trap close_mixer set.
+    a->run.fetch_or(1u, std::memory_order_release);
+
+    // 3: start mix_main if anything is active.
+    if (a->nactive > 0) {
+        start_mixthread(a);
+    }
+
+    // 4: release cs_in[i] in reverse order (matches reference).
+    for (int i = a->ninputs - 1; i >= 0; --i) {
+        a->cs_in[i].unlock();
+    }
+
+    // 5: re-arm accept bits for inputs in the active mask.
+    const std::uint32_t active_mask =
+        a->active.load(std::memory_order_acquire);
+    for (int i = a->ninputs - 1; i >= 0; --i) {
+        if ((active_mask & (1u << i)) != 0u) {
+            a->accept[i].fetch_or(1u, std::memory_order_release);
+        }
+    }
+
+    // 6: block on uwait until upslew completes (or timeout).
+    if (a->slew.uwait) {
+        (void)a->slew.uwait->try_acquire_for(
+            std::chrono::milliseconds(a->slew.utimeout));
     }
 }
 
