@@ -33,7 +33,10 @@
 
 namespace lyra::wire {
 
-class Router;  // forward — Router.h pulled by Ep6RecvThread.cpp.
+struct Router;  // forward — Router.h pulled by Ep6RecvThread.cpp.
+                // Must match the `struct Router { ... };` definition
+                // in Router.h or MSVC warns C4099 at each TU that
+                // includes both (forward + full).
 
 // §1-C Stage 4F: `Ep6IqSink` typedef removed — declared in
 // the §5 populate but never instantiated as a class member
@@ -99,7 +102,14 @@ using Ep6I2cSink = std::function<void(const uint8_t* bytes,
 // auto-key on this level — the N8SDR HL2+/AK4951 unit can carry a
 // non-zero ptt_in at RX rest; the consumer must gate on its
 // `hwPttEnabled` opt-in atomic before acting.
-using Ep6HwPttSink = std::function<void(bool ptt_in)>;
+// Stage 2b2-fix-v2: Ep6HwPttSink RETIRED.  Reference has no
+// wire-side HW-PTT push callback — the C-side FSM polls
+// `prn->ptt_in` directly on its own clock and edge-detects
+// there.  Lyra-side equivalent now lives in HL2Stream's
+// `hwPttTimer_` + `onHwPttPoll()` (Qt main thread, ~20 Hz).
+// Type + setter + member removed per operator-locked "do as
+// the reference does, period" strict-reference rule.
+// using Ep6HwPttSink = std::function<void(bool ptt_in)>;  // retired
 
 class Ep6RecvThread {
 public:
@@ -153,7 +163,9 @@ public:
     void set_telemetry_sink(Ep6TelemetrySink sink);
     void set_mic_sink(Ep6MicSink sink);
     void set_i2c_sink(Ep6I2cSink sink);
-    void set_hw_ptt_sink(Ep6HwPttSink sink);
+    // Stage 2b2-fix-v2: set_hw_ptt_sink retired — see Ep6HwPttSink
+    // comment above.  HW PTT consumer now polls prn->ptt_in
+    // directly via HL2Stream::onHwPttPoll() (reference posture).
 
     // Stage 14 Stage 2b — operator-facing counters retire the
     // HL2Stream::{seqErrors_, framingErrors_, totalDg_, windowDg_}
@@ -216,7 +228,8 @@ private:
     Ep6TelemetrySink                telemetry_sink_;
     Ep6MicSink                      mic_sink_;
     Ep6I2cSink                      i2c_sink_;
-    Ep6HwPttSink                    hw_ptt_sink_;
+    // Stage 2b2-fix-v2: hw_ptt_sink_ member retired (Ep6HwPttSink
+    // type retired alongside).  Reference has no wire-side sink.
     Router*                         router_     = nullptr;
     int                             router_id_  = 0;
 };

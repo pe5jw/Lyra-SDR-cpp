@@ -340,10 +340,10 @@ void Ep6RecvThread::set_i2c_sink(Ep6I2cSink sink) {
     i2c_sink_ = std::move(sink);
 }
 
-void Ep6RecvThread::set_hw_ptt_sink(Ep6HwPttSink sink) {
-    assert_not_running(running_);
-    hw_ptt_sink_ = std::move(sink);
-}
+// Stage 2b2-fix-v2: set_hw_ptt_sink retired — see Ep6RecvThread.h
+// `Ep6HwPttSink` comment.  Reference has no wire-side sink; the
+// FSM consumer polls prn->ptt_in directly on its own clock.
+// Lyra-side equivalent = HL2Stream::onHwPttPoll() (Qt timer).
 
 // ---- reader thread ----
 //
@@ -867,20 +867,17 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
         p->dash_in = static_cast<int>((cc[0] << 1) & 0x01);
         p->dot_in  = static_cast<int>((cc[0] << 2) & 0x01);
 
-        // Forward HW PTT-in level to operator-side consumer
-        // (HL2Stream's hwPttEnabled opt-in forwarder).  Reference
-        // doesn't have an equivalent sink — the C-side consumer
-        // reads `prn->ptt_in` directly elsewhere — but Lyra's
-        // edge-detect + Qt invokeMethod plumbing lives in the
-        // HL2Stream Q_OBJECT side of the operator boundary, so
-        // a callback is the C++ idiom translation.  Fires every
-        // non-I2C status decode (mirrors reference's
-        // unconditional per-frame `prn->ptt_in` write at
-        // `networkproto1.c:496`); the consumer does its own
-        // opt-in gate + edge-detect.
-        if (hw_ptt_sink_) {
-            hw_ptt_sink_(static_cast<bool>(cc[0] & 0x01));
-        }
+        // Stage 2b2-fix-v2: hw_ptt_sink_ push-callback RETIRED.
+        // The wire-thread push was a Lyra-native idiom (callback
+        // → Qt QueuedConnection slot hop per datagram); reference
+        // C-side consumer reads `prn->ptt_in` directly on its own
+        // clock (no push, no per-datagram event-queue spam).
+        // Lyra-side equivalent: `HL2Stream::onHwPttPoll()` (Qt
+        // timer @ 20 Hz on the main thread) polls
+        // `lyra::wire::prn->ptt_in` and edge-detects there.
+        // The `p->ptt_in = cc[0] & 0x01` write above is the SAME
+        // unconditional level write the reference does — the
+        // consumer just reads it differently.
 
         // ---- 5-class telemetry switch on (cc[0] & 0xf8) ----
         //      Verbatim from `networkproto1.c:499-524`.

@@ -107,6 +107,25 @@ void twist(int nsamples,
 // nullptr if id is out of range OR the slot is empty.
 Router* router_instance(int id);
 
+// `create_router(id)` — reference signature mirror at
+// `router.c:32-50`.  Heap-allocates a Router struct (ctor
+// self-registers at slot `id`), process-lifetime (intentional
+// leak matching reference's malloc-without-paired-free posture;
+// the matching `destroy_router(id, variant)` is called at process
+// teardown to release the slot).  Idempotent on already-occupied
+// slots (silently no-op).  Lyra equivalent of the reference's
+// `create_cmaster()`-time `create_router(0)` call at `cmaster.c:316`.
+void create_router(int id);
+
+// `destroy_router(id, variant)` — reference signature mirror at
+// `router.c:32-50`.  Deletes the Router at slot `id` (dtor self-
+// unregisters).  `variant` argument is accepted for reference-
+// signature compatibility but currently unused.  Caller's
+// responsibility to ensure no consumer is still dispatching
+// through the router before destroying it (HL2Stream's EP6 thread
+// must have joined first).
+void destroy_router(int id, int variant);
+
 // `register_sink()` — sets the callback at the given
 // (port, call_idx, ctrl_word) slot.  Lyra-native equivalent
 // of reference's `LoadRouterAll(...)` bulk-loader; signed §5.7

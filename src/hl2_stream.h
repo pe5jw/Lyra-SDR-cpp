@@ -87,6 +87,10 @@
 // is at namespace-pulling distance so the destructor + getter +
 // open()/close() wiring sites all compile without forward-declaring.
 #include "wire/Ep6RecvThread.h"
+// Stage 2b2: Router.h needed for the inline setIqSink shim's
+// register_sink() + router_instance(0) calls (the post-rxWorker_
+// IQ-dispatch path).
+#include "wire/Router.h"
 
 namespace lyra::ipc {
 
@@ -110,8 +114,8 @@ class HL2Stream : public QObject {
     Q_PROPERTY(double  txDatagramsPerSec    READ txDatagramsPerSec    NOTIFY statsChanged)
     Q_PROPERTY(qint64  txTotalDatagrams     READ txTotalDatagrams     NOTIFY statsChanged)
     Q_PROPERTY(qint64  txSendErrors         READ txSendErrors         NOTIFY statsChanged)
-    // RX1 signal level (Step 2c — first real radio reception in C++)
-    Q_PROPERTY(double  rx1DbFs              READ rx1DbFs              NOTIFY statsChanged)
+    // Stage 2b2: rx1DbFs Q_PROPERTY retired (strict-reference rule;
+    // WDSP audioDbFs is the reference-faithful S-meter path).
     // RX1 (DDC0) receive frequency, Hz — tuning from C++ (Step 4)
     Q_PROPERTY(quint32 rx1FreqHz            READ rx1FreqHz            NOTIFY rx1FreqChanged)
     // RX1 LNA gain (AD9866 PGA), dB.  Range −12…+48; sent on the C&C
@@ -478,7 +482,13 @@ public:
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
     QString targetIp()          const { return targetIp_; }
     double  datagramsPerSec()   const { return dgPerSec_; }
-    qint64  totalDatagrams()    const { return totalDg_.load(std::memory_order_relaxed); }
+    // Stage 2b2: counter accessors route to the Ep6RecvThread
+    // free-function facades (ep6_total_datagrams / ep6_seq_errors
+    // / ep6_framing_errors).  HL2Stream no longer holds these
+    // atomics — the EP6 recv path owns them inside its TU.
+    qint64  totalDatagrams()    const {
+        return lyra::wire::ep6_total_datagrams();
+    }
     // seqErrors: count of EP6 datagrams whose sequence number was
     // anything other than (previous+1).  Incremented by 1 per event
     // — NOT summed by the gap magnitude — so a one-shot sequence
@@ -486,28 +496,15 @@ public:
     // shows up as "1 seq err" instead of nonsense.  Matches the
     // reference-implementation diagnostic posture; see CLAUDE.md
     // §15.x / FEATURES.md for the rationale.
-    qint64  seqErrors()         const { return seqErrors_.load(std::memory_order_relaxed); }
-    qint64  framingErrors()     const { return framingErrors_.load(std::memory_order_relaxed); }
+    qint64  seqErrors()         const { return lyra::wire::ep6_seq_errors(); }
+    qint64  framingErrors()     const { return lyra::wire::ep6_framing_errors(); }
     double  txDatagramsPerSec() const { return txDgPerSec_; }
     qint64  txTotalDatagrams()  const { return txTotalDg_.load(std::memory_order_relaxed); }
     qint64  txSendErrors()      const { return txSendErrors_.load(std::memory_order_relaxed); }
-    // rx1DbFs — RMS magnitude of the RX1 baseband IQ stream in
-    // dBFS (full scale = 1.0 magnitude after normalizing the
-    // gateware's 24-bit signed samples).  Updated by the RX
-    // worker thread every 50 ms (9600 samples at 192 kHz);
-    // initial sentinel -200.0 means "no samples yet."
-    double  rx1DbFs()           const { return rx1DbFs_.load(std::memory_order_relaxed); }
-    // micDbFs — RMS magnitude of the EP6 mic-byte stream (bytes
-    // [24..25] of each 26-byte slot at nddc=4 = 16-bit BE signed
-    // PCM, see design doc §3.2).  Decode-only bench instrument
-    // for the design-v2 §5.1 gate #3 (Q6.5 verification: does the
-    // AK4951 mic actually deliver samples through EP6?).  Updated
-    // every 50 ms (9600 wire mic samples at the nddc=4 192-kHz
-    // wire rate); sentinel -200.0 = "no samples yet."  Not yet
-    // routed into any DSP — TX-1 will wire this later via
-    // Hl2Ep6MicSource.  Falsifiable: plug mic, talk → dBFS rises
-    // from baseline (~-90) toward speech levels (~-30..-10).
-    double  micDbFs()           const { return micDbFs_.load(std::memory_order_relaxed); }
+    // Stage 2b2: rx1DbFs / micDbFs accessors retired (strict-
+    // reference rule; WDSP audioDbFs is the reference-faithful
+    // S-meter, Q6.5 bench instrument no longer needed once
+    // Hl2Ep6MicSource ships the live AK4951 mic path).
     quint32 rx1FreqHz()         const { return rx1FreqHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
     bool    autoLna()           const { return autoLnaEnabled_; }
@@ -593,9 +590,13 @@ public:
     // mirroring how the working C-source reference's wire-thread pump
     // calls fexchange0).  Must be
     // set before open() spawns the worker; not changed while running.
-    void setIqSink(std::function<void(const double *, int)> sink) {
-        iqSink_ = std::move(sink);
-    }
+    // Stage 2b2-fix-v3: setIqSink shim retired.  IQ-sink wiring
+    // moved to main.cpp which calls `lyra::wire::register_sink(
+    // router_instance(0), 0, 0, 0, …)` directly — the reference-
+    // shaped LoadRouterAll-flattened registration.  No HL2Stream
+    // surface; the EP6 → Router → consumer dispatch chain is now
+    // exactly what `router.c` does (no Lyra-native arg-reorder
+    // wrapper, no per-stream member function).
 
     // TX Component 3 — register a consumer for decimated mic samples.
     // Called ONCE per EP6 datagram from the RX worker thread with a
@@ -612,9 +613,20 @@ public:
     // rx-loop call has finished — so a caller that holds a reference
     // to objects the consumer captures can safely tear them down
     // after this returns.
-    void setMicConsumer(std::function<void(const float *, int)> cb) {
-        std::lock_guard<std::mutex> lk(micConsumerMtx_);
-        micConsumer_ = std::move(cb);
+    // Stage 2b2: setMicConsumer is a NO-OP compile-stub kept ONLY
+    // for caller-compat with mic_source.cpp during the staged
+    // migration.  The OLD rxWorker_-owned mic forwarder is retired;
+    // the reference-faithful path is mic_source.cpp using
+    // `stream.ep6Thread().set_mic_sink(...)` directly (different
+    // signature: `(int n_samples, const double* iq_pairs)` per
+    // Ep6MicSink, not `(const float*, int)`).  Migrating
+    // mic_source.cpp is a separate sub-commit so we don't conflate
+    // the wire-LIVE EP6 surgery here with mic decoding semantics
+    // (Q6.5 RMS deletion, double→float conversion).  Until that
+    // commit ships, calling setMicConsumer is a silent no-op — the
+    // mic feed reaches DSP only after the mic_source migration.
+    void setMicConsumer(std::function<void(const float *, int)> /*cb*/) {
+        // intentional no-op — migrate to ep6Thread().set_mic_sink()
     }
 
     // Step 5: RX audio out via the HL2 onboard codec (AK4951).  The DSP
@@ -964,6 +976,13 @@ signals:
 private slots:
     void onStatsTick();
     void onAutoLnaTick();
+    // Stage 2b2-fix-v2 — HW-PTT-in poll slot (Qt main thread,
+    // ~20 Hz).  Reads `lyra::wire::prn->ptt_in` level, edge-
+    // detects, fires requestMoxFromHwPtt() on transitions.
+    // Reference-faithful: replaces the prior wire-side push
+    // callback with FSM-side polling per `console.cs`-class
+    // PTT consumer pattern.  Opt-in gated by hwPttEnabled_.
+    void onHwPttPoll();
     void onFatalError(QString reason);
 
 private:
@@ -983,9 +1002,12 @@ private:
     void safetyLog(const QString& msg);
     void fatalLog(const QString& msg);
 
-    void rxWorkerLoop(std::stop_token stop, SocketHandle sock);
-    void txWorkerLoop(std::stop_token stop, SocketHandle sock,
-                      QString ip);
+    // Stage 2b2: rxWorkerLoop retired (Ep6RecvThread is the live EP6
+    // recv path).  txWorkerLoop no longer takes the `ip` param —
+    // metis_write_frame() uses the TU-scope MetisAddr bound by
+    // metis_wire_bind() at session open (reference posture per
+    // network.c:1382-1402 sendPacket → MetisAddr file-scope).
+    void txWorkerLoop(std::stop_token stop, SocketHandle sock);
     // TX-0c-fsm — sequencer steps (all run on this QObject's thread via
     // QTimer::singleShot, NOT on the wire workers).  Each step re-reads
     // requestedMox_ so an operator change mid-transition (cancel during
@@ -1080,12 +1102,15 @@ private:
     // alignment (uint32_t array) satisfies its strictest field
     // (uint32_t sin_addr).  The .cpp reinterpret_casts to sockaddr_in.
     std::uint32_t        destStorage_[4] = {};
-    std::jthread         rxWorker_;
+    // Stage 2b2: rxWorker_ jthread retired (Ep6RecvThread owns the
+    // EP6 recv path).  ep6Thread_ member lives below near the wire
+    // sinks block.
     std::jthread         txWorker_;
     std::atomic<bool>    running_{false};
-    std::atomic<qint64>  totalDg_{0};
-    std::atomic<qint64>  seqErrors_{0};
-    std::atomic<qint64>  framingErrors_{0};
+    // Stage 2b2: totalDg_/seqErrors_/framingErrors_/windowDg_
+    // atomics retired — Ep6RecvThread owns them as TU-scope atomics
+    // (ep6_total_datagrams() / ep6_seq_errors() /
+    // ep6_framing_errors() / ep6_drain_window_datagrams() facades).
     // Task #48 diagnostic — Windows system-wide UDP RX counters
     // (GetUdpStatisticsEx, AF_INET).  Snapshotted at stream start
     // so close() logs the per-session delta:
@@ -1108,21 +1133,17 @@ private:
     std::atomic<qint64>  udpStartInDatagrams_{-1};
     std::atomic<qint64>  udpStartInNoPorts_{-1};
     std::atomic<qint64>  udpStartInErrors_{-1};
-    std::atomic<qint64>  windowDg_{0};
+    // Stage 2b2: windowDg_ atomic retired (see facade comment above).
     std::atomic<qint64>  txTotalDg_{0};
     std::atomic<qint64>  txWindowDg_{0};
     std::atomic<qint64>  txSendErrors_{0};
-    std::atomic<quint32> txSeq_{0};
-    // Step 2c: RX1 dBFS, written by the RX worker thread.  Sentinel
-    // -200.0 = "no samples yet" / pre-first-window.  std::atomic<double>
-    // is lock-free on x86_64 so the main-thread read in the Q_PROPERTY
-    // getter doesn't take a lock.
-    std::atomic<double>  rx1DbFs_{-200.0};
-    // Q6.5 bench instrument — EP6 mic-byte RMS in dBFS.  Decode-
-    // only, no protocol surface change, RX/TX behaviour byte-
-    // identical (mic bytes were already in every datagram; we
-    // just read them and publish a level).  See design doc §3.2.
-    std::atomic<double>  micDbFs_{-200.0};
+    // Stage 2b2: txSeq_ retired — metis_write_frame() owns the wire
+    // sequence counter via the TU-scope MetisOutBoundSeqNum, shared
+    // with the priming path for PureSignal-correct posture.
+    // Stage 2b2: rx1DbFs_ / micDbFs_ atomics retired — strict-
+    // reference rule: WDSP audioDbFs is the reference-faithful
+    // S-meter path; the Q6.5 mic bench instrument is no longer
+    // needed once Hl2Ep6MicSource ships the live AK4951 mic path.
     // Step 4: DDC0 (RX1) receive frequency, Hz.  Read by the EP2 writer
     // each send.  Default 7.074 MHz (40m FT8) so first launch lands on
     // a known-active spot.  std::atomic<quint32> is lock-free on x86_64.
@@ -1149,7 +1170,10 @@ private:
     // strong front end (one micro-clip pinned overload every cycle →
     // gain driven to the floor).  adcOverload_ / overloadLevel_ /
     // autoLna*_ are main-thread state owned by onAutoLnaTick().
-    std::atomic<bool>    adcOverloadNow_{false};
+    // Stage 2b2: adcOverloadNow_ retired — Auto-LNA's onAutoLnaTick()
+    // reads prn->adc[0].adc_overload direct (the EP6 status path
+    // writes it; reference posture per the HL2 read loop's single-
+    // frame assignment at networkproto1.c:502).
     // TX-0a — raw 12-bit EP6 telemetry slots, written by the RX worker
     // (direct overwrite, most-recent wins), read by the main-thread
     // getters.  −1 = no data yet.  std::atomic<int> is lock-free on
@@ -1179,10 +1203,14 @@ private:
     // 26761) is REUSED on HL2 to display temperature with a "C" suffix.
     // Lyra's hl2SupplyV() therefore returns NaN; the UI banner shows
     // "n/a" for V on HL2, matching reference behavior.
-    std::atomic<int>     telExciterRaw_{-1};   // 0x08 C1:C2 → temp (HL2)
-    std::atomic<int>     telFwdRaw_{-1};       // 0x08 C3:C4 → fwd_power
-    std::atomic<int>     telRevRaw_{-1};       // 0x10 C1:C2 → rev_power
-    std::atomic<int>     telUserAdc0Raw_{-1};  // 0x10 C3:C4 → PA current (HL2)
+    // Stage 2b2: tel*Raw_ atomics retired — telemetry accessors
+    // (hl2TempC/paCurrentA/fwdPowerW/revPowerW) and the diagnostic
+    // raw-int log read prn->tx[0].exciter_power/fwd_power/rev_power
+    // and prn->user_adc0 direct (the single telemetry state-of-
+    // record after Ep6RecvThread is the live writer).  Reference
+    // posture: int=0 at startup until the first telemetry frame
+    // arrives (no -1 sentinel; the formulas natively cope with
+    // raw=0 → quiet temp/voltage rather than NaN).
     bool                 adcOverload_    = false;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;
@@ -1230,7 +1258,14 @@ private:
     // fire a spurious release-edge on whatever the wire happens to
     // be reading at the moment.
     std::atomic<bool>    hwPttEnabled_{false};
-    bool                 lastPttIn_  = false;
+    // Stage 2b2-fix-v2: HW-PTT edge-detect state lives here on
+    // the Qt main thread (sole writer/reader = onHwPttPoll +
+    // open()'s seeding line — single-threaded discipline by
+    // construction).  Replaces the prior `thread_local bool prev`
+    // inside the wire-side `hw_ptt_sink` lambda; reference-
+    // faithful "FSM polls prn->ptt_in on its own clock" posture.
+    bool                 lastHwPttLevel_ = false;
+    QTimer               hwPttTimer_;
 
     // ── TX-1 component 6: SSB I/Q injection (wire-inert default) ──
     // Gate atomic — see Q_PROPERTY decl + setInjectTxIq() doc for
@@ -1294,7 +1329,9 @@ private:
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
     // read on the RX worker thread.  Default-empty = no DSP wired.
-    std::function<void(const double *, int)> iqSink_;
+    // Stage 2b2: iqSink_ retired — setIqSink() now registers on
+    // router_instance(0) port=0/call_idx=0 directly (the live
+    // Ep6RecvThread→Router dispatch path).  No member needed.
     // TX Component 3 — mic-byte forwarder.  micConsumer_ is the
     // producer entry point the rx-loop calls per datagram with the
     // decimated 48 kHz mic block.  micConsumerMtx_ is the
@@ -1308,10 +1345,15 @@ private:
     // the 192 kHz default; setSampleRate() updates it.
     // micDecimationCount_ persists across datagrams (per the source's
     // `mic_decimation_count`), reset only on a rate change.
-    std::function<void(const float *, int)> micConsumer_;
-    mutable std::mutex   micConsumerMtx_;          // csIN equivalent
-    std::atomic<int>     micDecimationFactor_{4};  // 192k default → /4
-    int                  micDecimationCount_ = 0;  // RX worker only
+    // Stage 2b2: micConsumer_ / micConsumerMtx_ /
+    // micDecimationFactor_ / micDecimationCount_ retired —
+    // setMicConsumer() is a no-op compile stub during the staged
+    // mic_source.cpp migration to ep6Thread().set_mic_sink();
+    // mic_decimation_factor lives at TU scope in RadioNet.cpp and
+    // is updated by HL2Stream::setSampleRate via
+    // lyra::wire::mic_decimation_factor = micDec.  The decimation
+    // count_ persists inside Ep6RecvThread's mic-tap state
+    // (reference posture per networkproto1.c:566-577).
     // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).
     // Producer = RX worker (pushAudio, via the DSP engine); consumer =
     // EP2 TX writer thread (drains 126 frames/datagram).  audioMtx_
@@ -1489,6 +1531,47 @@ private:
     static constexpr int     kAttOnTxDb       = 31;
     // TX safety timeout range — see public section above (canonical
     // bounds exposed for the Settings UI).
+
+    // ===== Stage 2b2 — Ep6RecvThread member =====
+    //
+    // MUST be declared LAST in the private member block.  Destructors
+    // run in reverse declaration order; declaring ep6Thread_ last
+    // means its destructor (which joins the EP6 thread) runs FIRST
+    // when HL2Stream goes away — guaranteeing the EP6 thread has
+    // stopped touching any HL2Stream state BEFORE other members
+    // dissolve.  Belt-and-suspenders: main.cpp's aboutToQuit handler
+    // calls stream->close() explicitly BEFORE delete'ing HL2Stream
+    // (matches reference's "explicit stop, never rely on implicit
+    // teardown" posture at network.c:1434-1452 IOThreadStop).
+    //
+    // The Ep6RecvThread itself wires LIVE in open() (set_router +
+    // set_hw_ptt_sink + start()), retires in close() (stop() joins
+    // the thread bounded by the WSAWait timeout).  Replaces the
+    // OLD rxWorker_ jthread + rxWorkerLoop body that Stage 2b2b
+    // deletes from this file.
+
+public:
+    // Stage 2b2 — getter used by Hl2Ep6MicSource to wire its mic
+    // consumer via ep6Thread_.set_mic_sink(...).  The MicSource
+    // owns its consumer registration; HL2Stream just owns the
+    // EP6 thread.
+    lyra::wire::Ep6RecvThread& ep6Thread() noexcept { return ep6Thread_; }
+
+private:
+    // Stage 2b2-fix-v2 — Router lifecycle is now process-singleton
+    // via the explicit `lyra::wire::create_router(0)` / `destroy_
+    // router(0, 0)` calls in main.cpp, matching the reference's
+    // `cmaster.c:316` `create_router(0)` / `destroy_cmaster()`
+    // `destroy_router(0, 0)` posture.  The transient HL2Stream
+    // value-member `router0_` (which existed in the first 2b2b-fix
+    // pass) is RETIRED — RAII-on-HL2Stream was a Lyra-native idiom
+    // translation, but operator-locked rule is "do as the reference
+    // does, period."  The router is created BEFORE the HL2Stream
+    // ctor runs (so router_instance(0) is non-null for any sink
+    // registration site), and destroyed AFTER HL2Stream's dtor
+    // runs (so ep6Thread_'s join completes before the router slot
+    // is freed).
+    lyra::wire::Ep6RecvThread ep6Thread_;
 };
 
 } // namespace lyra::ipc

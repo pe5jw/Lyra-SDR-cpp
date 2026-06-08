@@ -221,6 +221,18 @@ int main(int argc, char *argv[])
     // (QQmlEngine refuses cross-thread connect from QML).
     auto *discovery = new lyra::ipc::HL2Discovery(&app);
 
+    // Stage 2b2-fix-v2 — Router process-singleton create.  Mirrors
+    // the reference's `create_router(0)` call inside `create_cmaster()`
+    // at `cmaster.c:316`, which runs once at console init BEFORE any
+    // consumer (the EP6 thread, sink registrations) touches it.
+    // Must be called BEFORE HL2Stream construction (which wires the
+    // EP6 thread to router_instance(0) on open) AND BEFORE the
+    // `register_sink(...)` call below.  Process-lifetime; the
+    // matching `destroy_router(0, 0)` runs in the aboutToQuit
+    // handler AFTER all consumers (the HL2Stream itself) have
+    // been torn down.
+    lyra::wire::create_router(0);
+
     // Step 2a: the stream object opens the EP6 RX path to a
     // selected radio on its OWN dedicated OS thread (std::jthread
     // inside HL2Stream — see hl2_stream.h for the locked
@@ -244,14 +256,25 @@ int main(int argc, char *argv[])
     // loads + wisdom is ensured (below) so the channel-open is fast.
     auto *wdspEngine = new lyra::dsp::WdspEngine(wdsp, &app);
 
-    // Step 3d: route DDC0 baseband IQ from the stream's RX worker
-    // thread into the DSP engine.  Set BEFORE any open() so the worker
-    // sees the sink the moment it starts.  feedIq() runs synchronously
-    // on the RX worker thread (no Qt cross-thread queueing) and guards
-    // internally on the channel being open.
-    stream->setIqSink([wdspEngine](const double *iq, int n) {
-        wdspEngine->feedIq(iq, n);
-    });
+    // Stage 2b2-fix-v3 — Step 3d: route DDC0 baseband IQ from the
+    // EP6 thread into the DSP engine.  Registers directly on
+    // router_instance(0) port=0/call_idx=0/ctrl_word=0 — the
+    // reference's `LoadRouterAll(prouter[0], …)` posture
+    // (router.c) flattened to the single-sink case Lyra needs.
+    // Signature is the reference's (n_samples, iq_pairs) order;
+    // we adapt to WdspEngine::feedIq(iq, n) inside the lambda.
+    // Routes BEFORE HL2Stream::open() spawns the EP6 thread, so
+    // the very first datagram dispatched lands in the sink.  No
+    // HL2Stream shim involved — the previous `setIqSink(…)`
+    // member was a Lyra-native arg-reorder wrapper; retiring it
+    // matches the reference's "register at the router directly"
+    // shape (Rule 26 cleanup).
+    lyra::wire::register_sink(
+        lyra::wire::router_instance(0),
+        /*port=*/0, /*call_idx=*/0, /*ctrl_word=*/0,
+        [wdspEngine](int n, const double* iq) {
+            wdspEngine->feedIq(iq, n);
+        });
 
     // Step 5: route decoded RX audio the other way — engine → stream's
     // EP2 writer — so it plays out the HL2 onboard codec (AK4951) jack
@@ -384,6 +407,20 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-2 ENTRY (stream->close)");
         if (stream) stream->close();
         qWarning("[shutdown] handler-2 EXIT");
+    });
+
+    // Stage 2b2-fix-v2 — Router process-singleton destroy.  Mirrors
+    // the reference's `destroy_router(0, 0)` call inside
+    // `destroy_cmaster()` at `cmaster.c`.  MUST run AFTER handler-2
+    // above (stream->close → joins the EP6 thread → guarantees no
+    // in-flight xrouter() dispatch through &router_instance(0) at
+    // the moment we free the Router slot).  Qt connects in
+    // registration order and fires aboutToQuit handlers in that
+    // same order, so this lambda runs after handler-2.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        qWarning("[shutdown] handler-3 ENTRY (destroy_router(0,0))");
+        lyra::wire::destroy_router(0, 0);
+        qWarning("[shutdown] handler-3 EXIT");
     });
 
     // Step 5: register the panadapter widget as a QML type under its

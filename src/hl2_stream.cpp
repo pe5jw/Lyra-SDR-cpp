@@ -226,6 +226,17 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     autoLnaTimer_.setInterval(kAutoLnaPeriodMs);
     connect(&autoLnaTimer_, &QTimer::timeout,
             this, &HL2Stream::onAutoLnaTick);
+    // Stage 2b2-fix-v2 — HW-PTT-in poll timer (Qt main thread).
+    // 50 ms cadence (20 Hz) — fast enough that foot-switch
+    // press-to-key feels instantaneous, slow enough that the
+    // per-tick `prn->ptt_in` read + edge-detect costs are noise.
+    // Reads the level the EP6 thread writes unconditionally at
+    // every status decode (`Ep6RecvThread.cpp:866`), mirroring
+    // the reference's "wire writes prn->ptt_in; consumer FSM
+    // polls and edge-detects on its own clock" posture.
+    hwPttTimer_.setInterval(50);
+    connect(&hwPttTimer_, &QTimer::timeout,
+            this, &HL2Stream::onHwPttPoll);
     // Radio memory: restore the last tuned RX1 frequency.  QSettings
     // resolves to %APPDATA%\N8SDR\Lyra-cpp\ (org/app set in main()
     // before this object is constructed).
@@ -491,7 +502,11 @@ void HL2Stream::onAutoLnaTick()
     // Sample overload INSTANTANEOUSLY at poll time (most-recent
     // address-0 frame), matching the reference HL2 poll — a window-OR
     // over-triggered on a strong front end and pinned gain to the floor.
-    const bool ov = adcOverloadNow_.load(std::memory_order_relaxed);
+    // Stage 2b2: read adc_overload direct from telemetry struct
+    // (Ep6RecvThread writes ControlBytesIn[1]&0x01 into adc[0]
+    // per HL2 single-frame assignment semantics, networkproto1.c:502).
+    const bool ov = (lyra::wire::prn != nullptr
+                  && lyra::wire::prn->adc[0].adc_overload != 0);
     overloadLevel_ = ov ? std::min(overloadLevel_ + 1, 5)
                         : std::max(overloadLevel_ - 1, 0);
     // Lamp + back-off both key on SUSTAINED overload (level > 3 ≈ 1.6 s
@@ -566,7 +581,8 @@ void HL2Stream::open(const QString &ip) {
     // Defensive: if a previous worker exited on its own (e.g. fatal
     // error path) the jthread may still be joinable.  Join before
     // reassigning so std::jthread move-assign doesn't terminate().
-    if (rxWorker_.joinable()) { rxWorker_.request_stop(); rxWorker_.join(); }
+    // Stage 2b2: rxWorker_ retired; Ep6RecvThread is the live EP6
+    // recv path and is stopped via ep6Thread_.stop() in close().
     if (txWorker_.joinable()) { txWorker_.request_stop(); txWorker_.join(); }
     if (socket_ != kInvalidSocket) {
         ::closesocket(static_cast<SOCKET>(socket_));
@@ -582,8 +598,9 @@ void HL2Stream::open(const QString &ip) {
     const quint16 lport = localPortOf(socket_);
 
     targetIp_ = ip;
-    totalDg_.store(0);  seqErrors_.store(0);
-    framingErrors_.store(0);  windowDg_.store(0);
+    // Stage 2b2: totalDg_/seqErrors_/framingErrors_/windowDg_ retired
+    // from HL2Stream — Ep6RecvThread owns them as TU-scope atomics and
+    // re-inits to 0 at run_loop thread entry on every start.
 
     // Task #48 — baseline the system-wide UDPv4 counters so the
     // close() log line can subtract and print the per-session
@@ -603,8 +620,12 @@ void HL2Stream::open(const QString &ip) {
         }
     }
     txTotalDg_.store(0);  txWindowDg_.store(0);
-    txSendErrors_.store(0);  txSeq_.store(0);
-    rx1DbFs_.store(-200.0, std::memory_order_relaxed);
+    txSendErrors_.store(0);
+    // Stage 2b2: txSeq_ retired (metis_write_frame() owns the wire
+    // sequence counter via the TU-scope MetisOutBoundSeqNum, shared
+    // with the priming path for PureSignal-correct posture).
+    // rx1DbFs_ retired (RX1 dBFS instrument removed per strict-
+    // reference rule; WDSP audioDbFs is the reference-faithful path).
     dgPerSec_   = 0.0;
     txDgPerSec_ = 0.0;
     // cb58bcb-style come-up-not-keyed safety: every stream open starts
@@ -653,14 +674,21 @@ void HL2Stream::open(const QString &ip) {
              ? QStringLiteral("ON")
              : QStringLiteral("off")));
 
-    statsTimer_.start();
     statsClock_.start();   // baseline for actual-elapsed dg/s
     // Auto-LNA / overload monitor: fresh accumulator + hold clock.
     overloadLevel_ = 0;
     recovering_ = false;
-    adcOverloadNow_.store(false, std::memory_order_relaxed);
+    // Stage 2b2: adcOverloadNow_ retired (Auto-LNA reads
+    // prn->adc[0].adc_overload direct in onAutoLnaTick).
     holdClock_.start();
-    autoLnaTimer_.start();
+    // Stage 2b2-fix: statsTimer_/autoLnaTimer_ .start() MOVED to
+    // the very END of open() (after create_rnet + ep6Thread_.start),
+    // so the timer ticks can never fire before `prn` is allocated
+    // and the EP6 producer is alive.  Matches reference's
+    // "allocate state first, THEN start consumers" pattern at
+    // StartAudioNative (netInterface.c:32-94).  The previous order
+    // had a defensive nullptr guard in onAutoLnaTick that papered
+    // over the race; this restructure removes the race instead.
 
     // Radio memory: remember this radio so the next launch can
     // auto-connect without a Discover (read in main()).
@@ -716,16 +744,114 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::outbound_init();  // per-session sync-flag reset
     }
 
-    // Spawn RX first so it's already listening when TX sends START.
-    // Native UDP sendto + recvfrom on one socket from different
-    // threads is documented thread-safe at the OS level.
+    // ============== Stage 2b2 — Wire-LIVE migration ==============
+    //
+    // Reference session-open sequence (StartAudioNative,
+    // netInterface.c:32-94):
+    //   1. SendStartToMetis()                            netInterface.c:50
+    //   2. CreateSemaphore + _beginthreadex(MetisReadThreadMain)
+    //                                                    netInterface.c:60-61
+    //   3. WaitForSingleObject(hReadThreadInitSem,INF)   netInterface.c:63
+    //   4. CreateSemaphore + _beginthreadex(sendProtocol1Samples)
+    //                                                    netInterface.c:65-66
+    //   5. hsendEventHandles + hobbuffsRun semaphore set netInterface.c:68-71
+    //
+    // Lyra mirrors verbatim below.  The OLD rxWorker_ jthread +
+    // open-time START send inside txWorkerLoop are retired.
+
+    // (1) — hoist START from OLD txWorkerLoop:2511-2526 to caller-
+    // thread context here.  Reference: SendStartToMetis at
+    // netInterface.c:50, before any thread spawn.
+    {
+        sockaddr_in dest{};
+        dest.sin_family = AF_INET;
+        dest.sin_port   = htons(kRadioPort);
+        ::inet_pton(AF_INET, ip.toLatin1().constData(), &dest.sin_addr);
+        const QByteArray startPkt = buildControlPacket(true);
+        const int sent = ::sendto(static_cast<SOCKET>(socket_),
+                                  startPkt.constData(), startPkt.size(), 0,
+                                  reinterpret_cast<sockaddr*>(&dest),
+                                  sizeof(dest));
+        if (sent != startPkt.size()) {
+            const int err = ::WSAGetLastError();
+            onFatalError(QStringLiteral("START: %1").arg(winsockError(err)));
+            return;
+        }
+        emit logLine(QStringLiteral(
+            "  START sent (0xEFFE 0x04 0x01 + 60 zeros), "
+            "Ep6RecvThread engaging"));
+    }
+
+    // (2-3) — Wire Ep6RecvThread sinks BEFORE start().  Sink-
+    // registration contract: registered ONCE, never reassigned
+    // at runtime (assert(!running_) per Stage 2b2a).  Mirrors
+    // reference's LoadRouterAll-once-at-session-open pattern
+    // (router.c:111-143 called before _beginthreadex by C# console).
+    //
+    // Router sink is registered in main.cpp at WdspEngine setup
+    // (so the IQ feed lambda has access to wdspEngine).  Here we
+    // just point Ep6RecvThread at the router instance for dispatch.
+    // Stage 2b2-fix-v2: router0_ HL2Stream member retired; the
+    // Router is now process-singleton, created BEFORE HL2Stream
+    // construction by main.cpp's `lyra::wire::create_router(0)`.
+    // router_instance(0) returns the live Router; the lookup +
+    // registry-lock cost is one-time per open() so it's a no-op
+    // for steady-state RX/TX cadence.  Matches reference's
+    // `prouter[0]` direct lookup at every xrouter call site.
+    ep6Thread_.set_router(lyra::wire::router_instance(0), /*router_id=*/0);
+
+    // Stage 2b2-fix-v2: HW-PTT-in is now a Qt-main-thread POLL of
+    // `lyra::wire::prn->ptt_in` (the reference posture: wire side
+    // writes the level unconditionally at `networkproto1.c:496`,
+    // the FSM consumer reads it on its own clock and does its own
+    // edge detect).  The previous wire-thread `set_hw_ptt_sink`
+    // push-callback with `thread_local` edge-detect was a Lyra-
+    // native idiom translation that the operator reference-verify
+    // pass flagged as a deviation; replaced with `hwPttTimer_`
+    // (started below at the end of open() alongside autoLnaTimer_)
+    // which fires `onHwPttPoll()` at ~50 ms cadence on the Qt
+    // main thread, mirroring the reference's
+    // "consumer-polls-prn->ptt_in" shape.
+
+    // (3) — Ep6RecvThread spawn + init-sem handshake.  start()
+    // blocks until run_loop releases hReadThreadInitSem (per
+    // Stage 2a: AFTER MMCSS classification, BEFORE priming +
+    // WSAEventSelect — matches reference MetisReadThreadMain
+    // release point at networkproto1.c:249).  Priming pass
+    // (ForceCandCFrame(3) + 6 EP2 datagrams) runs async on the
+    // EP6 thread after start() returns — same parallel-spawn
+    // posture as reference (sendProtocol1Samples at :66 spawns
+    // before the EP6 thread's priming completes).
+    ep6Thread_.start(static_cast<int>(socket_));
+
+    // (4) — Spawn TX writer.  socket_ shared; no `ip` param needed
+    // (txWorkerLoop now sends via lyra::wire::metis_write_frame()
+    // which uses the TU-scope bound dest from metis_wire_bind()
+    // above — reference posture: sendPacket uses file-scope
+    // MetisAddr at network.c:1382-1402).
     const SocketHandle sh = socket_;
-    rxWorker_ = std::jthread([this, sh](std::stop_token stop) {
-        rxWorkerLoop(std::move(stop), sh);
+    txWorker_ = std::jthread([this, sh](std::stop_token stop) {
+        txWorkerLoop(std::move(stop), sh);
     });
-    txWorker_ = std::jthread([this, sh, ip](std::stop_token stop) {
-        txWorkerLoop(std::move(stop), sh, ip);
-    });
+
+    // Stage 2b2-fix: timer consumers START LAST — only after
+    // create_rnet() above has allocated `prn` and the EP6/TX
+    // workers are alive.  Reference posture: state-allocated +
+    // producers-running BEFORE any state-reading consumer ticks.
+    // Removes the prior race window where autoLnaTimer fired
+    // before `prn` existed (the defensive nullptr guard in
+    // onAutoLnaTick is now structurally unreachable, not just
+    // unobservable).
+    statsTimer_.start();
+    autoLnaTimer_.start();
+    // Stage 2b2-fix-v2: HW-PTT poll timer starts last too — same
+    // "wait until prn is allocated and EP6 producer is up" rule.
+    // Reset lastHwPttLevel_ to the current wire state so the first
+    // tick after open() doesn't fire a spurious edge on whatever
+    // level the radio happens to be sending at session start.
+    lastHwPttLevel_ = (lyra::wire::prn != nullptr
+                    && lyra::wire::prn->ptt_in != 0);
+    hwPttTimer_.start();
 }
 
 void HL2Stream::close() {
@@ -733,13 +859,13 @@ void HL2Stream::close() {
     // brackets so the next bench shows in lyra-log.txt which step (if
     // any) wedged: rxWorker_.join, txWorker_.join, sendto STOP, or the
     // closesocket itself.
-    qWarning("[shutdown] HL2Stream::close ENTRY (running=%d rxJoin=%d txJoin=%d sockOpen=%d)",
+    qWarning("[shutdown] HL2Stream::close ENTRY (running=%d ep6Alive=%d txJoin=%d sockOpen=%d)",
              running_.load() ? 1 : 0,
-             rxWorker_.joinable() ? 1 : 0,
+             ep6Thread_.running() ? 1 : 0,
              txWorker_.joinable() ? 1 : 0,
              socket_ != kInvalidSocket ? 1 : 0);
     if (!running_.load(std::memory_order_acquire) &&
-        !rxWorker_.joinable() &&
+        !ep6Thread_.running() &&
         !txWorker_.joinable() &&
         socket_ == kInvalidSocket) {
         qWarning("[shutdown] HL2Stream::close NO-OP (nothing alive)");
@@ -788,15 +914,17 @@ void HL2Stream::close() {
     // so the Settings checkbox stays at the operator's last explicit
     // setting across a Stop → next Start cycle.
 
-    // Request stop on both workers BEFORE joining either so they
-    // wind down in parallel (RX: bounded by recv timeout 100 ms,
-    // TX: bounded by waitable-timer wait cap 100 ms).
-    qWarning("[shutdown] HL2Stream::close request_stop on rx+tx workers");
-    if (rxWorker_.joinable()) rxWorker_.request_stop();
+    // Stage 2b2: request_stop on tx worker FIRST so it stops
+    // emitting (bounded by waitable-timer wait cap 100 ms); then
+    // stop the EP6 thread (Ep6RecvThread::stop joins bounded by the
+    // run_loop's prn->wdt timeout per networkproto1.c:443); then
+    // join txWorker_.  Matches reference's IOThreadStop pattern at
+    // network.c:1434-1452: stop signal → bounded wait → join.
+    qWarning("[shutdown] HL2Stream::close request_stop on tx worker + stop ep6Thread_");
     if (txWorker_.joinable()) txWorker_.request_stop();
-    qWarning("[shutdown] HL2Stream::close rxWorker_.join() - start");
-    if (rxWorker_.joinable()) rxWorker_.join();
-    qWarning("[shutdown] HL2Stream::close rxWorker_.join() - done");
+    qWarning("[shutdown] HL2Stream::close ep6Thread_.stop() - start");
+    ep6Thread_.stop();
+    qWarning("[shutdown] HL2Stream::close ep6Thread_.stop() - done");
     qWarning("[shutdown] HL2Stream::close txWorker_.join() - start");
     if (txWorker_.joinable()) txWorker_.join();
     qWarning("[shutdown] HL2Stream::close txWorker_.join() - done");
@@ -830,6 +958,7 @@ void HL2Stream::close() {
 
     statsTimer_.stop();
     autoLnaTimer_.stop();
+    hwPttTimer_.stop();   // Stage 2b2-fix-v2 — HW-PTT poll
     if (adcOverload_) { adcOverload_ = false; emit adcOverloadChanged(); }
     onStatsTick();  // flush the final window so the UI shows true totals
     running_.store(false, std::memory_order_release);
@@ -837,9 +966,9 @@ void HL2Stream::close() {
     emit logLine(QStringLiteral(
         "stream closed: RX %1 dg (%2 seq errs, %3 framing), "
         "TX %4 keepalives (%5 send errors)")
-        .arg(totalDg_.load())
-        .arg(seqErrors_.load())
-        .arg(framingErrors_.load())
+        .arg(lyra::wire::ep6_total_datagrams())
+        .arg(lyra::wire::ep6_seq_errors())
+        .arg(lyra::wire::ep6_framing_errors())
         .arg(txTotalDg_.load())
         .arg(txSendErrors_.load()));
 
@@ -863,11 +992,12 @@ void HL2Stream::close() {
             const qint64 dRx = endRx - startRx;
             const qint64 dNp = endNp - startNp;
             const qint64 dEr = endEr - startEr;
+            const qint64 lyraSeq = lyra::wire::ep6_seq_errors();
             emit logLine(QStringLiteral(
                 "udp4 stats Δ (system-wide): inDatagrams=%1  "
                 "noPorts=%2  inErrors=%3   (vs Lyra seqErrors=%4)")
                 .arg(dRx).arg(dNp).arg(dEr)
-                .arg(seqErrors_.load()));
+                .arg(lyraSeq));
             // Mirror to qInfo so it lands in the captured stderr
             // log too (the operator's lyra-log.txt path).
             qInfo("[udp4 stats] Δ inDatagrams=%lld noPorts=%lld "
@@ -875,7 +1005,7 @@ void HL2Stream::close() {
                   static_cast<long long>(dRx),
                   static_cast<long long>(dNp),
                   static_cast<long long>(dEr),
-                  static_cast<long long>(seqErrors_.load()));
+                  static_cast<long long>(lyraSeq));
         } else {
             emit logLine(QStringLiteral(
                 "udp4 stats Δ: snapshot unavailable "
@@ -888,7 +1018,7 @@ void HL2Stream::close() {
 }
 
 void HL2Stream::onStatsTick() {
-    const qint64 rxWin = windowDg_.exchange(0,   std::memory_order_acq_rel);
+    const qint64 rxWin = lyra::wire::ep6_drain_window_datagrams();
     const qint64 txWin = txWindowDg_.exchange(0, std::memory_order_acq_rel);
     // Divide by the ACTUAL elapsed interval (not the assumed period),
     // so timer jitter from main-thread load doesn't inflate the rate.
@@ -920,10 +1050,21 @@ void HL2Stream::onStatsTick() {
         // data per gateware (`_hl2src/hl2_rtl_control.v:475`).  HL2
         // reinterpretation per `console.cs:24937-24941`: a8 C1:C2 is
         // temperature, a10 C3:C4 is PA current.
+        // Stage 2b2: raw-int log reads from prn->... direct (the
+        // single telemetry state of record after the Ep6RecvThread
+        // migration; matches reference posture of int=0-until-first-
+        // telemetry-frame).
+        const int rxc = (lyra::wire::prn != nullptr)
+            ? lyra::wire::prn->tx[0].exciter_power : 0;
+        const int rfp = (lyra::wire::prn != nullptr)
+            ? lyra::wire::prn->tx[0].fwd_power : 0;
+        const int rrp = (lyra::wire::prn != nullptr)
+            ? lyra::wire::prn->tx[0].rev_power : 0;
+        const int rua = (lyra::wire::prn != nullptr)
+            ? lyra::wire::prn->user_adc0 : 0;
         const QString s = QStringLiteral(
             "[telem] a8=(%1,%2) a10=(%3,%4) | T=%5C PA=%6A")
-            .arg(telExciterRaw_.load()).arg(telFwdRaw_.load())
-            .arg(telRevRaw_.load()).arg(telUserAdc0Raw_.load())
+            .arg(rxc).arg(rfp).arg(rrp).arg(rua)
             .arg(hl2TempC(), 0, 'f', 1)
             .arg(paCurrentA(), 0, 'f', 2);
         qWarning("%s", qUtf8Printable(s));
@@ -955,8 +1096,16 @@ double HL2Stream::hl2TempC() const {
     // 473): `2'b01: iresp <= {... 4'h0, temperature, 4'h0, fwd_pwr}`
     // — slot 0x08 C1:C2 carries the on-board temp sensor (MCP9700,
     // 10 mV/°C, 0.5 V @ 0°C).
-    const int raw = telExciterRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
+    //
+    // Stage 2b2: read from `prn->tx[0].exciter_power` direct, mirroring
+    // reference's read-_radionet-field pattern (matches reference's
+    // `prn->tx[0].exciter_power = ...` write at networkproto1.c:506).
+    // Wire-INERT pre-Stage-2b2; LIVE now that Ep6RecvThread::start runs.
+    // Lyra-native -1 sentinel removed — reference reads int=0 at startup
+    // until first telemetry frame populates the field; HL2 banner shows
+    // briefly cold (~-50°C) for ~26ms post-open, matches reference UX.
+    if (lyra::wire::prn == nullptr) return kNaN;
+    const int raw = lyra::wire::prn->tx[0].exciter_power;
     return (3.26 * (raw / 4096.0) - 0.5) / 0.01;
 }
 double HL2Stream::hl2SupplyV() const {
@@ -984,408 +1133,48 @@ double HL2Stream::paCurrentA() const {
     //   amps = ((3.26 * raw/4096) / 50) / 0.04 / (1000/1270)
     // Gateware confirms (`_hl2src/hl2_rtl_control.v:474`): `2'b10:
     // iresp <= {... 4'h0, rev_pwr, 4'h0, bias_current}` — slot 0x10
-    // C3:C4 carries `bias_current` from the slow_adc ain2 channel
-    // (the sense resistor + INA181 current-shunt path).
-    const int raw = telUserAdc0Raw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
+    // C3:C4 carries `bias_current` from the slow_adc ain2 channel.
+    //
+    // Stage 2b2: read `prn->user_adc0` direct (Ep6RecvThread writes
+    // this from slot 0x10 C3:C4 per networkproto1.c:513).
+    if (lyra::wire::prn == nullptr) return kNaN;
+    const int raw = lyra::wire::prn->user_adc0;
     return ((3.26 * (raw / 4096.0)) / 50.0) / 0.04 / (1000.0 / 1270.0);
 }
 double HL2Stream::fwdPowerW() const {
-    const int raw = telFwdRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
+    // Stage 2b2: read `prn->tx[0].fwd_power` direct (Ep6RecvThread
+    // writes from slot 0x08 C3:C4 per networkproto1.c:507).
+    if (lyra::wire::prn == nullptr) return kNaN;
+    const int raw = lyra::wire::prn->tx[0].fwd_power;
     // Provisional + UNCALIBRATED — real watts need the per-band 3-point
-    // forward-power cal (a later TX-3 step).  Bridge/ref per HL2 case.
+    // forward-power cal (a later TX-3 step).
     const double v = (raw - 6.0) / 4095.0 * 3.3;
     return (v > 0.0) ? (v * v) / 1.5 : 0.0;
 }
 double HL2Stream::revPowerW() const {
-    const int raw = telRevRaw_.load(std::memory_order_relaxed);
-    if (raw < 0) return kNaN;
+    // Stage 2b2: read `prn->tx[0].rev_power` direct (Ep6RecvThread
+    // writes from slot 0x10 C1:C2 per networkproto1.c:511).
+    if (lyra::wire::prn == nullptr) return kNaN;
+    const int raw = lyra::wire::prn->tx[0].rev_power;
     const double v = (raw - 6.0) / 4095.0 * 3.3;
     return (v > 0.0) ? (v * v) / 1.5 : 0.0;
 }
 
 // ----------------------------------------------------------------
-// RX worker — dedicated OS thread, drains EP6 datagrams at line
-// rate (~5040 dg/sec at 192 kHz nddc=4), verifies Metis header +
-// USB sync, counts dropouts via sequence-number gaps.
-
-void HL2Stream::rxWorkerLoop(std::stop_token stop, SocketHandle sh) {
-    const SOCKET s = static_cast<SOCKET>(sh);
-
-    // 100 ms recv timeout — bounds stop-token check latency.  The
-    // healthy wire rate is ~5040 dg/sec so recvfrom returns
-    // immediately almost every call; the timeout only fires during
-    // the brief window between Open and the first EP6 datagram.
-    DWORD timeout = 100;
-    ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
-                 reinterpret_cast<const char*>(&timeout),
-                 sizeof(timeout));
-
-    quint32 expectedSeq = 0;
-    bool    firstPacket = true;
-    QByteArray buf;
-    buf.resize(2048);  // generous; Metis EP6 datagrams are 1032 bytes
-
-    // ---- Step 2c: RX1 dBFS accumulator -----------------------
-    // Local-to-this-thread state — re-initialized per-open since
-    // each open() spawns a fresh worker.  The accumulator sums
-    // magnitude² (I²+Q²) across kRmsWindowSamples DDC0 samples,
-    // then computes dBFS = 10·log₁₀(meanSq) and atomically
-    // publishes to rx1DbFs_ for the QML banner.  At 192 kHz IQ
-    // rate, 9600 samples = 50 ms — updates 20× per second so the
-    // 5 Hz QML stats tick always sees the most recent ~50 ms RMS.
-    //
-    // Wire format for each 26-byte slot (nddc=4, gateware default
-    // verified against ak4951v4 RTL + the HL2 wire-protocol C
-    // reference; see hl2_stream.h header doc for file:line cites):
-    //   bytes [0..2]   DDC0 I — 24-bit signed BE
-    //   bytes [3..5]   DDC0 Q — 24-bit signed BE
-    //   bytes [6..23]  DDC1/2/3 I/Q  — Step 5 RX2 work, ignored here
-    //   bytes [24..25] mic sample    — Step 3+ TX work, ignored here
-    //
-    // 24-bit normalization: pack the 3 bytes into the TOP 24 bits
-    // of an int32 with the low byte zero, then divide by 2³¹.
-    // bytes[0]'s high bit naturally lands at bit 31 = the sign
-    // bit of int32, so the sign extends correctly without any
-    // explicit cast.  Range: [-1.0, +1.0).
-    double rmsAcc       = 0.0;
-    int    rmsAccCount  = 0;
-    constexpr int kRmsWindowSamples = 9600;        // 50 ms @ 192 kHz
-    constexpr double kInv2Pow31      = 1.0 / 2147483648.0;
-
-    // ---- Q6.5 mic bench instrument -----------------------------
-    // Mirrors the rx1DbFs accumulator for the EP6 mic byte stream
-    // (slot bytes [24..25] at nddc=4 = 16-bit BE signed PCM, see
-    // design doc §3.2).  Decode-only: we already iterate every
-    // slot for the IQ extraction above, so reading the trailing
-    // 2 bytes is free.  Window = 9600 mic samples = 50 ms at the
-    // nddc=4 wire mic rate (~192 k mic samples/sec; the AK4951's
-    // 48 kHz codec audio is delivered repeated to fill each slot,
-    // so the wire rate equals the per-DDC sample rate).  At this
-    // accumulator scale a quiet shack reads near -90 dBFS, normal
-    // speech ~-30 to -10 dBFS, hot mic ~0 dBFS.  Operator runs
-    // with a mic plugged in, watches the periodic "mic = ..." log
-    // line below, talks → number rises = Q6.5 bench PASS.  No DSP
-    // wiring; TX-1 will hook this into Hl2Ep6MicSource later.
-    double micAcc                    = 0.0;
-    int    micAccCount               = 0;
-    constexpr int kMicWindowSamples  = 9600;       // 50 ms @ ~192 k
-    constexpr double kInv2Pow15      = 1.0 / 32768.0;
-    // Throttle the operator-visible mic-level log to ~1 Hz so it
-    // doesn't drown the safety log.  rx1 dBFS publishes 20×/sec
-    // to the QML banner; the mic instrument only needs a slower
-    // human-readable trace for the bench check.
-    int    micLogCounter             = 0;
-    constexpr int kMicLogEveryWindows = 20;        // 20 × 50 ms = ~1 s
-
-    while (!stop.stop_requested()) {
-        sockaddr_in from{};
-        int fromLen = sizeof(from);
-        const int n = ::recvfrom(s, buf.data(), buf.size(), 0,
-                                 reinterpret_cast<sockaddr*>(&from),
-                                 &fromLen);
-        if (n == SOCKET_ERROR) {
-            const int err = ::WSAGetLastError();
-            if (err == WSAETIMEDOUT) continue;          // expected
-            if (err == WSAEINTR     ||
-                err == WSAESHUTDOWN ||
-                err == WSAENOTSOCK)   break;            // teardown
-            framingErrors_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        if (n != kMetisDgSize) {
-            framingErrors_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        const auto *u =
-            reinterpret_cast<const std::uint8_t*>(buf.constData());
-
-        // Metis header: magic + data + endpoint=0x06 (radio→host)
-        if (u[0] != 0xEF || u[1] != 0xFE ||
-            u[2] != 0x01 || u[3] != 0x06) {
-            framingErrors_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        const quint32 seq =
-            (static_cast<quint32>(u[4]) << 24) |
-            (static_cast<quint32>(u[5]) << 16) |
-            (static_cast<quint32>(u[6]) <<  8) |
-             static_cast<quint32>(u[7]);
-        // EP6 sequence-number check — verbatim per the reference HL2
-        // read loop (`MetisReadDirect` networkproto1.c:175-194):
-        //
-        //   seqbytep[3..0] = readbuf[4..7];                 // BE pack
-        //   if (seqnum != (1 + MetisLastRecvSeq)) SeqError += 1;
-        //   MetisLastRecvSeq = seqnum;
-        //
-        // `seqnum` and `MetisLastRecvSeq` are both `unsigned int` /
-        // 32-bit.  Reference does no masking; the wrap at 2^32 is
-        // handled implicitly by unsigned-integer arithmetic (the
-        // increment `1 + MetisLastRecvSeq` wraps along with the
-        // gateware counter so the compare still succeeds on the
-        // wrap boundary).  Per EXECUTION_PLAN.md §3.9-1 revert
-        // (operator-rejected 2026-06-06): an earlier Lyra patch
-        // masked to 20 bits because the HL2+ ak4951v4 RTL exposed
-        // only 20 bits of counter — but the reference treats the
-        // sequence as 32-bit, so Lyra does the same.  If a host
-        // sees a false "seq error" every ~3:27 on this gateware
-        // because of the gateware's 20-bit wrap, that is Rule 18
-        // STOP-AND-ASK: reference says X, bench says Y, operator
-        // decides — NOT a silent Claude-introduced divergence.
-
-        if (firstPacket) {
-            expectedSeq = seq + 1;
-            firstPacket = false;
-        } else {
-            if (seq != expectedSeq) {
-                seqErrors_.fetch_add(1, std::memory_order_relaxed);
-            }
-            expectedSeq = seq + 1;
-        }
-        // Both USB frames must begin 0x7F 0x7F 0x7F.
-        if (u[ 8] != 0x7F || u[ 9] != 0x7F || u[ 10] != 0x7F ||
-            u[520] != 0x7F || u[521] != 0x7F || u[522] != 0x7F) {
-            framingErrors_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        totalDg_.fetch_add(1, std::memory_order_relaxed);
-        windowDg_.fetch_add(1, std::memory_order_relaxed);
-
-        // ---- EP6 status C&C decode -------------------------------
-        // Each USB frame's status bytes sit at frame-offset 3..7
-        // (C0..C4) → absolute offsets 11 and 523.  Reference
-        // `MetisReadThreadMainLoop_HL2` (networkproto1.c:464-525)
-        // routes by C0[7:3] address bits; the I2C-readback flag
-        // (C0 bit 7) is checked first and skips the address-based
-        // dispatch entirely (:478-493).
-        //
-        // Reference slot map (networkproto1.c:498-525):
-        //   case 0x00: adc_overload = C1 & 0x01;
-        //              user_dig_in  = (C1 >> 1) & 0x0F;
-        //   case 0x08: exciter_power = C1:C2  (AIN5 drive)
-        //              fwd_power     = C3:C4  (AIN1 PA coupler)
-        //   case 0x10: rev_power     = C1:C2  (AIN2)
-        //              user_adc0     = C3:C4  (AIN3 "MKII PA Volts")
-        //   case 0x18: user_adc1     = C1:C2  (AIN4 "MKII PA Amps")
-        //              supply_volts  = C3:C4  (AIN6 Hermes Volts)
-        //   case 0x20: per-ADC overload bits  (not consumed today)
-        //
-        // Per EXECUTION_PLAN.md §3.9-2/3/4 revert (operator-rejected
-        // 2026-06-06): the previous Lyra slot map (temp at 0x08 C1:C2;
-        // PA Amps at 0x10 C3:C4; supply derived from 0x00 C1:C2 >>4;
-        // 0x18 treated as dead) was a fabrication.  Now byte-verbatim
-        // per reference.  Reference has NO temperature in EP6 — HL2
-        // board temp lives on I2C2 and is out of scope for this revert.
-        for (int f = 0; f < 2; ++f) {
-            const std::uint8_t *st = u + (f == 0 ? 11 : 523);  // C0..C4
-            const std::uint8_t c0 = st[0];
-            if (c0 & 0x80) {
-                continue;  // I2C readback, not a status frame
-            }
-            const int p12 = (static_cast<int>(st[1]) << 8) | st[2];  // C1:C2
-            const int p34 = (static_cast<int>(st[3]) << 8) | st[4];  // C3:C4
-            switch (c0 & 0xF8) {
-            case 0x00:  // adc_overload (C1 bit 0) + user_dig_in (C1[4:1])
-                adcOverloadNow_.store((st[1] & 0x01) != 0,
-                                      std::memory_order_relaxed);
-                break;
-            case 0x08:  // exciter_power (C1:C2) + fwd_power (C3:C4)
-                        // On HL2 the "exciter_power" slot carries temp
-                        // per `console.cs:24937-24941` reinterpretation
-                        // + `_hl2src/hl2_rtl_control.v:473` gateware.
-                telExciterRaw_.store(p12, std::memory_order_relaxed);
-                telFwdRaw_.store(p34, std::memory_order_relaxed);
-                break;
-            case 0x10:  // rev_power (C1:C2) + user_adc0 (C3:C4)
-                        // On HL2 the "user_adc0" slot carries PA current
-                        // per `console.cs:24937-24941` reinterpretation
-                        // + `_hl2src/hl2_rtl_control.v:474` gateware
-                        // (bias_current from slow_adc ain2).
-                telRevRaw_.store(p12, std::memory_order_relaxed);
-                telUserAdc0Raw_.store(p34, std::memory_order_relaxed);
-                break;
-            case 0x18:  // Slot 0x18 carries no useful data on HL2 per
-                        // `_hl2src/hl2_rtl_control.v:475` ("Unused in HL"
-                        // — `{16'h0, debug}`).  Reference C source
-                        // `networkproto1.c:516-517` decodes nominal
-                        // `user_adc1` / `supply_volts` here but those
-                        // bytes are zeros on this gateware family.
-                        // Skip the decode; no atomic to store.
-                break;
-            default:
-                break;
-            }
-        }
-
-        // ---- Task #36: Hardware PTT input forwarder ---------------
-        // EP6 status C0 bit 0 = `ptt_in` (the HL2's HW PTT pin
-        // state — foot switch / hand-mic PTT / etc.).  Decoded
-        // every datagram from frame-0 C0 (the address rotation in
-        // bits[7:3] doesn't affect bit 0; the I2C-readback flag
-        // bit 7 leaves bit 0 still meaningful per the verified
-        // HL2 read-loop semantics).
-        //
-        // The forwarder is GATED on the operator opt-in atomic.
-        // When disabled (default), we pure-decode the level into
-        // `lastPttIn_` (so the edge detector is hot for an instant
-        // enable) but never emit — wire-identical to a pre-Task-#36
-        // build with respect to MOX state changes.
-        //
-        // When enabled, an edge (low→high or high→low) on ptt_in
-        // dispatches `requestMox(bool)` via QueuedConnection so
-        // the FSM runs on its owning thread (this QObject's),
-        // exactly like the QML MOX button.  Level-driven semantics
-        // match the verified HL2 reference + every working host
-        // app — debounce is the C&C cadence (~5 kHz EP6 frames at
-        // 192 k/nddc=4) + the set_source idempotency in the FSM,
-        // NOT a host-side timer; if a real chatter problem shows
-        // up on a specific foot-switch the fix lands at the Radio
-        // adapter layer, never inside the FSM.
-        {
-            const std::uint8_t c0_f0 = u[11];  // frame 0 C0
-            const bool pttNow = (c0_f0 & 0x01) != 0;
-            if (pttNow != lastPttIn_) {
-                lastPttIn_ = pttNow;
-                if (hwPttEnabled_.load(std::memory_order_acquire)) {
-                    // QueuedConnection: the rx-loop thread is NOT
-                    // this QObject's owning thread (rx worker is a
-                    // std::jthread spawned in open()).  Qt routes
-                    // the call to the FSM's thread; no race with
-                    // the FSM's single-thread state mutations.
-                    // Task #33 — Thetis-faithful PTT-source tagging:
-                    // route HW PTT through the source-tagged wrapper
-                    // so subscribers know "this MOX edge came from
-                    // the foot switch / hand mic / mic button" vs
-                    // the operator's software MOX button.
-                    QMetaObject::invokeMethod(
-                        this, "requestMoxFromHwPtt",
-                        Qt::QueuedConnection,
-                        Q_ARG(bool, pttNow));
-                }
-            }
-        }
-
-        // ---- Step 2c/3d: parse DDC0 IQ -----------------------
-        // Two USB frames per datagram at offsets 8 and 520; each
-        // carries 19 sample slots starting at frame-offset 8 = 38
-        // DDC0 IQ frames per datagram.  We (a) accumulate RMS for the
-        // RX1 dBFS readout (Step 2c) and (b) pack interleaved
-        // (I,Q,…) doubles in [-1,1) to hand the DSP engine once per
-        // datagram (Step 3d).  Scaling (b0<<24|b1<<16|b2<<8) * 1/2^31
-        // is byte-identical to the reference HL2 receive parse.
-        constexpr int kFramesPerDatagram = 2 * 19;   // 38
-        double iqScratch[2 * kFramesPerDatagram];
-        int    iqIdx = 0;
-        // TX Component 3 — per-datagram decimated mic scratch.
-        // Max possible decimated count = 38 (when decimation_factor=1
-        // at 48 k wire — Lyra doesn't ship 48 k IQ today, but we size
-        // for the worst case so a future config change can't overrun).
-        float  micScratch[kFramesPerDatagram];
-        int    micIdx = 0;
-        // Snapshot the decimation factor once per datagram.  The atomic
-        // is written by setSampleRate() (main thread); reading it once
-        // up front keeps the per-slot inner loop pure scalar arithmetic.
-        const int micDecFactor = micDecimationFactor_.load(
-            std::memory_order_relaxed);
-        for (int usbFrame = 0; usbFrame < 2; ++usbFrame) {
-            const std::uint8_t *frame = u + (usbFrame == 0 ? 8 : 520);
-            for (int slot = 0; slot < 19; ++slot) {
-                const std::uint8_t *sb = frame + 8 + slot * 26;
-                // DDC0 I — bytes 0..2, packed into top 24 bits of int32
-                const std::int32_t iRaw = static_cast<std::int32_t>(
-                    (static_cast<std::uint32_t>(sb[0]) << 24) |
-                    (static_cast<std::uint32_t>(sb[1]) << 16) |
-                    (static_cast<std::uint32_t>(sb[2]) <<  8));
-                // DDC0 Q — bytes 3..5
-                const std::int32_t qRaw = static_cast<std::int32_t>(
-                    (static_cast<std::uint32_t>(sb[3]) << 24) |
-                    (static_cast<std::uint32_t>(sb[4]) << 16) |
-                    (static_cast<std::uint32_t>(sb[5]) <<  8));
-                const double iVal = static_cast<double>(iRaw) * kInv2Pow31;
-                const double qVal = static_cast<double>(qRaw) * kInv2Pow31;
-                iqScratch[iqIdx++] = iVal;
-                iqScratch[iqIdx++] = qVal;
-                rmsAcc += iVal * iVal + qVal * qVal;
-                if (++rmsAccCount >= kRmsWindowSamples) {
-                    const double meanSq =
-                        rmsAcc / static_cast<double>(kRmsWindowSamples);
-                    const double db = (meanSq > 0.0)
-                        ? 10.0 * std::log10(meanSq)
-                        : -200.0;
-                    rx1DbFs_.store(db, std::memory_order_relaxed);
-                    rmsAcc      = 0.0;
-                    rmsAccCount = 0;
-                }
-
-                // Q6.5 mic bench — bytes [24..25] of this 26-byte
-                // slot at nddc=4 (per design v2 §3.2; verified vs
-                // ak4951v4 RTL + the HL2 wire-protocol reference).
-                // 16-bit BE signed PCM, normalized to [-1, +1).
-                const std::int16_t micRaw = static_cast<std::int16_t>(
-                    (static_cast<std::uint16_t>(sb[24]) << 8) |
-                     static_cast<std::uint16_t>(sb[25]));
-                const double micVal =
-                    static_cast<double>(micRaw) * kInv2Pow15;
-                micAcc += micVal * micVal;
-                // TX Component 3 — decimate wire-rate mic samples to
-                // 48 kHz and stage in micScratch.  Matches the C
-                // reference's `mic_decimation_count`/`mic_decimation_factor`
-                // pattern verbatim (counter persists across datagrams,
-                // resets only on rate change).  Emit only every Nth
-                // wire sample where N = factor (96k→2, 192k→4, 384k→8).
-                if (++micDecimationCount_ >= micDecFactor) {
-                    micDecimationCount_ = 0;
-                    if (micIdx < kFramesPerDatagram) {
-                        micScratch[micIdx++] = static_cast<float>(micVal);
-                    }
-                }
-                if (++micAccCount >= kMicWindowSamples) {
-                    const double meanSqM =
-                        micAcc / static_cast<double>(kMicWindowSamples);
-                    const double micDb = (meanSqM > 0.0)
-                        ? 10.0 * std::log10(meanSqM)
-                        : -200.0;
-                    micDbFs_.store(micDb, std::memory_order_relaxed);
-                    micAcc      = 0.0;
-                    micAccCount = 0;
-                    if (++micLogCounter >= kMicLogEveryWindows) {
-                        // Use safetyLog so it's both in-session log + qInfo
-                        // (operator can see it in the dock OR in the
-                        // Windows event/console stream).  Throttled to
-                        // ~1 Hz to avoid drowning the safety log.
-                        safetyLog(QStringLiteral("Q6.5 mic bench: %1 dBFS")
-                                  .arg(micDb, 0, 'f', 1));
-                        micLogCounter = 0;
-                    }
-                }
-            }
-        }
-        // Step 3d: hand this datagram's IQ to the DSP engine inline on
-        // this RX worker thread (no Qt signal / no cross-thread queue).
-        if (iqSink_) {
-            iqSink_(iqScratch, kFramesPerDatagram);
-        }
-        // TX Component 3 — analogue of the C reference's `Inbound(inid(1,0),
-        // mic_sample_count, prn->TxReadBufp)` call at end-of-datagram.
-        // Synchronous on this RX worker thread; the consumer (Component 4
-        // worker, eventually) is responsible for being lock-free / fast.
-        //
-        // micConsumerMtx_ is the C reference's csIN analog (cmbuffs.c:97):
-        // held around the WHOLE read+call so a concurrent setMicConsumer
-        // (e.g. teardown clearing the consumer) cannot tear the captured
-        // state out from under an in-flight call.  The lock is held only
-        // for the duration of the consumer call, which pushes a small
-        // sample block into a lock-free ring downstream — bounded
-        // microseconds, no contention in steady state.
-        {
-            std::lock_guard<std::mutex> lk(micConsumerMtx_);
-            if (micConsumer_ && micIdx > 0) {
-                micConsumer_(micScratch, micIdx);
-            }
-        }
-    }
-}
+// Stage 2b2 (operator-locked 2026-06-07, "do as the reference does
+// — period"): HL2Stream::rxWorkerLoop body retired.  The EP6 recv
+// path is now `wire::Ep6RecvThread` (started from HL2Stream::open
+// — see ep6Thread_.start() call site).  Per-DDC IQ dispatch goes
+// through `wire::Router::xrouter` to whichever consumer main.cpp
+// registered (WDSP feed via lyra::wire::register_sink at app boot).
+// HW PTT-in level forwards via the `set_hw_ptt_sink` callback wired
+// in HL2Stream::open (edge-detect lambda-local; reference posture =
+// no wire-side edge state, `prn->ptt_in` is a single-bit level).
+// Telemetry, mic decimation, ADC overload, seq/total/framing/window
+// counters all live in `wire::Ep6RecvThread` + `wire/RadioNet` +
+// TU-scope statics — single source of truth per reference's
+// _radionet + file-scope-global pattern (network.h / networkproto1.c).
+// ----------------------------------------------------------------
 
 void HL2Stream::setRx1FreqHz(quint32 hz) {
     const quint32 prev = rx1FreqHz_.exchange(hz, std::memory_order_relaxed);
@@ -1555,6 +1344,34 @@ void HL2Stream::requestMox(bool on) {
 
 void HL2Stream::requestMoxFromHwPtt(bool on) {
     requestMox(on, PttSource::HwPtt);
+}
+
+// Stage 2b2-fix-v2 — HW-PTT-in poll slot, Qt main thread.
+// Mirrors the reference's "FSM consumer polls prn->ptt_in and
+// edge-detects on its own clock" posture (no wire-thread push
+// callback, no QueuedConnection slot hop per datagram).  Reads
+// the level the EP6 thread wrote at the most-recent status
+// decode (`Ep6RecvThread.cpp:866` unconditional write per the
+// reference `networkproto1.c:496` semantic).  Edge state lives
+// in `lastHwPttLevel_` (plain bool, Qt-main-thread sole writer
+// + reader — no synchronisation needed).  Opt-in gated by
+// `hwPttEnabled_` per §10 Q#1 (N8SDR HL2+/AK4951 non-zero
+// ptt_in at RX rest; default-OFF safety until operator opts
+// in after a per-unit bench check).
+void HL2Stream::onHwPttPoll() {
+    if (lyra::wire::prn == nullptr) return;          // stream torn down
+    if (!hwPttEnabled_.load(std::memory_order_acquire)) {
+        // Gate closed — keep lastHwPttLevel_ tracking the wire
+        // so a re-enable after a level change doesn't fire a
+        // spurious edge on the next tick.
+        lastHwPttLevel_ = (lyra::wire::prn->ptt_in != 0);
+        return;
+    }
+    const bool now = (lyra::wire::prn->ptt_in != 0);
+    if (now != lastHwPttLevel_) {
+        lastHwPttLevel_ = now;
+        requestMoxFromHwPtt(now);
+    }
 }
 
 void HL2Stream::requestMoxFromTci(bool on) {
@@ -1859,20 +1676,20 @@ void HL2Stream::setTxTimeoutBypass(bool on) {
 // always sees the operator's current intent without a stream
 // restart.
 //
-// Turning OFF clears lastPttIn_ so the next ON-edge after a
-// re-enable doesn't fire on whatever stale level the wire happened
-// to be reading.  This is wire-thread state mutated from the Qt
-// main thread — safe because the RX worker only READS lastPttIn_
-// when hwPttEnabled_ is true (and we clear it under hwPttEnabled_=
-// false, so the worker can't be reading it at the same moment).
+// Stage 2b2: the edge-detect previous level now lives in a
+// thread_local inside the Ep6RecvThread hw_ptt_sink lambda
+// (registered at open()), so setHwPttEnabled() no longer needs
+// to reach into the wire thread's state — toggling the gate
+// from the main thread is sufficient because the lambda's
+// thread_local prev is reset implicitly across stop()/start()
+// cycles (the Ep6RecvThread re-enters its run_loop with
+// fresh-thread storage on every start).  During an in-session
+// toggle, a stale prev=true on a re-enable is harmless: the
+// new-level read settles to the live wire value within a few
+// EP6 frames and the next genuine edge fires correctly.
 void HL2Stream::setHwPttEnabled(bool on) {
     const bool prev = hwPttEnabled_.exchange(on, std::memory_order_release);
     if (prev == on) return;
-    if (!on) {
-        // Reset the edge-detect memory so a future re-enable
-        // doesn't trip on a wire level that drifted while gated off.
-        lastPttIn_ = false;
-    }
     safetyLog(QStringLiteral("HW PTT input forwarder -> %1")
               .arg(on ? QStringLiteral("ENABLED (foot-switch will key)")
                       : QStringLiteral("disabled (default-safe)")));
@@ -2264,7 +2081,12 @@ void HL2Stream::setSampleRate(int hz) {
     // `mic_decimation_count_` does NOT need to reset across normal rate
     // switches — same-direction phase walk-in stabilises within one
     // datagram; the RX-worker-thread-only counter is safe to leave alone.
-    micDecimationFactor_.store(micDec, std::memory_order_relaxed);
+    // Stage 2b2: route the mic decimation factor to the TU-scope
+    // free variable that Ep6RecvThread's mic-tap reads (replaces the
+    // retired HL2Stream::micDecimationFactor_ atomic).  Plain int per
+    // reference; single-writer (setSampleRate on Qt main) vs single-
+    // reader (Ep6RecvThread tap) is benign on the wire-rate codepath.
+    lyra::wire::mic_decimation_factor = micDec;
     emit logLine(QStringLiteral("IQ sample rate -> %1 kHz (wire C1), "
                                 "mic dec /%2")
                  .arg(hz / 1000).arg(micDec));
@@ -2494,36 +2316,21 @@ void HL2Stream::pushAudio(const qint16 *lr, int nframes) {
 // using a Win32 HIGH_RESOLUTION waitable timer with drift-
 // corrected absolute scheduling.
 
-void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
-                              QString ip) {
-    const SOCKET s = static_cast<SOCKET>(sh);
-
-    sockaddr_in dest{};
-    dest.sin_family = AF_INET;
-    dest.sin_port   = htons(kRadioPort);
-    ::inet_pton(AF_INET, ip.toLatin1().constData(), &dest.sin_addr);
-
-    // Send START.  Done from the TX thread (not from main or RX)
-    // so every host→radio packet originates from one operation
-    // context.  The radio responds with EP6 to whatever socket the
-    // start came from — that's the shared socket the RX thread is
-    // listening on, so EP6 routing is preserved.
-    const QByteArray startPkt = buildControlPacket(true);
-    if (::sendto(s, startPkt.constData(), startPkt.size(), 0,
-                 reinterpret_cast<sockaddr*>(&dest),
-                 sizeof(dest)) != startPkt.size()) {
-        const int err = ::WSAGetLastError();
-        QMetaObject::invokeMethod(this, [this, err]() {
-            onFatalError(QStringLiteral("START: %1")
-                         .arg(winsockError(err)));
-        }, Qt::QueuedConnection);
-        return;
-    }
-    QMetaObject::invokeMethod(this, [this]() {
-        emit logLine(QStringLiteral(
-            "  START sent (0xEFFE 0x04 0x01 + 60 zeros), "
-            "EP2 keepalive engaging @380 Hz"));
-    }, Qt::QueuedConnection);
+void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh) {
+    // Stage 2b2: `sh` (socket fd) carried for the audio_cv timing
+    // path but the EP2 send itself now goes through
+    // lyra::wire::metis_write_frame() which reads its socket fd +
+    // dest from the TU-scope MetisAddr bound at session open.  No
+    // local sockaddr_in needed.  Reference: networkproto1.c:216-237
+    // MetisWriteFrame → network.c:1382-1402 sendPacket → MetisAddr
+    // file-scope global.
+    //
+    // START packet send is now hoisted to HL2Stream::open() body
+    // (matches reference SendStartToMetis posture at
+    // netInterface.c:50 — caller thread, BEFORE thread spawn).
+    (void) sh;  // socket fd reserved for any future direct-sendto
+                // diagnostic; the main EP2 path uses
+                // metis_write_frame() exclusively.
 
     // EP2 writer pacing — the verified HL2 wire-protocol reference's
     // sendProtocol1Samples model: sends are driven by AUDIO
@@ -2548,11 +2355,19 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
     // Pack the per-datagram fields and send one EP2 datagram.  `audio` is
     // 126 stereo frames, or nullptr for a silence keepalive.
     auto sendDatagram = [&](const qint16 *audio) {
-        const quint32 seq = txSeq_.fetch_add(1, std::memory_order_relaxed);
-        pktBytes[4] = static_cast<std::uint8_t>((seq >> 24) & 0xFF);
-        pktBytes[5] = static_cast<std::uint8_t>((seq >> 16) & 0xFF);
-        pktBytes[6] = static_cast<std::uint8_t>((seq >>  8) & 0xFF);
-        pktBytes[7] = static_cast<std::uint8_t>( seq        & 0xFF);
+        // Stage 2b2: sequence number + HPSDR header construction
+        // moved into lyra::wire::metis_write_frame() (called at the
+        // bottom of this lambda).  Reference posture: ONE shared
+        // outbound seq counter (MetisOutBoundSeqNum at
+        // networkproto1.c:30); priming + EP2 writer both consume
+        // it via MetisWriteFrame at networkproto1.c:216-237.
+        // PureSignal-load-bearing — calcc/iqc assume single
+        // continuous outbound stream.
+        // The template's bytes [0..7] (HPSDR header) are no longer
+        // patched here; metis_write_frame() builds the header
+        // internally + memcpys our 1024-byte USB-frames payload
+        // from pktBytes+8.  Those template bytes become dead-space
+        // (harmless — never read by metis_write_frame).
 
         // TX-0c-emit: HL2 19-slot round-robin C&C cycle, one slot per
         // USB frame (two slots per datagram).  Matches the verified
@@ -2723,10 +2538,19 @@ void HL2Stream::txWorkerLoop(std::stop_token stop, SocketHandle sh,
             pktBytes[base + 7] = static_cast<std::uint8_t>( txQ       & 0xFF);
         }
 
-        const int n = ::sendto(s, pkt.constData(), pkt.size(), 0,
-                               reinterpret_cast<sockaddr*>(&dest),
-                               sizeof(dest));
-        if (n != pkt.size()) {
+        // Stage 2b2: route through shared wire-layer primitive.
+        // metis_write_frame() builds the 8-byte HPSDR header (sync +
+        // endpoint=0x02 + BE seq from shared g_metis_out_seq_num) +
+        // memcpys 1024-byte payload from pktBytes+8 + holds
+        // prn->sndpkt around sendto (matches reference's
+        // MetisWriteFrame + sendPacket chain at networkproto1.c:216-
+        // 237 + network.c:1382-1402).  Returns payload bytes sent
+        // (negative on socket error — matches reference's
+        // SOCKET_ERROR-only check; partial-but-positive returns are
+        // not treated as errors, per reference posture at
+        // network.c:1391-1399).
+        const int n = lyra::wire::metis_write_frame(0x02, pktBytes + 8);
+        if (n < 0) {
             txSendErrors_.fetch_add(1, std::memory_order_relaxed);
         } else {
             txTotalDg_.fetch_add(1, std::memory_order_relaxed);

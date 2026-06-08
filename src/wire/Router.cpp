@@ -68,6 +68,45 @@ Router* router_instance(int id) {
     return g_routers[id];
 }
 
+// =================== Free function: create_router =================
+//
+// Mirror of reference's `create_router(id)` at `router.c:32-50`.
+// Reference does `prouter[id] = (ROUTER)malloc(sizeof(router))` +
+// zero-init; Lyra's `new Router` runs the ctor which self-
+// registers at slot 0 (current single-Router posture; multi-id
+// support deferred to v0.4-class multi-radio work).  Idempotent:
+// if the slot is already occupied, no-op (matches reference's
+// implicit "don't double-create" expectation — reference relies
+// on a single call-site at `create_cmaster()`).  Intentional
+// process-lifetime leak: matches reference posture of "malloc at
+// create_cmaster, free at destroy_cmaster" with the matching free
+// in destroy_router below.
+
+void create_router(int id) {
+    if (id < 0 || id >= kRouterMaxInstances) return;
+    if (router_instance(id) != nullptr) return;  // idempotent
+    (void) new Router();   // ctor self-registers at slot 0
+    (void) id;             // multi-id slot support TBD (v0.4 multi-radio)
+}
+
+// =================== Free function: destroy_router ================
+//
+// Mirror of reference's `destroy_router(id, variant)` at
+// `router.c:32-50`.  Deletes the Router; dtor self-unregisters.
+// `variant` is accepted for reference-signature compatibility
+// (the reference variant parameter selects which prouter[]
+// variant to free; Lyra single-instance build ignores it).
+// Caller-discipline note: ALL consumers (Ep6RecvThread,
+// hl2_stream worker, etc.) MUST have stopped dispatching through
+// the router before this call — otherwise an in-flight xrouter()
+// dispatches into a freed Router.  The matching call site in
+// HL2Stream::close() is ordered AFTER the EP6 thread joins.
+
+void destroy_router(int id, int /*variant*/) {
+    Router* r = router_instance(id);
+    if (r) delete r;   // dtor calls registry_unregister
+}
+
 // =================== Free function: register_sink =================
 
 void register_sink(Router* a,
