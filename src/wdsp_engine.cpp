@@ -2404,18 +2404,6 @@ void WdspEngine::setAudioOutputDevice(int index)
 // locked methodology.
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
-    // DEBUG B.6.b-debug-sink: dispatch-side counters live in
-    // file-scope (static) atomics so we don't widen the public
-    // header.  We log at ~1 Hz piggybacking on the call count.
-    static std::atomic<std::uint64_t> g_dispatch_calls{0};
-    static std::atomic<std::uint64_t> g_dispatch_muted{0};
-    static std::atomic<std::uint64_t> g_dispatch_hl2_push{0};
-    static std::atomic<std::uint64_t> g_dispatch_hl2_null{0};
-    static std::atomic<std::uint64_t> g_dispatch_pc_push{0};
-    static std::atomic<std::uint64_t> g_dispatch_pc_null{0};
-    const std::uint64_t dcnt =
-        g_dispatch_calls.fetch_add(1, std::memory_order_relaxed) + 1;
-
     // Two mute paths OR together: the operator's manual mute_
     // (Audio panel) AND the auto-mute-on-TX gate (live wire MOX
     // bit, gated by autoMuteOnTx_ pref).  Either silences audio
@@ -2432,7 +2420,6 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
         (m_manual || m_tx)
             ? 0.0
             : posToGain(volume_.load(std::memory_order_relaxed));
-    if (gain == 0.0) g_dispatch_muted.fetch_add(1, std::memory_order_relaxed);
     if (hl2Out_) {
         gain *= kHl2OutAtten;   // tame the hotter AK4951 output
     }
@@ -2457,50 +2444,14 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
         pcm16_[static_cast<size_t>(2 * f + 1)] =
             static_cast<qint16>(r * 32767.0);
     }
-    // DEBUG B.6.b-debug-sink: peak |pcm16| over this block.
-    qint16 pk = 0;
-    for (int f = 0; f < nframes; ++f) {
-        qint16 a = pcm16_[static_cast<size_t>(2 * f + 0)];
-        qint16 b = pcm16_[static_cast<size_t>(2 * f + 1)];
-        if (a < 0) a = static_cast<qint16>(-a);
-        if (b < 0) b = static_cast<qint16>(-b);
-        if (a > pk) pk = a;
-        if (b > pk) pk = b;
-    }
     if (hl2Out_) {
         // HL2 onboard codec -- hand to the EP2 writer's ring.
-        if (hl2AudioPush_) {
-            g_dispatch_hl2_push.fetch_add(1, std::memory_order_relaxed);
-            hl2AudioPush_(pcm16_.data(), nframes);
-        } else {
-            g_dispatch_hl2_null.fetch_add(1, std::memory_order_relaxed);
-        }
+        if (hl2AudioPush_) hl2AudioPush_(pcm16_.data(), nframes);
     } else {
         // PC sound card -- audioMtx_ guards audioRing_ against a
         // main-thread device switch / teardown.
         std::lock_guard<std::mutex> lk(audioMtx_);
-        if (audioRing_) {
-            g_dispatch_pc_push.fetch_add(1, std::memory_order_relaxed);
-            audioRing_->push(pcm16_.data(), nframes);
-        } else {
-            g_dispatch_pc_null.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-    // Rate-limited dump (every 188th call ~ 1 Hz at 48k/256 cadence).
-    if ((dcnt % 188u) == 0u) {
-        qInfo("[disp-dbg] calls=%llu muted=%llu gain=%.4f bal(L,R)=(%.2f,%.2f) "
-              "hl2Out=%d nframes=%d peak16=%d "
-              "hl2(push/null)=%llu/%llu pc(push/null)=%llu/%llu "
-              "hl2pushSet=%d audioRingSet=%d",
-              (unsigned long long)dcnt,
-              (unsigned long long)g_dispatch_muted.load(),
-              gain, lBal, rBal,
-              hl2Out_ ? 1 : 0, nframes, (int)pk,
-              (unsigned long long)g_dispatch_hl2_push.load(),
-              (unsigned long long)g_dispatch_hl2_null.load(),
-              (unsigned long long)g_dispatch_pc_push.load(),
-              (unsigned long long)g_dispatch_pc_null.load(),
-              hl2AudioPush_ ? 1 : 0, audioRing_ ? 1 : 0);
+        if (audioRing_) audioRing_->push(pcm16_.data(), nframes);
     }
 }
 
