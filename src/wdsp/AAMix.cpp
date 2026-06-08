@@ -82,6 +82,32 @@
 #include <numbers>
 #include <thread>
 
+// Stage B.6.b-debug (2026-06-08): 5-counter diagnostic instrumentation.
+// Operator B.6.b-retry bench failed silently (NO audio on either sink).
+// Counters localise WHICH station in the chain breaks:
+//   1. xmixaudio_calls  : feedIq -> xMixAudio entry count
+//   2. ready_releases   : Ready[i]->release(n) total permits granted
+//   3. mixmain_wakes    : mix_main passed the AND-wait acquire
+//   4. nonzero_out      : xaamix produced at least one non-zero sample
+//   5. outbound_calls   : a->Outbound() invoked
+// Emits one INFO log line per ~1 sec from mix_main (every 188th wake
+// at 188 Hz cadence).  Rate-limited so it doesn't flood the log.
+#include <QtCore/QtGlobal>
+#include <QtCore/QString>
+
+namespace lyra::wdsp::diag {
+inline std::atomic<std::uint64_t> g_xmixaudio_calls{0};
+inline std::atomic<std::uint64_t> g_ready_releases{0};
+inline std::atomic<std::uint64_t> g_xmixaudio_skipped_accept_off{0};
+inline std::atomic<std::uint64_t> g_xmixaudio_skipped_null_ptr{0};
+inline std::atomic<std::uint64_t> g_mixmain_wakes{0};
+inline std::atomic<std::uint64_t> g_mixmain_started{0};
+inline std::atomic<std::uint64_t> g_mixmain_acquire_n{0};  // nactive at wake
+inline std::atomic<std::uint64_t> g_nonzero_out{0};
+inline std::atomic<std::uint64_t> g_outbound_calls{0};
+inline std::atomic<std::uint64_t> g_outbound_null{0};
+}  // namespace lyra::wdsp::diag
+
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -505,14 +531,41 @@ static void downslew(AAMix* a);
 // resampler runs; `2 * ringinsize` doubles when it doesn't).
 void xMixAudio(AAMix* ptr, int id, int stream, double* data)
 {
+    // DEBUG B.6.b-debug: entry count.
+    const std::uint64_t entry_cnt =
+        diag::g_xmixaudio_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Independent producer-side log every 188th call (~1 Hz at
+    // 48k/256 cadence).  Fires regardless of whether mix_main is
+    // alive -- so we see the producer side even if mix_main is
+    // stuck in the AND-wait acquire.
+    if ((entry_cnt % 188u) == 0u) {
+        qInfo("[aamix-dbg-prod] xmix=%llu rel=%llu skip(acc/null)=%llu/%llu "
+              "wake=%llu(n=%llu) nzOut=%llu out=%llu nullOut=%llu "
+              "mixmain_started=%llu",
+              (unsigned long long)diag::g_xmixaudio_calls.load(),
+              (unsigned long long)diag::g_ready_releases.load(),
+              (unsigned long long)diag::g_xmixaudio_skipped_accept_off.load(),
+              (unsigned long long)diag::g_xmixaudio_skipped_null_ptr.load(),
+              (unsigned long long)diag::g_mixmain_wakes.load(),
+              (unsigned long long)diag::g_mixmain_acquire_n.load(),
+              (unsigned long long)diag::g_nonzero_out.load(),
+              (unsigned long long)diag::g_outbound_calls.load(),
+              (unsigned long long)diag::g_outbound_null.load(),
+              (unsigned long long)diag::g_mixmain_started.load());
+    }
+
     AAMix* a = (ptr == nullptr) ? paamix[id] : ptr;
-    if (a == nullptr) return;
+    if (a == nullptr) {
+        diag::g_xmixaudio_skipped_null_ptr.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // Reference aamix.c:244 — accept bit 0 gate (input is open
     // for incoming samples).  Acquire ordering pairs with the
     // release in create_aamix / SetAAudioMixState{,s} /
     // open_mixer.
     if ((a->accept[stream].load(std::memory_order_acquire) & 1u) == 0u) {
+        diag::g_xmixaudio_skipped_accept_off.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -572,7 +625,11 @@ void xMixAudio(AAMix* ptr, int id, int stream, double* data)
         // Reference aamix.c:271 — ReleaseSemaphore(Ready[stream], n, 0).
         // std::counting_semaphore::release(n) bumps the permit
         // count by n in one call (C++20).  Matches semantics.
-        if (a->Ready[stream]) a->Ready[stream]->release(n);
+        if (a->Ready[stream]) {
+            a->Ready[stream]->release(n);
+            diag::g_ready_releases.fetch_add(static_cast<std::uint64_t>(n),
+                                             std::memory_order_relaxed);
+        }
         a->unqueuedsamps[stream] -= n * a->outsize;
     }
 
@@ -885,6 +942,13 @@ static void flush_mix_ring(AAMix* a, int stream)
 // thread teardown via the function's natural return.
 static void mix_main(std::stop_token st, AAMix* a)
 {
+    // DEBUG B.6.b-debug: thread-start beacon (rate=1, fires once).
+    diag::g_mixmain_started.fetch_add(1, std::memory_order_relaxed);
+    qInfo("[aamix-dbg] mix_main ENTRY: a=%p nactive=%d outsize=%d "
+          "aready[0]=%p Outbound=%s",
+          (void*)a, a->nactive, a->outsize, (void*)a->aready[0],
+          a->Outbound ? "set" : "NULL");
+
 #ifdef _WIN32
     // Reference aamix.c:34-37.
     DWORD taskIndex = 0;
@@ -895,6 +959,10 @@ static void mix_main(std::stop_token st, AAMix* a)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
 #endif
+
+    // DEBUG B.6.b-debug: log throttle (every 188th wake ~= 1 Hz at
+    // 48k/256-frame cadence).
+    std::uint64_t log_throttle = 0;
 
     // Reference aamix.c:41-47 — main loop.
     while (!st.stop_requested() &&
@@ -912,6 +980,11 @@ static void mix_main(std::stop_token st, AAMix* a)
             }
         }
 
+        // DEBUG B.6.b-debug: woke from AND-wait.
+        diag::g_mixmain_wakes.fetch_add(1, std::memory_order_relaxed);
+        diag::g_mixmain_acquire_n.store(static_cast<std::uint64_t>(n),
+                                        std::memory_order_relaxed);
+
         // Re-check stop + run after the (potentially long) wait
         // so close_mixer / destroy_aamix can wake the thread by
         // releasing semaphores AND clearing run / requesting stop.
@@ -923,9 +996,35 @@ static void mix_main(std::stop_token st, AAMix* a)
         // Reference aamix.c:44 — pump body.
         xaamix(a);
 
+        // DEBUG B.6.b-debug: check if xaamix produced non-zero output.
+        bool nz = false;
+        for (size_t k = 0; k < a->out.size(); ++k) {
+            if (a->out[k] != 0.0) { nz = true; break; }
+        }
+        if (nz) diag::g_nonzero_out.fetch_add(1, std::memory_order_relaxed);
+
         // Reference aamix.c:45 — operator-supplied output dispatch.
         if (a->Outbound) {
+            diag::g_outbound_calls.fetch_add(1, std::memory_order_relaxed);
             a->Outbound(a->outbound_id, a->outsize, a->out.data());
+        } else {
+            diag::g_outbound_null.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // DEBUG B.6.b-debug: rate-limited counter dump (~ 1 Hz).
+        if (++log_throttle >= 188) {
+            log_throttle = 0;
+            qInfo("[aamix-dbg] xmix=%llu rel=%llu skip(acc/null)=%llu/%llu "
+                  "wake=%llu(n=%llu) nzOut=%llu out=%llu nullOut=%llu",
+                  (unsigned long long)diag::g_xmixaudio_calls.load(),
+                  (unsigned long long)diag::g_ready_releases.load(),
+                  (unsigned long long)diag::g_xmixaudio_skipped_accept_off.load(),
+                  (unsigned long long)diag::g_xmixaudio_skipped_null_ptr.load(),
+                  (unsigned long long)diag::g_mixmain_wakes.load(),
+                  (unsigned long long)diag::g_mixmain_acquire_n.load(),
+                  (unsigned long long)diag::g_nonzero_out.load(),
+                  (unsigned long long)diag::g_outbound_calls.load(),
+                  (unsigned long long)diag::g_outbound_null.load());
         }
     }
 
