@@ -735,6 +735,103 @@ Phase 3 begins ONLY after Step 14 Stage 10 is OPERATOR-SIGNED.
 
 ---
 
+## ✅ PROGRESS TRACKING — STAGE B (aamix.c port) [SIDE-TRACK]
+
+**Side-track to Step 14 / Phase 3.** The Stage B series ports
+WDSP's `aamix.c` (RX audio mixer dispatcher) into Lyra-cpp's
+`src/wdsp/AAMix.{h,cpp}` and wires it into the RX audio path
+via `WdspEngine::openRx1`. Operates on the same `tx-rebuild`
+branch but is independent of Step 14's wire-layer scope.
+
+The arc was operator-driven on a smallest-revertable-step
+methodology: each sub-stage one focused commit, each gated on
+the operator's HL2+ bench (audible RX through the AK4951 jack
+or PC sound card, no clicks/pops, no thread starvation).
+
+### Stage B.0 — resample dependency link check
+- [x] Verify `create_resample`/`destroy_resample`/`flush_resample`/`xresample` symbols exported by bundled `wdsp.dll`
+- [x] Add cdef typedefs to `wdsp_native.{h,cpp}` (4 functions)
+- [x] Shipped `6938022`
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.1 — AAMix.h header port
+- [x] Verbatim port of `aamix.c::AAMix` struct (538 lines, full GPL v3+ attribution to NR0V/WDSP)
+- [x] Plus `Resample.h` (88-line replicated `resample` struct — needed because WDSP accessor setters are `extern` only, not `__declspec(dllexport)`)
+- [x] 14 public function declarations matching `aamix.h`
+- [x] Single documented `[Lyra-native]` divergence: `WdspNative*` field for DLL handle plumbing
+- [x] Shipped `20b1df5`
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.2 — constructor + destructor + slew helpers
+- [x] `create_aaslew`, `destroy_aaslew`, `flush_aaslew`, `create_aamix`, `destroy_aamix`
+- [x] Idiom translations documented: `CRITICAL_SECTION → std::mutex`, `HANDLE semaphore → std::counting_semaphore<1000>`, `_Interlocked* → std::atomic<uint32_t>` with `fetch_or`/`fetch_and`, `malloc0 → std::vector` RAII
+- [x] Shipped `427304c`
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.3 — xMixAudio + xaamix pump + slew + flush_mix_ring
+- [x] Producer-side ring fill via `xMixAudio` with `cs_in[stream]` lock
+- [x] Consumer pump `xaamix` with `cs_out` lock
+- [x] `upslew` / `downslew` cosine envelope helpers
+- [x] `flush_mix_ring` ring-buffer reset
+- [x] Shipped `ca3600c`
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.4 — close_mixer + open_mixer + mix_main + start_mixthread
+- [x] `mix_main` consumer thread (std::jthread) with MMCSS Pro Audio priority
+- [x] AND-wait semaphore acquisition (`WaitForMultipleObjects(N, TRUE, INFINITE)` → sequential `acquire()` loop)
+- [x] `close_mixer` / `open_mixer` slew-shutdown / slew-startup atom
+- [x] `start_mixthread` invocation moved into `open_mixer` (matches reference flow)
+- [x] Shipped `80d934b`
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.5 — 10 property setters + CMaster wire-up
+- [x] All 10 `SetAAudioMix*` / `SetAAudioRing*` / `SetAAudioOutRate` / `SetAAudioStreamRate` setters
+- [x] `CMaster.cpp::SendpOutboundRx` wired to invoke `SetAAudioMixOutputPointer(nullptr, 0, pcm->OutboundRx)` (replaces the Stage A `PENDING` comment)
+- [x] Shipped `f052398`
+- [x] **Status:** ✅ COMPLETE (this is the wire-up site that B.6.b-fix1 later untangled — see B.6.b-fix1 below)
+
+### Stage B.6.a — feedIq audio tail refactored into dispatchAudioFrame helper
+- [x] Lines 2402-2456 of `wdsp_engine.cpp::feedIq` extracted into new `WdspEngine::dispatchAudioFrame(audio, nframes)` member function
+- [x] Byte-identical relocation — `feedIq` now calls `dispatchAudioFrame` inline; behavior unchanged
+- [x] Shipped `27ac2fa`
+- [x] Bench-confirmed byte-identical to pre-refactor
+- [x] **Status:** ✅ COMPLETE
+
+### Stage B.6.b — wire AAMix(1-input passthrough) into RX path
+- [x] **First attempt** (`525c2f0`) — `create_aamix(active=0x01)` shortcut. REVERTED at bench (NO audio on either sink). Revert `6e773a5`.
+- [x] **Retry** (`53d9e5a`) — reference-faithful initialization per `cmaster.c:297-313`: `create_aamix(active=0L, ring_size=4096, slew=0/10/0/10ms)` → `SetAAudioMixOutputPointer(aaMix_, 0, outbound)` → `SetAAudioMixState(aaMix_, 0, 0, 1)` (activate via close_mixer/open_mixer slew atom). STILL NO audio at bench.
+- [x] **Debug-chain instrumentation** (`225518c`) — 9 atomic counters + ENTRY beacon + producer/consumer 1-Hz log emits. Proved AAMix runs end-to-end (`xmix=rel=wake=out=188/s`, `nzOut`=99%, `mixmain_started=1`). Symptom localized: chain healthy → Outbound is fired 188×/sec → but no audible RX → bug must be downstream of `Outbound`.
+- [x] **Debug-dispatch instrumentation** (`12369bc`) — 6 atomic counters in `dispatchAudioFrame` + 1-Hz log. CRITICAL FINDING: `[disp-dbg]` lines NEVER appeared in the bench log. `dispatchAudioFrame` was never entered. The `Outbound` callable installed in AAMix was NOT the lambda WdspEngine wired.
+- [x] **Stage B.6.b-fix1 (the actual fix, `8b8e0da`)** — Root cause traced from the timestamps:
+  - `19:22:02.972` — `openRx1::create_aamix(id=0, ..., Outbound=dispatchAudioFrame_lambda)` → `paamix[0]->Outbound = real lambda`
+  - `19:22:02.973` — `HL2Stream::open() → create_rnet() → SendpOutboundRx(STUB)` → `SetAAudioMixOutputPointer(nullptr, 0, STUB)` resolves `nullptr → paamix[0]` → **`aaMix_->Outbound = STUB`, real lambda CLOBBERED**
+  - The Stage-A NO-OP stub registration at `RadioNet.cpp:272-283` (its comment: "Stage B aamix port wires it via SetAAudioMixOutputPointer") was a placeholder for the wire-up Stage B was supposed to replace with something useful. Stage B.6.b correctly wired `dispatchAudioFrame` in `openRx1` — but left the Stage-A stub registration in place, which then overwrote B.6.b's wiring 1 ms later when `HL2Stream::open()` called `create_rnet()`.
+  - **Fix:** delete the Stage-A stub registration. The wire-up the Stage-A comment promised now lives in `WdspEngine::openRx1` where the per-channel sink-routing context (`hl2Out_`, `hl2AudioPush_`, `audioRing_`) lives — the global `pcm` cannot reach it. Comment block on the deleted case warns future hands.
+- [x] **Stage B.6.b-final (`533b06b`)** — strip diagnostic scaffolding. -134 lines. Brief comment block in `AAMix.cpp` points future regression-hunters at commit history (`git show 225518c` for chain instrument; `git show 12369bc` for dispatch instrument).
+- [x] **Operator HL2+ bench validated end-to-end 19:27:49 - 19:28:47** (58-second run):
+  - HL2 jack: first `[disp-dbg]` after unmute showed `calls=188 muted=0 gain=0.0845 peak16=32767 hl2(push)=188/0 hl2pushSet=1` — audio reaching AK4951
+  - Operator-confirmed audible RX ("Yes we have audio now")
+  - Mute toggle worked through dispatch (muted counter 0→22→133→287)
+  - Output device switch HL2 jack → PC Soundcard at 19:28:17 → `hl2Out=0, audioRingSet=1, pc(push) 176→928`
+  - Switch back HL2 jack at 19:28:23 → `hl2Out=1`, `hl2(push)` resumed
+  - AGC mode changes (med/slow/off/fast) clean
+  - Chain `out=N` tracks 1:1 with dispatch `calls=N` across both sinks — no dropped frames
+- [x] Tasks #130 (parent) + #132 (Stage B.6.b) closed
+- [x] **Status:** ✅ COMPLETE — Stage B aamix.c port arc DONE
+
+### Stage B+ — next port target TBD
+- Operator's call. Candidates per the rolling Stage agenda:
+  - **Stage C:** `ilv.c` port (TX I/Q interleaver — pairs with the `SendpOutboundTx` stub already wired in `CMaster.cpp` Stage A)
+  - **Stage D:** `xcmaster` pump body port
+  - Or pivot back to Step 14 / Phase 3 on the main wire-layer rebuild
+- **Methodology lessons recorded for next Stage X** (in memory file `project_lyra_cpp_tx.md` and §15.28 retrospective):
+  - 2-stage instrumentation (chain + dispatch) localized the defect to a single line of code on the 2nd bench. No speculation cycle.
+  - Operator-empirical rule held: after first B.6.b failure I was tempted to revert the AAMix port itself; chain counters proved AAMix was correct in isolation, redirecting the dig to the wire-up surface where the bug actually was.
+  - Hard rule for next port: counters first when the symptom is "nothing happens". Instrumentation cost = trivial vs the alternative (multi-round revert/speculate cycle).
+  - "Do as Thetis does" continues to hold — the `active=0x01` shortcut attempt cost a revert cycle; the reference's `active=0 then SetAAudioMixState(activate)` pattern worked.
+
+---
+
 ## 📜 VERIFICATION LOG
 
 Per-stage record of audit runs + operator sign-offs. Newest at top.
@@ -746,6 +843,7 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 | §3.9 reverts (3b7888b/42f66c2/12e7acc/6d0e476) | 2026-06-07 | PASS (5 §3.9-style sign-offs) | PASS (T/PA real values, dead-key 0.2A draw) | RX+telemetry confirmed | ✓ |
 | 2a (Ep6RecvThread prep, wire-INERT) | 2026-06-07 | PASS (cite table above) | PASS (zero-delta bench — RX works as before, MOX-TX crash pre-existing unchanged) | RX clean; build clean; Rule 2 clean | ✓ |
 | 2b1 (operator-facing counter accessors, wire-INERT) | 2026-06-07 | PASS (additive only — 4 free-function accessors at lyra::wire namespace scope mirror reference's `SeqError` file-scope global at `networkproto1.c:26`; total/framing/window are Lyra-native operator UX with no reference equivalent, classified ACCEPTABLE per Rule 26) | PASS (zero-delta bench — RX still operational) | RX clean; build clean; Rule 2 clean | ✓ |
+| **STAGE B** aamix.c port (B.0 → B.6.b-final) | 2026-06-08 | PASS — reference-faithful to `aamix.c` byte-for-byte; idiom translations documented; the B.6.b-fix1 surgery in `RadioNet.cpp:272` (delete Stage-A SendpOutboundRx no-op stub that clobbered `aaMix_->Outbound`) closed the silent-audio root cause | PASS — operator HL2+ bench 19:27:49→19:28:47 (58-sec run): audible RX out AK4951 jack at `peak16=32767`; mute toggle through dispatch; output device swap HL2↔PC Soundcard works; AGC mode changes clean; chain `out=N` tracks 1:1 with dispatch `calls=N` across both sinks | Audible RX confirmed: "Yes we have audio now" | ✓ |
 
 ---
 
@@ -761,7 +859,15 @@ Per-stage record of audit runs + operator sign-offs. Newest at top.
 
 ---
 
-**End of EXECUTION_PLAN.md. Status as of 2026-06-07 EOD: Stage 2a SHIPPED (commit `39f3fa9` — Ep6RecvThread reference-position init-sem release + HW-PTT sink scaffolding). Stage 2b1 SHIPPED — operator-facing counter accessors at `lyra::wire` namespace scope (additive, wire-INERT, operator-confirmed zero-delta).
+**End of EXECUTION_PLAN.md. Status as of 2026-06-08 EOD:**
+
+**Stage B aamix.c port arc COMPLETE + operator-bench-validated** (commits `27ac2fa` → `533b06b` on `tx-rebuild`; backup `_backups/lyra-cpp-2026-06-08-aamix-stage-B-COMPLETE.bundle`). RX audio flows through the ported `AAMix` dispatcher into both HL2-jack and PC-soundcard sinks; operator confirmed audible. The B.6.b root cause was the Stage-A `SendpOutboundRx` no-op stub in `RadioNet.cpp:272` clobbering `aaMix_->Outbound` ~1 ms after `WdspEngine::openRx1` wired the real lambda — deleted by `8b8e0da`. 2-stage diagnostic instrumentation (`225518c` chain + `12369bc` dispatch) localized the defect to one line of code on the 2nd bench; both instrumentation layers stripped in `533b06b`. Tasks #130 (parent) + #132 (Stage B.6.b) closed.
+
+**Next port target = OPERATOR'S CALL.** Stage B side-track done; resume tomorrow on operator direction. Candidates: Stage C `ilv.c` (TX I/Q interleaver — pairs with Stage A's `SendpOutboundTx` stub), Stage D `xcmaster` pump body, or pivot back to Step 14 / Phase 3 wire-layer rebuild on the main arc.
+
+**Step 14 status carried forward from 2026-06-07 EOD:**
+
+Stage 2a SHIPPED (commit `39f3fa9` — Ep6RecvThread reference-position init-sem release + HW-PTT sink scaffolding). Stage 2b1 SHIPPED — operator-facing counter accessors at `lyra::wire` namespace scope (additive, wire-INERT, operator-confirmed zero-delta).
 
 Stage 2b2 SHIPPED (uncommitted, 2026-06-07 EOD; backup `_backups/lyra-cpp-2026-06-07-stage2b2b-ref-faithful.bundle`) — the strict-reference strip-out + reference-faithfulness follow-up pass:
 
