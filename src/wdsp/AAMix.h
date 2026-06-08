@@ -185,6 +185,8 @@
 #include <thread>
 #include <vector>
 
+namespace lyra::dsp { class WdspNative; }
+
 namespace lyra::wdsp {
 
 // Reference aamix.c:29 — `#define MAX_EXT_AAMIX (4)`.  Process-wide
@@ -362,6 +364,23 @@ struct AAMix {
     // the same `run` bit.  Lives in the AAMix so destruction joins
     // automatically (RAII).
     std::jthread mix_thread;
+
+    // [Lyra-native] DLL handle for the resampler API
+    // (api().create_resample / destroy_resample / flush_resample /
+    // xresample resolved at Lyra startup).  Required because
+    // Lyra-cpp consumes wdsp.dll via dynamic LoadLibrary +
+    // GetProcAddress (vs the reference's static link), so the
+    // function pointers are not file-scope globals — they are
+    // members of the WdspNative singleton.  Storing the singleton
+    // pointer on the AAMix lets every operation (create_aamix,
+    // destroy_aamix, xMixAudio, SetAAudioRingInsize,
+    // SetAAudioOutRate, SetAAudioStreamRate) reach the resampler
+    // calls without a global lookup.  Single-additional-field
+    // divergence from the reference; mixer semantics unchanged.
+    // Set by create_aamix; never reassigned; never dereferenced
+    // for ownership (the singleton outlives every AAMix per the
+    // Lyra-cpp lifecycle).
+    lyra::dsp::WdspNative* wdsp = nullptr;
 };
 
 // ===== Public API (matches aamix.h:87-122 byte-for-byte) =====
@@ -379,7 +398,14 @@ struct AAMix {
 // initializes semaphores + mutexes + slew, registers in paamix[id]
 // if id >= 0, starts mix_main if nactive > 0.  Returns the new
 // AAMix (== the value stored in paamix[id] when id >= 0).
+//
+// **[Lyra-native]** extra leading param `wdsp` — the resolved
+// WdspNative singleton, so create_aamix + subsequent operations
+// can reach api().create_resample(...) without a global lookup.
+// Documented in the AAMix struct's `wdsp` field comment.  Single-
+// param divergence from reference; mixer semantics unchanged.
 AAMix* create_aamix(
+    lyra::dsp::WdspNative& wdsp,
     int id,
     int outbound_id,
     int ringinsize,
