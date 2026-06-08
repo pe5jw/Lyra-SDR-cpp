@@ -314,9 +314,13 @@ int main(int argc, char *argv[])
     //      hooks no-op cleanly (app is shutting down anyway).
     //   2. txWorker delete -> clears its mic consumer, joins
     //      worker thread, closes TX WDSP channel.
-    //   3. micSource delete -> clears HL2Stream's forwarder
-    //      while HL2Stream is still alive.
-    //   4. stream->close() -> joins the rx-loop thread.
+    //   3. stream->close() -> joins the rx-loop thread + ep6Thread.
+    //   4. micSource delete -> clears ep6Thread's mic sink AFTER
+    //      ep6Thread has been joined (Stage 2b2c: the wire-side
+    //      sink contract is F1 set-once-before-start, so the
+    //      sink-clear at dtor must happen with ep6Thread NOT
+    //      running; the captured `this` is also safe — no reader
+    //      can be inside the lambda once close() returns).
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
     // TX-rip Phase 1 (Q2): txWorker / tciMicSource pointer declarations
     // removed — TX DSP worker + TCI mic source are being rebuilt from
@@ -349,11 +353,18 @@ int main(int argc, char *argv[])
     // pattern as &txWorker/&micSource above.
     lyra::ui::MainWindow *winRef = nullptr;
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [stream, &micSource]() {
+                     [stream]() {
         // TX-rip Phase 1 (Q2): teardown collapses to the RX-only
         // surface (HL2Stream TX callbacks unregister + Hl2Ep6MicSource
         // delete).  TxDspWorker / TciMicSource teardown returns with
         // the rebuild per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
+        //
+        // Stage 2b2c: `delete micSource` moved out of this handler
+        // and into a dedicated handler between stream->close()
+        // (handler-2) and destroy_router (handler-4) — see below.
+        // The reference-faithful ep6Thread().set_mic_sink({}) at
+        // ~Hl2Ep6MicSource requires ep6Thread NOT running, so the
+        // dtor must run AFTER stream->close() has joined it.
         qWarning("[shutdown] handler-1 ENTRY");
         if (stream) {
             qWarning("[shutdown] handler-1 step a: registerTxIqSource({}) - start");
@@ -363,9 +374,6 @@ int main(int argc, char *argv[])
             stream->registerTxControl({});
             qWarning("[shutdown] handler-1 step b: done");
         }
-        qWarning("[shutdown] handler-1 step d: delete micSource - start (~Hl2Ep6MicSource runs now)");
-        delete micSource; micSource = nullptr;
-        qWarning("[shutdown] handler-1 step d: done");
         qWarning("[shutdown] handler-1 EXIT");
     });
 
@@ -409,6 +417,20 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-2 EXIT");
     });
 
+    // Stage 2b2c — Hl2Ep6MicSource teardown.  Runs AFTER handler-2
+    // (stream->close has joined ep6Thread), so the dtor's
+    // `ep6Thread().set_mic_sink({})` lands under the F1 set-once-
+    // before-start invariant (ep6Thread is NOT running here), and
+    // the lambda's captured `this` is safe (no reader thread can
+    // be inside it).  Qt connects in registration order and fires
+    // aboutToQuit handlers in that same order.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     [&micSource]() {
+        qWarning("[shutdown] handler-3 ENTRY (delete micSource - ~Hl2Ep6MicSource runs now)");
+        delete micSource; micSource = nullptr;
+        qWarning("[shutdown] handler-3 EXIT");
+    });
+
     // Stage 2b2-fix-v2 — Router process-singleton destroy.  Mirrors
     // the reference's `destroy_router(0, 0)` call inside
     // `destroy_cmaster()` at `cmaster.c`.  MUST run AFTER handler-2
@@ -416,11 +438,12 @@ int main(int argc, char *argv[])
     // in-flight xrouter() dispatch through &router_instance(0) at
     // the moment we free the Router slot).  Qt connects in
     // registration order and fires aboutToQuit handlers in that
-    // same order, so this lambda runs after handler-2.
+    // same order, so this lambda runs after handler-2 and the
+    // Stage-2b2c micSource-delete handler-3.
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
-        qWarning("[shutdown] handler-3 ENTRY (destroy_router(0,0))");
+        qWarning("[shutdown] handler-4 ENTRY (destroy_router(0,0))");
         lyra::wire::destroy_router(0, 0);
-        qWarning("[shutdown] handler-3 EXIT");
+        qWarning("[shutdown] handler-4 EXIT");
     });
 
     // Step 5: register the panadapter widget as a QML type under its

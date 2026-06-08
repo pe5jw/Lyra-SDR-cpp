@@ -598,36 +598,12 @@ public:
     // exactly what `router.c` does (no Lyra-native arg-reorder
     // wrapper, no per-stream member function).
 
-    // TX Component 3 — register a consumer for decimated mic samples.
-    // Called ONCE per EP6 datagram from the RX worker thread with a
-    // block of `n` mono float32 samples at 48 kHz (already decimated
-    // from the wire mic rate by the same factor the C reference's
-    // `mic_decimation_factor` table picks via the current DDC0 rate:
-    // 96 k → /2, 192 k → /4, 384 k → /8).  Sample range [-1, +1).
-    //
-    // Thread-safety: micConsumerMtx_ protects this assignment AND the
-    // rx-loop's read+call of micConsumer_, the same way the C
-    // reference's csIN critical section protects Inbound() against
-    // destroy_cmbuffs (cmbuffs.c:55, :97, :64).  Calling
-    // setMicConsumer({}) at teardown BLOCKS until any in-flight
-    // rx-loop call has finished — so a caller that holds a reference
-    // to objects the consumer captures can safely tear them down
-    // after this returns.
-    // Stage 2b2: setMicConsumer is a NO-OP compile-stub kept ONLY
-    // for caller-compat with mic_source.cpp during the staged
-    // migration.  The OLD rxWorker_-owned mic forwarder is retired;
-    // the reference-faithful path is mic_source.cpp using
-    // `stream.ep6Thread().set_mic_sink(...)` directly (different
-    // signature: `(int n_samples, const double* iq_pairs)` per
-    // Ep6MicSink, not `(const float*, int)`).  Migrating
-    // mic_source.cpp is a separate sub-commit so we don't conflate
-    // the wire-LIVE EP6 surgery here with mic decoding semantics
-    // (Q6.5 RMS deletion, double→float conversion).  Until that
-    // commit ships, calling setMicConsumer is a silent no-op — the
-    // mic feed reaches DSP only after the mic_source migration.
-    void setMicConsumer(std::function<void(const float *, int)> /*cb*/) {
-        // intentional no-op — migrate to ep6Thread().set_mic_sink()
-    }
+    // Stage 2b2c: `setMicConsumer` retired.  The mic-feed path is now
+    // reference-faithful end-to-end — mic_source.cpp registers its
+    // consumer on `ep6Thread().set_mic_sink(...)` directly, matching
+    // the reference's `Inbound(inid(1,0), n_samples, double*)` shape
+    // (decimated mic doubles interleaved as `{I=mic, Q=0.0}` per
+    // sample).  No float bridge, no Q6.5 RMS bench instrument.
 
     // Step 5: RX audio out via the HL2 onboard codec (AK4951).  The DSP
     // engine pushes decoded 48 kHz stereo int16 here (from the RX worker
@@ -1332,28 +1308,19 @@ private:
     // Stage 2b2: iqSink_ retired — setIqSink() now registers on
     // router_instance(0) port=0/call_idx=0 directly (the live
     // Ep6RecvThread→Router dispatch path).  No member needed.
-    // TX Component 3 — mic-byte forwarder.  micConsumer_ is the
-    // producer entry point the rx-loop calls per datagram with the
-    // decimated 48 kHz mic block.  micConsumerMtx_ is the
-    // csIN-equivalent (cmbuffs.c:55-72): the rx-loop holds it
-    // around the read+call of micConsumer_, and setMicConsumer
-    // holds it around the assign — so a teardown-time
-    // setMicConsumer({}) BLOCKS until any in-flight rx-loop call
-    // has finished, matching the destroy_cmbuffs csIN protocol.
-    // micDecimationFactor_ tracks the current wire-rate-derived
-    // divisor (the source's `mic_decimation_factor`): initial 4 =
-    // the 192 kHz default; setSampleRate() updates it.
-    // micDecimationCount_ persists across datagrams (per the source's
-    // `mic_decimation_count`), reset only on a rate change.
-    // Stage 2b2: micConsumer_ / micConsumerMtx_ /
-    // micDecimationFactor_ / micDecimationCount_ retired —
-    // setMicConsumer() is a no-op compile stub during the staged
-    // mic_source.cpp migration to ep6Thread().set_mic_sink();
-    // mic_decimation_factor lives at TU scope in RadioNet.cpp and
-    // is updated by HL2Stream::setSampleRate via
-    // lyra::wire::mic_decimation_factor = micDec.  The decimation
-    // count_ persists inside Ep6RecvThread's mic-tap state
-    // (reference posture per networkproto1.c:566-577).
+    // Stage 2b2c: the entire mic-forwarder state retired from
+    // HL2Stream — micConsumer_ / micConsumerMtx_ /
+    // micDecimationFactor_ / micDecimationCount_ all live elsewhere
+    // now.  The decimation factor is at TU scope in RadioNet.cpp
+    // (`lyra::wire::mic_decimation_factor`), updated by
+    // HL2Stream::setSampleRate; the decimation count_ persists
+    // inside Ep6RecvThread's mic-tap state (reference posture per
+    // networkproto1.c:566-577).  The mic-block delivery shape and
+    // consumer registration live on Ep6RecvThread directly
+    // (`set_mic_sink(...)`, signature
+    // `(int n_samples, const double* iq_pairs)` matching the
+    // reference's `Inbound(inid(1,0), n_samples, double*)` —
+    // mic_source.cpp drives it).
     // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).
     // Producer = RX worker (pushAudio, via the DSP engine); consumer =
     // EP2 TX writer thread (drains 126 frames/datagram).  audioMtx_
