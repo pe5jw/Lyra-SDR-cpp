@@ -787,6 +787,32 @@ Final-state audit (2-agent, parallel, 2026-06-07 EOD): **GREEN** — all 4 fixes
 
 **Known tracked caveat:** `setMicConsumer(...)` on `HL2Stream` is now a documented NO-OP compile stub. `Hl2Ep6MicSource` ctor/dtor (`mic_source.cpp:15`/`:45`) call it → forwarder silently DROPPED ⇒ **TX mic feed does NOT reach WDSP TXA**. Intentional staged-migration interim per `hl2_stream.h:616-627`. **Stage 2b2c (NEXT) = migrate `mic_source.cpp` to `stream.ep6Thread().set_mic_sink(...)` direct** with double→float conversion + drop Q6.5 RMS computation; delete the no-op stub once the call sites are gone.
 
+---
+
+### Stage 14.2b2c — `mic_source.cpp` migration to `Ep6RecvThread::set_mic_sink` (SHIPPED 2026-06-08, commit `0974b62`)
+
+**The Stage 2b2b caveat above is now CLOSED.** The mic path runs reference-faithful end-to-end — doubles all the way from `Ep6RecvThread`'s mic-tap through `Hl2Ep6MicSource::Consumer` into whatever TX DSP consumer eventually registers via `setConsumer`, matching the reference's `Inbound(inid(1,0), n, prn->TxReadBufp)` → CMB ring → cmaster pump → `fexchange0(chid(stream,0), pcm->in[stream] /*double**/, …)` flow. No float bridge anywhere.
+
+Re-verify-twice methodology (operator-directed: "revisit Thetis the reference- read twice-verify first please"):
+
+* **Read #1** captured the reference mic-decode + delivery shape from `networkproto1.c:395-413` (generic) and `:555-579` (HL2 nddc=4) — both byte-identical: `bptr[k+0]<<24 | bptr[k+1]<<16` × `const_1_div_2147483648_` (`network.h:444`, = `1.0/2^31`) → double in [-1, +1); written as interleaved `{TxReadBufp[2i+0]=mic, TxReadBufp[2i+1]=0.0}`; delivered via `Inbound(inid(1,0), mic_sample_count, prn->TxReadBufp)` once per datagram when `mic_sample_count > 0`. `TxReadBufp` is `calloc(2 * sizeof(double) * 720)` (`netInterface.c:1604`) — 720 mic-samples max.
+* **Read #2** verified the downstream double-flow: `Inbound(int id, int nsamples, double* in)` at `cmbuffs.c:89-121` writes `in` into the CMB ring's `r1_baseptr` (interleaved double pairs, copied via `nsamples * sizeof(complex)`), releases `Sem_BuffReady`; the cmaster pump thread drains it and calls `fexchange0(chid(stream, 0), pcm->in[stream], …)` (`cmaster.c:389`); `pcm->in[i]` is `malloc(... * sizeof(complex))` doubles (`cmaster.c:285`). WDSP `fexchange0` takes doubles in and out on TX. The reference NEVER converts to float on the mic path.
+
+Stage 2b2c implements that posture verbatim:
+
+1. **`mic_source.h`** — `Consumer = std::function<void(int n_samples, const double* iq_pairs)>`, byte-shape-identical to `Ep6MicSink` (`wire/Ep6RecvThread.h:84-85`) and the reference `Inbound` contract. No float anywhere on the mic path.
+2. **`mic_source.cpp`** — ctor calls `stream_.ep6Thread().set_mic_sink([this](int n, const double* iq){ if (consumer_) consumer_(n, iq); })`. Pure passthrough — no buffer allocation, no double→float conversion, no Q6.5 RMS bench instrument, no Task #40 safetyLog qWarnings (none of which exist in the reference path). Dtor clears with `stream_.ep6Thread().set_mic_sink({})` under the discipline documented at `Ep6RecvThread.cpp:305-311` ("Releasing a sink via `set_*({})` from a destructor is permitted ONLY after the EP6 thread is joined").
+3. **`hl2_stream.h`** — the no-op `setMicConsumer(...)` compile stub deleted entirely. Private-section commentary referencing `micConsumer_` / `micConsumerMtx_` / the csIN-equivalent / Q6.5 staging retired in favour of a one-paragraph pointer at the new mechanism + RadioNet.cpp's TU-scope `mic_decimation_factor`.
+4. **`main.cpp`** — aboutToQuit handler ordering reworked so the F1 set-once-before-start contract holds at teardown. The old `delete micSource` step lived inside handler-1 (which fired BEFORE `stream->close()` — that worked for the prior mutex-blocking `setMicConsumer({})` shim but breaks against the new `assert_not_running`). New order: handler-1 (TX cleanup) → handler-2 (`stream->close()` → joins ep6Thread) → **handler-3 (new: `delete micSource`)** → handler-4 (`destroy_router(0,0)`, was handler-3, log strings updated). Qt fires aboutToQuit slots in registration order, so handler-3's `~Hl2Ep6MicSource` → `ep6Thread().set_mic_sink({})` lands with `ep6Thread_` provably joined and the captured `this` in the registered lambda safe by construction.
+
+Build: 31/31 ninja green, `lyra.exe` links clean. Two warnings (`bandmemory.cpp:109` C4702 unreachable, `hl2_stream.cpp:776` C4456 `err` shadowing) are pre-existing.
+
+Reference parity self-audit: GREEN. Doubles end-to-end on the mic path; signature match against `Ep6MicSink` + `Inbound`; lambda body pure passthrough; F1 contract honoured at both endpoints (ctor pre-start, dtor post-join); no orphan `setMicConsumer` callers; no leftover float-Consumer references; stale commentary retargeted.
+
+Backup: `_backups/lyra-cpp-2026-06-08-stage2b2c.bundle` (full git bundle, 15.9 MB).
+
+**Downstream still pending:** `Hl2Ep6MicSource::setConsumer(...)` has no live caller — the TxDspWorker that would feed mic doubles into the WDSP TXA chain was removed in TX-rip Phase 1 (Q2) and is being rebuilt per `docs/TX_ARCHITECTURAL_MAPPING.md §10.3`. Stage 2b2c is the wire-side half: the mic path is now correctly wired all the way to the operator-facing `Consumer` boundary. Wiring the TX DSP consumer + the wire-LIVE TX path is the next stage.
+
 Operator hardware bench pending (NOT run this session — code-level audits only): cold open RX1 audio + panadapter, telemetry T/V/PA, Auto-LNA on a real signal, ×5 stop/restart, HW-PTT-opt-in foot-switch (after per-unit `ptt_in`-at-rest bench-verify per §10 Q#1), MOX bit flip without PA.
 
 Methodology discipline (operator-locked 2026-06-07, REAFFIRMED EOD): DEFAULT VERDICT = strict reference. Lyra-native preservation is NEVER the default answer. **Default action on any flagged deviation = fix to match reference. NOT patch. NOT deviate. NOT rationalize "acceptable."** Verify-pass output gets re-judged against this rule before presentation; agents report what they find, the rule decides what gets actioned. RX options (WDSP NR/AGC/ANF/LMS/NB/SQ/AEPF/captured profile/etc.) STAY (WDSP-backed = reference-equivalent). TX operator-feature suite (Combinator, Plate Reverb, EQ, CFC, speech-enhancement, mic profiles) is where Lyra deliberately differs — strict-reference rule does NOT auto-apply there; WE TALK before any change near those. LNA — flag if anything LNA-related interacts with TX path; WE TALK.**
