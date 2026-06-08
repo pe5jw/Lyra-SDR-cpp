@@ -2273,6 +2273,82 @@ void WdspEngine::setAudioOutputDevice(int index)
     }
 }
 
+// Stage B.6.a (2026-06-08) -- pure extraction from feedIq's inline
+// audio-dispatch tail.  Operator gain/mute/balance/BIN/HL2-atten +
+// int16 quantization + sink dispatch.  EVERY state read uses the
+// same memory order, EVERY operation runs in the same sequence,
+// EVERY conditional is the same as the pre-refactor inline body
+// at wdsp_engine.cpp:2402-2456 (pre-B.6.a).  This is a byte-
+// identical relocation -- no cleanups, no reorderings, no "while
+// I'm here" changes.  The pre-refactor inline body and this helper
+// are operationally indistinguishable; the operator HL2 bench-gate
+// for Stage B.6.a is "audio sounds exactly like it did 5 minutes
+// ago".
+//
+// Why: Stage B.6.b will swap the inline `dispatchAudioFrame(
+// outBuf_.data(), outSize_)` call in feedIq for an
+// `xMixAudio(0, 0, outBuf_.data())` push into the ported AAMix at
+// id=0, with this same helper bound as the AAMix's Outbound
+// callback.  Pre-extracting it into a sharable function means
+// B.6.b is a 1-line call-site swap + an AAMix construction at RX
+// open; no audio-dispatch logic moves in B.6.b -- it just runs
+// from mix_main's Outbound dispatch instead of inline.  Splitting
+// the refactor (B.6.a) from the wire-up (B.6.b) keeps each step
+// individually revertable + individually bench-gateable per the
+// locked methodology.
+void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
+{
+    // Two mute paths OR together: the operator's manual mute_
+    // (Audio panel) AND the auto-mute-on-TX gate (live wire MOX
+    // bit, gated by autoMuteOnTx_ pref).  Either silences audio
+    // without disturbing the other's persistent state -- so a
+    // keyup releases the TX gate and audio resumes at the
+    // operator's pre-TX volume immediately.  Both reads are
+    // memory_order_relaxed because the gain calc tolerates a
+    // one-block stale read (worst case = one ~21 ms output
+    // block of pre-edge audio, ear-imperceptible).
+    const bool m_manual = muted_.load(std::memory_order_relaxed);
+    const bool m_tx     = txMuted_.load(std::memory_order_relaxed) &&
+                          autoMuteOnTx_.load(std::memory_order_relaxed);
+    double gain =
+        (m_manual || m_tx)
+            ? 0.0
+            : posToGain(volume_.load(std::memory_order_relaxed));
+    if (hl2Out_) {
+        gain *= kHl2OutAtten;   // tame the hotter AK4951 output
+    }
+    // Stereo balance (−1 left … +1 right): attenuate the opposite
+    // channel.  1.0 each at centre.  Applied as the very last stage.
+    const double bal = balance_.load(std::memory_order_relaxed);
+    const double lBal = (bal > 0.0) ? (1.0 - bal) : 1.0;
+    const double rBal = (bal < 0.0) ? (1.0 + bal) : 1.0;
+    for (int f = 0; f < nframes; ++f) {
+        double l = audio[static_cast<size_t>(2 * f + 0)] * gain;
+        double r = audio[static_cast<size_t>(2 * f + 1)] * gain;
+        // BIN -- synthesize the stereo pair from the mono (L=R)
+        // signal via the Hilbert post-processor (last stage).
+        if (binEnabled_)
+            binauralStep(l, &l, &r);
+        l *= lBal;
+        r *= rBal;
+        l = std::clamp(l, -1.0, 1.0);
+        r = std::clamp(r, -1.0, 1.0);
+        pcm16_[static_cast<size_t>(2 * f + 0)] =
+            static_cast<qint16>(l * 32767.0);
+        pcm16_[static_cast<size_t>(2 * f + 1)] =
+            static_cast<qint16>(r * 32767.0);
+    }
+    if (hl2Out_) {
+        // HL2 onboard codec -- hand to the EP2 writer's ring.
+        if (hl2AudioPush_) hl2AudioPush_(pcm16_.data(), nframes);
+    } else {
+        // PC sound card -- audioMtx_ guards audioRing_ against a
+        // main-thread device switch / teardown.
+        std::lock_guard<std::mutex> lk(audioMtx_);
+        if (audioRing_) audioRing_->push(pcm16_.data(), nframes);
+    }
+}
+
 void WdspEngine::feedIq(const double *iq, int nframes)
 {
     // Drop IQ until the channel is live (e.g. samples arriving in the
@@ -2400,60 +2476,13 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         }
 
         // Step 3e/5: apply the operator volume/mute gain, convert to
-        // int16 stereo, and route to the active output — the HL2 codec
-        // (EP2 injection) or the PC sound card.  gain = 0 when muted
-        // (SAFETY default at startup) — applies to BOTH paths.
-        {
-            // Two mute paths OR together: the operator's manual mute_
-            // (Audio panel) AND the auto-mute-on-TX gate (live wire MOX
-            // bit, gated by autoMuteOnTx_ pref).  Either silences audio
-            // without disturbing the other's persistent state — so a
-            // keyup releases the TX gate and audio resumes at the
-            // operator's pre-TX volume immediately.  Both reads are
-            // memory_order_relaxed because the gain calc tolerates a
-            // one-block stale read (worst case = one ~21 ms output
-            // block of pre-edge audio, ear-imperceptible).
-            const bool m_manual = muted_.load(std::memory_order_relaxed);
-            const bool m_tx     = txMuted_.load(std::memory_order_relaxed) &&
-                                  autoMuteOnTx_.load(std::memory_order_relaxed);
-            double gain =
-                (m_manual || m_tx)
-                    ? 0.0
-                    : posToGain(volume_.load(std::memory_order_relaxed));
-            if (hl2Out_) {
-                gain *= kHl2OutAtten;   // tame the hotter AK4951 output
-            }
-            // Stereo balance (−1 left … +1 right): attenuate the opposite
-            // channel.  1.0 each at centre.  Applied as the very last stage.
-            const double bal = balance_.load(std::memory_order_relaxed);
-            const double lBal = (bal > 0.0) ? (1.0 - bal) : 1.0;
-            const double rBal = (bal < 0.0) ? (1.0 + bal) : 1.0;
-            for (int f = 0; f < outSize_; ++f) {
-                double l = outBuf_[static_cast<size_t>(2 * f + 0)] * gain;
-                double r = outBuf_[static_cast<size_t>(2 * f + 1)] * gain;
-                // BIN — synthesize the stereo pair from the mono (L=R)
-                // signal via the Hilbert post-processor (last stage).
-                if (binEnabled_)
-                    binauralStep(l, &l, &r);
-                l *= lBal;
-                r *= rBal;
-                l = std::clamp(l, -1.0, 1.0);
-                r = std::clamp(r, -1.0, 1.0);
-                pcm16_[static_cast<size_t>(2 * f + 0)] =
-                    static_cast<qint16>(l * 32767.0);
-                pcm16_[static_cast<size_t>(2 * f + 1)] =
-                    static_cast<qint16>(r * 32767.0);
-            }
-            if (hl2Out_) {
-                // HL2 onboard codec — hand to the EP2 writer's ring.
-                if (hl2AudioPush_) hl2AudioPush_(pcm16_.data(), outSize_);
-            } else {
-                // PC sound card — audioMtx_ guards audioRing_ against a
-                // main-thread device switch / teardown.
-                std::lock_guard<std::mutex> lk(audioMtx_);
-                if (audioRing_) audioRing_->push(pcm16_.data(), outSize_);
-            }
-        }
+        // int16 stereo, and route to the active output.  As of Stage
+        // B.6.a (2026-06-08) the gain/mute/balance/BIN/quantize/sink
+        // logic lives in dispatchAudioFrame() so it can be shared
+        // between this inline feedIq call (today) and an AAMix
+        // Outbound callback (Stage B.6.b).  Pure relocation -- every
+        // state read + operation order + sink dispatch is unchanged.
+        dispatchAudioFrame(outBuf_.data(), outSize_);
 
         // Drop the consumed block; shift the small remainder down.
         accum_.erase(accum_.begin(),

@@ -585,6 +585,19 @@ private:
     void emitLog(const QString &line);   // mirror logLine -> qInfo console
     bool startAudio();   // create + start the QAudioSink (Step 3e)
     void stopAudio();    // stop + tear down the QAudioSink
+
+    // Stage B.6.a refactor (pure extraction, no behaviour change):
+    // applies operator volume/mute/balance/BIN/HL2-atten to the supplied
+    // interleaved L/R double buffer + quantizes into pcm16_ + dispatches
+    // to the active sink (HL2 EP2 via hl2AudioPush_ OR PC sound card via
+    // audioRing_).  Today called inline from feedIq with
+    // (outBuf_.data(), outSize_); Stage B.6.b swaps to feeding AAMix's
+    // out buffer instead.  EVERY state read + operation order is
+    // byte-identical to the pre-refactor inline body
+    // (wdsp_engine.cpp:2402-2456 pre-B.6.a) -- this is a pure relocation
+    // so the helper can be called from either feedIq or an AAMix
+    // Outbound callback unchanged.
+    void dispatchAudioFrame(const double *audio, int nframes);
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
