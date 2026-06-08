@@ -41,8 +41,6 @@
 
 class QAudioSink;
 
-namespace lyra::wdsp { struct AAMix; }
-
 namespace lyra::dsp {
 
 // Defined in wdsp_engine.cpp — a QIODevice the QAudioSink pulls audio
@@ -850,28 +848,6 @@ private:
     bool                hl2Out_ = true;
     std::function<void(const qint16 *, int)> hl2AudioPush_;
     std::function<void(bool)>                hl2AudioEnable_;
-
-    // Stage B.6.b (2026-06-08): the ported AAMix instance for the RX
-    // audio path.  Constructed in openRx1() after the WDSP RX channel
-    // is open but before SetChannelState(1) brings it live; destroyed
-    // in closeRx1() AFTER SetChannelState(0,1) blocking-flush has
-    // drained WDSP but BEFORE CloseChannel tears the channel down.
-    // Configured as a 1-input passthrough (RX1 only; vol=1.0,
-    // master=1.0, inrate==outrate, no resampling); the AAMix's
-    // Outbound callback runs dispatchAudioFrame on mix_main's thread.
-    //
-    // Today (Stage B.6.b) this is the sole consumer of the ported
-    // AAMix code.  RX2 (task #96-97) will add a second input
-    // (stream 1) for stereo split via SetAAudioMixState(1, true);
-    // TX monitor (task #90) will add a third input for sidetone.
-    // The 1-input single-RX configuration is the operationally-
-    // simplest "AAMix is wire-effective" exerciser.
-    //
-    // Null-check before every xMixAudio call in feedIq: aaMix_ is
-    // briefly nullptr during the close-then-reopen race window; skip
-    // the audio dispatch in that case (one block of silence, ear-
-    // imperceptible at ~21 ms).
-    lyra::wdsp::AAMix* aaMix_ = nullptr;
 };
 
 } // namespace lyra::dsp
