@@ -41,6 +41,8 @@
 
 class QAudioSink;
 
+namespace lyra::wdsp { struct AAMix; }
+
 namespace lyra::dsp {
 
 // Defined in wdsp_engine.cpp — a QIODevice the QAudioSink pulls audio
@@ -848,6 +850,25 @@ private:
     bool                hl2Out_ = true;
     std::function<void(const qint16 *, int)> hl2AudioPush_;
     std::function<void(bool)>                hl2AudioEnable_;
+
+    // Stage B.6.b-retry (2026-06-08): ported AAMix instance for the RX
+    // audio path.  THIS RETRY follows the bench-validated reference
+    // initialization pattern verbatim (cmaster.c:297-313 + :411 +
+    // :534-536): create with active=0 (NO mix_main yet), then
+    // SetAAudioMixOutputPointer to re-set Outbound defensively,
+    // then SetAAudioMixState(stream=0, active=1) to trigger the
+    // close_mixer/open_mixer atom which is the reference's bench-
+    // validated path to start mix_main.  The previous B.6.b
+    // shortcut (active=0x01 at create-time) silently failed at
+    // bench -- mode of failure unknown but the reference path
+    // sidesteps whatever code path of the port my shortcut
+    // exercised.
+    //
+    // Constructed in openRx1() after startAudio() / before
+    // SetChannelState(channel,1); destroyed in closeRx1() after
+    // SetChannelState(0,1) blocking-flush / before CloseChannel.
+    // Null-check in feedIq covers the brief close-then-reopen race.
+    lyra::wdsp::AAMix* aaMix_ = nullptr;
 };
 
 } // namespace lyra::dsp

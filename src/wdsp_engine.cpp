@@ -10,6 +10,8 @@
 #include <QAudioFormat>
 #include <QAudioSink>
 #include <QByteArray>
+
+#include "wdsp/AAMix.h"  // Stage B.6.b-retry: reference-faithful AAMix wire-up
 #include <QDataStream>
 #include <QDateTime>
 #include <QDebug>
@@ -794,6 +796,101 @@ bool WdspEngine::openRx1()
     // continue (the dBFS meter still works, just no sound).
     startAudio();
 
+    // Stage B.6.b-retry (2026-06-08) — REFERENCE-FAITHFUL AAMix
+    // initialization.  The previous B.6.b shortcut (active=0x01 at
+    // create-time) shipped + silently produced NO audio at bench
+    // (operator confirmed on both HL2-jack + PC sound card paths).
+    // Root cause class: the reference NEVER creates an aamix with
+    // inputs immediately active.  Both create_aamix call sites in
+    // cmaster.c (anti-vox mixer :159-175 + global mixer :297-313)
+    // pass active=0 and let SetAAudioMixState activate streams
+    // LATER -- which goes through the close_mixer/open_mixer slew
+    // atom + start_mixthread inside open_mixer.  My shortcut
+    // bypassed that path and started mix_main directly in
+    // create_aamix.  That exercises an untested code path in the
+    // port (the "active at create" branch of my Stage B.2 code is
+    // never exercised by the reference).
+    //
+    // This retry follows the reference INITIALIZATION SEQUENCE
+    // verbatim:
+    //   1. create_aamix(active=0)   -- NO mix_main started yet
+    //   2. SetAAudioMixOutputPointer -- defensive Outbound re-set
+    //                                   (cmaster.c:411)
+    //   3. SetAAudioMixState(stream=0, active=1)
+    //                                -- triggers close_mixer +
+    //                                   activate + open_mixer,
+    //                                   which calls start_mixthread
+    //                                   inside the slew-orchestrated
+    //                                   open atom (cmaster.c:534-536
+    //                                   pattern via update_aamix_*).
+    //
+    // Plus reference-exact param values:
+    //   - ring_size = literal 4096   (cmaster.c:306 -- 4x my prior
+    //                                 4*outSize_=1024)
+    //   - slew      = 0/10ms/0/10ms  (cmaster.c:310-313 -- vs my
+    //                                 prior 5/5/5/5)
+    //
+    // Construction is here -- AFTER startAudio() (audioRing_ live
+    // when Outbound first fires on PC path) and BEFORE
+    // SetChannelState(channel,1) below (AAMix initialised, but
+    // dormant since active=0 + nactive=0 -> no mix_main yet).
+    if (aaMix_ != nullptr) {
+        // Defensive: a previous closeRx1 should have cleared this.
+        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        aaMix_ = nullptr;
+    }
+    {
+        int inrates[1] = { cfg_.outRate };
+        // Outbound lambda captures `this` so mix_main can call
+        // dispatchAudioFrame (the Stage B.6.a helper -- byte-
+        // identical-to-pre-B.6.a inline body).  WdspEngine outlives
+        // AAMix (destroyed in closeRx1 before WdspEngine dtor) so
+        // `this` is valid throughout AAMix lifetime.
+        auto outbound =
+            [this](int /*id*/, int nsamples, double *buff) {
+                dispatchAudioFrame(buff, nsamples);
+            };
+        aaMix_ = lyra::wdsp::create_aamix(
+            *wdsp_,
+            /*id*/             0,
+            /*outbound_id*/    0,
+            /*ringinsize*/     outSize_,
+            /*outsize*/        outSize_,
+            /*ninputs*/        1,
+            /*active*/         0L,         // REFERENCE: 0 not 0x01
+            /*what*/           0x01L,
+            /*volume*/         1.0,
+            /*ring_size*/      4096,       // REFERENCE: literal 4096
+            /*inrates*/        inrates,
+            /*outrate*/        cfg_.outRate,
+            /*Outbound*/       outbound,
+            /*tdelayup*/       0.000,      // REFERENCE: 0
+            /*tslewup*/        0.010,      // REFERENCE: 10ms
+            /*tdelaydown*/     0.000,      // REFERENCE: 0
+            /*tslewdown*/      0.010);     // REFERENCE: 10ms
+
+        // Reference cmaster.c:411 defensive Outbound re-set --
+        // safe regardless of whether create_aamix already stored it.
+        lyra::wdsp::SetAAudioMixOutputPointer(aaMix_, 0, outbound);
+
+        // Reference activation pattern (cmaster.c:534-536):
+        //   SetAAudioMixState(ptr, id, mix_in_id, 0)   // ensure inactive
+        //   SetAAudioStreamRate(ptr, id, mix_in_id, rate)  // rate match
+        //   SetAAudioMixState(ptr, id, mix_in_id, 1)   // activate
+        // We skip the explicit inactive step (already inactive from
+        // create_aamix(active=0)) and the rate setter (inrate ==
+        // outrate so SetAAudioStreamRate is a no-op for stream 0).
+        // The activation call below is what triggers the
+        // close_mixer/open_mixer atom -- the bench-validated
+        // reference path that brings mix_main online.
+        lyra::wdsp::SetAAudioMixState(aaMix_, 0, /*stream*/ 0,
+                                      /*active*/ 1);
+    }
+    emitLog(QStringLiteral(
+        "[wdsp] aamix: id=0 1-input ref-faithful (outSize=%1 frames "
+        "@ %2 Hz, ring=4096, slew=0/10ms; activated via "
+        "SetAAudioMixState)").arg(outSize_).arg(cfg_.outRate));
+
     // Start the channel (state=running, dmode=0).
     api.SetChannelState(channel_, 1, 0);
     running_ = true;
@@ -818,6 +915,15 @@ void WdspEngine::closeRx1()
     // before CloseChannel tears the channel down.
     if (api.SetChannelState) {
         api.SetChannelState(channel_, 0, 1);
+    }
+    // Stage B.6.b-retry: destroy AAMix BEFORE CloseChannel so
+    // mix_main joins (its Outbound stops calling dispatchAudioFrame)
+    // while WdspEngine sink-dispatch state remains valid.
+    // destroy_aamix's first action (Stage B.4) = clear run + release
+    // every Ready semaphore + request_stop + join mix_thread.
+    if (aaMix_ != nullptr) {
+        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        aaMix_ = nullptr;
     }
     if (nbCreated_ && api.destroy_nobEXT) {
         api.destroy_nobEXT(channel_);
@@ -2475,14 +2581,23 @@ void WdspEngine::feedIq(const double *iq, int nframes)
             emit tciAudioBlock(b, cfg_.outRate);
         }
 
-        // Step 3e/5: apply the operator volume/mute gain, convert to
-        // int16 stereo, and route to the active output.  As of Stage
-        // B.6.a (2026-06-08) the gain/mute/balance/BIN/quantize/sink
-        // logic lives in dispatchAudioFrame() so it can be shared
-        // between this inline feedIq call (today) and an AAMix
-        // Outbound callback (Stage B.6.b).  Pure relocation -- every
-        // state read + operation order + sink dispatch is unchanged.
-        dispatchAudioFrame(outBuf_.data(), outSize_);
+        // Step 3e/5 — Stage B.6.b-retry: push the WDSP RX channel's
+        // output block into the ported AAMix's stream-0 ring via
+        // xMixAudio.  AAMix's mix_main thread wakes on the Ready[0]
+        // semaphore release, runs xaamix (1-input passthrough mix,
+        // tvol[0]=1.0), and invokes Outbound -> dispatchAudioFrame
+        // (the Stage B.6.a helper) on the SAME bytes that used to
+        // be passed inline.  Net audio result intended to be byte-
+        // identical to the pre-B.6.b inline path; only the dispatch
+        // thread changes (feedIq's RX thread -> AAMix's mix_main).
+        //
+        // Null-check: aaMix_ is briefly nullptr during the close-
+        // then-reopen race window; skip the push (one block of
+        // silence ~21 ms, operator-imperceptible).
+        if (aaMix_ != nullptr) {
+            lyra::wdsp::xMixAudio(aaMix_, 0, /*stream*/ 0,
+                                  outBuf_.data());
+        }
 
         // Drop the consumed block; shift the small remainder down.
         accum_.erase(accum_.begin(),
