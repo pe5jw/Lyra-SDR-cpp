@@ -1,5 +1,20 @@
-// Lyra — ChannelMaster (cmaster) layer implementation.  See CMaster.h
-// for the multi-stage port plan + reference-mapping rationale.
+// Lyra-cpp — CMaster.cpp
+//
+// Ported from: openHPSDR Thetis (MI0BOT fork)
+// Upstream: https://github.com/mi0bot/OpenHPSDR-Thetis
+// Source file: ChannelMaster/cmaster.c (specifically the
+//   `cm` / `pcm` globals at :29-30, the `SendpOutbound*` setters
+//   at :407-432, and `SetTCIRun` at :434-437)
+// Source version: 2.10.3.13 (MI0BOT HL2 fork)
+// Original copyright: (C) 2014-2019 Warren Pratt, NR0V
+// License: GNU General Public License v3 or later
+//
+// See CMaster.h for the multi-stage port plan + per-symbol
+// reference-mapping rationale + full C → C++23 idiom-translation
+// list.  See NOTICE.md / CREDITS.md at repo root for full
+// upstream attribution.
+//
+// ---------------------------------------------------------------
 //
 // Stage A (this commit): module shell.  cmaster struct typedef +
 // global pcm pointer + enum AudioCodecId + 4 SendpOutbound* setter

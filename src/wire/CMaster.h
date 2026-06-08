@@ -1,12 +1,40 @@
-// Lyra — ChannelMaster (cmaster) layer.
+// Lyra-cpp — CMaster.h
 //
-// Reference-faithful port of the reference `cmaster.h` + `cmaster.c`
-// orchestration layer.  Reference files (provenance only; the
-// reference name stays out of shipped commits per the no-attribution
-// rule):
-//   - cmaster.h: cmaster typedef + pcm global + xcmaster + SendpOutbound*
-//   - cmaster.c: create_cmaster / destroy_cmaster / xcmaster body /
-//                SendpOutbound* setters
+// Ported from: openHPSDR Thetis (MI0BOT fork)
+// Upstream: https://github.com/mi0bot/OpenHPSDR-Thetis
+// Upstream mainline: https://github.com/ramdor/Thetis
+// Source files:
+//   - ChannelMaster/cmaster.h: cmaster typedef + pcm global +
+//                              xcmaster + SendpOutbound* signatures
+//   - ChannelMaster/cmaster.c: create_cmaster / destroy_cmaster /
+//                              xcmaster body / SendpOutbound* setters
+// Source version: 2.10.3.13 (MI0BOT HL2 fork)
+// Original copyright: (C) 2014-2019 Warren Pratt, NR0V
+//                     and the openHPSDR / Thetis contributors
+// License: GNU General Public License v3 or later
+// Lyra-cpp is also GPL v3+; redistribution complies with GPL
+// terms (preserved copyright, documented modifications, complete
+// source available at https://github.com/N8SDR1/Lyra-SDR-cpp).
+//
+// **C → C++23 idiom translations applied** (each preserves
+// observable behaviour; see per-symbol comments for exceptions):
+//   - struct typedef         → struct with in-class initializers
+//   - C unscoped enum        → enum class (with explicit int values)
+//   - C function pointers    → std::function (per docs/RULES.md §5.8
+//                              signed-off idiom)
+//   - CRITICAL_SECTION       → std::mutex (per Q5 Option A)
+//   - _InterlockedExchange   → plain int assignment for x86_64
+//                              word-sized writes (Rule 24 source-
+//                              verified; matches XmitBit precedent
+//                              at RadioNet.h:716-727)
+//
+// [Lyra-native] markers identify additions that are not part of
+// the reference port — Lyra TX DSP enhancements, operator-policy
+// hooks, etc.
+//
+// See NOTICE.md and CREDITS.md (repo root) for full attribution.
+//
+// ---------------------------------------------------------------
 //
 // **Multi-stage port** (operator-directed 2026-06-08, "FIX IT LIKE
 // THETIS DOES — no deviations no patches"):

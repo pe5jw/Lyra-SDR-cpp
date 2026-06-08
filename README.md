@@ -5,22 +5,36 @@ for the Hermes Lite 2 / 2+).  The Python tree is preserved in `../lyra/`
 as the protocol research + doc archive reference; this is a clean ground-
 up rewrite using the architecture the project should have started with.
 
+> **Acknowledgments at a glance:** Lyra-cpp incorporates code ported
+> from two GPL-compatible open-source projects:
+> **[WDSP](https://github.com/TAPR/OpenHPSDR-wdsp)** (Dr. Warren Pratt,
+> NR0V) for DSP algorithms, and the **[MI0BOT openHPSDR-Thetis
+> fork](https://github.com/mi0bot/OpenHPSDR-Thetis)** (Reid MI0BOT/GI8TME,
+> building on Richie Samphire ramdor's upstream maintained at
+> https://github.com/ramdor/Thetis) for the TX baseline ChannelMaster
+> architecture.  Both upstream projects are GPL v3+; per-file copyright
+> headers are preserved in every ported file.  See [NOTICE.md](NOTICE.md)
+> and [CREDITS.md](CREDITS.md) for full attribution.
+
 ## Architecture
 
-| Layer          | Choice                                                           |
-|----------------|------------------------------------------------------------------|
-| Language       | C++23                                                            |
-| UI framework   | Qt 6 (Qt Quick / QML)                                            |
-| Graphics       | Qt RHI (Vulkan/D3D12 on Windows, Metal on macOS, OpenGL fallback) |
-| DSP            | WDSP DSP engine, loaded natively (GPL v3+)                       |
-| FFT            | FFTW3 (per-host wisdom-cached on first launch)                   |
-| Wire I/O       | Native UDP (`QUdpSocket`) on dedicated OS threads — no GIL       |
-| Threading      | `std::jthread` + Qt thread pools, OS-priority + MMCSS later      |
-| Build          | CMake 3.21+                                                      |
-| Compiler       | MSVC v143 (VS 2022/2026) on Windows; clang/gcc on Linux; Apple Clang on macOS |
-| License        | GPL v3+                                                          |
+| Layer            | Choice                                                                                              |
+|------------------|-----------------------------------------------------------------------------------------------------|
+| Language         | C++23                                                                                               |
+| UI framework     | Qt 6 (Qt Quick / QML) — Lyra-native                                                                 |
+| Graphics         | Qt RHI (Vulkan/D3D12 on Windows, Metal on macOS, OpenGL fallback)                                   |
+| RX DSP           | WDSP DSP engine (Warren Pratt NR0V, GPL v3+) — loaded natively                                      |
+| RX architecture  | Lyra-native (no Python, no GIL) + Lyra-native flair (NPE modes, AEPF, captured-profile IQ-domain NR, per-band bounds memory, EiBi overlay, NCDXF beacon follow, ...) |
+| **TX baseline**  | **Ported from [openHPSDR Thetis (MI0BOT fork)](https://github.com/mi0bot/OpenHPSDR-Thetis) ChannelMaster (cmaster, aamix, ilv, supporting modules) — GPL v3+, attributed per file** |
+| **TX DSP additions** | **Lyra-native** (Combinator multiband compressor, Plate Reverb, parametric EQ, formant boost, sibilance enhance, DX cut-through, de-esser, auto-AGC — sit BEFORE the ported TXA chain) |
+| FFT              | FFTW3 (per-host wisdom-cached on first launch)                                                      |
+| Wire I/O         | Native UDP (`QUdpSocket`) on dedicated OS threads — no GIL                                          |
+| Threading        | `std::jthread` + Qt thread pools, OS-priority + MMCSS later                                         |
+| Build            | CMake 3.21+                                                                                         |
+| Compiler         | MSVC v143 (VS 2022/2026) on Windows; clang/gcc on Linux; Apple Clang on macOS                       |
+| License          | GPL v3+ (matches both upstream projects)                                                            |
 
-**No Python. No GIL. No cffi. No in-process bottleneck on the wire path.**
+**No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
 ## Features (v0.1.5)
 
@@ -97,6 +111,41 @@ let it configure, hit the green Run button.
 
 ## License
 
-GPL v3+, matches the parent `Lyra` Python project (`../lyra/`) and WDSP
-(`../lyra/dsp/_native/`, when integrated in a later commit).  See
-`../LICENSE` and `../NOTICE.md`.
+GPL v3 or later — matches WDSP, openHPSDR Thetis, and the parent
+[Lyra](../lyra) Python project.  See [LICENSE](LICENSE) for the full
+license text, [NOTICE.md](NOTICE.md) for upstream-project attribution
+(WDSP + Thetis), and [CREDITS.md](CREDITS.md) for the full
+acknowledgments and contributor list.
+
+### Why this matters
+
+Two open-source projects make Lyra-cpp possible without years of
+ground-up implementation:
+
+- **[WDSP](https://github.com/TAPR/OpenHPSDR-wdsp)** — Dr. Warren
+  Pratt NR0V's DSP engine.  RX audio chain (NR, AGC, ANF, LMS, NB,
+  AEPF, bandpass, demod, panel pan), TX audio chain (ALC, leveler,
+  compressor, CFC, PHROT), and the future PureSignal port (calcc +
+  iqc) in v0.3.  Lyra-cpp links the bundled WDSP DLL and calls into
+  it from native C++; the bundled DLL itself carries WDSP's GPL v3+
+  license and copyright.
+
+- **[openHPSDR Thetis (MI0BOT fork)](https://github.com/mi0bot/OpenHPSDR-Thetis)**
+  — the HL2-focused fork of Richie Samphire (ramdor)'s
+  [upstream Thetis](https://github.com/ramdor/Thetis), maintained by
+  Reid (MI0BOT / GI8TME) with the HL2/HL2+ specific work that makes
+  the Hermes Lite 2 family first-class.  Lyra-cpp's TX baseline ports
+  the Thetis ChannelMaster layer (cmaster.c + aamix.c + ilv.c +
+  supporting modules) with full per-file GPL attribution.  This
+  brings tested, debugged, multi-radio (HL2/HL2+/ANAN/Orion/...) TX
+  dispatch into Lyra-cpp; Lyra-native TX DSP enhancements layer on
+  top.
+
+The Python Lyra (`../lyra/`) and Lyra-cpp are both N8SDR's projects;
+Lyra-cpp is the C++23 rebuild that makes hard-realtime audio + wire
+I/O practical on Windows / macOS / Linux without Python's GIL.
+
+Cross-platform support (macOS / Linux) is planned post-v0.2 TX
+release; Qt 6 + modern C++ stdlib handles most of the cross-platform
+lifting, with platform-shim modules for Win32-specific items (MMCSS
+thread priority, WSAEventSelect → epoll/kqueue, etc.).
