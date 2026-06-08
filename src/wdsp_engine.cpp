@@ -9,6 +9,8 @@
 #include <QAudioDevice>
 #include <QAudioFormat>
 #include <QAudioSink>
+
+#include "wdsp/AAMix.h"  // Stage B.6.b: 1-input passthrough AAMix in RX path
 #include <QByteArray>
 #include <QDataStream>
 #include <QDateTime>
@@ -794,6 +796,75 @@ bool WdspEngine::openRx1()
     // continue (the dBFS meter still works, just no sound).
     startAudio();
 
+    // Stage B.6.b: construct the AAMix for the RX audio path.  Sized
+    // for a 1-input passthrough at the WDSP RX channel's output rate:
+    //   - 1 input (RX1 only; RX2 / TX-monitor add streams 1+ later)
+    //   - ringinsize = outSize_ (samples per xMixAudio call =
+    //     fexchange0's output frame count)
+    //   - outsize    = outSize_ (1:1; AAMix emits one frame per
+    //     xaamix pump matching feedIq's call cadence)
+    //   - inrates[0] = outRate (no resample required since
+    //     inrate == outrate)
+    //   - ring_size  = 4*outSize_ (4-frame buffer; absorbs
+    //     ~85 ms @ 48 kHz of back-pressure on the Outbound sink
+    //     without latency on steady-state cadence)
+    //   - active = 0x01, what = 0x01 (stream 0 active + in mix)
+    //   - volume = 1.0, vol[0] = 1.0 (unity passthrough; operator
+    //     volume + balance + BIN live in dispatchAudioFrame which
+    //     runs as the Outbound callback)
+    //   - slew times = 5 ms each (Thetis-typical; fires only on
+    //     SetAAudioMixState toggles which never happen in this
+    //     1-input static config -- so slewing is effectively dormant)
+    //   - Outbound = lambda -> dispatchAudioFrame, running on
+    //     mix_main's std::jthread.
+    //
+    // Construction is here -- AFTER startAudio() (so audioRing_ is
+    // live when the first Outbound fires on the PC sound path) and
+    // BEFORE SetChannelState(channel,1) below (so the AAMix is fully
+    // constructable + mix_main running before WDSP starts producing
+    // output blocks that feedIq will push via xMixAudio).
+    if (aaMix_ != nullptr) {
+        // Defensive: a previous closeRx1 should have cleared this;
+        // if it didn't, destroy first to avoid a leak + paamix[0]
+        // slot collision.
+        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        aaMix_ = nullptr;
+    }
+    {
+        int inrates[1] = { cfg_.outRate };
+        // Outbound: capture `this` so the AAMix's mix_main thread can
+        // call dispatchAudioFrame, the same byte-identical-to-pre-
+        // B.6.a helper Stage B.6.a extracted.  Lambda is std::function
+        // -- stored by value on the AAMix; lifetime is tied to the
+        // AAMix (destroyed in closeRx1 before WdspEngine).
+        auto outbound =
+            [this](int /*id*/, int nsamples, double *buff) {
+                dispatchAudioFrame(buff, nsamples);
+            };
+        aaMix_ = lyra::wdsp::create_aamix(
+            *wdsp_,
+            /*id*/             0,
+            /*outbound_id*/    0,
+            /*ringinsize*/     outSize_,
+            /*outsize*/        outSize_,
+            /*ninputs*/        1,
+            /*active*/         0x01L,
+            /*what*/           0x01L,
+            /*volume*/         1.0,
+            /*ring_size*/      4 * outSize_,
+            /*inrates*/        inrates,
+            /*outrate*/        cfg_.outRate,
+            /*Outbound*/       outbound,
+            /*tdelayup*/       0.005,
+            /*tslewup*/        0.005,
+            /*tdelaydown*/     0.005,
+            /*tslewdown*/      0.005);
+    }
+    emitLog(QStringLiteral(
+        "[wdsp] aamix: id=0 1-input passthrough (outSize=%1 frames "
+        "@ %2 Hz, ring=%3 frames)")
+        .arg(outSize_).arg(cfg_.outRate).arg(4 * outSize_));
+
     // Start the channel (state=running, dmode=0).
     api.SetChannelState(channel_, 1, 0);
     running_ = true;
@@ -818,6 +889,21 @@ void WdspEngine::closeRx1()
     // before CloseChannel tears the channel down.
     if (api.SetChannelState) {
         api.SetChannelState(channel_, 0, 1);
+    }
+    // Stage B.6.b: destroy the AAMix BEFORE CloseChannel so mix_main
+    // joins (its Outbound stops calling dispatchAudioFrame) while the
+    // WdspEngine sink-dispatch state (hl2AudioPush_, audioRing_)
+    // remains valid + WDSP outBuf_ etc. is still allocated.
+    // destroy_aamix's first action is to clear the run bit + release
+    // every Ready semaphore + request_stop + join mix_thread (Stage
+    // B.4 sequence) -- guarantees mix_main is dead before this call
+    // returns.  Sequencing here vs CloseChannel: WDSP is already
+    // stopped (SetChannelState(0,1) above blocked until WDSP downslew
+    // completed), no more outBuf_ writes; AAMix destroy joins the
+    // mix_thread; CloseChannel below frees the WDSP channel.
+    if (aaMix_ != nullptr) {
+        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        aaMix_ = nullptr;
     }
     if (nbCreated_ && api.destroy_nobEXT) {
         api.destroy_nobEXT(channel_);
@@ -2475,14 +2561,30 @@ void WdspEngine::feedIq(const double *iq, int nframes)
             emit tciAudioBlock(b, cfg_.outRate);
         }
 
-        // Step 3e/5: apply the operator volume/mute gain, convert to
-        // int16 stereo, and route to the active output.  As of Stage
-        // B.6.a (2026-06-08) the gain/mute/balance/BIN/quantize/sink
-        // logic lives in dispatchAudioFrame() so it can be shared
-        // between this inline feedIq call (today) and an AAMix
-        // Outbound callback (Stage B.6.b).  Pure relocation -- every
-        // state read + operation order + sink dispatch is unchanged.
-        dispatchAudioFrame(outBuf_.data(), outSize_);
+        // Step 3e/5 — Stage B.6.b: push the WDSP RX channel's output
+        // block into the ported AAMix's stream-0 ring (xMixAudio).
+        // AAMix's mix_main thread will wake on the Ready semaphore
+        // release (one release per outsize-sized push -- matches
+        // feedIq's call cadence 1:1 because ringinsize==outsize for
+        // this 1-input configuration), call xaamix (passthrough mix
+        // since stream 0 is the only `what`-set input, tvol[0]=1.0),
+        // and invoke the registered Outbound -- the lambda set in
+        // openRx1 that calls dispatchAudioFrame (Stage B.6.a) on the
+        // SAME bytes that used to be passed inline.  Net audio result
+        // is identical to the pre-B.6.b inline path; only the
+        // dispatch thread changes (feedIq's caller-thread -> AAMix's
+        // mix_main).
+        //
+        // Null-check: aaMix_ is briefly nullptr only during the
+        // close-then-reopen race window (closeRx1 has set it to
+        // nullptr but running_/opened_ haven't flipped yet).  Skip
+        // the push in that case; one block of silence (~21 ms) is
+        // operator-imperceptible and the next openRx1 reconstructs
+        // the mixer cleanly.
+        if (aaMix_ != nullptr) {
+            lyra::wdsp::xMixAudio(aaMix_, 0, /*stream*/ 0,
+                                  outBuf_.data());
+        }
 
         // Drop the consumed block; shift the small remainder down.
         accum_.erase(accum_.begin(),
