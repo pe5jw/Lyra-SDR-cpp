@@ -226,6 +226,24 @@ void create_rnet() {
     prbpfilter2 = new RbpFilter2();
     prbpfilter2->bpfilter = 0;  // :1732
     prbpfilter2->enable   = 2;  // :1733
+
+    // ---- §15.26 PA-OFF-at-startup safety (Task #114, 2026-06-08) ----
+    //
+    // Initialize `ApolloFilt = 0x04` (C2 bit 2 = `tr_disable` per
+    // ad9866.v gateware RTL).  This is the same state
+    // `set_pa_on(false)` produces — consistent safe default.  PA
+    // bias OFF (`ApolloTuner = 0` per BSS default) + T/R relay
+    // disabled (`ApolloFilt = 0x04`) means **no RF can leave the
+    // host on a MOX edge until the operator opts in to PA via
+    // `set_pa_on(true)`** — neither driver-only leakage nor PA
+    // output reach the antenna terminal.
+    //
+    // The other 4 Apollo globals (`ApolloTuner`, `ApolloFiltSelect`,
+    // `ApolloATU`, `xvtr_enable`) stay at 0 (BSS default) per the
+    // §15.26 PA-OFF-at-startup contract; comment block above the
+    // global declarations at the bottom of this file documents the
+    // safe-state pairing.
+    ApolloFilt = 0x04;
 }
 
 // §3.4 — Dispatch-relevant runtime globals.
@@ -268,15 +286,31 @@ int           P1_en_diversity   = 0;
 // C1=0, C2=0).  ANAN models set non-zero values at session open.
 int P1_adc_cntrl = 0;
 
-// §4b-2 supplement (added 2026-06-05 per §4b-2 source-verification).
+// §4b-2 supplement (added 2026-06-05 per §4b-2 source-verification;
+// `ApolloFilt` default semantic corrected 2026-06-08 per Task #114
+// PA-policy wire-layer fix).
 //
-// All five globals default 0 per the §15.26-locked PA-OFF-at-startup
-// safety.  C2 of frame 0x12 = `0x40` (case 10's OR'd `0b01000000`
-// constant only) → gateware `pa_enable = 0` → PA bias OFF → RF
-// impossible until operator opt-in (Task #114 Settings → TX →
-// "Enable PA").
+// Globals default 0 (BSS) here at the file-scope declaration level;
+// `create_rnet()` ABOVE writes `ApolloFilt = 0x04` to flip to the
+// safe state (tr_disable set when PA off — same state
+// `set_pa_on(false)` produces).  The BSS-0 default here covers the
+// brief window between program start and `create_rnet()` invocation
+// (no wire traffic is possible in that window since `prn == nullptr`).
+//
+// Post-`create_rnet()` safe state:
+//   - `ApolloTuner = 0`     → C2 bit 3 clear → gateware `pa_enable = 0`
+//                             → PA bias OFF
+//   - `ApolloFilt  = 0x04`  → C2 bit 2 set   → gateware `tr_disable = 1`
+//                             → T/R relay disabled even during MOX
+//                             → no RF can leave the host until operator
+//                               opts in via `set_pa_on(true)`
+//   - `ApolloFiltSelect / ApolloATU / xvtr_enable = 0`
+//                           → Apollo-daughterboard operator features
+//                             OFF; operator opts in via dedicated
+//                             setters (deferred until daughterboard
+//                             support lands).
 int xvtr_enable      = 0;
-int ApolloFilt       = 0;
+int ApolloFilt       = 0;   // overwritten to 0x04 by create_rnet (safe default)
 int ApolloFiltSelect = 0;
 int ApolloTuner      = 0;
 int ApolloATU        = 0;

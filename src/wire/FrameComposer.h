@@ -110,10 +110,32 @@ void set_tx_freq(int freq_hz);
 // BEFORE calling this setter).  No-op if `prn` is nullptr.
 void set_drive_level(int level);
 
-// Write `prn->tx[0].pa` (case 10 C3 bit 7 — the LEGACY PA
-// enable path).  Note: on Apollo-modded HL2+, the PA enable
-// is C2 bit 3 via `ApolloTuner` global (Task #114), NOT this
-// bit.  Kept for reference parity + non-Apollo paths.
+// PA enable.  Task #114 wire-layer fix (2026-06-08): drives
+// the THREE bits the HL2 / HL2+ gateware reads for PA bias +
+// T/R relay control:
+//   - `prn->tx[0].pa`  → case-10 C3 bit 7 (LEGACY; HL2
+//                        gateware IGNORES per ad9866.v RTL
+//                        ground truth, but kept for non-HL2
+//                        family parity)
+//   - `ApolloTuner`    → case-10 C2 bit 3 (0x08, `pa_enable`
+//                        per ad9866.v:209-220) — the actual
+//                        PA bias enable on HL2+
+//   - `ApolloFilt`     → case-10 C2 bit 2 (0x04, `tr_disable`
+//                        per ad9866.v) — PA OFF sets this so
+//                        the T/R relay cannot engage on a MOX
+//                        edge (prevents driver-only RF
+//                        leakage); PA ON clears it
+//
+// Operator-confirmed correct on N8SDR HL2+ via lyra-Python
+// §15.26 commit `b68886d` (PA-enable reconcile that produced
+// "first real RF").  See FrameComposer.cpp body for the full
+// reference-citation + safety rationale.
+//
+// **Default-OFF safety at startup**: `create_rnet()` sets
+// `ApolloFilt = 0x04` at session-open, matching the
+// `set_pa_on(false)` safe state.  Operator must call
+// `set_pa_on(true)` to enable RF; no accidental MOX edge
+// can produce RF before that call.
 void set_pa_on(bool on);
 
 // §4b-2.5 TX step attenuator setter — **per-family branching**.

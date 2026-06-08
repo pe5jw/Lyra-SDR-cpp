@@ -105,11 +105,52 @@ void set_drive_level(int level) {
     prn->tx[0].drive_level = level;
 }
 
-// §4b-2.5 — `prn->tx[0].pa` (case 10 C3 bit 7, legacy path).
-// Apollo-modded HL2+ PA enable is via `ApolloTuner` C2 bit 3
-// (Task #114); this setter only touches the legacy bit.
+// §4b-2.5 — PA enable.  Task #114 wire-layer fix
+// (2026-06-08): drives BOTH the legacy C3-bit-7 path AND the
+// Apollo C2-bit-3 (`pa_enable`) + C2-bit-2 (`tr_disable`) bits
+// that the HL2/HL2+ gateware actually reads per ad9866.v RTL
+// ground truth (§15.26 / HL2 wiki register `0x09[19] =
+// pa_enable`, `0x09[18] = tr_disable`).
+//
+// Legacy C3 bit 7 (`prn->tx[0].pa`) — HL2 gateware IGNORES
+// this bit per the §15.26 R1' RTL audit (`data[19]` is the
+// actual enable, NOT C3 bit 7).  Kept for reference parity +
+// non-HL2 (ANAN-class) family paths where the legacy bit may
+// still matter.
+//
+// C2 bit 3 (`ApolloTuner = 0x08`) — the load-bearing PA-enable
+// bit on Apollo-gated HL2+ gateware.  Mirrors reference's
+// `EnableApolloTuner(bits)` at `netInterface.c:578-585` +
+// `DisablePA(bit)` at `:625-636` (which on HL2 calls
+// `EnableApolloTuner(!bit)`).  Operator-empirically confirmed
+// on N8SDR HL2+ as the actually-functional PA enable mechanism
+// per lyra-Python §15.26 commit `b68886d` ("PA-enable C2 bit 3
+// (ApolloTuner) never reaching the wire" → first real RF).
+//
+// C2 bit 2 (`ApolloFilt = 0x04`) — `tr_disable` per gateware.
+// PA OFF ⇒ tr_disable SET (T/R relay disabled even during
+// MOX, prevents driver-only RF leakage onto the antenna
+// terminal); PA ON ⇒ tr_disable CLEAR (relay engages
+// normally for TX).  Pairing with `ApolloTuner` per the
+// pihpsdr / HL2-wiki convention; matches the safe state
+// `create_rnet()` initializes (ApolloFilt = 0x04 at startup
+// = same as the post-`set_pa_on(false)` state).
+//
+// NOTE on dual-purpose bits: `ApolloFilt` and
+// `ApolloFiltSelect` carry both the tr_disable / PA-relay-
+// gating semantics (HL2 base hardware) AND the Apollo
+// daughterboard filter operator-feature bits (Apollo-equipped
+// HL2+).  Until Apollo daughterboard support lands as a
+// dedicated operator-feature setter, `set_pa_on` owns
+// `ApolloFilt` to keep the gateware semantic correct on
+// base HL2 hardware.  When daughterboard support arrives, a
+// `set_apollo_filter(...)` sibling setter coordinates with
+// `set_pa_on` to manage the operator-feature aspect without
+// breaking the tr_disable contract.
 void set_pa_on(bool on) {
     prn->tx[0].pa = on ? 1 : 0;
+    ApolloTuner   = on ? 0x08 : 0;
+    ApolloFilt    = on ? 0    : 0x04;
 }
 
 // §4b-2.5 — TX step attenuator setter.  HL2 (`console.cs:
