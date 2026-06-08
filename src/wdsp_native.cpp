@@ -267,6 +267,16 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.create_resampleFV,    "create_resampleFV");
     resolve(api_.xresampleFV,          "xresampleFV");
     resolve(api_.destroy_resampleFV,   "destroy_resampleFV");
+    // Stage B (Thetis ChannelMaster port — AAMix) — complex-double
+    // resampler.  Missing-symbol failure here is the Stage B.0 gate
+    // signal: aamix per-input resampling cannot ship if the bundled
+    // wdsp.dll does not export these.  (Source-verified
+    // __declspec(dllexport) at wdsp/resample.h:60-70, so this should
+    // resolve clean — but the linker is the bench, not the source.)
+    resolve(api_.create_resample,      "create_resample");
+    resolve(api_.destroy_resample,     "destroy_resample");
+    resolve(api_.flush_resample,       "flush_resample");
+    resolve(api_.xresample,            "xresample");
 
     if (!missing.isEmpty()) {
         loadError_ = QStringLiteral(

@@ -323,6 +323,37 @@ using fn_xresampleFV_t         = void  (*)(float *input, float *output,
                                            int numsamps, int *outsamps,
                                            void *ptr);
 using fn_destroy_resampleFV_t  = void  (*)(void *ptr);
+
+// ============================================================
+// Stage B (Thetis ChannelMaster port — AAMix): WDSP polyphase
+// complex-double resampler (resample.c — DIFFERENT entry points
+// from the float-vector variant above).  Used by the ported
+// AAMix per-input resampler bank (one create_resample per stream,
+// xresample on every push, destroy on teardown, flush on ring
+// reset).  Signatures verified against wdsp/resample.h:60-70.
+// All 4 are __declspec(dllexport) in the upstream WDSP source —
+// confirmation that the bundled wdsp.dll exports them lands via
+// the resolveSymbols() probe at app load (Stage B.0 gate).
+//
+// The corresponding `resample` struct layout (with `in`/`out`/
+// `size` fields written directly by the consumer per the WDSP
+// public ABI in resample.h) is replicated under
+// src/wdsp/Resample.h (Stage B.1) with full GPL attribution —
+// required because the accessor setters
+// (setBuffers_resample / setSize_resample / setInRate_resample /
+// setOutRate_resample) are `extern` only, NOT
+// __declspec(dllexport), so they cannot be resolved across the
+// DLL boundary.  Direct field access is the upstream-faithful
+// pattern used by aamix.c itself (e.g. line 249
+// `a->rsmp[stream]->in = data;`).
+using fn_create_resample_t   = void* (*)(int run, int size,
+                                         double *in, double *out,
+                                         int in_rate, int out_rate,
+                                         double fc, int ncoef,
+                                         double gain);
+using fn_destroy_resample_t  = void  (*)(void *ptr);
+using fn_flush_resample_t    = void  (*)(void *ptr);
+using fn_xresample_t         = int   (*)(void *ptr);
 } // extern "C"
 
 // Resolved function pointers.  Step 3b populates these via
@@ -423,6 +454,15 @@ struct WdspApi {
     fn_create_resampleFV_t    create_resampleFV    = nullptr;
     fn_xresampleFV_t          xresampleFV          = nullptr;
     fn_destroy_resampleFV_t   destroy_resampleFV   = nullptr;
+    // Stage B (Thetis ChannelMaster port — AAMix): complex-double
+    // resampler (resample.c).  Consumed by ported AAMix at
+    // src/wdsp/AAMix.* (lands in Stage B.1+).  See typedef block
+    // header for the rationale on replicating the public resample
+    // struct rather than using the extern-only accessor setters.
+    fn_create_resample_t      create_resample      = nullptr;
+    fn_destroy_resample_t     destroy_resample     = nullptr;
+    fn_flush_resample_t       flush_resample       = nullptr;
+    fn_xresample_t            xresample            = nullptr;
 };
 
 class WdspNative : public QObject {
