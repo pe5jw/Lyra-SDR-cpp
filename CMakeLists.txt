@@ -89,6 +89,15 @@ qt_add_executable(lyra
     src/wdsp/TxChannel.cpp
     src/wdsp/TxaCffi.h
     src/wdsp/ChannelLifecycle.h
+    # Stage B (Thetis ChannelMaster port — AAMix).  Header-only at
+    # Stage B.1; the .cpp body lands in Stage B.2-B.5.  Resample.h
+    # replicates the WDSP public ABI struct so AAMix can do the
+    # direct ->in/->out/->size field writes the upstream aamix.c
+    # uses.  See src/wdsp/AAMix.h header preamble for the full
+    # B.0-B.6 stage plan.
+    src/wdsp/AAMix.h
+    src/wdsp/AAMix.cpp
+    src/wdsp/Resample.h
     # TX-rip Phase 1 step 1c-c — dsp/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3.
     src/dsp/StreamThread.h
