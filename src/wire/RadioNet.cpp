@@ -269,18 +269,28 @@ void create_rnet() {
     // empty body.
     switch (pcm->audioCodecId) {
     case AudioCodecId::HERMES:
-        SendpOutboundRx([](int id, int nsamples, double* buff) {
-            (void) id;
-            (void) nsamples;
-            // Stage A NO-OP body: aamix doesn't exist yet, so this
-            // callback is never invoked.  Stage B aamix port wires
-            // it via SetAAudioMixOutputPointer; the eventual body
-            // calls outbound_push_lr(buff) — the byte-shape-
-            // equivalent of reference network.c:1335-1337
-            // `memcpy(prn->outLRbufp,…); ReleaseSemaphore(hsendLR)
-            // ; WaitForSingleObject(hobbuffsRun[1])`.
-            (void) buff;
-        });
+        // Stage B.6.b-fix (2026-06-08): the Stage A NO-OP stub
+        // registration that USED to live here is REMOVED.  Cause:
+        // `SendpOutboundRx(stub)` runs `SetAAudioMixOutputPointer(
+        // nullptr, 0, stub)` which resolves `nullptr→paamix[0]` and
+        // clobbers `paamix[0]->Outbound`.  `create_rnet()` is called
+        // from `HL2Stream::open()` AFTER `WdspEngine::openRx1`'s
+        // `create_aamix(...)` -- so this registration overwrote the
+        // real `dispatchAudioFrame` lambda B.6.b had just wired
+        // ~1 ms earlier.  Result: AAMix's `mix_main` ran the no-op
+        // lambda 188×/sec (Outbound=set / out=N climbing in the
+        // chain-side log) but `dispatchAudioFrame` was never
+        // entered ([disp-dbg] silent in the bench log).
+        //
+        // The wire-up the Stage A comment promised ("eventual body
+        // calls outbound_push_lr(buff) ... reference network.c:
+        // 1335-1337") lives in `WdspEngine::openRx1` now, where the
+        // operator-supplied dispatcher (route to HL2 EP2 ring OR
+        // PC sound card) needs the per-channel context the global
+        // `pcm` cannot reach.  Re-introducing a default registration
+        // here would re-clobber that lambda; future codec-id
+        // switching needs to be reference-faithful AT openRx1, not
+        // at create_rnet.
         break;
     case AudioCodecId::ASIO:
         // FIXME (Stage E+ cmasio.c port): pass asio_out wrapper.
