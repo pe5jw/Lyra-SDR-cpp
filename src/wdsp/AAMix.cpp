@@ -14,36 +14,21 @@
 //
 // ---------------------------------------------------------------
 //
-// **Stage B.2 (THIS COMMIT) — constructor + destructor + slew
-// helpers.**  Lands the bodies of create_aaslew /
-// destroy_aaslew / flush_aaslew (reference aamix.c:69-125) +
-// create_aamix (aamix.c:128-207) + destroy_aamix (aamix.c:209-234).
-// Mixer is now constructable + destructible.  Still wire-inert
-// (no caller invokes create_aamix yet — the cmaster pump wire-up
-// lands in Stage D).
+// **Stage B.3 (THIS COMMIT) — DSP hot path.**  Adds the bodies
+// of xMixAudio (aamix.c:237-278) + upslew (aamix.c:280-343) +
+// downslew (aamix.c:345-420) + xaamix (aamix.c:423-459) +
+// flush_mix_ring (aamix.c:461-469).  Mixer can now mix.  Still
+// wire-inert (no consumer constructs the AAMix or pushes samples
+// to it — the cmaster pump wire-up lands in Stage D).
+//
+// **Already shipped in Stage B.2**: create_aaslew, destroy_aaslew,
+// flush_aaslew, create_aamix, destroy_aamix.
 //
 // **Deliberately deferred to Stage B.4**:
 //   - mix_main thread entry (aamix.c:32-49)
 //   - start_mixthread (aamix.c:51-55)
 //   - close_mixer (aamix.c:471-491)
 //   - open_mixer (aamix.c:493-505)
-// The reference create_aamix calls start_mixthread on its last
-// line (if nactive > 0); Stage B.2 replaces that single line with
-// a TODO marker so the AAMix is fully initialized but its mix
-// thread does NOT start.  Stage B.4 fills in the thread machinery.
-// The reference destroy_aamix's stop-the-thread sequence
-// (InterlockedBitTestAndReset(&run, 0) + per-input
-// ReleaseSemaphore(Ready[i], 1, 0) + Sleep(2)) similarly defers
-// to Stage B.4 — Stage B.2 destroy_aamix is a pure RAII cleanup
-// (std::vector / std::mutex / unique_ptr<semaphore> auto-clean
-// on AAMix's `delete`), correct because Stage B.2's create_aamix
-// never started any thread.
-//
-// **Deliberately deferred to Stage B.3**:
-//   - xMixAudio (per-input push)
-//   - xaamix (mix-and-output pump)
-//   - upslew / downslew (envelope state machines)
-//   - flush_mix_ring (per-ring reset)
 //
 // **Deliberately deferred to Stage B.5**:
 //   - 10 property setters (SetAAudioMix*, SetAAudioRing*,
@@ -54,7 +39,9 @@
 #include "wdsp/AAMix.h"
 #include "wdsp_native.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <numbers>
 
 namespace lyra::wdsp {
@@ -415,6 +402,391 @@ void destroy_aamix(AAMix* ptr, int id)
     // Reference aamix.c:230-232 — destroy_aaslew + _aligned_free(a).
     destroy_aaslew(a);  // no-op (RAII)
     delete a;
+}
+
+// =========================================================================
+// DSP hot path — reference aamix.c:237-469.
+// =========================================================================
+
+// Forward declarations for the upslew/downslew helpers (file-internal
+// state machines called only from xaamix).
+static void upslew  (AAMix* a);
+static void downslew(AAMix* a);
+
+// Reference aamix.c:237-278 — xMixAudio(ptr, id, stream, data).
+//
+// Per-input sample push entry point.  Called by upstream pump
+// (Stage D cmaster) for every block of input samples destined for
+// this mixer's `stream`.  Resamples (if rates differ) into the
+// per-stream ring buffer; releases the per-stream Ready semaphore
+// when ≥outsize complex samples have accumulated since the last
+// release; advances the wrap-around write index.
+//
+// Locking: cs_in[stream] serialises with concurrent xMixAudio
+// calls on the same stream (very unlikely in practice — one
+// upstream producer per stream — but the reference takes the lock
+// unconditionally and so does the port).  cs_out is NOT taken
+// here (the resampler-output buffer and ring are per-stream so
+// xaamix's mix-and-output path does not conflict with the ring
+// write itself; xaamix only reads `outidx` and `tvol`).
+//
+// `data` is interleaved complex (I,Q,I,Q,...), length = a's
+// configured input-rate-equivalent of ringinsize complex samples
+// (i.e. `2 * size_passed_to_create_resample` doubles when the
+// resampler runs; `2 * ringinsize` doubles when it doesn't).
+void xMixAudio(AAMix* ptr, int id, int stream, double* data)
+{
+    AAMix* a = (ptr == nullptr) ? paamix[id] : ptr;
+    if (a == nullptr) return;
+
+    // Reference aamix.c:244 — accept bit 0 gate (input is open
+    // for incoming samples).  Acquire ordering pairs with the
+    // release in create_aamix / SetAAudioMixState{,s} /
+    // open_mixer.
+    if ((a->accept[stream].load(std::memory_order_acquire) & 1u) == 0u) {
+        return;
+    }
+
+    // Reference aamix.c:246 — EnterCriticalSection(&cs_in[stream]).
+    std::scoped_lock lock(a->cs_in[stream]);
+
+    // Reference aamix.c:247-254 — optional resample.  Direct
+    // field access on the WDSP resample struct (`->in`/`->out`/
+    // `->run`) per the upstream aamix.c pattern; the public
+    // struct layout is replicated in Resample.h with full
+    // attribution so this static_cast is well-defined.
+    double* indata = nullptr;
+    resample* rsmp = static_cast<resample*>(a->rsmp[stream]);
+    if (rsmp != nullptr && rsmp->run) {
+        rsmp->in = data;
+        indata   = a->resampbuff[stream].data();
+        if (a->wdsp != nullptr) {
+            a->wdsp->api().xresample(rsmp);
+        }
+    } else {
+        indata = data;
+    }
+
+    // Reference aamix.c:255-264 — wrap-around ring write.  The
+    // ring holds `rsize` complex samples (== 2*rsize doubles);
+    // inidx is the *complex* write index.
+    int first  = 0;
+    int second = 0;
+    if (a->ringinsize > (a->rsize - a->inidx[stream])) {
+        first  = a->rsize - a->inidx[stream];
+        second = a->ringinsize - first;
+    } else {
+        first  = a->ringinsize;
+        second = 0;
+    }
+    // memcpy of `first` complex samples (2 doubles each) into the
+    // ring starting at the current inidx position.
+    std::memcpy(a->ring[stream].data() + 2 * a->inidx[stream],
+                indata,
+                static_cast<size_t>(first) * 2 * sizeof(double));
+    // Wrap-around tail: `second` complex samples from offset
+    // `2 * first` of the indata into the start of the ring.
+    if (second > 0) {
+        std::memcpy(a->ring[stream].data(),
+                    indata + 2 * first,
+                    static_cast<size_t>(second) * 2 * sizeof(double));
+    }
+
+    // Reference aamix.c:268-273 — semaphore-release accounting.
+    // unqueuedsamps tracks samples written but not yet "released"
+    // to the mixer thread; once it crosses outsize, release the
+    // Ready semaphore `n` times so the mixer can dequeue `n`
+    // output frames' worth of samples.
+    a->unqueuedsamps[stream] += a->ringinsize;
+    if (a->unqueuedsamps[stream] >= a->outsize) {
+        const int n = a->unqueuedsamps[stream] / a->outsize;
+        // Reference aamix.c:271 — ReleaseSemaphore(Ready[stream], n, 0).
+        // std::counting_semaphore::release(n) bumps the permit
+        // count by n in one call (C++20).  Matches semantics.
+        if (a->Ready[stream]) a->Ready[stream]->release(n);
+        a->unqueuedsamps[stream] -= n * a->outsize;
+    }
+
+    // Reference aamix.c:274-275 — advance inidx with wrap.
+    a->inidx[stream] += a->ringinsize;
+    if (a->inidx[stream] >= a->rsize) {
+        a->inidx[stream] -= a->rsize;
+    }
+    // cs_in[stream] released by scoped_lock dtor.
+}
+
+// Reference aamix.c:280-343 — upslew(a).
+//
+// Cosine-shaped fade-in state machine called from xaamix when
+// slew.uflag is set.  Iterates the freshly-mixed output buffer
+// (a->out) sample-by-sample and applies the BEGIN → DELAYUP →
+// UPSLEW → ON envelope transitions.  When the ON state is
+// reached AND the iteration finishes a buffer, ON resets to
+// BEGIN, clears uflag, and releases the uwait semaphore so the
+// open_mixer caller (Stage B.4) unblocks.
+//
+// Ported verbatim from aamix.c:280-343 — the switch-on-ustate
+// dispatch + the per-state pout assignments + state-transition
+// arithmetic match reference byte-for-byte.  Only translation:
+// SlewState enum class vs int; uflag atomic write uses release
+// ordering.
+static void upslew(AAMix* a)
+{
+    double* pin  = a->out.data();
+    double* pout = a->out.data();
+    for (int i = 0; i < a->outsize; ++i) {
+        const double I = pin[2 * i + 0];
+        const double Q = pin[2 * i + 1];
+        switch (a->slew.ustate) {
+        case SlewState::BEGIN:
+            pout[2 * i + 0] = 0.0;
+            pout[2 * i + 1] = 0.0;
+            if ((I != 0.0) || (Q != 0.0)) {
+                if (a->slew.ndelup > 0) {
+                    a->slew.ustate = SlewState::DELAYUP;
+                    a->slew.ucount = a->slew.ndelup;
+                } else if (a->slew.ntup > 0) {
+                    a->slew.ustate = SlewState::UPSLEW;
+                    a->slew.ucount = a->slew.ntup;
+                } else {
+                    a->slew.ustate = SlewState::ON;
+                }
+            }
+            break;
+        case SlewState::DELAYUP:
+            pout[2 * i + 0] = 0.0;
+            pout[2 * i + 1] = 0.0;
+            if (a->slew.ucount-- == 0) {
+                if (a->slew.ntup > 0) {
+                    a->slew.ustate = SlewState::UPSLEW;
+                    a->slew.ucount = a->slew.ntup;
+                } else {
+                    a->slew.ustate = SlewState::ON;
+                }
+            }
+            break;
+        case SlewState::UPSLEW:
+            pout[2 * i + 0] = I * a->slew.cup[a->slew.ntup - a->slew.ucount];
+            pout[2 * i + 1] = Q * a->slew.cup[a->slew.ntup - a->slew.ucount];
+            if (a->slew.ucount-- == 0) {
+                a->slew.ustate = SlewState::ON;
+            }
+            break;
+        case SlewState::ON:
+            pout[2 * i + 0] = I;
+            pout[2 * i + 1] = Q;
+            if (i == a->outsize - 1) {
+                a->slew.ustate = SlewState::BEGIN;
+                a->slew.uflag.fetch_and(~1u, std::memory_order_release);
+                if (a->slew.uwait) a->slew.uwait->release();
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+// Reference aamix.c:345-420 — downslew(a).
+//
+// Cosine-shaped fade-out state machine, mirror of upslew.
+// Iterates a->out and applies BEGIN → DELAYDOWN → DOWNSLEW →
+// ZERO → OFF envelope transitions.  In OFF state on iteration
+// completion, resets to BEGIN, clears dflag, releases dwait so
+// the close_mixer caller (Stage B.4) unblocks.
+//
+// Ported verbatim from reference; same translation list as
+// upslew above.
+static void downslew(AAMix* a)
+{
+    double* pin  = a->out.data();
+    double* pout = a->out.data();
+    for (int i = 0; i < a->outsize; ++i) {
+        const double I = pin[2 * i + 0];
+        const double Q = pin[2 * i + 1];
+        switch (a->slew.dstate) {
+        case SlewState::BEGIN:
+            pout[2 * i + 0] = I;
+            pout[2 * i + 1] = Q;
+            if (a->slew.ndeldown > 0) {
+                a->slew.dstate = SlewState::DELAYDOWN;
+                a->slew.dcount = a->slew.ndeldown;
+            } else if (a->slew.ntdown > 0) {
+                a->slew.dstate = SlewState::DOWNSLEW;
+                a->slew.dcount = a->slew.ntdown;
+            } else {
+                a->slew.dstate = SlewState::ZERO;
+                a->slew.dcount = a->outsize;
+            }
+            break;
+        case SlewState::DELAYDOWN:
+            pout[2 * i + 0] = I;
+            pout[2 * i + 1] = Q;
+            if (a->slew.dcount-- == 0) {
+                if (a->slew.ntdown > 0) {
+                    a->slew.dstate = SlewState::DOWNSLEW;
+                    a->slew.dcount = a->slew.ntdown;
+                } else {
+                    a->slew.dstate = SlewState::ZERO;
+                    a->slew.dcount = a->outsize;
+                }
+            }
+            break;
+        case SlewState::DOWNSLEW:
+            pout[2 * i + 0] =
+                I * a->slew.cdown[a->slew.ntdown - a->slew.dcount];
+            pout[2 * i + 1] =
+                Q * a->slew.cdown[a->slew.ntdown - a->slew.dcount];
+            if (a->slew.dcount-- == 0) {
+                a->slew.dstate = SlewState::ZERO;
+                a->slew.dcount = a->outsize;
+            }
+            break;
+        case SlewState::ZERO:
+            pout[2 * i + 0] = 0.0;
+            pout[2 * i + 1] = 0.0;
+            if (a->slew.dcount-- == 0) {
+                a->slew.dstate = SlewState::OFF;
+            }
+            break;
+        case SlewState::OFF:
+            pout[2 * i + 0] = 0.0;
+            pout[2 * i + 1] = 0.0;
+            if (i == a->outsize - 1) {
+                a->slew.dstate = SlewState::BEGIN;
+                a->slew.dflag.fetch_and(~1u, std::memory_order_release);
+                if (a->slew.dwait) a->slew.dwait->release();
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+// Reference aamix.c:423-459 — xaamix(a).
+//
+// Mixer pump body called from mix_main (Stage B.4) after the
+// AND-wait completes.  Steps:
+//   1. Take cs_out.
+//   2. Re-check `run`; if cleared, return (mix_main will see the
+//      cleared bit on its next while-check and exit).  The
+//      reference calls `_endthread()` here — Lyra-cpp uses a
+//      plain `return` because cleanup is RAII + jthread join
+//      (Stage B.4); the operator-visible "thread exits soon
+//      after run is cleared" semantic is preserved.
+//   3. Zero a->out.
+//   4. Compute mix-mask = what & active (snapshot atomically).
+//   5. For each set bit, sum the per-input ring contents
+//      (starting at outidx[i], advancing per output sample)
+//      times tvol[i] into a->out.
+//   6. For each accept-bit-set input, advance outidx[i] by
+//      outsize (with wrap).
+//   7. If uflag set, run upslew over a->out.
+//   8. If dflag set, run downslew over a->out.
+//   9. Release cs_out (scoped_lock dtor).
+void xaamix(AAMix* a)
+{
+    std::scoped_lock lock(a->cs_out);
+
+    // Reference aamix.c:428-433 — early exit if run cleared.
+    if ((a->run.load(std::memory_order_acquire) & 1u) == 0u) {
+        // [Lyra-native — _endthread() → return]: the reference
+        // calls _endthread() inside the locked section + then
+        // falls through to LeaveCriticalSection and return.
+        // Lyra-cpp's scoped_lock dtor releases cs_out
+        // automatically on return, and the mix_main loop's
+        // `run` check on the next iteration handles thread
+        // exit (RAII jthread join — Stage B.4).
+        return;
+    }
+
+    // Reference aamix.c:434 — `memset (a->out, 0, outsize *
+    // sizeof(complex))`.
+    std::fill(a->out.begin(), a->out.end(), 0.0);
+
+    // Reference aamix.c:435 — snapshot what & active into a
+    // local mask the loop walks.  Both reads use acquire
+    // ordering to pair with the producer-side release writes
+    // in SetAAudioMixState{,s} / SetAAudioMixWhat (Stage B.5).
+    std::uint32_t what = a->what.load(std::memory_order_acquire) &
+                         a->active.load(std::memory_order_acquire);
+
+    // Reference aamix.c:436-452 — per-input mix loop.  Walks set
+    // bits; for each one, sums `outsize` complex samples from
+    // ring[i] starting at outidx[i] (with wrap on rsize) into
+    // a->out, scaled by tvol[i].
+    int i = 0;
+    while (what != 0u) {
+        const std::uint32_t mask = 1u << i;
+        if ((mask & what) != 0u) {
+            int idx = a->outidx[i];
+            const double tv = a->tvol[i];
+            for (int j = 0; j < a->outsize; ++j) {
+                a->out[2 * j + 0] += tv * a->ring[i][2 * idx + 0];
+                a->out[2 * j + 1] += tv * a->ring[i][2 * idx + 1];
+                if (++idx == a->rsize) idx = 0;
+            }
+            what &= ~mask;
+        }
+        ++i;
+    }
+
+    // Reference aamix.c:453-455 — advance outidx for every input
+    // whose accept bit is set (NOT just the mixed inputs — every
+    // accepting input's ring is consumed in lockstep so they stay
+    // aligned for future mix windows).
+    for (int k = 0; k < a->ninputs; ++k) {
+        if ((a->accept[k].load(std::memory_order_acquire) & 1u) != 0u) {
+            a->outidx[k] += a->outsize;
+            if (a->outidx[k] >= a->rsize) a->outidx[k] -= a->rsize;
+        }
+    }
+
+    // Reference aamix.c:456-457 — slew dispatch.
+    if ((a->slew.uflag.load(std::memory_order_acquire) & 1u) != 0u) {
+        upslew(a);
+    }
+    if ((a->slew.dflag.load(std::memory_order_acquire) & 1u) != 0u) {
+        downslew(a);
+    }
+    // cs_out released by scoped_lock dtor.
+}
+
+// Reference aamix.c:461-469 — flush_mix_ring(a, stream).
+//
+// Zeros the per-stream ring buffer, resets indices, drains any
+// pending Ready semaphore permits, and flushes the WDSP
+// resampler's internal state.  Called from close_mixer
+// (Stage B.4) for every input on mixer close.  Public to
+// in-file callers in B.4; declared `static` until then.
+//
+// The reference `while (!WaitForSingleObject(Ready[stream], 1))`
+// loop is a polled-drain — WFSO returns 0 (WAIT_OBJECT_0) if a
+// permit was acquired (loop continues), non-zero on 1 ms
+// timeout (loop exits).  Lyra-cpp uses try_acquire_for(1 ms)
+// which returns true on acquire / false on timeout — same
+// semantics, inverted boolean.
+[[maybe_unused]] static void flush_mix_ring(AAMix* a, int stream)
+{
+    // Reference aamix.c:463 — memset ring (size = rsize complex
+    // = 2*rsize doubles).
+    std::fill(a->ring[stream].begin(), a->ring[stream].end(), 0.0);
+    a->inidx[stream]         = 0;
+    a->outidx[stream]        = 0;
+    a->unqueuedsamps[stream] = 0;
+    // Reference aamix.c:467 — drain Ready semaphore until empty.
+    if (a->Ready[stream]) {
+        while (a->Ready[stream]->try_acquire_for(
+                   std::chrono::milliseconds(1))) {
+            // intentionally empty
+        }
+    }
+    // Reference aamix.c:468 — flush the WDSP resampler.
+    if (a->wdsp != nullptr && a->rsmp[stream] != nullptr &&
+        a->wdsp->api().flush_resample != nullptr) {
+        a->wdsp->api().flush_resample(a->rsmp[stream]);
+    }
 }
 
 } // namespace lyra::wdsp
