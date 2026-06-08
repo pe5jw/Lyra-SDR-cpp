@@ -14,7 +14,42 @@
 //
 // ---------------------------------------------------------------
 //
-// **Stage B.4 (THIS COMMIT) — threading + slew orchestration.**
+// **Stage B.5 (THIS COMMIT) — 10 property setters + CMaster
+// wire-up.**  Adds the bodies of SetAAudioMixOutputPointer,
+// SetAAudioMixState{,s}, SetAAudioMixWhat, SetAAudioMixVolume,
+// SetAAudioMixVol, SetAAudioRing{In,Out}size, SetAAudioOutRate,
+// SetAAudioStreamRate (aamix.c:513-699).  Most reach
+// close_mixer/open_mixer from Stage B.4 to safely re-edit the
+// mixer state while data may be flowing; the volume/vol/what
+// setters mutate fields directly under cs_out (they don't
+// require a slewed shutdown).
+//
+// **Plus**: replaces the `// Stage B PENDING:
+// SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx);` comment
+// in src/wire/CMaster.cpp's Stage A SendpOutboundRx stub with
+// the actual call.  This is the architectural hand-off Stage A
+// wired the storage slot for: SendpOutboundRx still stores the
+// callback into pcm->OutboundRx (the central CMasterState
+// global), AND now also pushes it into AAMix's central
+// pointer-bank slot 0 so any future code constructing the
+// AAMix RX mixer at id=0 picks up the same operator-registered
+// callback.
+//
+// **Already shipped in Stages B.2-B.4**: create_aaslew,
+// destroy_aaslew, flush_aaslew, create_aamix, destroy_aamix
+// (B.2); xMixAudio, upslew, downslew, xaamix, flush_mix_ring
+// (B.3); mix_main, start_mixthread, close_mixer, open_mixer
+// (B.4).
+//
+// **Stage B.6 (DEFERRED — separate later commit)**: migrate
+// the existing Lyra-native audio_mixer to use the ported AAMix
+// in the RX audio routing path.  THAT commit is the
+// wire-effective migration where the operator HL2 bench-gate
+// matters; Stage B.5 finishes the ported library + the
+// architectural hand-off but no Lyra consumer constructs an
+// AAMix yet.
+//
+// (Historical Stage B.4 docstring — superseded by the above.)
 // Adds mix_main (aamix.c:32-49) + start_mixthread (aamix.c:51-55)
 // + close_mixer (aamix.c:471-491) + open_mixer (aamix.c:493-505)
 // + restores the `start_mixthread(a)` call in create_aamix that
@@ -1089,6 +1124,287 @@ void open_mixer(AAMix* a)
     if (a->slew.uwait) {
         (void)a->slew.uwait->try_acquire_for(
             std::chrono::milliseconds(a->slew.utimeout));
+    }
+}
+
+// =========================================================================
+// MIXER PROPERTIES — reference aamix.c:507-699.
+// =========================================================================
+
+// Helper — resolves the AAMix from the (ptr, id) pair per the
+// reference's `if (ptr == 0) a = paamix[id]; else a = (AAMIX)ptr`
+// pattern.  Returns nullptr if both ptr is null and id is out
+// of range, so callers can safely guard with `if (!a) return`.
+static AAMix* resolve_aamix(AAMix* ptr, int id)
+{
+    if (ptr != nullptr) return ptr;
+    if (id < 0 || id >= MAX_EXT_AAMIX) return nullptr;
+    return paamix[id];
+}
+
+// Reference aamix.c:513-519 — SetAAudioMixOutputPointer.
+void SetAAudioMixOutputPointer(
+    AAMix* ptr, int id,
+    std::function<void(int id, int nsamples, double* buff)> Outbound)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    a->Outbound = std::move(Outbound);
+}
+
+// Reference aamix.c:521-546 — SetAAudioMixState(ptr, id, stream, state).
+//
+// Edits the active mask + nactive count + aready[] list + accept
+// bits for ONE stream.  Wrapped in a close_mixer/open_mixer atom
+// so any in-flight mix is slewed-out + ringbufs flushed before
+// the edit, and slewed back in after.  Idempotent — early-return
+// if the requested state already matches the current bit.
+void SetAAudioMixState(AAMix* ptr, int id, int stream, int state)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    const std::uint32_t cur_active =
+        a->active.load(std::memory_order_acquire);
+    const int cur_state =
+        static_cast<int>((cur_active >> stream) & 1u);
+    if (cur_state == state) return;
+
+    close_mixer(a);
+    if (state) {
+        a->active.fetch_or(1u << stream, std::memory_order_release);
+    } else {
+        a->active.fetch_and(~(1u << stream), std::memory_order_release);
+    }
+    // Rebuild nactive + aready[] + accept flags from the new mask.
+    a->nactive = 0;
+    const std::uint32_t new_active =
+        a->active.load(std::memory_order_acquire);
+    for (int i = 0; i < a->ninputs; ++i) {
+        if ((new_active & (1u << i)) != 0u) {
+            a->aready[a->nactive++] = a->Ready[i].get();
+            a->accept[i].fetch_or(1u, std::memory_order_release);
+        } else {
+            a->accept[i].fetch_and(~1u, std::memory_order_release);
+        }
+    }
+    open_mixer(a);
+}
+
+// Reference aamix.c:548-582 — SetAAudioMixStates(ptr, id, streams,
+// states).  Batched-set variant: `streams` mask says which bits
+// to change, `states` mask says what to set them to.  Idempotent
+// guard: early-return if the masked subset of `active` already
+// matches `states & streams`.
+void SetAAudioMixStates(AAMix* ptr, int id, int streams, int states)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    const std::uint32_t cur_active =
+        a->active.load(std::memory_order_acquire);
+    const std::uint32_t want = static_cast<std::uint32_t>(states) &
+                               static_cast<std::uint32_t>(streams);
+    const std::uint32_t cur  = cur_active &
+                               static_cast<std::uint32_t>(streams);
+    if (cur == want) return;
+
+    close_mixer(a);
+    for (int i = 0; i < a->ninputs; ++i) {
+        if (((streams >> i) & 1) != 0) {
+            if (((states >> i) & 1) != 0) {
+                a->active.fetch_or(1u << i, std::memory_order_release);
+            } else {
+                a->active.fetch_and(~(1u << i),
+                                    std::memory_order_release);
+            }
+        }
+    }
+    a->nactive = 0;
+    const std::uint32_t new_active =
+        a->active.load(std::memory_order_acquire);
+    for (int i = 0; i < a->ninputs; ++i) {
+        if ((new_active & (1u << i)) != 0u) {
+            a->aready[a->nactive++] = a->Ready[i].get();
+            a->accept[i].fetch_or(1u, std::memory_order_release);
+        } else {
+            a->accept[i].fetch_and(~1u, std::memory_order_release);
+        }
+    }
+    open_mixer(a);
+}
+
+// Reference aamix.c:584-594 — SetAAudioMixWhat.
+//
+// Sets/clears bit `stream` of the `what` mask.  Does NOT need a
+// close/open atom — `what` is read atomically by xaamix per
+// frame.  Operator-facing MUTE/UNMUTE control for a specific
+// input.
+void SetAAudioMixWhat(AAMix* ptr, int id, int stream, int state)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    if (state) {
+        a->what.fetch_or(1u << stream, std::memory_order_release);
+    } else {
+        a->what.fetch_and(~(1u << stream), std::memory_order_release);
+    }
+}
+
+// Reference aamix.c:596-608 — SetAAudioMixVolume.
+//
+// Master volume.  Takes cs_out so the recompute of tvol[] is
+// atomic w.r.t. xaamix reading tvol[] mid-mix.
+void SetAAudioMixVolume(AAMix* ptr, int id, double volume)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    std::scoped_lock lock(a->cs_out);
+    a->volume = volume;
+    for (int i = 0; i < AAMIX_MAX_INPUTS; ++i) {
+        a->tvol[i] = a->volume * a->vol[i];
+    }
+}
+
+// Reference aamix.c:610-620 — SetAAudioMixVol.
+//
+// Per-input volume.  Same cs_out atomicity requirement as
+// SetAAudioMixVolume.
+void SetAAudioMixVol(AAMix* ptr, int id, int stream, double vol)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    std::scoped_lock lock(a->cs_out);
+    a->vol [stream] = vol;
+    a->tvol[stream] = a->vol[stream] * a->volume;
+}
+
+// Reference aamix.c:622-642 — SetAAudioRingInsize.
+//
+// Change `ringinsize` while data may be flowing.  Wrapped in
+// close/open.  Per-input resampler->size is updated in place
+// (the reference does direct `->size` writes; the public WDSP
+// resample struct is replicated in Resample.h so the cast is
+// well-defined); resampler-output buffer is reallocated.
+void SetAAudioRingInsize(AAMix* ptr, int id, int size)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    close_mixer(a);
+    a->ringinsize = size;
+    for (int i = 0; i < a->ninputs; ++i) {
+        int rs_size;
+        if (a->inrate[i] > a->outrate) {
+            rs_size = a->ringinsize * (a->inrate[i] / a->outrate);
+        } else {
+            rs_size = a->ringinsize / (a->outrate / a->inrate[i]);
+        }
+        resample* rsmp = static_cast<resample*>(a->rsmp[i]);
+        if (rsmp != nullptr) {
+            rsmp->size = rs_size;
+        }
+        a->resampbuff[i].assign(static_cast<size_t>(2 * a->ringinsize),
+                                0.0);
+        if (rsmp != nullptr) {
+            rsmp->out = a->resampbuff[i].data();
+        }
+    }
+    open_mixer(a);
+}
+
+// Reference aamix.c:644-654 — SetAAudioRingOutsize.
+//
+// Change `outsize` while data may be flowing.  Wrapped in
+// close/open.  Output buffer reallocated.
+void SetAAudioRingOutsize(AAMix* ptr, int id, int size)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    close_mixer(a);
+    a->outsize = size;
+    a->out.assign(static_cast<size_t>(2 * a->outsize), 0.0);
+    open_mixer(a);
+}
+
+// Reference aamix.c:656-681 — SetAAudioOutRate.
+//
+// Change `outrate` while data may be flowing.  Wrapped in
+// close/open.  Per-input resamplers are destroyed + recreated
+// with the new rate (and re-evaluated run flag based on
+// in_rate==out_rate match).
+void SetAAudioOutRate(AAMix* ptr, int id, int rate)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    close_mixer(a);
+    a->outrate = rate;
+    if (a->wdsp != nullptr) {
+        const lyra::dsp::WdspApi& api = a->wdsp->api();
+        for (int i = 0; i < a->ninputs; ++i) {
+            int run;
+            int size;
+            if (a->rsmp[i] != nullptr && api.destroy_resample != nullptr) {
+                api.destroy_resample(a->rsmp[i]);
+                a->rsmp[i] = nullptr;
+            }
+            if (a->inrate[i] != a->outrate) run = 1;
+            else                            run = 0;
+            if (a->inrate[i] > a->outrate) {
+                size = a->ringinsize * (a->inrate[i] / a->outrate);
+            } else {
+                size = a->ringinsize / (a->outrate / a->inrate[i]);
+            }
+            a->resampbuff[i].assign(
+                static_cast<size_t>(2 * a->ringinsize), 0.0);
+            if (api.create_resample != nullptr) {
+                a->rsmp[i] = api.create_resample(
+                    run, size, nullptr, a->resampbuff[i].data(),
+                    a->inrate[i], a->outrate, 0.0, 0, 1.0);
+                // Reference aamix.c:678 redundantly assigns
+                // `->out` after create_resample (which already
+                // takes `out` as the 4th arg).  Preserved
+                // verbatim for byte-for-byte parity with the
+                // reference behaviour.
+                resample* rsmp = static_cast<resample*>(a->rsmp[i]);
+                if (rsmp != nullptr) {
+                    rsmp->out = a->resampbuff[i].data();
+                }
+            }
+        }
+    }
+    open_mixer(a);
+}
+
+// Reference aamix.c:683-699 — SetAAudioStreamRate.
+//
+// Change ONE stream's input rate.  The reference NOTE comment
+// at :684 is load-bearing: "you must set the stream state to
+// INACTIVE before using this function!"  This function does
+// NOT wrap close/open — the caller is expected to have
+// SetAAudioMixState(..., 0)'d the stream first, then call this,
+// then SetAAudioMixState(..., 1).
+void SetAAudioStreamRate(AAMix* ptr, int id, int mixinid, int rate)
+{
+    AAMix* a = resolve_aamix(ptr, id);
+    if (a == nullptr) return;
+    if (a->wdsp == nullptr) return;
+    const lyra::dsp::WdspApi& api = a->wdsp->api();
+    a->inrate[mixinid] = rate;
+    if (a->rsmp[mixinid] != nullptr && api.destroy_resample != nullptr) {
+        api.destroy_resample(a->rsmp[mixinid]);
+        a->rsmp[mixinid] = nullptr;
+    }
+    int run;
+    int size;
+    if (a->inrate[mixinid] != a->outrate) run = 1;
+    else                                  run = 0;
+    if (a->inrate[mixinid] > a->outrate) {
+        size = a->ringinsize * (a->inrate[mixinid] / a->outrate);
+    } else {
+        size = a->ringinsize / (a->outrate / a->inrate[mixinid]);
+    }
+    if (api.create_resample != nullptr) {
+        a->rsmp[mixinid] = api.create_resample(
+            run, size, nullptr, a->resampbuff[mixinid].data(),
+            a->inrate[mixinid], a->outrate, 0.0, 0, 1.0);
     }
 }
 

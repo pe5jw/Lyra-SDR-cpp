@@ -23,6 +23,7 @@
 // body, etc.) plug into.
 
 #include "wire/CMaster.h"
+#include "wdsp/AAMix.h"
 
 namespace lyra::wire {
 
@@ -52,7 +53,18 @@ CMasterState* pcm = &cm;
 void SendpOutboundRx(OutboundCallback cb)
 {
     pcm->OutboundRx = std::move(cb);
-    // Stage B PENDING: SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx);
+    // Stage B.5 wire-up: push the registered callback into the
+    // ported AAMix's central pointer-bank slot 0 (the conventional
+    // RX mixer id matching reference cmaster.c:411
+    // `SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx)`).  Safe
+    // when no AAMix exists at that slot yet (paamix[0] == nullptr
+    // before Stage B.6's create_aamix call site): the setter's
+    // resolve_aamix returns nullptr and the setter early-returns
+    // without effect.  Once Stage B.6 ports the RX audio path to
+    // construct AAMix at id=0, this call wires the operator-
+    // registered RX-out callback into mix_main's Outbound dispatch
+    // automatically; no further plumbing change needed.
+    lyra::wdsp::SetAAudioMixOutputPointer(nullptr, 0, pcm->OutboundRx);
 }
 
 // ===== SendpOutboundTx =====
