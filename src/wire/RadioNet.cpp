@@ -5,6 +5,7 @@
 // but not wired into HL2Stream until §10.3 step 14.
 
 #include "wire/RadioNet.h"
+#include "wire/CMaster.h"    // SendpOutboundRx/Tx + AudioCodecId for create_rnet wire-up
 #include "wire/RbpFilter.h"  // prbpfilter / prbpfilter2 allocator targets
 
 namespace lyra::wire {
@@ -226,6 +227,80 @@ void create_rnet() {
     prbpfilter2 = new RbpFilter2();
     prbpfilter2->bpfilter = 0;  // :1732
     prbpfilter2->enable   = 2;  // :1733
+
+    // ---- cmaster outbound callback registration (Stage A, 2026-06-08) ----
+    //
+    // Reference netInterface.c:1749-1761:
+    //
+    //     switch (pcm->audioCodecId) {
+    //     case HERMES:
+    //         SendpOutboundRx(OutBound);
+    //         break;
+    //     case ASIO:
+    //         SendpOutboundRx(asioOUT);
+    //         break;
+    //     case WASAPI:
+    //         // not implmented
+    //         break;
+    //     }
+    //     SendpOutboundTx(OutBound);
+    //
+    // Stage A scope: the setters STORE the callback in
+    // `pcm->Outbound{Rx,Tx}`; the downstream wire-up (aamix's
+    // `SetAAudioMixOutputPointer` for RX; ILV's `SetILVOutputPointer`
+    // for TX) lands when Stage B (aamix port) + Stage C (ilv port)
+    // ship.  Until then the stored callbacks sit idle — no behaviour
+    // change from pre-Stage-A.  This is the architectural shell that
+    // subsequent stages plug into; byte-shape matches reference
+    // create_rnet's final block.
+    //
+    // The HERMES branch passes a thin wrapper around Lyra's existing
+    // `outbound_push_lr` producer (declared in OutboundRing.h) — the
+    // reference's `OutBound` function at network.c:1285-1340 is the
+    // producer-side that does `memcpy → ReleaseSemaphore(hsendLRSem)
+    // → WaitForSingleObject(hobbuffsRun)` for the RX audio path.
+    // Lyra's `outbound_push_lr` is the byte-shape-equivalent of that
+    // producer.  When Stage B's aamix lands, AAMIX will invoke this
+    // callback for every RX audio frame it produces — matching
+    // reference's `xMixAudio → AAMIX → OutboundRx → OutBound` chain.
+    //
+    // The ASIO branch is a Stage E+ FIXME (cmasio.c port pending).
+    // The WASAPI branch matches reference's `// not implmented`
+    // empty body.
+    switch (pcm->audioCodecId) {
+    case AudioCodecId::HERMES:
+        SendpOutboundRx([](int id, int nsamples, double* buff) {
+            (void) id;
+            (void) nsamples;
+            // Stage A NO-OP body: aamix doesn't exist yet, so this
+            // callback is never invoked.  Stage B aamix port wires
+            // it via SetAAudioMixOutputPointer; the eventual body
+            // calls outbound_push_lr(buff) — the byte-shape-
+            // equivalent of reference network.c:1335-1337
+            // `memcpy(prn->outLRbufp,…); ReleaseSemaphore(hsendLR)
+            // ; WaitForSingleObject(hobbuffsRun[1])`.
+            (void) buff;
+        });
+        break;
+    case AudioCodecId::ASIO:
+        // FIXME (Stage E+ cmasio.c port): pass asio_out wrapper.
+        // For now: matches reference WASAPI empty branch (no
+        // registration; ASIO path doesn't drive the wire).
+        break;
+    case AudioCodecId::WASAPI:
+        // not implmented — matches reference comment verbatim.
+        break;
+    }
+    SendpOutboundTx([](int id, int nsamples, double* buff) {
+        (void) id;
+        (void) nsamples;
+        // Stage A NO-OP body: ilv doesn't exist yet, so this
+        // callback is never invoked.  Stage C ilv port wires it
+        // via SetILVOutputPointer; eventual body calls
+        // outbound_push_iq(buff) — byte-shape-equivalent of
+        // reference's xilv → OutBound chain.
+        (void) buff;
+    });
 
     // ---- §15.26 PA-OFF-at-startup safety (Task #114, 2026-06-08) ----
     //

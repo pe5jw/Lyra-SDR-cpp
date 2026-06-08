@@ -65,6 +65,8 @@ qt_add_executable(lyra
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h
     src/wire/RadioNet.cpp
+    src/wire/CMaster.h
+    src/wire/CMaster.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
