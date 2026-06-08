@@ -813,6 +813,58 @@ Backup: `_backups/lyra-cpp-2026-06-08-stage2b2c.bundle` (full git bundle, 15.9 M
 
 **Downstream still pending:** `Hl2Ep6MicSource::setConsumer(...)` has no live caller — the TxDspWorker that would feed mic doubles into the WDSP TXA chain was removed in TX-rip Phase 1 (Q2) and is being rebuilt per `docs/TX_ARCHITECTURAL_MAPPING.md §10.3`. Stage 2b2c is the wire-side half: the mic path is now correctly wired all the way to the operator-facing `Consumer` boundary. Wiring the TX DSP consumer + the wire-LIVE TX path is the next stage.
 
+---
+
+### Stage 14.2b2d — `lyra::wdsp::TxChannel` body, wire-inert (SHIPPED 2026-06-08)
+
+Phase 1 empty `TxChannel.{h,cpp}` shells get a reference-faithful 1:1 body per §10.3 item 4. Wire-inert: nothing constructs the class yet, nothing calls its methods, runtime behaviour is byte-identical to Stage 2b2c.
+
+**Honest correction note:** the initial Stage 2b2d ship (commits `e995740` + `0265d02`) contained three real reference deviations caught by the operator's "no patches" challenge and corrected before re-shipping:
+
+1. `cfg.inSize` default `512` was a number I invented — the reference value is `getbuffsize(48000) = 64` (cmsetup.c:106-111 + :71). **Fixed:** `inSize` removed from `TxConfig` entirely; computed at `open()` time via `referenceBuffsize(inRate) = 64 * rate / 48000` matching reference exactly.
+2. `computeOutSize` rounded up to the next power-of-2, which the reference's `getbuffsize` does NOT do. I had even written a comment claiming the reference rounded — false. **Fixed:** `computeOutSize` deleted; output buffer sized to `referenceBuffsize(outRate)` matching reference cmsetup.c:84.
+3. `stop(bool blocking = true)` exposed a non-blocking option for which the reference has zero call-site precedent (both `console.cs:30355` keyup and `destroy_xmtr` cmaster.c:265 unconditionally use `dmode=1`). **Fixed:** parameter removed; `stop()` always issues blocking-flush.
+
+The reset + re-ship preserves a clean single-commit landing for Stage 2b2d in reference-faithful form; the earlier patched-state commits are retained in the prior backup bundle for archaeology.
+
+The shipped class wraps the canonical WDSP TXA channel lifecycle:
+- `open()` invokes `OpenChannel(channel, inSize_, 4096, 48000, 96000, 48000, type=1, state=0, 0.000/0.010/0.000/0.010, block=1)` — every parameter matches `cmaster.c:177-190` byte-for-byte. `inSize_` = `referenceBuffsize(inRate) = 64` for HL2 48 kHz mic.
+- Three TX output buffers (`out[0]`/`out[1]`/`out[2]`) allocated to `referenceBuffsize(outRate)` pairs unconditionally at construction per `cmaster.c:126-127` reference posture. `out[1]` (EER) and `out[2]` (sidetone) sit unused until their helpers land in their own queued stages — but the buffers are held per reference.
+- `close()` calls `CloseChannel(ch)` **alone** — matches `destroy_xmtr` (`cmaster.c:255-271`) verbatim. The reference at line 265 is literally `CloseChannel (chid (inid (1, i), 0));` with NO preceding `SetChannelState`. The blocking-flush `SetChannelState(0,1)` discipline belongs at keyup (`stop()`; reference `console.cs:30355`), NOT at destroy time. The initial Stage 2b2d ship of `close()` conflated keyup discipline + destroy discipline into one method; caught by the deeper PASS 1 reference cross-check below.
+- `start()` wraps `SetChannelState(ch, 1, 0)` matching `console.cs:30346`. `stop()` wraps `SetChannelState(ch, 0, 1)` — always blocking, no parameter, no non-reference variant.
+- `setMode(TxaMode)` wraps `SetTXAMode` — TxaMode enum mirrors `wdsp/TXA.h:31-47 enum txaMode` 1:1 (LSB=0 .. AM_USB=13).
+- `setBandpass(lo, hi)` wraps `SetTXABandpassFreqs`. **Documented LANDMINE:** never calls `SetTXABandpassRun` (the §15.23 root cause — bp1 toggle, not bp0 sideband select).
+- `process(mic_iq, n_samples)` wraps `fexchange0(channel, mic_iq, outBuf_, &err)` matching `cmaster.c:389` TX dispatch. `const_cast` at the boundary is the standard Rule 26 C-to-C++23 const-correctness bridge (WDSP cdef takes non-const `double*` for historical C reasons; only READS through the input pointer in practice).
+
+**Idiom translations (Rule 26 — all reviewed against the strict-reference rule and justified):**
+- C++23 `class TxChannel` wraps the reference's C `pcm->xmtr[i]` struct + free-function pattern. Same idiom precedent as `RxChannel` (operator-approved when that shipped).
+- `std::vector<double>` for the three output buffers replaces reference `malloc0(2*sizeof(complex)*ch_outsize)`. Bits passed to `fexchange0` are identical; ownership idiom is C++23-native.
+- `const double*` on `process()` arg matches Stage 2b2c's `Hl2Ep6MicSource::Consumer` signature; `const_cast` at the WDSP boundary is the standard C-to-C++23 const bridge.
+- `enum class TxaMode` is C++23 strong-typed mirror of the C `enum txaMode` — same integer values, namespace-scoped.
+- `if (!opened_) return -1;` RAII state guard on `process()` — Rule 26 C++23 defensive API idiom. The reference assumes caller has set the channel up; the guard makes that explicit at the boundary. Behaviour is byte-identical to bare `fexchange0` when inputs are valid.
+- `constexpr int referenceBuffsize(int rate) noexcept` helper — namespace-scoped C++23 mirror of reference `getbuffsize(rate) = 64 * rate / 48000` (cmsetup.c:106-111). Same return for every input.
+
+**Audit-follow-up note (deeper PASS 1 reference cross-check, 2026-06-08):** after the Stage 2b2d soft-reset re-ship, an operator-directed line-by-line audit re-reading each cited reference file (cmsetup.c:106-111, TXA.h:31-47, cmaster.c:112-271, cmaster.c:389, TXA.c:827+, cmbuffs.c:89, networkproto1.c:395-413/:560-579, bandpass.c:466) caught one additional real deviation + one doc-accuracy nit, both fixed in this commit:
+
+1. **`close()` had `SetChannelState(ch, 0, 1)` before `CloseChannel`.** The cited justification claimed this matched "`console.cs:30355` keyup discipline + `destroy_xmtr` (`cmaster.c:265`)" — but those are two SEPARATE reference sites used in two SEPARATE situations: keyup is operator-PTT-release (channel stays OPEN), destroy is teardown (channel goes AWAY). Reference `destroy_xmtr` calls `CloseChannel` ALONE at line 265, with no preceding `SetChannelState`. **Fixed:** removed the `SetChannelState(0,1)` from `close()`; `stop()` (the keyup analog) keeps it. The two reference sites are now correctly separated in Lyra: `stop()` ↔ keyup (`console.cs:30355`), `close()`/dtor ↔ destroy_xmtr (`cmaster.c:265`).
+2. **`setMode` comment cited "`TXA.c:823-829`"** — that line range is actually `TXAUslewCheck` (an unrelated function); `TXASetupBPFilters` begins at `TXA.c:827+`. **Fixed:** comment updated to "`TXA.c:827+`". No code change; doc accuracy only.
+
+`SetTXABandpassRun` zero call sites + symbol absent from cdef confirmed by grep across the entire Lyra-cpp tree (also confirmed in reference: defined at `bandpass.c:466`, called nowhere else in Thetis). LANDMINE-protected at both the comment layer AND the linker layer.
+
+**Explicitly deferred to later queued stages per §10.3 (each ships in its own reference-verify-twice / no-patch cycle):**
+- `create_dexp` (VOX)
+- `create_aamix` (anti-VOX mixer)
+- `create_txgain` (Penelope / PS gain — note: HL2 uses different mechanism per CLAUDE.md §3.8 step-attenuator + drive_level; that's protocol-layer, not WDSP-layer)
+- `create_eer` / `create_ilv` (EER + EER interleaver — operator DB has EER off)
+- `create_sidetone` (CW sidetone — v0.2.2)
+- `XCreateAnalyzer` (TX-side panadapter source — polish stage)
+
+Build: ninja green, `lyra.exe` links clean. Zero new warnings.
+
+**No hardware bench required at this stage** — the class is dead code at runtime. Hardware verification gate moves to Stage 2b2e (when something constructs `TxChannel` + registers it on `micSource->setConsumer(...)`).
+
+**Operator-directed next checkpoint:** detailed Reference-vs-Lyra TX audit BEFORE proceeding to Stage 2b2e. Sweep the entire TX surface (FrameComposer + PttFsm + TxChannel + Ep2SendThread integration plan + ATT-on-TX + PA-enable + mic source plumbing + any other §10.3 Phase 1 items) against the Thetis reference, flag deviations, present findings BEFORE any further code.
+
 Operator hardware bench pending (NOT run this session — code-level audits only): cold open RX1 audio + panadapter, telemetry T/V/PA, Auto-LNA on a real signal, ×5 stop/restart, HW-PTT-opt-in foot-switch (after per-unit `ptt_in`-at-rest bench-verify per §10 Q#1), MOX bit flip without PA.
 
 Methodology discipline (operator-locked 2026-06-07, REAFFIRMED EOD): DEFAULT VERDICT = strict reference. Lyra-native preservation is NEVER the default answer. **Default action on any flagged deviation = fix to match reference. NOT patch. NOT deviate. NOT rationalize "acceptable."** Verify-pass output gets re-judged against this rule before presentation; agents report what they find, the rule decides what gets actioned. RX options (WDSP NR/AGC/ANF/LMS/NB/SQ/AEPF/captured profile/etc.) STAY (WDSP-backed = reference-equivalent). TX operator-feature suite (Combinator, Plate Reverb, EQ, CFC, speech-enhancement, mic profiles) is where Lyra deliberately differs — strict-reference rule does NOT auto-apply there; WE TALK before any change near those. LNA — flag if anything LNA-related interacts with TX path; WE TALK.**
