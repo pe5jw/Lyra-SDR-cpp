@@ -99,10 +99,12 @@ qt_add_executable(lyra
     src/wdsp/AAMix.cpp
     src/wdsp/Resample.h
     # Stage C (Thetis ChannelMaster port — ILV / TX I/Q interleaver).
-    # Header-only at Stage C.0; the .cpp body + 7 setters land in
-    # Stage C.1-C.2; CMaster wire-up lands in Stage C.3.  See
-    # src/wdsp/ILV.h header preamble for the full C.0-C.4 stage plan.
+    # Header at Stage C.0; constructor/destructor/xilv body at C.1;
+    # 7 setters + central bank + unit test at C.2; CMaster wire-up
+    # at C.3.  See src/wdsp/ILV.h header preamble for the full
+    # C.0-C.4 stage plan.
     src/wdsp/ILV.h
+    src/wdsp/ILV.cpp
     # TX-rip Phase 1 step 1c-c — dsp/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3.
     src/dsp/StreamThread.h
