@@ -21,7 +21,8 @@
 // to a stub until the new components land.
 #include "wdsp_native.h"
 #include "wdsp/TxChannel.h"  // Stage 7.2 — TX-1 OpenChannel / SetChannelState lifecycle
-#include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster()
+#include "wdsp/ILV.h"       // Stage 7.3 — create_ilv / destroy_ilv (cmaster.c:226-232)
+#include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() / create_xmtr_hl2 / destroy_xmtr_hl2
 
 #include <algorithm>
 #include <atomic>
@@ -347,6 +348,29 @@ int main(int argc, char *argv[])
     // CORRECTED-ordering puts that in fsmKeydownSettled AFTER
     // rf_delay; will land in Stage 7.4 TxControl wiring).
     lyra::wdsp::TxChannel *txChannel = nullptr;
+    // Stage 7.3 (2026-06-09) — ILV pointer + xmtr bank-slot lifetime.
+    //
+    // Reference cmaster.c:226-232 (inside create_xmtr):
+    //   xmtr[i].pilv = create_ilv(
+    //       /*run*/ 0,
+    //       /*obid*/ 1,
+    //       /*insize*/ ch_outsize,    // = TxChannel.outSize() (= 64 @ 48k)
+    //       /*ninputs*/ 2,
+    //       /*what*/ 3,               // bits 0+1 (both inputs active)
+    //       &xmtr[i].outbound);       // Outbound fn ptr slot
+    //
+    // Lyra creates the ILV at xmtr_id=0 publishing into the pilv[0]
+    // central bank (== reference's `pcm->xmtr[0].pilv`).  Outbound
+    // is empty {} at create-time; SendpOutboundTx in Stage 7.4 wires
+    // the real producer lambda via SetILVOutputPointer(0, cb).
+    //
+    // Lyra also publishes pxmtr[0] via create_xmtr_hl2 so the
+    // xcmaster TX-case 1 dispatch (Phase C-wired) reaches a real
+    // TxChannel + ILV-slot.  Once Stage 7.5 wires Inbound, the
+    // full cm_main pump -> xcmaster -> xcmasterTickTx ->
+    // TxChannel.process -> xilv -> SendpOutboundTx chain becomes
+    // wire-effective.
+    lyra::wdsp::ILV *ilv = nullptr;
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -419,8 +443,29 @@ int main(int argc, char *argv[])
     // std::vector buffers.  Idempotent: if open() failed earlier
     // (txChannel == nullptr), `delete nullptr` is a well-defined no-op.
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [&txChannel]() {
-        qWarning("[shutdown] handler-1.5 ENTRY (TxChannel close+delete)");
+                     [&txChannel, &ilv]() {
+        qWarning("[shutdown] handler-1.5 ENTRY (xmtr_hl2 + ILV + "
+                 "TxChannel close+delete)");
+
+        // Stage 7.3 (2026-06-09) — tear down in REVERSE construction
+        // order (reference cmaster.c:255-271 destroy_xmtr): clear the
+        // pxmtr[] bank slot FIRST so cm_main / xcmaster can no longer
+        // dispatch TX-case 1 against this xmtr; THEN destroy the ILV
+        // (clears pilv[0], frees outbuff via std::vector RAII); THEN
+        // close + delete the TxChannel.  The defensive guards in
+        // destroy_xmtr_hl2 (only clears pxmtr[0] if it still
+        // references this tx_channel) and destroy_ilv (only clears
+        // pilv[0] if xmtr_id >= 0) keep the teardown idempotent
+        // against a partially-failed startup (e.g. txChannel->open()
+        // failed earlier; ilv == nullptr → destroy_ilv(nullptr, 0)
+        // is a well-defined no-op per ILV.cpp).
+        if (txChannel) {
+            lyra::wire::destroy_xmtr_hl2(/*xmtr_id=*/ 0, txChannel);
+        }
+        if (ilv) {
+            lyra::wdsp::destroy_ilv(ilv, /*xmtr_id=*/ 0);
+            ilv = nullptr;
+        }
         if (txChannel) {
             txChannel->close();
             delete txChannel;
@@ -628,7 +673,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource, &txChannel]() {
+                                  &micSource, &txChannel, &ilv]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
@@ -706,6 +751,88 @@ int main(int argc, char *argv[])
                       "OpenChannel(1, %d, 4096, 48000, 96000, 48000, "
                       "type=1, state=0, ...) per cmaster.c:177-190)",
                       txChannel->inSize());
+
+                // Stage 7.3 (2026-06-09) — create_ilv + create_xmtr_hl2.
+                //
+                // Reference cmaster.c:226-232 (inside create_xmtr,
+                // which create_cmaster:288 invokes for xmtr 0):
+                //   xmtr[i].pilv = create_ilv(
+                //       /*run*/ 0,                 // bypass: xilv
+                //                                  // memcpy's input[0]
+                //                                  // straight to outbuff
+                //                                  // (ilv.c:82-87)
+                //       /*obid*/ 1,                // outbound id (the
+                //                                  // CMB ring id that
+                //                                  // the Outbound fn
+                //                                  // writes back into)
+                //       /*insize*/ ch_outsize,     // = TxChannel.outSize()
+                //                                  // = 64 frames @ 48k
+                //                                  // (matches xtxa
+                //                                  // out_size after
+                //                                  // rsmpout 96k->48k)
+                //       /*ninputs*/ 2,             // ILV can interleave
+                //                                  // up to 2 inputs
+                //       /*what*/ 3,                // bits 0+1 = both
+                //                                  // inputs active
+                //                                  // (HL2 SSB: bypass
+                //                                  // mode means `what`
+                //                                  // is unused; reference
+                //                                  // sets it anyway)
+                //       &xmtr[i].outbound);        // function pointer
+                //                                  // slot inside the
+                //                                  // xmtr struct (set
+                //                                  // later by Stage 7.4
+                //                                  // SendpOutboundTx →
+                //                                  // SetILVOutputPointer)
+                //
+                // Lyra extends create_ilv's signature with a leading
+                // `xmtr_id` (the documented [Lyra-native] divergence
+                // per ILV.h:228-234) so the central pilv[] bank can
+                // resolve the pointer via SetILV* setters — the
+                // analogous AAMix create_aamix(id, ...) pattern.
+                // Outbound is empty {} at create time; Stage C.3 wired
+                // SendpOutboundTx -> SetILVOutputPointer(0, cb) so the
+                // real producer lambda lands there in Stage 7.4.
+                ilv = lyra::wdsp::create_ilv(
+                    /*xmtr_id=*/ 0,
+                    /*run=*/ 0,
+                    /*outbound_id=*/ 1,
+                    /*insize=*/ txChannel->outSize(),
+                    /*ninputs=*/ 2,
+                    /*what=*/ 3,
+                    /*Outbound=*/ {});
+
+                // Reference cmaster.c:233 (last line of create_xmtr,
+                // immediately after the create_ilv call): the result
+                // is stored into pcm->xmtr[i].pilv so xcmaster's TX-case
+                // dispatch (cmaster.c:397) can xilv() through it.
+                //
+                // Lyra-cpp's central pxmtr[] bank publishes both the
+                // TxChannel pointer + the matching ILV's xmtr_id; the
+                // Phase-C-wired xcmaster case 1 (CMaster.cpp xcmasterTickTx)
+                // then resolves both and pumps:
+                //   mic_in = pcm_in(stream); n = pcm_in_size(stream);
+                //   xcmasterTickTx(tx, mic_in, n);
+                //     -> txChannel->process(mic_in, n)
+                //     -> xilv(pilv[0], txChannel->outBuffers())
+                //     -> ILV.Outbound(1, n_out, outbuff)  // Stage 7.4
+                //
+                // Once Stage 7.4 wires SendpOutboundTx and Stage 7.5
+                // wires Hl2Ep6MicSource::setConsumer -> Inbound(1,...),
+                // the whole cm_main pump becomes wire-effective and
+                // mic -> WDSP TXA -> EP2 starts flowing.
+                lyra::wire::create_xmtr_hl2(
+                    /*xmtr_id=*/ 0,
+                    /*tx_channel=*/ txChannel,
+                    /*ilv_xmtr_id=*/ 0);
+
+                qInfo("[tx] Stage 7.3: ILV created (xmtr_id=0, run=0 "
+                      "bypass, obid=1, insize=%d, ninputs=2, what=3) + "
+                      "xmtr_hl2 published (pxmtr[0].tx_channel=%p, "
+                      "ilv_xmtr_id=0) — xcmaster case 1 dispatch now "
+                      "reaches live TxChannel + ILV slot",
+                      txChannel->outSize(),
+                      static_cast<void*>(txChannel));
             }
 
             // TX-1 Path A: construct micSource NOW that the WDSP DLL
