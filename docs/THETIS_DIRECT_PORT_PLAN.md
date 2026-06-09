@@ -24,19 +24,25 @@ deliberately untouched by the direct-port arc).
   (`control.v` / `radio.v` / `usopenhpsdr1.v` etc. — the ground
   truth when host-side reference and gateware disagree)
 
-**Provenance rule (operator-enforced, do NOT slip):**
-- Old Python Lyra is NOT a trusted TX reference (its TX never
-  worked).  Verify against Thetis 2.10.3.13 + the gateware RTL
-  ONLY.
-- Reference citations (Thetis `file:line`, gateware `control.v`)
-  MAY appear in lyra-cpp code COMMENTS + design docs + memory
-  files (operator decision 2026-05-27).  Keep COMMIT MESSAGES
-  first-principles (no reference-app name in commits, code, or
-  UI strings).
-- The exception that proves the rule: WDSP module ports include
-  full GPL v3+ attribution to NR0V/WDSP in the file header
-  (license requires it).  This is NOT a "Thetis attribution" —
-  WDSP is its own GPL'd DSP project that Thetis happens to use.
+**Provenance & attribution rule (operator-locked 2026-06-09, supersedes the 2026-05-31 "no-attribution-in-commits" tightening):**
+
+Lyra-cpp is a derivative work of openHPSDR Thetis (ChannelMaster + WDSP modules), GPL v3+. The GitHub project description openly states this: *"TX baseline ported from openHPSDR Thetis (ChannelMaster) with Lyra-native DSP additions."* Open attribution is both legally required (GPL) and operator-intended (public project posture).
+
+1. **License attribution at file head — REQUIRED.** Any file ported from WDSP or ChannelMaster carries a header block crediting upstream (NR0V for WDSP modules; openHPSDR Thetis for ChannelMaster modules) + the GPL v3+ notice. Existing `AAMix.{h,cpp}`, `CMaster.cpp`, `RadioNet.cpp` etc. already follow this; keep it.
+
+2. **Code comments citing source — ENCOURAGED.** Citations may name the reference openly (`Reference: Thetis ChannelMaster cmaster.c:297-313`, `// Per openHPSDR networkproto1.c:1078`, `// HL2+ ak4951v4 gateware control.v:209-220`). The file:line is the primary technical content; the reference-app name is context that helps future readers find the source tree.
+
+3. **Commit messages — REFERENCE-APP NAMES PERMITTED.** A commit like *"port aamix.c from Thetis ChannelMaster with Lyra-native idiom translations"* is fine — it matches the public GitHub posture and makes the history grep-able. The earlier `4cef88d` tightening (2026-05-31) that put commit messages on the no-attribution list is **rescinded**.
+
+4. **Public docs (README, `docs/*.md` design docs, memory files, this plan) — OPEN ATTRIBUTION.** Same posture as the GitHub description.
+
+5. **User-facing UI strings — KEEP OPERATOR-FOCUSED.** UI labels operators see in normal operation (panel titles, button text, error toasts) describe Lyra behavior, not provenance. *"AAMix output (HL2 jack)"* not *"Thetis-ported AAMix output"*. About dialog / credits screen / install docs MAY (and probably should) name openHPSDR Thetis + WDSP/NR0V openly — credit where due. This is the only category that stays "Lyra-native voice in operator-facing labels," because operators interact with Lyra, not its source provenance.
+
+6. **The "Lyra-Native style governs surrounding architecture only" rule (Stage B-locked) STANDS unchanged.** Reference DSP API call patterns are byte-for-byte faithful; Qt/Vulkan/QML/process model is Lyra-native.
+
+7. **Reference precedence STANDS unchanged.** Verify TX ONLY against Thetis 2.10.3.13 (`D:\sdrprojects\OpenHPSDR-Thetis-2.10.3.13\...`) + the HL2+ ak4951v4 gateware RTL (`Y:\Claude local\_hl2src\`). **Old Python Lyra is NOT a trusted TX reference** (its TX never worked).
+
+**Consequence of the 2026-06-09 amendment:** the three historical commits (`efdde02`, `604d87b`, `ed9f0cd`) that "predated the no-attribution rule" and contained "Thetis" in their messages are **no longer in violation** — they're now consistent with the rule. Task #73 ("Cleanup pre-existing 'Thetis' mentions in shipped code") is **OBSOLETED** by this amendment.
 
 ---
 
