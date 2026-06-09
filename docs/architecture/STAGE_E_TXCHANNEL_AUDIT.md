@@ -35,15 +35,21 @@ per-xmtr surfaces in this order. Per-surface audit vs Lyra-cpp:
 | 2 | `create_dexp` (VOX expander) | `cmaster.c:130-157` | **DEFERRED-BY-DESIGN** | — | Reference creates with `run=0` (line 132); VOX is operator opt-in. Tracked: Task #91 (v0.2.3 VOX). Out of v0.2.0 SSB-first scope. |
 | 3 | `create_aamix` as `pavoxmix` (anti-VOX mixer) | `cmaster.c:159-175` | **DEFERRED-BY-DESIGN** | — | Tied to surface #2 (anti-VOX feeds DEXP). Will land alongside Task #91. Stage B `AAMix` port (just shipped) provides the implementation when needed. |
 | 4 | `OpenChannel` (WDSP TXA channel) | `cmaster.c:177-190` | **PARITY** | `TxChannel.cpp:70-77` | Byte-for-byte arg match: `channel`, `in_size=getbuffsize(inRate)`, `dsp_size=4096`, `in_rate=48000`, `dsp_rate=96000`, `out_rate=48000`, `type=1`, `state=0`, `tdelayup=0.000`, `tslewup=0.010`, `tdelaydown=0.000`, `tslewdown=0.010`, `block=1`. Verified via `referenceBuffsize()` helper (cmsetup.c:106-111 formula). |
-| 5 | `XCreateAnalyzer` (TX spectrum analyzer) | `cmaster.c:192-198` | **HARMLESS DIVERGENCE** | RX-side analyzer reused | Lyra has a single panadapter analyzer that source-swaps on MOX edge (Task #44 shipped, §15.29/§15.30 dB-range separation shipped). Reference allocates a separate TX-channel analyzer instance with the same `XCreateAnalyzer(in_id, &rc, 262144, 1, 1, "")` shape. Lyra's reuse delivers equivalent operator-visible behavior (TX spectrum during keydown) without a second analyzer instance — accepted divergence, no behavior loss. |
+| 5 | `XCreateAnalyzer` (TX spectrum analyzer) | `cmaster.c:192-198` | **MUST-FIX (deferred to Stage E.1, post-Stage-D)** | `wdsp_engine.cpp:775-788` (one slot only, `kAnDisp`) | Lyra has a single panadapter analyzer reconfigured on every MOX edge via `SetAnalyzer(...)` (§15.29/§15.30 dB-range/avg separation work). Reference allocates a SEPARATE TX-channel analyzer instance with `XCreateAnalyzer(in_id, &rc, 262144, 1, 1, "")` — both analyzers run concurrently, UI picks which to display. **Reclassified MUST-FIX 2026-06-09 per operator + PS prerequisite:** PureSignal v0.3 `calcc.c` IMD measurement feeds from the TX analyzer; keeping the single-analyzer hack paints v0.3 PS into a structural corner (§15.23-class forward-reasoning trap that would have to be undone later at much higher cost). Tracked: Task #140 (Stage E.1, blocked-by Task #112). |
 | 6 | `create_txgain` (`pgain`, Penelope / PS protection gain) | `cmaster.c:200-209` | **DEFERRED-BY-DESIGN** | — | Reference creates with `run=0` for fixed gain and `run=0` for protection (lines 201-202) — `txgain` is INERT unless an external amp's IGain/QGain pre-emphasis is enabled OR PureSignal is calibrating. HL2 has no Penelope; PS landing in v0.3 fills the protection-gain need. Inert reference allocation = no observable parity loss. |
 | 7 | `create_eer` (`peer`) | `cmaster.c:212-224` | **REFERENCE-EQUIVALENT** | — | Reference creates with `run=0` (line 213); EER is host-DSP envelope-elimination for class-D PA hardware. HL2 has no EER hardware. Reference + Lyra both never enable EER on HL2; reference still allocates the inert stage (the `out[1]` EER-output buffer Lyra also allocates). Equivalent for HL2. |
 | 8 | `create_ilv` (`pilv`, TX I/Q interleaver) | `cmaster.c:226-232` | **PARITY — SHIPPED STAGE C** | `src/wdsp/ILV.{h,cpp}` | Stage C just shipped (commits `0440186` → `81176ca` → `11064bb` → `2511099`). `pilv[]` central bank, all 7 setters, xilv pump, bit-exact unit-tested. `SendpOutboundTx → SetILVOutputPointer(0, cb)` hand-off wired (C.3). No remediation needed. |
 | 9 | `create_sidetone` (CW) | `cmaster.c:235-250` | **DEFERRED-BY-DESIGN** | — | Reference creates with `run_tx=0` (line 238) — CW transmit OFF; sidetone INERT until CW mode active. CW is v0.2.2 (Task #105). Out of v0.2.0 SSB-first scope. |
 
-**Score:** 4 PARITY (1 / 4 / 7 / 8) + 3 DEFERRED-BY-DESIGN (2 / 3 / 9)
-+ 1 REFERENCE-EQUIVALENT (7) + 1 HARMLESS DIVERGENCE (5).
-**Zero MUST-FIX findings.**
+**Score (corrected 2026-06-09 per operator + PS-prerequisite review):**
+4 PARITY (1 / 4 / 7 / 8) + 3 DEFERRED-BY-DESIGN (2 / 3 / 9) +
+1 REFERENCE-EQUIVALENT (7) + **1 MUST-FIX (5 — TX analyzer port,
+deferred to Stage E.1 post-Stage-D per PS prerequisite — see §5.5)**.
+
+The earlier classification of surface #5 as "HARMLESS DIVERGENCE"
+was a downgrade I should not have made.  "Do as the reference port
+does" is the locked methodology -- any divergence needs a justified
+reason, not a comfort grade.  Surface #5 has neither.  Corrected.
 
 ---
 
@@ -152,16 +158,16 @@ clean ground for a reference-faithful rebuild.
   covers (out buffers + `OpenChannel` + `start`/`stop`/`process` +
   `setMode`/`setBandpass`) match the reference byte-for-byte.
   Disciplined deferral of EER / DEXP / anti-VOX / sidetone /
-  txgain / TX-side analyzer matches reference's `run=0`-allocation
-  posture for HL2.
+  txgain matches reference's `run=0`-allocation posture for HL2.
 - **Stage C ILV: REFERENCE-PARITY** (shipped this session, bit-exact
   unit-tested).
 - **WDSP setter pushes: REFERENCE-PARITY.** All operator-tunable
   setters push at operator-change time, NOT at `create_xmtr` /
   `TxChannel::open()` time — matches reference posture exactly.
 - **Three known §15.23-class landmines: VERIFIED ABSENT.**
-- **Zero MUST-FIX findings.** No remediation commits required
-  before Stage D.
+- **ONE MUST-FIX finding (surface #5 — TX analyzer port).**
+  Sequenced AFTER Stage D ships first-RF (Stage E.1, Task #140);
+  load-bearing for v0.3 PureSignal — see §5.5 below.
 
 ### Gap to Stage D
 
@@ -183,13 +189,13 @@ Stage D is a **clean-vacuum fill**, not a tear-and-replace.
 
 ### Recommendation
 
-**PROCEED TO STAGE D.** Stage E found ZERO must-fix items in the
-surviving TxChannel + WDSP-setter surface. The reference-parity
-posture is intact across every surface the rebuild will touch. The
-rip created clean ground; Stage D fills it with a reference-faithful
-xcmaster pump.
+**PROCEED TO STAGE D, THEN STAGE E.1.**  Locked sequence per
+operator 2026-06-09:
 
-Stage D scope when greenlit:
+  Stage C (DONE) → Stage D (xcmaster pump body, first-RF) →
+  Stage E.1 (TX analyzer port to reference parity, PS prereq).
+
+**Stage D scope** when greenlit:
 1. Port `cmaster.c::xcmaster(int stream)` body to
    `src/wire/CMasterPump.{h,cpp}` (or fold into CMaster.cpp — operator
    choice on file layout).
@@ -201,8 +207,73 @@ Stage D scope when greenlit:
    (already wired to EP2 via Stage C.3 SendpOutboundTx hand-off).
 4. Operator HL2 bench gate after Stage D commits — this is the first
    commit since the rip where TX I/Q reaches the wire.
+5. Stage D ships using the CURRENT single-analyzer architecture
+   (the §15.29/§15.30 MOX-edge `SetAnalyzer` reconfigure stays
+   intact for first-RF).  E.1 lifts that hack post-bench.
 
-Stage D is the right next move. No E.1 commits needed.
+**Stage E.1 scope** when greenlit (after Stage D bench passes):
+1. **E.1.0** — Declare `kAnDispTx` analyzer slot ID; verify
+   `XCreateAnalyzer` / `DestroyAnalyzer` / `SetAnalyzer` /
+   `Spectrum0` cffi resolutions handle multi-slot (they do —
+   already keyed by `disp` arg).
+2. **E.1.1** — Allocate the TX analyzer at TX-channel-open with
+   `XCreateAnalyzer(kAnDispTx, &rc, 262144, 1, 1, "")` — byte-exact
+   args per cmaster.c:192-198.  Destroy at TX-channel-close
+   (parity with `destroy_xmtr` cmaster.c:264 `DestroyAnalyzer(inid(1,i))`).
+3. **E.1.2** — Retarget `TXASetSipDisplay(...)` → `kAnDispTx` so
+   the TX siphon feeds the TX analyzer.  STOP the MOX-edge
+   `SetAnalyzer` reconfigure of the RX slot (`wdsp_engine.cpp:443`
+   and the TX-state branch at `:543`); RX analyzer stays in RX
+   configuration permanently.
+4. **E.1.3** — Panadapter UI: source-select read from `kAnDisp`
+   vs `kAnDispTx` based on MOX state (initial UX = swap on MOX,
+   matches current operator-visible behavior).  Eventually
+   simultaneous display becomes possible (operator UX call —
+   tracked separately).
+5. Bench gate: RX panadapter spectrum **no longer freezes** during
+   keydown (it keeps updating from the still-RX-configured
+   `kAnDisp` analyzer; TX state is rendered from `kAnDispTx`).
+
+§15.29/§15.30 dB-range/avg/FFT-size separation work stays useful —
+becomes per-analyzer settings rather than per-MOX-state of a
+single slot.  No throwaway code.
+
+---
+
+### §5.5 — Why TX analyzer is a v0.3 PureSignal prerequisite
+
+The reference's PS calibration (`wdsp/calcc.c::calc()`,
+PSForm.cs timer-driven FSM) feeds from the TX-side analyzer's
+spectrum data to measure IMD products from the PA feedback DDC
+samples.  Specifically:
+- PS feedback DDCs (DDC2/DDC3 on HL2 per CLAUDE.md §3.8) deliver
+  PA output samples to `calcc.c`'s ring buffer.
+- `XCreateAnalyzer(inid(1, i), ...)` is the TX-channel analyzer
+  the PS dialog reads to display IMD product levels + drive the
+  auto-attenuator FSM decisions (recalibrate when `FeedbackLevel
+  > 181 || (FeedbackLevel <= 128 && cur_att > -28)` per
+  PSForm.cs:1142).
+- If Lyra keeps the single-analyzer reuse architecture into v0.3,
+  PS's calcc would need to either:
+    (a) timeshare the analyzer with the operator panadapter
+        (introducing analyzer-config thrash that calcc was never
+        designed for + visible UI artifacts), OR
+    (b) sidestep the WDSP analyzer entirely and reimplement the
+        IMD measurement in Lyra-native (large new attack surface,
+        reference-divergent v0.3 PS port).
+  Both choices are §15.23-class forward-reasoning traps that would
+  have to be undone later at much higher cost than fixing the
+  TX-analyzer port now (post-Stage-D).
+
+Adopting reference parity in E.1 (TX analyzer is its own slot,
+created at TX-channel-open, destroyed at TX-channel-close) means
+v0.3 PS's calcc plumbing reads from `kAnDispTx` exactly the way
+reference's calcc reads from `inid(1, i)` — straight port, no
+sidesteps.  This is the right kind of forward investment:
+spending E.1 commits now to avoid a v0.3 PS structural wall.
+
+(Logged in this audit + Task #140 description so the rationale
+survives the next session compaction.)
 
 ---
 
