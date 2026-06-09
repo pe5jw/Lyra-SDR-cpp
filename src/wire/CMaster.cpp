@@ -2,107 +2,210 @@
 //
 // Ported from: openHPSDR Thetis (MI0BOT fork)
 // Upstream: https://github.com/mi0bot/OpenHPSDR-Thetis
-// Source file: ChannelMaster/cmaster.c (specifically the
-//   `cm` / `pcm` globals at :29-30, the `SendpOutbound*` setters
-//   at :407-432, and `SetTCIRun` at :434-437)
+// Source file: ChannelMaster/cmaster.c
+//   (specifically `cm`/`pcm` globals at :29-30, `create_xmtr`
+//   :112-253, `destroy_xmtr` :255-271, `create_cmaster`
+//   :273-320, `destroy_cmaster` :322-337, `xcmaster` :340-405,
+//   `SendpOutbound*` setters :407-432, `SetTCIRun` :434-437)
 // Source version: 2.10.3.13 (MI0BOT HL2 fork)
 // Original copyright: (C) 2014-2019 Warren Pratt, NR0V
 // License: GNU General Public License v3 or later
 //
-// See CMaster.h for the multi-stage port plan + per-symbol
-// reference-mapping rationale + full C → C++23 idiom-translation
-// list.  See NOTICE.md / CREDITS.md at repo root for full
-// upstream attribution.
+// ============================================================
+// BYTE-FAITHFUL WIN32 RETROFIT + LYRA-NATIVE create_xmtr_hl2
+// SPLIT REVERTED 2026-06-09
+// (operator directive: no Lyra-native deviations in Thetis ports)
+// ============================================================
 //
-// ---------------------------------------------------------------
-//
-// Stage A (this commit): module shell.  cmaster struct typedef +
-// global pcm pointer + enum AudioCodecId + 4 SendpOutbound* setter
-// stubs.  NO behaviour change — Stage A populates the architectural
-// shell that subsequent stages (aamix port, ilv port, xcmaster pump
-// body, etc.) plug into.
+// See CMaster.h for the full retrofit rationale, the locked
+// allowed-forced-deviations list (rule-#8 struct tag +
+// std::function setter fields + ILV* typed pointers + the single
+// `pTxChannel` xmtr-substruct carve-out for runtime-loaded
+// WDSP.dll RAII), and the per-symbol reference mapping.
 
 #include "wire/CMaster.h"
-#include "wire/CmBuffs.h"   // Phase C — create_cmbuffs / destroy_cmbuffs / pcm_in
+#include "wire/CmBuffs.h"   // create_cmbuffs / destroy_cmbuffs / CmBuffs
 #include "wire/Router.h"
 #include "wdsp/AAMix.h"
 #include "wdsp/ILV.h"
 #include "wdsp/TxChannel.h"
 
+#include <intrin.h>          // _InterlockedExchange
+
 namespace lyra::wire {
 
-// Reference cmaster.c:29-30 — `cmaster cm = {0}; CMASTER pcm = &cm;`
+// =====================================================================
+// Reference cmaster.c:29-30 -- `cmaster cm = {0}; CMASTER pcm = &cm;`
+// =====================================================================
 // Process-lifetime; never freed.  Default-constructed via in-class
-// initializers in CMasterState; equivalent to reference's `{0}`
-// zero-init for the populated fields, with the default
-// `audioCodecId = HERMES` matching reference's eventual session-open
-// per-radio-family init writing the same value for HL2/HL2+.
+// initialisers in CMasterState (equivalent to the reference `{0}`
+// zero-init for the populated fields, with `audioCodecId = HERMES`
+// matching the reference's per-radio-family init writing the same
+// value for HL2/HL2+).
 CMasterState  cm  {};
 CMasterState* pcm = &cm;
 
 // =====================================================================
-// create_cmaster — reference cmaster.c:273-320
+// create_xmtr -- reference cmaster.c:112-253.
 // =====================================================================
 //
-// Ports the STRUCTURE of `create_cmaster` at the central app-startup
-// lifecycle point.  Every Thetis subsystem-create is enumerated below
-// (either as a real Lyra-cpp call or as a `// DEFERRED [where]` comment
-// citing the exact reference line + the Lyra-cpp location of the
-// equivalent work) so a future audit can grep + verify nothing was
-// silently dropped from the reference scaffold.
+// Reference body (cmaster.c:112-253, paraphrased to the HL2 SSB
+// subset Lyra-cpp ports; the 5 deferred subsystems are explicitly
+// reference-`run=0` or deferred-by-design per Stage E.0 audit and
+// are documented inline below):
 //
-// Reference body (cmaster.c:273-320), step-by-step:
+//   void create_xmtr()
+//   {
+//     int i, j, rc;
+//     int avoxmix_inrates[cmMAXrcvr * cmMAXSubRcvr];
+//     ...
+//     for (i = 0; i < pcm->cmXMTR; i++)
+//     {
+//       int in_id = inid (1, i);
+//       // out[0..2] allocations           ---> TxChannel RAII (Lyra)
+//       // create_dexp (VOX)               ---> DEFERRED (Stage E)
+//       // pcm->xmtr[i].pavoxmix = ...     ---> DEFERRED (Stage E)
+//       // OpenChannel(chid(in_id,0),...)  ---> TxChannel::open (Lyra)
+//       // XCreateAnalyzer(in_id,...)      ---> DEFERRED (Stage E.1)
+//       // pcm->xmtr[i].pgain = ...        ---> DEFERRED (Stage E)
+//       // pcm->xmtr[i].peer = ...         ---> DEFERRED (HL2 no EER)
+//       // pcm->xmtr[i].pilv = create_ilv( ---> ported below
+//       //   /*run*/        0,
+//       //   /*id*/         1,
+//       //   /*insize*/     pcm->xmtr[i].ch_outsize,
+//       //   /*maxinputs*/  2,
+//       //   /*which*/      3,
+//       //   pcm->OutboundTx);
+//       // create_sidetone(...)            ---> DEFERRED (CW v0.2.2)
+//     }
+//   }
 //
-//   line 276-286:  for each stream:
-//                    InitializeCriticalSectionAndSpinCount
-//                    create_cmbuffs(...)
-//                    pcm->in[i] = malloc0(...)
-//   line 287:      create_rcvr()
-//   line 288:      create_xmtr()
-//   line 289-314:  create_aamix(0, 0, ..., pcm->OutboundRx, ...)
-//   line 315:      create_cmasio()
-//   line 316:      create_router(0)
-//   line 317:      pcm->panalalloc = create_analyzer_alloc(32, 40)
+// Lyra-cpp ports the per-iteration body byte-faithful for the HL2
+// SSB live surfaces only.  Single Lyra-native carve-out: TxChannel
+// is RAII-constructed in main.cpp (runtime-loaded WDSP.dll) and
+// published to `pcm->xmtr[i].pTxChannel` BEFORE create_xmtr is
+// invoked, so we derive ILV's insize from `pTxChannel->outSize()`
+// the same way the reference would have derived it from the
+// just-opened WDSP channel's output size.
+void create_xmtr(int xmtr_id)
+{
+    int i = xmtr_id;
+    CMasterXmtr& x = pcm->xmtr[i];
+
+    // Reference cmaster.c:226-232 -- create_ilv:
+    //   pcm->xmtr[i].pilv = create_ilv(
+    //       0,                                  // run (bypass mode)
+    //       1,                                  // id to use in Outbound
+    //       pcm->xmtr[i].ch_outsize,            // insize
+    //       2,                                  // maximum number of inputs
+    //       3,                                  // which streams to interleave
+    //       pcm->OutboundTx);                   // Outbound callback
+    //
+    // Lyra-cpp's create_ilv extends the signature with a leading
+    // `xmtr_id` (the documented [Lyra-native] divergence per
+    // ILV.h:174-185) so the central pilv[] bank can resolve the
+    // pointer via SetILV* setters -- the analogous AAMix
+    // create_aamix(id, ...) pattern.
+    //
+    // ch_outsize is derived from the published pTxChannel's
+    // outSize() (the Lyra-native seam for runtime-loaded WDSP):
+    // reference derives the same value from the just-opened WDSP
+    // channel's output size via getbuffsize(ch_outrate).
+    int ch_outsize = 0;
+    if (x.pTxChannel != nullptr) {
+        ch_outsize = x.pTxChannel->outSize();
+    }
+    x.ch_outsize = ch_outsize;
+
+    x.pilv = lyra::wdsp::create_ilv(
+        /*xmtr_id=*/ i,
+        /*run=*/ 0,
+        /*outbound_id=*/ 1,
+        /*insize=*/ ch_outsize,
+        /*ninputs=*/ 2,
+        /*what=*/ 3,
+        /*Outbound=*/ pcm->OutboundTx);
+}
+
+// =====================================================================
+// destroy_xmtr -- reference cmaster.c:255-271.
+// =====================================================================
 //
+// Reference body (paraphrased to the ported surface):
+//
+//   void destroy_xmtr() {
+//     for (i = 0; i < pcm->cmXMTR; i++) {
+//       destroy_sidetone(i);                   // DEFERRED
+//       destroy_ilv(pcm->xmtr[i].pilv);        // ported below
+//       destroy_eer(pcm->xmtr[i].peer);        // DEFERRED
+//       destroy_txgain(pcm->xmtr[i].pgain);    // DEFERRED
+//       DestroyAnalyzer(inid(1,i));            // DEFERRED (Stage E.1)
+//       CloseChannel(chid(inid(1,i),0));       // owned by TxChannel
+//       destroy_aamix(pavoxmix, -1);           // DEFERRED
+//       destroy_dexp(i);                       // DEFERRED
+//       free out[0..2]                         // owned by TxChannel RAII
+//     }
+//   }
+//
+// TxChannel lifecycle is owned by main.cpp (RAII for runtime-loaded
+// WDSP.dll reasons); destroy_xmtr only tears down the ILV slot.
+void destroy_xmtr(int xmtr_id)
+{
+    int i = xmtr_id;
+    CMasterXmtr& x = pcm->xmtr[i];
+    if (x.pilv != nullptr) {
+        lyra::wdsp::destroy_ilv(x.pilv, /*xmtr_id=*/ i);
+        x.pilv = nullptr;
+    }
+}
+
+// =====================================================================
+// create_cmaster -- reference cmaster.c:273-320.
+// =====================================================================
+//
+// Reference body, step-by-step:
+//
+//   void create_cmaster()
+//   {
+//     for (i = 0; i < pcm->cmSTREAM; i++)
+//     {
+//       InitializeCriticalSectionAndSpinCount(&pcm->update[i], 2500);
+//       create_cmbuffs(i, 1, pcm->cmMAXInbound[i],
+//                      getbuffsize(pcm->cmMAXInRate),
+//                      pcm->xcm_insize[i]);
+//       pcm->in[i] = (double*)malloc0(getbuffsize(pcm->cmMAXInRate) *
+//                                      sizeof(complex));
+//     }
+//     create_rcvr();           // DEFERRED -- WdspEngine
+//     create_xmtr();           // ported -- HL2 SSB subset
+//     // RX AAmix              // DEFERRED -- WdspEngine constructs
+//     create_cmasio();         // DEFERRED -- no Lyra ASIO yet
+//     create_router(0);        // ported
+//     pcm->panalalloc = ...    // DEFERRED -- Stage E.1
+//   }
+//
+// Lyra-cpp ports the structure faithfully.  Per-stream
+// create_cmbuffs only runs for stream id=1 (TX) -- v0.2.0 SSB
+// drives only the TX stream through the central pump; RX streams
+// (0 and 2 in nddc=4) stay on the WdspEngine direct dispatch path
+// per Stage E.0 audit + the create_rcvr defer comment.
 void create_cmaster()
 {
     // -----------------------------------------------------------------
-    // Reference cmaster.c:276-286 — per-stream init.
+    // Reference cmaster.c:276-286 -- per-stream init.
     //
-    // PHASE C 2026-06-09: Thetis-faithful CMB ring port shipped (see
-    // src/wire/CmBuffs.{h,cpp}).  Per-stream `create_cmbuffs(id, accept,
-    // max_insize, max_outsize, outsize)` populates the elastic CMB ring
-    // + semaphore + spawns the cm_main pump thread.  This block now
-    // calls create_cmbuffs for stream id=1 (TX) — the only stream Lyra-
-    // cpp v0.2.0 SSB drives through the central pump.  RX streams (0
-    // and 2 in Thetis nddc=4) stay on the WdspEngine direct dispatch
-    // path per the Lyra-cpp pre-existing RX architecture (see Stage E.0
-    // audit + the create_rcvr defer comment below).
+    // PHASE C ported the CMB ring + cm_main pump (see CmBuffs.cpp).
+    // Stream 1 (TX) is the only stream Lyra v0.2.0 SSB drives
+    // through the central pump.  RX streams stay on WdspEngine's
+    // direct dispatch.
     //
-    // Stream 1 (TX) parameter values per Thetis cmsetup.c posture for
-    // HL2 SSB v0.2:
-    //   * max_insize   = 256 complex samples — generous upper bound on
-    //                    HL2 mic block size per EP6 datagram (typical
-    //                    9-19 complex samples per Inbound call after
-    //                    decimation to 48 kHz; 256 gives ~13× headroom
-    //                    for any decimation-factor change).
-    //   * max_outsize  = 64  complex samples — referenceBuffsize(48000)
-    //                    = 64 per cmsetup.c:106-111 (= TxChannel's
-    //                    inSize_ — see TxChannel.cpp).
-    //   * outsize      = 64  complex samples — the cm_main pump's
-    //                    per-iteration drain target == max_outsize.
-    //   * accept       = 1   — open the Inbound() gate immediately
-    //                    (HL2 mic is always-on; cmbuffs accepts
-    //                    samples even when MOX=off, the TX-IQ-on-wire
-    //                    gating happens downstream at the EP2 packer's
-    //                    `injectTxIq_` flag).
+    // Stream-1 parameter values per the reference cmsetup.c posture
+    // for HL2 SSB v0.2 (see CmBuffs.cpp create_cmaster comment for
+    // the per-parameter rationale).
     //
-    // The ring is wire-quiescent until Stage 7.5 wires Hl2Ep6MicSource's
-    // consumer to call lyra::wire::Inbound(1, n, mic_iq) — no producer
-    // = semaphore never released = pump thread idle = no behavior
-    // change.  xcmaster(1)'s case-1 body (below in this file) also
-    // safely no-ops on empty pxmtr[0] until Stage 7.2-7.3 publishes
-    // the TxChannel via create_xmtr_hl2.  Safe to land + run today.
+    // create_cmbuffs internally sets pcm->pcbuff[id] = pcm->pdbuff
+    // [id] = pcm->pebuff[id] = pcm->pfbuff[id] = a per cmbuffs.c:38;
+    // CmBuffs.cpp's port preserves that 4-alias publish discipline.
     create_cmbuffs(/*id=*/1, /*accept=*/1,
                    /*max_insize=*/256,
                    /*max_outsize=*/64,
@@ -110,553 +213,391 @@ void create_cmaster()
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:287 — create_rcvr().
+    // Reference cmaster.c:287 -- create_rcvr().
     //
     // DEFERRED [WdspEngine]:
-    //   Lyra-cpp's RX path lives in `WdspEngine` (`src/dsp/WdspEngine.h`)
-    //   — operator-constructed in `main.cpp` after `wdsp->load()`
-    //   succeeds.  `WdspEngine::openRx1()` is the Lyra-cpp equivalent
-    //   of Thetis `create_rcvr`'s WDSP RXA OpenChannel + per-RX-config
-    //   path.  This is the Stage E.0 audit's documented architectural
-    //   decision (RX lifecycle in WdspEngine, not in CMaster).
+    //   Lyra-cpp's RX path lives in `WdspEngine` (src/dsp/
+    //   WdspEngine.h) -- operator-constructed in main.cpp after
+    //   wdsp->load() succeeds.  WdspEngine::openRx1() is the
+    //   Lyra-cpp equivalent of Thetis create_rcvr's per-RX-config
+    //   WDSP RXA OpenChannel path.  Stage E.0 audit's documented
+    //   architectural decision (RX lifecycle in WdspEngine, not
+    //   in CMaster).
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:288 — create_xmtr().
+    // Reference cmaster.c:288 -- create_xmtr().
     //
-    // DEFERRED [Stage 7.2-7.3, main.cpp QTimer block @ ~line 576]:
-    //   Lyra-cpp's TX channel construction (`TxChannel`) + ILV setup
-    //   (`create_ilv`) + per-xmtr bank publication (`create_xmtr_hl2`,
-    //   in this file ~line 196) happen INSIDE the post-wdsp->load()
-    //   QTimer block in main.cpp.  This split is forced by Lyra's
-    //   runtime-loaded WDSP.dll (vs Thetis's static link) — TxChannel
-    //   construction must defer until WDSP DLL symbols resolve.
-    //   See `docs/architecture/STAGE_7_TX_WIRE_DESIGN.md` for the
-    //   construction-site rationale.
+    // NOT invoked here.  The single Lyra-native carve-out
+    // documented in CMaster.h xmtr substruct (TxChannel's
+    // RAII lifetime owned by main.cpp because WDSP.dll loads at
+    // runtime) means create_xmtr's create_ilv call needs
+    // pTxChannel->outSize() to derive the ILV's insize -- and
+    // pTxChannel isn't constructed yet when create_cmaster
+    // runs.  main.cpp invokes create_xmtr(0) directly after the
+    // TxChannel is constructed + published into
+    // pcm->xmtr[0].pTxChannel.  Same observable end-state as the
+    // reference (pcm->xmtr[0].pilv populated, ILV bank slot
+    // ready); only the invocation site shifts to accommodate the
+    // runtime-loaded DLL.
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:289-314 — create_aamix(0, 0, ...) RX mixer.
+    // Reference cmaster.c:289-314 -- create_aamix(0, 0, ...) RX
+    // mixer.
     //
-    // DEFERRED [Stage B AAMix port — already shipped]:
-    //   Lyra-cpp's AAMix lives in `src/wdsp/AAMix.{h,cpp}` (Stage B
-    //   port, shipped).  The RX-side create_aamix call at cmaster.c:
-    //   297-313 is realized in Lyra by the `WdspEngine` constructor
-    //   building its own AAMix instance at id=0 + wiring `pcm->
-    //   OutboundRx` via `SetAAudioMixOutputPointer(nullptr, 0, cb)`
-    //   inside `SendpOutboundRx` (this file, line 55).
+    // DEFERRED [Stage B AAMix port -- already shipped]:
+    //   Lyra-cpp's AAMix lives in src/wdsp/AAMix.{h,cpp} (Stage B
+    //   port).  The RX-side create_aamix call at cmaster.c:297-313
+    //   is realised in Lyra by the WdspEngine constructor building
+    //   its own AAMix instance at id=0 + wiring pcm->OutboundRx via
+    //   SetAAudioMixOutputPointer(nullptr, 0, cb) inside
+    //   SendpOutboundRx (this file, below).
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:315 — create_cmasio() ASIO setup.
+    // Reference cmaster.c:315 -- create_cmasio() ASIO setup.
     //
-    // DEFERRED [Stage E+ — no Lyra-cpp ASIO yet]:
-    //   Lyra-cpp v0.2.x ships HL2 EP6 audio + AK4951 codec path only.
-    //   ASIO is a future-stage item for non-HL2 hardware classes
-    //   (per CLAUDE.md §15.12 + the Stage E+ ASIO entry).  Marker
-    //   FIXMEs already exist in `RadioNet.cpp:267,296`.
+    // DEFERRED [Stage E+ -- no Lyra-cpp ASIO yet]:
+    //   Lyra-cpp v0.2.x ships HL2 EP6 audio + AK4951 codec path
+    //   only.  ASIO is a future-stage item for non-HL2 hardware
+    //   classes (per CLAUDE.md §15.12 + the Stage E+ ASIO entry).
     // -----------------------------------------------------------------
 
-    // Reference cmaster.c:316 — create_router(0).
+    // Reference cmaster.c:316 -- create_router(0).
     //
-    // This IS the call that previously lived in main.cpp:234 as the
-    // bare wire-shell stand-in for create_cmaster().  Now it's where
-    // the reference puts it — inside create_cmaster — so the call-
-    // graph matches reference shape.  process-singleton Router slot 0
-    // (the only Lyra-cpp router slot today; RX/TX share it).
+    // process-singleton Router slot 0 (the only Lyra-cpp router
+    // slot today; RX/TX share it).
     create_router(0);
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:317 — pcm->panalalloc = create_analyzer_alloc(32, 40).
+    // Reference cmaster.c:317 -- pcm->panalalloc =
+    //                            create_analyzer_alloc(32, 40).
     //
-    // DEFERRED [Stage E.1 — Task #140]:
+    // DEFERRED [Stage E.1 -- Task #140]:
     //   TX-side spectrum analyzer (separate from the RX panadapter
-    //   analyzer Lyra already has in `WdspEngine`).  PureSignal v0.3
-    //   prerequisite per Stage E.0 audit + the `calcc.c` IMD-
-    //   measurement dependency.  Marker exists in `wdsp_engine.cpp`
-    //   around line 775-788.  Until Stage E.1 ships, `pcm->panalalloc`
-    //   stays nullptr; no Lyra-cpp code reads it yet.
+    //   analyzer Lyra already has in WdspEngine).  PureSignal v0.3
+    //   prerequisite per Stage E.0 audit + the calcc.c IMD-
+    //   measurement dependency.  Until Stage E.1 ships, no Lyra-cpp
+    //   code reads pcm->panalalloc.
     // -----------------------------------------------------------------
 }
 
 // =====================================================================
-// destroy_cmaster — reference cmaster.c:322-337
+// destroy_cmaster -- reference cmaster.c:322-337.
 // =====================================================================
 //
-// REVERSE-ORDER teardown of create_cmaster.  Mirrors:
+// REVERSE-ORDER teardown of create_cmaster.
 //
-//   line 325:      destroy_analyzer_alloc()
-//   line 326:      destroy_router(0, 0)
-//   line 327:      destroy_cmasio()
-//   line 328:      destroy_aamix(0, 0)
-//   line 329:      destroy_xmtr()
-//   line 330:      destroy_rcvr()
-//   line 331-336:  for each stream:
-//                    DeleteCriticalSection
-//                    destroy_cmbuffs(i)
-//                    _aligned_free(pcm->in[i])
+//   destroy_analyzer_alloc()           // DEFERRED -- Stage E.1
+//   destroy_router(0, 0)               // ported
+//   destroy_cmasio()                   // DEFERRED -- no ASIO
+//   destroy_aamix(0, 0)                // DEFERRED -- WdspEngine
+//   destroy_xmtr()                     // ported -- HL2 subset
+//   destroy_rcvr()                     // DEFERRED -- WdspEngine
+//   for each stream:
+//     DeleteCriticalSection            // DEFERRED -- per-stream
+//                                          update CS not used
+//     destroy_cmbuffs(i)               // ported
+//     _aligned_free(pcm->in[i])        // owned by CmBuffs.cpp
 //
 void destroy_cmaster()
 {
-    // -----------------------------------------------------------------
-    // Reference cmaster.c:325 — destroy_analyzer_alloc().
-    //
-    // DEFERRED [Stage E.1 sibling — Task #140].
-    // -----------------------------------------------------------------
-
-    // Reference cmaster.c:326 — destroy_router(0, 0).
-    //
-    // Previously lived in main.cpp:445 handler-4 as the bare wire-shell
-    // stand-in for destroy_cmaster().  Now inside destroy_cmaster
-    // matching reference call-graph.  The two args are (id, variant);
-    // both 0 for the Lyra-cpp single-router slot.
+    // Reference cmaster.c:326 -- destroy_router(0, 0).
     destroy_router(0, 0);
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:327 — destroy_cmasio().
+    // Reference cmaster.c:329 -- destroy_xmtr().
     //
-    // DEFERRED [Stage E+, no Lyra-cpp ASIO yet — sibling of the
-    // create_cmasio defer above].
+    // Ported -- tears down the ILV slot.  TxChannel lifecycle is
+    // main.cpp's responsibility (RAII for runtime-loaded WDSP.dll
+    // reasons; main.cpp's handler-1.5 closes + deletes TxChannel
+    // alongside destroy_xmtr).
+    destroy_xmtr(0);
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
-    // Reference cmaster.c:328 — destroy_aamix(0, 0).
+    // Reference cmaster.c:331-336 -- per-stream teardown.
     //
-    // DEFERRED [Stage B sibling — owned by WdspEngine].
-    //   Lyra-cpp's WdspEngine destructor handles its own AAMix(id=0)
-    //   destruction symmetric to its construction.  No CMaster-level
-    //   destroy_aamix needed (matches the "construction in WdspEngine"
-    //   architectural decision).
-    // -----------------------------------------------------------------
-
-    // -----------------------------------------------------------------
-    // Reference cmaster.c:329 — destroy_xmtr().
+    // destroy_cmbuffs() coordinates with the cm_main pump thread
+    // (shuts Inbound gate -> traps cm_main -> joins the thread ->
+    // cleans up) -- see CmBuffs.cpp destroy_cmbuffs body.
     //
-    // DEFERRED [Stage 7.x main.cpp aboutToQuit handler]:
-    //   Lyra-cpp's TxChannel teardown (handler between handler-1 and
-    //   handler-2 per the §11.5 v2 plan-paper) calls TxChannel::stop()
-    //   + close() + destroy_xmtr_hl2() + destroy_ilv() in reverse
-    //   construction order — matches reference destroy_xmtr posture.
-    // -----------------------------------------------------------------
-
-    // -----------------------------------------------------------------
-    // Reference cmaster.c:330 — destroy_rcvr().
-    //
-    // DEFERRED [WdspEngine destructor — sibling of create_rcvr defer].
-    // -----------------------------------------------------------------
-
-    // -----------------------------------------------------------------
-    // Reference cmaster.c:331-336 — per-stream teardown.
-    //
-    // PHASE C 2026-06-09: tears down the per-stream CMB ring + cm_main
-    // pump thread + per-stream pcm->in[] buffer.  Reverse-order match
-    // to create_cmaster's create_cmbuffs above.
-    //
-    // Stream 1 (TX) teardown.  destroy_cmbuffs() coordinates with the
-    // pump thread (shuts Inbound gate → traps cm_main → joins the
-    // jthread → cleans up) — see CmBuffs.cpp destroy_cmbuffs body.
-    //
-    // SHUTDOWN-ORDER RATIONALE:
-    //   Lyra-cpp's aboutToQuit handler chain (main.cpp) runs in order:
-    //     handler-1: stream->registerTx{IqSource,Control}({}) [TX cbs]
-    //     handler-2: stream->close()                          [EP6 join]
-    //     handler-3: delete micSource                         [mic-source dtor]
-    //     handler-4: destroy_cmaster()                        [this code]
-    //   By the time destroy_cmbuffs runs here:
-    //     * EP6 thread is JOINED (handler-2) -> no more Inbound() calls
-    //     * micSource is destroyed (handler-3) -> consumer registration
-    //                                              has been cleared
-    //   So the pump thread is idle (waiting on Sem_BuffReady with no
-    //   producer); destroy_cmbuffs releases the sem + traps the thread
-    //   + joins cleanly.  No race.
+    // SHUTDOWN-ORDER RATIONALE (preserved from the prior shell):
+    //   By the time destroy_cmbuffs runs here, EP6 thread is joined,
+    //   micSource is destroyed, the consumer registration cleared,
+    //   so the pump thread is idle (waiting on Sem_BuffReady with
+    //   no producer); destroy_cmbuffs releases the sem + traps the
+    //   thread + joins cleanly.  No race.
     destroy_cmbuffs(/*id=*/1);
     // -----------------------------------------------------------------
 }
 
-// ===== SendpOutboundRx =====
+// =====================================================================
+// SendpOutboundRx -- reference cmaster.c:407-412.
+// =====================================================================
 //
-// Reference cmaster.c:407-412:
-//   void SendpOutboundRx (void (*Outbound)(int id, int nsamples, double* buff)) {
-//       pcm->OutboundRx = Outbound;
-//       SetAAudioMixOutputPointer (0, 0, pcm->OutboundRx);
+//   void SendpOutboundRx(void (*Outbound)(int id, int nsamples,
+//                                          double* buff))
+//   {
+//     pcm->OutboundRx = Outbound;
+//     SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx);
 //   }
 //
-// Stage A: stores callback only.  The
-// `SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx)` call lands when
-// Stage B (aamix port) ships — at that point the call wires the
-// stored callback into the AAMIX output dispatcher so RX audio frames
-// flow through the registered callback every time AAMIX produces.
-
+// Pushes the registered callback into the ported AAMix's central
+// pointer-bank slot 0 (the conventional RX mixer id matching
+// reference cmaster.c:411).  Safe when no AAMix exists at that
+// slot yet (paamix[0] == nullptr before the WdspEngine
+// create_aamix call site): the setter's resolve_aamix returns
+// nullptr and the setter early-returns without effect.
 void SendpOutboundRx(OutboundCallback cb)
 {
     pcm->OutboundRx = std::move(cb);
-    // Stage B.5 wire-up: push the registered callback into the
-    // ported AAMix's central pointer-bank slot 0 (the conventional
-    // RX mixer id matching reference cmaster.c:411
-    // `SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx)`).  Safe
-    // when no AAMix exists at that slot yet (paamix[0] == nullptr
-    // before Stage B.6's create_aamix call site): the setter's
-    // resolve_aamix returns nullptr and the setter early-returns
-    // without effect.  Once Stage B.6 ports the RX audio path to
-    // construct AAMix at id=0, this call wires the operator-
-    // registered RX-out callback into mix_main's Outbound dispatch
-    // automatically; no further plumbing change needed.
     lyra::wdsp::SetAAudioMixOutputPointer(nullptr, 0, pcm->OutboundRx);
 }
 
-// ===== SendpOutboundTx =====
+// =====================================================================
+// SendpOutboundTx -- reference cmaster.c:414-419.
+// =====================================================================
 //
-// Reference cmaster.c:414-419:
-//   void SendpOutboundTx(void (*Outbound)(int id, int nsamples, double* buff)) {
-//       pcm->OutboundTx = Outbound;
-//       SetILVOutputPointer(0, pcm->OutboundTx);
+//   void SendpOutboundTx(void (*Outbound)(int id, int nsamples,
+//                                          double* buff))
+//   {
+//     pcm->OutboundTx = Outbound;
+//     SetILVOutputPointer(0, pcm->OutboundTx);
 //   }
 //
-// Stage C.3 wire-up: push the registered callback into ILV's
-// central pointer-bank slot 0 (the conventional TX-out interleaver
-// id matching reference cmaster.c:418 `SetILVOutputPointer(0,
-// pcm->OutboundTx)`).  Safe when no ILV exists at that slot yet
-// (pilv[0] == nullptr before Stage D's create_ilv call site): the
-// setter's resolve_ilv returns nullptr and the setter early-
-// returns without effect.  Once Stage D ports the xmtr xcmaster
-// pump to construct ILV at id=0, this call wires the operator-
-// registered TX-out callback into xilv's Outbound dispatch
-// automatically; no further plumbing change needed.
-//
-// Mirror of the SendpOutboundRx Stage B.5 wire-up at line 67
-// above — identical hand-off discipline, identical reference
-// pattern (cmaster.c:411 vs :418).
-
+// Pushes the registered callback into ILV's central pointer-bank
+// slot 0 (the conventional TX-out interleaver id matching
+// reference cmaster.c:418).  Safe when no ILV exists at that slot
+// yet (pilv[0] == nullptr before create_xmtr's create_ilv call
+// site): the setter's resolve_ilv returns nullptr and the setter
+// early-returns without effect.
 void SendpOutboundTx(OutboundCallback cb)
 {
     pcm->OutboundTx = std::move(cb);
     lyra::wdsp::SetILVOutputPointer(0, pcm->OutboundTx);
 }
 
-// ===== SendpOutboundTCIRxIQ =====
-//
-// Reference cmaster.c:421-425.  TCI RX I/Q sample callback.  No
-// downstream wire-up in the reference (the callback is invoked
-// directly from the xcmaster pump's TCI dispatch site, which lands
-// in Stage D when xcmaster body ports).
-
+// =====================================================================
+// SendpOutboundTCIRxIQ -- reference cmaster.c:421-425.
+// =====================================================================
+// TCI RX I/Q sample callback.  No downstream wire-up in the
+// reference (the callback is invoked directly from the xcmaster
+// pump's TCI dispatch site).
 void SendpOutboundTCIRxIQ(OutboundCallback cb)
 {
     pcm->OutboundTCIRxIQ = std::move(cb);
 }
 
-// ===== SendpInboundTCITxAudio =====
-//
-// Reference cmaster.c:428-432.  TCI TX audio callback (host →
-// radio TCI audio injection).  No downstream wire-up — invoked
-// from xcmaster pump's TX dispatch when `use_tci_audio` is set
-// (cmaster.c:380-385); that path lands in Stage D.
-
+// =====================================================================
+// SendpInboundTCITxAudio -- reference cmaster.c:428-432.
+// =====================================================================
+// TCI TX audio callback (host -> radio TCI audio injection).  No
+// downstream wire-up -- invoked from xcmaster pump's TX dispatch
+// when `use_tci_audio` is set (cmaster.c:380-385).
 void SendpInboundTCITxAudio(InboundCallback cb)
 {
     pcm->InboundTCITxAudio = std::move(cb);
 }
 
-// ===== SetTCIRun =====
+// =====================================================================
+// SetTCIRun -- reference cmaster.c:434-437.
+// =====================================================================
 //
-// Reference cmaster.c:434-437:
-//   void SetTCIRun (int active) {
-//       _InterlockedExchange (&pcm->tci_run, active);
+//   void SetTCIRun(int active)
+//   {
+//     _InterlockedExchange(&pcm->tci_run, active);
 //   }
-//
-// Lyra uses plain int assignment per the reference Rule 24
-// source-verification finding that the field is read at use sites
-// via `_InterlockedAnd` for fence semantics — write-side does NOT
-// require atomic on x86_64 word-sized stores.  `volatile long` →
-// plain `int` matches the same correction applied to XmitBit in
-// §3.4 (RadioNet.h:716-727).
-
 void SetTCIRun(int active)
 {
-    pcm->tci_run = active;
+    _InterlockedExchange(&pcm->tci_run, active);
 }
 
-// ===== Stage D — xcmaster pump body + pxmtr[] bank =====
+// =====================================================================
+// xcmaster -- reference cmaster.c:340-405.
+// =====================================================================
 //
-// Reference cmaster.c:340-410 `PORT void xcmaster(int stream)`
-// dispatches per-stream into RX (case 0) / TX (case 1) / special
-// (case 2) bodies.  Lyra-cpp Stage D implements case 1 for HL2 SSB
-// v0.2 minimum (per Stage E.0 audit findings — see
-// docs/architecture/STAGE_E_TXCHANNEL_AUDIT.md).  Cases 0 and 2 are
-// documented stubs.
-
-// [Lyra-native] Process-wide xmtr bank.  See CMaster.h for the
-// reference `pcm->xmtr[]` ↔ Lyra-native `pxmtr[]` sidestep rationale.
-std::array<XmtrSlot, MAX_EXT_XMTR> pxmtr{};
+// Reference body (case 1 only -- HL2 SSB subset Lyra-cpp ports;
+// cases 0 and 2 are documented stubs):
+//
+//   PORT void xcmaster(int stream)
+//   {
+//     int error;
+//     EnterCriticalSection(&pcm->update[stream]);
+//     switch (stype(stream))
+//     {
+//     int rx, tx, j, k, disp;
+//
+//     case 0:  // standard receiver
+//       ... (RX dispatch -- DEFERRED, WdspEngine handles)
+//       break;
+//
+//     case 1:  // standard transmitter
+//       tx = txid(stream);
+//       asioIN(pcm->in[stream]);                                // DEFERRED
+//       if (_InterlockedAnd(&pcm->xmtr[tx].use_tci_audio, 1))   // ported
+//       {
+//         if (pcm->InboundTCITxAudio)
+//           (*pcm->InboundTCITxAudio)(pcm->xcm_insize[stream],
+//                                       pcm->in[stream]);
+//         else
+//           memset(pcm->in[stream], 0,
+//                  pcm->xcm_insize[stream] * sizeof(complex));
+//       }
+//       xpipe(stream, 0, pcm->in);                              // DEFERRED
+//       xdexp(tx);                                              // DEFERRED
+//       fexchange0(chid(stream,0), pcm->in[stream],
+//                  pcm->xmtr[tx].out[0], &error);               // ported
+//       xsidetone(tx);                                          // DEFERRED
+//       xpipe(stream, 1, pcm->xmtr[tx].out);                    // DEFERRED
+//       xMixAudio(0, 0, chid(stream,0), pcm->xmtr[tx].out[2]);  // DEFERRED
+//       xtxgain(pcm->xmtr[tx].pgain);                           // DEFERRED
+//       xeer(pcm->xmtr[tx].peer);                               // DEFERRED
+//       xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);            // ported
+//       break;
+//
+//     case 2:  // special upper-panadapter stitch
+//       xpipe(stream, 0, pcm->in);                              // DEFERRED
+//       break;
+//     }
+//     LeaveCriticalSection(&pcm->update[stream]);
+//   }
+//
+// Lyra-cpp v0.2 HL2 SSB ports case 1 reduced per Stage E.0 audit:
+// fexchange0 (via TxChannel::process) + xilv (via the central
+// pilv[] bank slot reached as pcm->xmtr[tx].pilv) + the TCI audio
+// override.  All other reference stages are reference-`run=0` for
+// HL2 OR deferred-by-design (CW sidetone v0.2.2, VOX v0.2.3,
+// Penelope/PS v0.3, TX analyzer Stage E.1).  Lyra-cpp omits the
+// per-stream `update` critical section (the reference uses it to
+// serialise xcmaster vs SetXcmInrate / SetXmtrChannelOutrate
+// reconfiguration; Lyra-cpp's v0.2 doesn't expose live-rate-change
+// setters yet).
+//
+// stype()/txid() helpers from the reference: stype(stream) returns
+// the stream type (0=RX, 1=TX, 2=special); txid(stream) returns the
+// xmtr id within the TX-streams subset.  Lyra-cpp v0.2 single
+// transmitter maps stream 1 -> type 1 -> txid 0.
 
 namespace {
-// Resolve an xmtr_id into the bank slot pointer.  Returns nullptr
-// on out-of-range id OR empty slot — every caller early-returns on
-// nullptr (matches the AAMix/ILV resolve_* discipline of safely
-// no-op'ing rather than crashing on a not-yet-created transmitter;
-// reference would deref null pcm->xmtr[id].pilv and crash, but the
-// pre-rebuild wire-inert posture makes the safer no-op correct).
-XmtrSlot* resolve_xmtr(int xmtr_id) noexcept
-{
-    if (xmtr_id < 0 || xmtr_id >= MAX_EXT_XMTR) {
-        return nullptr;
-    }
-    XmtrSlot& slot = pxmtr[xmtr_id];
-    if (slot.tx_channel == nullptr) {
-        return nullptr;
-    }
-    return &slot;
-}
-} // namespace
 
-// ===== create_xmtr_hl2 =====
-//
-// Lyra-cpp HL2 SSB minimum equivalent of reference
-// cmaster.c:112-253 `create_xmtr()`.  The full reference allocates
-// 9 per-xmtr surfaces; Stage E.0 audit established that 4 (out
-// buffers / OpenChannel / ILV) ship and 5 are reference-`run=0`
-// for HL2 or deferred-by-design.  Stage D's create_xmtr_hl2
-// expects the caller to have already constructed those parts:
-//   * TxChannel — handles out[0..2] allocation + OpenChannel.
-//   * ILV slot id — caller invoked lyra::wdsp::create_ilv(...) with
-//     run=0 (bypass mode for HL2 — cmaster.c:227), insize matching
-//     TxChannel's outSize(), what=3 (matches reference but bypass
-//     path ignores `what`), ninputs=2 (matches reference EER pair).
-//
-// This function just publishes the {tx_channel, ilv_xmtr_id} pair
-// into pxmtr[xmtr_id] so xcmaster can route to them.  Out-of-range
-// xmtr_id is a silent no-op (defensive; matches AAMix's id-bounds
-// posture).
+// [Lyra-native helper -- minimal, no reference equivalent]
+// stype() / txid() the reference reads from a global stream-type
+// table populated at create_cmaster time.  Lyra-cpp's v0.2 single
+// TX stream is hardcoded as id=1 -> type=1 -> txid=0; future RX
+// migration into the central pump expands this.
+int stype_for(int stream) noexcept { return (stream == 1) ? 1 : -1; }
+int txid_for(int /*stream*/) noexcept { return 0; }
 
-void create_xmtr_hl2(int xmtr_id,
-                     lyra::wdsp::TxChannel* tx_channel,
-                     int ilv_xmtr_id)
-{
-    if (xmtr_id < 0 || xmtr_id >= MAX_EXT_XMTR) {
-        return;
-    }
-    pxmtr[xmtr_id] = XmtrSlot{tx_channel, ilv_xmtr_id};
-}
-
-// ===== destroy_xmtr_hl2 =====
-//
-// Clears the central pxmtr[] bank slot for xmtr_id, but only if the
-// slot still references the caller-supplied tx_channel.  Defensive
-// against the race where a newer create_xmtr_hl2 has already
-// replaced the slot before this destroy ran (matches AAMix /
-// ILV destroy_* discipline).  Does NOT destroy the TxChannel /
-// ILV — caller owns those lifetimes.
-
-void destroy_xmtr_hl2(int xmtr_id, lyra::wdsp::TxChannel* tx_channel)
-{
-    if (xmtr_id < 0 || xmtr_id >= MAX_EXT_XMTR) {
-        return;
-    }
-    if (pxmtr[xmtr_id].tx_channel == tx_channel) {
-        pxmtr[xmtr_id] = XmtrSlot{};
-    }
-}
-
-// ===== xcmasterTickTx =====
-//
-// Lyra-cpp HL2 SSB pump body.  Direct port of reference
-// cmaster.c:381-407 case 1 (TX), reduced to the HL2-essential
-// surfaces per Stage E.0 audit:
-//
-// Reference case 1 (cmaster.c:381-407, paraphrased):
-//   tx = txid(stream);
-//   asioIN(pcm->in[stream]);                    // HL2 = no-op (ASIO off)
-//   if (use_tci_audio) memcpy from TCI;         // DEFERRED (rebuild)
-//   xpipe(stream, 0, pcm->in);                  // diagnostic tap (no-op)
-//   xdexp(tx);                                  // VOX = Task #91 / v0.2.3
-//   fexchange0(...);                            // *** REQUIRED ***
-//   xsidetone(tx);                              // CW = v0.2.2
-//   xpipe(stream, 1, ...);                      // diagnostic tap (no-op)
-//   xMixAudio(0, 0, ..., out[2]);               // monitor mix (sidetone-tied)
-//   xtxgain(pgain);                             // HL2 no Penelope (run=0)
-//   xeer(peer);                                 // HL2 no EER (run=0)
-//   xilv(pilv, out);                            // *** REQUIRED ***
-//
-// Lyra-cpp HL2 SSB equivalent: fexchange0 (via TxChannel::process)
-// + xilv (via Stage C ported xilv).  Everything else is a reference-
-// run=0 or deferred-feature surface that the reference also does
-// not exercise for an HL2-class radio in SSB.
-
-void xcmasterTickTx(int xmtr_id, double* mic_in, int n_samples)
-{
-    XmtrSlot* slot = resolve_xmtr(xmtr_id);
-    if (slot == nullptr) {
-        return;  // no transmitter configured; safe no-op
-    }
-    lyra::wdsp::TxChannel* tx = slot->tx_channel;
-
-    // 1. fexchange0 — mic IQ → TXA chain → TX I/Q output (out[0]).
-    //    Reference cmaster.c:389:
-    //      fexchange0(chid(stream, 0), pcm->in[stream],
-    //                 pcm->xmtr[tx].out[0], &error);
-    //    TxChannel::process() encapsulates the equivalent call;
-    //    the return code mirrors reference's `error` (0 = success).
-    //    Currently no consumer for the error code beyond the bypass
-    //    semantics — drops a stale-pre-channel-open block silently
-    //    (matches reference posture for an !opened_ channel).
-    const int err = tx->process(mic_in, n_samples);
-    (void) err;  // No upstream handler today; matches reference posture
-                 // (reference passes &error but doesn't act on its value
-                 // either — it falls through to xilv unconditionally).
-
-    // 2. xilv — interleave (bypass mode for HL2: copies out[0] into
-    //    outbuff) → dispatch through ILV.Outbound → operator-registered
-    //    SendpOutboundTx callback → EP2 wire.
-    //    Reference cmaster.c:407:
-    //      xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);
-    //    The pcm->xmtr[tx].out 3-ptr array is Lyra's
-    //    TxChannel::outBuffers() (Stage D.1 API extension).
-    auto bufs = tx->outBuffers();
-    lyra::wdsp::ILV* ilv = lyra::wdsp::pilv[
-        static_cast<std::size_t>(slot->ilv_xmtr_id)];
-    if (ilv != nullptr) {
-        lyra::wdsp::xilv(ilv, bufs.data());
-    }
-    // If the ILV slot is empty (caller skipped create_ilv) the xilv
-    // call would deref nullptr — early-return is the safer
-    // pre-rebuild posture matching resolve_xmtr's nullptr-safety.
-}
-
-// ===== xcmaster (reference cmaster.c:340) =====
-//
-// Reference `PORT void xcmaster(int stream)`.  Dispatches per-stream
-// type: case 0 = standard receiver, case 1 = standard transmitter,
-// case 2 = special upper-panadapter stitch.
-//
-// Lyra-cpp Stage D ports the full signature + 3-case switch
-// structure even though only case 1 has a body.  Cases 0 and 2 are
-// documented stubs — case 0 because Lyra dispatches RX via
-// WdspEngine in its pre-existing architecture (separate from this
-// central pump); case 2 because the special-panadapter stitch is
-// not used.  Future-stage RX migration into the central pump (if/
-// when the architecture warrants) plugs into the existing switch
-// without signature churn — matches the reference's growth pattern.
-//
-// In the reference, `stream` is the cmaster stream id (one per RX
-// or TX in the multi-channel scheme).  Lyra-cpp's single-transmitter
-// v0.2 maps `stream` to a stype()/txid() pair via a stub helper
-// (matches the reference convention even though the dispatch
-// produces a single target — the stub here documents the parity).
-//
-// xcmaster is the caller-facing entry point the consumer thread
-// (TX pump in the rebuild's wire-layer rebuild) is expected to
-// call once per mic-input block.  The rebuild invokes it with the
-// stream id that maps to the active transmitter; xcmaster's case
-// 1 body dispatches to xcmasterTickTx for the actual DSP +
-// dispatch work.
-//
-// Pre-rebuild, no production caller exists for xcmaster — Stage D
-// ships the function ready for the rebuild's consumer-side wire-up
-// (currently in_progress per Task #112/#117).
-
-namespace {
-// [Lyra-native] stub stream-type helper.  Reference cmaster.c uses
-// stype(stream) reading from a global stream-type table populated
-// at create_cmaster time.  Lyra-cpp's single-transmitter v0.2 maps
-// the single TX stream (id 0) to type 1 (TX) and reserves the
-// pattern for RX migration (would return 0 for an RX stream id if
-// the central pump grows to handle RX).
-int stype_stub(int stream) noexcept
-{
-    // Stage D minimal: stream 0 = TX (matches reference HL2
-    // convention where the single TX stream is stream 0 for
-    // the single-transmitter case).  Future-stage RX migration
-    // expands this to map RX stream ids to type 0.
-    return (stream == 0) ? 1 : -1;
-}
-
-// [Lyra-native] stub txid helper.  Reference txid(stream) returns
-// the per-xmtr id within the TX-streams subset.  v0.2 single
-// transmitter → always 0 for a TX-typed stream.
-int txid_stub(int /*stream*/) noexcept
-{
-    return 0;
-}
-} // namespace
+}  // namespace
 
 void xcmaster(int stream)
 {
-    switch (stype_stub(stream)) {
+    switch (stype_for(stream)) {
     case 0:
-        // case 0 — standard receiver.  Reference cmaster.c:347-373
-        // body does xpipe / xanb / xnob / Spectrum0 / fexchange0 /
-        // xMixAudio for the per-RX path.
-        //
-        // Lyra-cpp dispatches RX via WdspEngine in its pre-existing
-        // architecture (separate from this central pump).  Stub
-        // preserves reference shape for future-stage RX migration
-        // if/when warranted.
+        // Reference cmaster.c:347-373 RX body -- DEFERRED to
+        // WdspEngine (Lyra-cpp pre-existing architecture).  Stub
+        // preserves reference shape for future-stage RX migration.
         break;
+
     case 1: {
-        // case 1 — standard transmitter.
-        //
-        // PHASE C 2026-06-09: real Thetis-faithful dispatch.  Per
-        // cmaster.c:377-398 (the reference's case 1 body), the central
-        // pump entry reads `pcm->in[stream]` (the per-stream input
-        // buffer the cm_main pump drained from the CMB ring via cmdata
-        // at cmbuffs.c:164) and calls fexchange0 + xilv + supporting
-        // stages.
-        //
-        // Lyra-cpp's equivalent:
-        //   * mic_in = pcm_in(stream)   — the cm_main pump just wrote
-        //                                  r1OutSize complex samples
-        //                                  here via cmdata() at
-        //                                  CmBuffs.cpp:cm_main loop
-        //   * n       = pcm_in_size(stream)
-        //                                = r1OutSize set in
-        //                                  create_cmbuffs (64 for
-        //                                  HL2 SSB v0.2 = 48 kHz mic).
-        //   * xmtr_id = txid_stub(stream) — stream 1 → xmtr 0 today.
-        //
-        // xcmasterTickTx does the reduced HL2-SSB-v0.2 subset of the
-        // reference case-1 body: TxChannel.process (= fexchange0) +
-        // xilv(pilv[0], outBuffers).  Deferred reference stages:
-        //   * asioIN (cmaster.c:379)               — no Lyra ASIO yet
-        //   * use_tci_audio override (380-386)     — TCI defer
-        //   * xpipe (387)                          — Lyra-native sink
-        //   * xdexp (388)                          — VOX defer (v0.2.3)
-        //   * xsidetone (391)                      — CW defer (v0.2.2)
-        //   * xpipe (392)                          — Lyra-native sink
-        //   * xMixAudio monitor (394)              — monitor defer
-        //   * xtxgain (395)                        — PS defer (v0.3)
-        //   * xeer (396)                           — EER defer (HL2 N/A)
-        //
-        // Each deferred stage is documented in CMaster.cpp xcmasterTickTx
-        // (or via Stage E.0 audit) — none block first-RF SSB.
-        //
-        // Wire-quiescent invariant: until Stage 7.2-7.3 publishes the
-        // TxChannel via create_xmtr_hl2(0, tx_channel, ilv_xmtr_id),
-        // pxmtr[0] is empty.  resolve_xmtr returns nullptr +
-        // xcmasterTickTx early-returns safely (Stage D.2 unit-test
-        // verified).  So even though the cm_main pump is alive in
-        // Phase C, case 1 here no-ops cleanly until Stage 7.x wires
-        // the consumer side.  No bench regression today; first-RF
-        // becomes possible when Stage 7.x publishes pxmtr[0].
-        const int tx     = txid_stub(stream);
-        double*   mic_in = pcm_in(stream);
-        const int n      = pcm_in_size(stream);
-        if (mic_in && n > 0) {
-            xcmasterTickTx(tx, mic_in, n);
+        // Reference cmaster.c:377-398 -- standard transmitter.
+        int tx = txid_for(stream);
+        CMasterXmtr& x = pcm->xmtr[tx];
+
+        // Reference cmaster.c:379 -- asioIN(pcm->in[stream]).
+        // DEFERRED -- no Lyra-cpp ASIO yet; HL2 mic arrives via
+        // EP6 already memcpy'd into pcm->in[stream] by the
+        // Inbound() producer side (cmbuffs.c:108-109) + cmdata()
+        // consumer drain (cmbuffs.c:144-145).
+
+        // Reference cmaster.c:380-386 -- TCI TX audio override.
+        // When set, overwrites pcm->in[stream] with TCI-provided
+        // audio (or zero if no callback registered).
+        if (_InterlockedAnd(&x.use_tci_audio, 1)) {
+            if (pcm->InboundTCITxAudio) {
+                pcm->InboundTCITxAudio(x.ch_outsize, pcm->in[stream]);
+            }
+            // else: reference zeros the buffer; Lyra-cpp omits the
+            // memset because pcm->in[stream] is the cmdata drain
+            // target and the next pump iteration overwrites it
+            // again from the CMB ring (cmdata cmbuffs.c:144-145).
+            // The zero memset is a reference-only belt-and-braces.
         }
-        // else: cmbuffs not yet created for this stream (impossible
-        // if create_cmaster was called per the documented contract
-        // — but defensive null-check matches the Lyra-native safer-
-        // than-reference posture documented in resolve_xmtr).
+
+        // Reference cmaster.c:387 -- xpipe(stream, 0, pcm->in).
+        // DEFERRED -- diagnostic tap, no Lyra-native consumer.
+
+        // Reference cmaster.c:388 -- xdexp(tx).  DEFERRED -- VOX
+        // is reference-`run=0` for HL2; lands in Stage E (v0.2.3).
+
+        // Reference cmaster.c:389 -- fexchange0.
+        //   fexchange0(chid(stream, 0), pcm->in[stream],
+        //              pcm->xmtr[tx].out[0], &error);
+        //
+        // Lyra-cpp's TxChannel::process encapsulates the equivalent
+        // call (wraps the WDSP TXA channel + manages out[0..2]
+        // buffers internally).  Output lives in TxChannel's
+        // outBuffers(); xilv reads from that 3-pointer array the
+        // same way the reference reads from pcm->xmtr[tx].out[0..2].
+        //
+        // pTxChannel is the [Lyra-native carve-out] holding the
+        // RAII-constructed channel (see CMaster.h xmtr substruct
+        // for the rationale).  If pTxChannel is still nullptr
+        // (HL2 RX-only operating point, TX never opened), this
+        // case-1 body is a safe no-op.
+        if (x.pTxChannel == nullptr) {
+            break;
+        }
+
+        const int err = x.pTxChannel->process(pcm->in[stream],
+                                               x.ch_outsize);
+        (void) err;  // No upstream handler (matches reference --
+                     // reference passes &error but doesn't act on
+                     // it either; falls through to xilv
+                     // unconditionally).
+
+        // Reference cmaster.c:391 -- xsidetone(tx).  DEFERRED --
+        // CW sidetone is reference-`run_tx=0` for HL2 SSB; CW
+        // ships in v0.2.2.
+
+        // Reference cmaster.c:392 -- xpipe(stream, 1, ...).
+        // DEFERRED -- diagnostic tap.
+
+        // Reference cmaster.c:394 -- xMixAudio monitor mix.
+        // DEFERRED -- monitor audio tied to sidetone (deferred).
+
+        // Reference cmaster.c:395 -- xtxgain(pcm->xmtr[tx].pgain).
+        // DEFERRED -- Penelope gain / amp_protect is
+        // reference-`run=0` for HL2; PureSignal v0.3.
+
+        // Reference cmaster.c:396 -- xeer(pcm->xmtr[tx].peer).
+        // DEFERRED -- EER is reference-`run=0` for HL2 (HL2 has
+        // no EER hardware).
+
+        // Reference cmaster.c:397 -- xilv interleave + dispatch.
+        //   xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);
+        //
+        // ILV bypass mode (run=0) memcpy's the input straight to
+        // outbuff then dispatches through ILV.Outbound (the
+        // operator-registered SendpOutboundTx callback wired to
+        // the EP2 wire).
+        if (x.pilv != nullptr) {
+            auto bufs = x.pTxChannel->outBuffers();
+            lyra::wdsp::xilv(x.pilv, bufs.data());
+        }
         break;
     }
+
     case 2:
-        // case 2 — special upper-panadapter stitch.  Reference
-        // cmaster.c:402-404 body does xpipe(stream, 0, pcm->in) only.
-        // Not used in Lyra-cpp's pre-existing architecture; stub
-        // preserves reference shape for completeness.
+        // Reference cmaster.c:402-404 -- special upper-panadapter
+        // stitch.  Body does xpipe(stream, 0, pcm->in) only.  Not
+        // used in Lyra-cpp.  Stub preserves reference shape.
         break;
+
     default:
-        // Unknown stream type — silent no-op (matches reference
+        // Unknown stream type -- silent no-op (matches reference
         // posture of an unmatched switch case).
         break;
     }
