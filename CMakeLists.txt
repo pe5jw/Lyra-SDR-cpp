@@ -121,14 +121,11 @@ qt_add_executable(lyra
     src/dsp/StreamRing.h
     src/dsp/StreamRegistry.h
     src/dsp/StreamRegistry.cpp
-    # Stage 7.1 (TX wire-consumer rebuild — STAGE_7_TX_WIRE_DESIGN.md
-    # §11.8 v2 commit 7.1).  Lyra-native SPSC ring decoupling the
-    # TX-DSP producer (TXA Outbound on the rx-loop thread) from the
-    # HL2Stream EP2 wire-writer consumer (timer-paced TxIqSource
-    # pull).  See src/dsp/TxIqRing.h header preamble for the
-    # threading + ownership contract.
-    src/dsp/TxIqRing.h
-    src/dsp/TxIqRing.cpp
+    # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
+    # post-TXA placement per audit Agent F; replaced by the Thetis-
+    # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
+    # CmBuffs.{h,cpp} — see Phase C commit message.  Files deleted
+    # from tree.)
     # TX-rip Phase 1 step 1c-d — tx/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §5.
     src/tx/PttFsm.h

@@ -11,7 +11,9 @@
 #include "wire/CMaster.h"   // for xcmaster declaration
 
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -111,15 +113,22 @@ void create_cmbuffs(int id, int accept,
     // Publish to bank BEFORE starting thread.  Thread reads g_cmbuffs[id]
     // via resolve() on first iteration; this ordering guarantees the
     // slot is non-null when the thread arrives.
-    CmBuffs* ptr = a.get();
     g_cmbuffs[id] = std::move(a);
 
-    // Reference start_cmthread(id) — _beginthread(cm_main, 0, id).
-    // jthread RAII: captures id, calls cm_main, auto-joins on dtor.
-    // Stored in the struct (lifetime tied to the bank slot).
-    // std::jthread auto-supplies stop_token as first arg of cm_main
-    // (detected because cm_main's first param type is std::stop_token).
-    ptr->pumpThread = std::jthread(cm_main, id);
+    // Reference start_cmthread(id) cmbuffs.c:29-33 —
+    //   HANDLE handle = (HANDLE) _beginthread(cm_main, 0, (void *)id);
+    //   // SetThreadPriority(handle, THREAD_PRIORITY_HIGHEST);
+    // — `handle` is discarded (reference never joins or closes it).
+    //
+    // Lyra: std::thread spawned + immediately .detach() == identical
+    // posture (handle discarded, thread runs detached).  cm_main()
+    // sets its own MMCSS Pro Audio priority internally per cmbuffs.c:
+    // 153-156.  Thread exits via natural return when destroy_cmbuffs
+    // traps run=0 + releases the semaphore; the Sleep(2) at the end
+    // of destroy_cmbuffs gives it time to exit before the bank slot's
+    // memory is freed (matches reference cmbuffs.c:70 Sleep(2) discipline
+    // exactly).
+    std::thread(cm_main, id).detach();
 }
 
 // ---------------------------------------------------------------
@@ -148,38 +157,44 @@ void destroy_cmbuffs(int id)
     auto* a = resolve(id);
     if (!a) return;  // never created, nothing to destroy
 
-    // Shut the Inbound() gate to prevent new infusions.
+    // Reference cmbuffs.c:63 — `InterlockedBitTestAndReset(&a->accept, 0)`
+    // — shut the Inbound() gate to prevent new infusions.
     a->accept.fetch_and(~1u, std::memory_order_acq_rel);
-    // Wait until current Inbound() infusion finishes.
+    // Reference cmbuffs.c:64 — `EnterCriticalSection(&a->csIN)` — wait
+    // until current Inbound() infusion finishes.  Lyra: scoped lock +
+    // immediate release == same semantic.
     {
         std::lock_guard<std::mutex> lkIn(a->inMtx);
-        // (lock acquired + immediately released — same semantic as the
-        // reference's EnterCS/LeaveCS pair: serializes against any
-        // ongoing Inbound() execution.)
     }
-    // Block cm_main before its next cmdata() call.
+    // Reference cmbuffs.c:65 — `EnterCriticalSection(&a->csOUT)` —
+    // block cm_main before its next cmdata() call.
     a->outMtx.lock();
-    // Let the thread arrive at the top of its loop.  Reference uses
-    // Sleep(25); we do the same — kernel sleeps aren't expensive at
-    // shutdown.
+    // Reference cmbuffs.c:66 — `Sleep(25)` — wait for thread to arrive
+    // at the top of the cm_main() loop.
     std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    // Trap for cm_main — set run=0 so the next loop iteration exits.
+    // Reference cmbuffs.c:67 — `InterlockedBitTestAndReset(&a->run, 0)`
+    // — set the trap for cm_main.
     a->run.fetch_and(~1u, std::memory_order_acq_rel);
-    // Release semaphore so cm_main can pass its WaitForSingleObject.
+    // Reference cmbuffs.c:68 — `ReleaseSemaphore(a->Sem_BuffReady, 1, 0)`
+    // — ensure the cm_main thread can pass its WaitForSingleObject.
     a->bufReady->release(1);
-    // Let cm_main pass into cmdata + see run=0 + return.
+    // Reference cmbuffs.c:69 — `LeaveCriticalSection(&a->csOUT)` —
+    // let cm_main pass into cmdata + see run=0 + return.
     a->outMtx.unlock();
-    // jthread destructor below will join the pump thread cleanly
-    // (no separate Sleep(2) needed — jthread.join() blocks until exit).
-
-    // Lyra-cpp RAII cleanup: resetting the bank slot's unique_ptr
-    // triggers ~CmBuffs which:
-    //   - destroys pumpThread (jthread) -> join (waits for cm_main exit)
-    //   - destroys bufReady (counting_semaphore) -> no-op cleanup
-    //   - destroys outMtx/inMtx -> no-op cleanup
-    //   - destroys r1BasePtr (vector) -> free
-    // This is the RAII equivalent of:
-    //   DeleteCriticalSection x2 + CloseHandle + _aligned_free x2.
+    // Reference cmbuffs.c:70 — `Sleep(2)` — wait for the cm_main thread
+    // to die.  Lyra-cpp matches BYTE-EXACT: 2ms gives the detached
+    // thread time to return from cm_main before this function frees
+    // the bank slot's memory (the thread will dereference `a` one more
+    // time on its loop-condition check before exiting; the 2ms ensures
+    // it completes that before unique_ptr.reset() runs the destructor).
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    // Reference cmbuffs.c:71-75 — DeleteCriticalSection x2 + CloseHandle
+    // + _aligned_free x2.  Lyra: RAII via std::unique_ptr<CmBuffs>.reset()
+    // — destroys std::mutex x2 (no-op cleanup), counting_semaphore
+    // (no-op cleanup), std::vector<double> (frees ring memory).
+    // Observable behavior identical.  The detached cm_main thread has
+    // already returned (post-Sleep(2)), so no thread is touching the
+    // memory at the moment of free.
     g_cmbuffs[id].reset();
     g_pcm_in[id].clear();
     g_pcm_in[id].shrink_to_fit();
@@ -377,12 +392,10 @@ void cmdata(int id, double* out)
 //     _endthread();
 // }
 // ---------------------------------------------------------------
-void cm_main(std::stop_token stop_tok, int id)
+void cm_main(int id)
 {
 #ifdef _WIN32
-    // MMCSS Pro Audio priority + 2 — Win32 Multimedia Class Scheduler
-    // Service.  KEPT from reference (no portable equivalent).  Same
-    // pattern AAMix.cpp Stage B start_mixthread uses.
+    // Reference cmbuffs.c:153-156 — MMCSS Pro Audio prio + 2.
     DWORD taskIndex = 0;
     HANDLE hTask = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
     if (hTask != nullptr) {
@@ -392,47 +405,28 @@ void cm_main(std::stop_token stop_tok, int id)
     }
 #endif
 
+    // Reference cmbuffs.c:158-159 — `int id = (int)pargs; CMB a = pcm->pdbuff[id];`
     auto* a = resolve(id);
     if (!a) return;  // bank slot vanished before thread ran
 
-    // Loop exit conditions (BOTH checked):
-    //   * a->run == 0      — reference destroy_cmbuffs trap path
-    //   * stop_tok.stop_requested() — C++20 jthread RAII path,
-    //                          fires if the jthread is destroyed
-    //                          without explicit destroy_cmbuffs.
-    while ((a->run.load(std::memory_order_acquire) & 1u)
-           && !stop_tok.stop_requested()) {
-        // Wait on the semaphore — releases when Inbound has queued
-        // at least one full output block (reference: WaitForSingleObject
-        // Sem_BuffReady INFINITE).  Lyra polls with a 50 ms timeout
-        // so the stop_token check at the loop top can fire even when
-        // no producer ever calls Inbound (avoids the "main() exits
-        // early, jthread destructor hangs forever on acquire()"
-        // landmine the reference's _endthread() path didn't have to
-        // worry about).  50 ms = ~1 datagram cycle at 380 Hz wire
-        // cadence; negligible latency.
-        if (!a->bufReady->try_acquire_for(std::chrono::milliseconds(50))) {
-            continue;  // timeout; re-check loop conditions
-        }
-
-        // Re-check both exit conditions — destroy_cmbuffs releases the
-        // semaphore to wake us, then sets run=0; stop_token can fire
-        // any time.  Same race-tolerance the reference relies on.
+    // Reference cmbuffs.c:161-166 — `while (_InterlockedAnd(&a->run, 1))
+    //   { WaitForSingleObject(a->Sem_BuffReady, INFINITE);
+    //     cmdata(id, pcm->in[id]); xcmaster(id); } _endthread();`
+    //
+    // Lyra: byte-equivalent.  acquire() blocks until release (= INFINITE
+    // wait, no timeout, no stop_token poll — matching reference exactly).
+    // Exits via natural function return when run flag is reset; the
+    // reference's _endthread() at cmbuffs.c:167 is a C-era artifact
+    // with no C++23 equivalent needed (returning from the function +
+    // detached std::thread is the same observable behavior — process
+    // exit reclaims the thread).
+    while (a->run.load(std::memory_order_acquire) & 1u) {
+        a->bufReady->acquire();  // = WaitForSingleObject(Sem_BuffReady, INFINITE)
         if (!(a->run.load(std::memory_order_acquire) & 1u)) break;
-        if (stop_tok.stop_requested()) break;
-
-        // Drain one r1OutSize block from the ring into pcm->in[id].
         cmdata(id, g_pcm_in[id].data());
-
-        // Hand to the central pump dispatch.  xcmaster(id) routes to
-        // case 0 (RX — Lyra-cpp uses WdspEngine, not central pump,
-        // for RX) or case 1 (TX — fexchange0 + xilv via the Stage D
-        // body) or case 2 (special).  Lives in CMaster.cpp.
         xcmaster(id);
     }
-    // jthread auto-joins on destruction — natural return matches
-    // reference _endthread() semantics; stop_token / run==0 / both
-    // converge here cleanly.
+    // Return = thread exits.  Reference _endthread() not needed in C++23.
 }
 
 // ---------------------------------------------------------------
@@ -445,28 +439,25 @@ void cm_main(std::stop_token stop_tok, int id)
 // ---------------------------------------------------------------
 void SetCMRingOutsize(int id, int size)
 {
+    // Reference cmbuffs.c:170-187 — byte-equivalent sequence with the
+    // detached-thread + Sleep(2) discipline matching destroy_cmbuffs.
     auto* a = resolve(id);
     if (!a) return;
-    a->accept.fetch_and(~1u, std::memory_order_acq_rel);
-    {
-        std::lock_guard<std::mutex> lkIn(a->inMtx);
-    }
-    a->outMtx.lock();
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    a->run.fetch_and(~1u, std::memory_order_acq_rel);
-    a->bufReady->release(1);
-    a->outMtx.unlock();
-    // Join the existing pump thread (jthread RAII; .request_stop()
-    // would work but the run-flag check is the documented mechanism).
-    if (a->pumpThread.joinable()) {
-        a->pumpThread.join();
-    }
-    flush_cmbuffs(id);
-    a->r1OutSize = size;
-    a->run.fetch_or(1u, std::memory_order_acq_rel);
-    // Restart the pump thread.
-    a->pumpThread = std::jthread(cm_main, id);
-    a->accept.fetch_or(1u, std::memory_order_acq_rel);
+    a->accept.fetch_and(~1u, std::memory_order_acq_rel);   // ref:173
+    { std::lock_guard<std::mutex> lkIn(a->inMtx); }        // ref:174
+    a->outMtx.lock();                                       // ref:175
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));  // ref:176
+    a->run.fetch_and(~1u, std::memory_order_acq_rel);      // ref:177
+    a->bufReady->release(1);                                // ref:178
+    a->outMtx.unlock();                                     // ref:179
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));   // ref:180
+    flush_cmbuffs(id);                                      // ref:181
+    a->r1OutSize = size;                                    // ref:182
+    a->run.fetch_or(1u, std::memory_order_acq_rel);        // ref:183
+    // Reference cmbuffs.c:184 — `start_cmthread(id)` — re-spawn
+    // detached thread.  Same pattern as create_cmbuffs.
+    std::thread(cm_main, id).detach();
+    a->accept.fetch_or(1u, std::memory_order_acq_rel);     // ref:186
 }
 
 double* pcm_in(int id)

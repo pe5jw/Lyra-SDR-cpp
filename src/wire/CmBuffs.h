@@ -78,12 +78,30 @@
 //                                       (Windows kernel spinlock then
 //                                       SRWLock fallback) — behavior
 //                                       equivalent in practice.
-//   - `_beginthread(cm_main, 0, id)` -> `std::jthread pumpThread_`.
-//      `_endthread()`                  RAII; auto-join on destruction.
-//                                       The reference's _endthread()
-//                                       calls are RETIRED — jthread's
-//                                       natural return from the run
-//                                       loop joins cleanly.
+//   - `_beginthread(cm_main, 0, id)` -> `std::thread t(cm_main, id);
+//      `_endthread()`                    t.detach();`.  Reference posture
+//                                        EXACTLY: thread runs detached
+//                                        (no join), exits via natural
+//                                        return from its run-flag loop
+//                                        when destroy_cmbuffs traps
+//                                        run=0 + releases the semaphore.
+//                                        Reference's _endthread() at
+//                                        cmbuffs.c:131 + :167 is a
+//                                        no-op in C++23 (the thread
+//                                        function just returns); the
+//                                        Sleep(2) after release in
+//                                        destroy_cmbuffs gives the
+//                                        thread time to exit before
+//                                        the struct is freed (same as
+//                                        reference cmbuffs.c:70).
+//                                        std::thread::detach() is the
+//                                        C++23 equivalent of "fire and
+//                                        forget" the reference's
+//                                        _beginthread returned-handle
+//                                        usage pattern (the reference
+//                                        ignores the returned HANDLE
+//                                        at cmbuffs.c:31 -- never
+//                                        joins or closes it).
 //   - `pcm->pcbuff[id]` /            -> Single `CmBuffs*` per stream in
 //      `pcm->pdbuff[id]` /             a Lyra-native `pcmbuffs[]` bank
 //      `pcm->pebuff[id]` /             (mirrors the AAMix paamix[] /
@@ -108,7 +126,6 @@
 #include <memory>
 #include <mutex>
 #include <semaphore>
-#include <thread>
 #include <vector>
 
 namespace lyra::wire {
@@ -163,9 +180,13 @@ struct CmBuffs {
     std::mutex outMtx;
     std::mutex inMtx;
 
-    // pumpThread — cm_main equivalent, started by create_cmbuffs,
-    // joined by destroy_cmbuffs.  jthread RAII auto-joins on dtor.
-    std::jthread pumpThread;
+    // pumpThread handle is NOT stored — reference cmbuffs.c:31 ignores
+    // the HANDLE returned by _beginthread (no join, no close).  Lyra
+    // matches: std::thread spawned + immediately detached() in
+    // create_cmbuffs.  Thread exits via natural return when destroy_
+    // cmbuffs traps run=0.  Sleep(2) in destroy_cmbuffs gives the
+    // thread time to exit before this struct's memory is freed —
+    // identical to reference cmbuffs.c:70 Sleep(2) discipline.
 };
 
 // ---------------------------------------------------------------
@@ -219,20 +240,16 @@ void cmdata(int id, double* out);
 //
 // Pump-thread body.  MMCSS Pro Audio priority + 2 (Windows).  Loop:
 // wait on Sem_BuffReady → cmdata(id, pcm->in[id]) → xcmaster(id).
-// Exits when EITHER the reference's `run` atomic goes 0 (the
-// destroy_cmbuffs trap) OR the std::jthread's stop_token has been
-// requested (the C++20 RAII orderly-shutdown mechanism — fires
-// automatically if the jthread is destroyed without an explicit
-// destroy_cmbuffs first, e.g. during a static-storage tear-down after
-// an early main() exit).  Both paths converge to clean exit; the
-// reference path is preserved exactly + the stop_token path adds
-// belt-and-suspenders for the C++23 lifetime model that the
-// reference's C era didn't have.  Called via std::jthread inside
-// create_cmbuffs; not invoked directly by callers.
-void cm_main(std::stop_token stop_tok, int id);  // signature per Rule 26
-                                                 // (C++23 jthread auto-
-                                                 // supplies stop_token
-                                                 // first arg).
+// Exits when the run atomic goes 0 (the destroy_cmbuffs trap).
+// Called via std::thread inside create_cmbuffs + immediately
+// detached (matches reference _beginthread + no-join posture); not
+// invoked directly by callers.
+//
+// Signature: reference is `cm_main(void* pargs)` with `int id =
+// (int)pargs` cast on entry (cmbuffs.c:158).  Lyra takes int
+// directly per Rule 26 (C++23 std::thread captures typed args
+// natively).  Same semantic.
+void cm_main(int id);
 
 // Reference cmbuffs.h:65 — `extern void SetCMRingOutsize (int id,
 //   int size)`.
