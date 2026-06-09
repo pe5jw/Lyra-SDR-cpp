@@ -91,12 +91,18 @@ public:
     static constexpr int kBlockSize = 126;
 
     // capacity_samples is the maximum number of std::complex<float>
-    // samples the ring can hold.  A typical choice is 512 (~336 ms
-    // cushion at 380 Hz / ~10.7 ms at 48 kHz), giving plenty of
-    // headroom for a transient Qt-main-thread / GIL-class stall on
-    // the rx-loop thread without starving the wire.  Construction
-    // throws std::bad_alloc on allocation failure; capacity_samples
-    // == 0 is clamped to 1.
+    // samples the ring can hold.  A typical choice is 512 (~10.7 ms
+    // cushion at the 48 kHz HL2 EP2 cadence; equivalently ~4 EP2
+    // datagrams' worth of 126-sample blocks).  Construction throws
+    // std::bad_alloc on allocation failure; capacity_samples == 0 is
+    // clamped to 1.
+    //
+    // The 2026-06-09 ship of this file had a "~336 ms cushion at
+    // 380 Hz" comment here — that was arithmetically wrong by ~32×
+    // (it conflated 512 samples with 512 blocks; 512 samples /
+    // 48 kHz = 10.7 ms, NOT 336 ms).  Fixed.  If a longer cushion
+    // is needed, raise capacity_samples — at the chosen capacity
+    // the cushion is capacity_samples / 48 kHz seconds.
     explicit TxIqRing(std::size_t capacity_samples);
 
     TxIqRing(const TxIqRing&) = delete;

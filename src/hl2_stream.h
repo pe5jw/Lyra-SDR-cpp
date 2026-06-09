@@ -989,24 +989,39 @@ private:
     // requestedMox_ so an operator change mid-transition (cancel during
     // keydown, re-key during keyup space window) takes effect cleanly.
     void fsmAdvance();        // entry — picks keydown vs keyup vs idle
-    void fsmKeydownPostMox(); // after moxDelayMs — wire MOX bit set,
-                              //   fade-in starts, TX channel started,
-                              //   inject_tx_iq armed (component 7)
-    void fsmKeydownSettled(); // after rfDelayMs  — emit moxActiveChanged(true)
-    void fsmKeyupPostSpace(); // after spaceMoxDelayMs — fade-out + inject
-                              //   cleared, schedule fsmKeyupTxOff
-                              //   (or collapse-stay-TX if re-keyed)
-    void fsmKeyupTxOff();     // §3.9-5 revert: TX channel stopped
-                              //   (blocking flush) — reference-faithful
-                              //   keyup with no host-side envelope wait.
-                              //   Schedules fsmKeyupInFlight via the
-                              //   `mox_delay` (txStopDelayMs_) sleep
-                              //   per §15.25 keyup ordering.
-    void fsmKeyupInFlight();  // after txStopDelayMs_ — wire MOX bit
-                              //   clears (in-flight UDP datagrams
-                              //   processed by HL2 by now) (NEW)
-    void fsmKeyupSettled();   // after pttOutDelayMs  — restore step-att,
-                              //   emit moxActiveChanged(false)
+    // §15.25 keydown/keyup ordering CORRECTED 2026-06-09 per Thetis
+    // console.cs:30269-30383 read-3×-verified.  The prior codification
+    // had inject-IQ-clear-FIRST (keyup) and TXA-start-BEFORE-rf_delay
+    // (keydown) — both reference-divergent.  Corrected to:
+    //   keydown: mox_=true → rf_delay → setInject(true) → startFn
+    //   keyup:   stopFn (BLOCKING) → mox_delay → setInject(false) +
+    //            mox_=false → ptt_out_delay → settled
+    // fsmKeyupInFlight retired — its body folded into fsmKeyupTxOff
+    // alongside setInjectTxIq(false) per Thetis' AudioMOXChanged +
+    // HdwMOXChanged + cmaster.Mox grouping at console.cs:30373-30376.
+    void fsmKeydownPostMox(); // after moxDelayMs — wire MOX bit set
+                              //   (equivalent of Thetis HdwMOXChanged +
+                              //   cmaster.Mox).  Schedules fsmKeydown-
+                              //   Settled via rfDelayMs_ QTimer.
+    void fsmKeydownSettled(); // after rfDelayMs — setInjectTxIq(true)
+                              //   (Thetis AudioMOXChanged) + startFn()
+                              //   (Thetis SetChannelState(id(1,0),1,0))
+                              //   + emit moxActiveChanged(true).
+    void fsmKeyupPostSpace(); // after spaceMoxDelayMs — stopFn()
+                              //   BLOCKING (Thetis SetChannelState(
+                              //   id(1,0),0,1)).  Schedules fsmKeyupTxOff
+                              //   via txStopDelayMs_ (= Thetis mox_delay)
+                              //   so WDSP TXA cos² downslew tail reaches
+                              //   the wire while XmitBit is still 1.
+                              //   (Or collapse-stay-TX if re-keyed.)
+    void fsmKeyupTxOff();     // after txStopDelayMs_ — setInjectTxIq(false)
+                              //   (Thetis AudioMOXChanged false) +
+                              //   mox_.store(false) (Thetis HdwMOXChanged
+                              //   + cmaster.Mox false).  Schedules
+                              //   fsmKeyupSettled via pttOutDelayMs_.
+    void fsmKeyupSettled();   // after pttOutDelayMs — restore step-att,
+                              //   restore OC pattern, emit
+                              //   moxActiveChanged(false).
     // TX-0c-pa-debug — arm the safety timer (called at moxActive=true
     // edge if bypass is off) / cancel it (at moxActive=false edge).
     // No-ops if bypass is on.

@@ -1468,21 +1468,59 @@ void HL2Stream::fsmKeydownPostMox() {
     // Flip the wire MOX bit — visible on the next EP2 datagram
     // (~2.6 ms worst case at 380 Hz cadence).  C0 bit 0 on both USB
     // frames of the next datagram (composeCC snapshots mox_ once
-    // per send) — coherent.
+    // per send) — coherent.  Reference parity per console.cs:30332
+    // (HdwMOXChanged → SetTRXrelay(1) + SetPttOut(1)) + console.cs:
+    // 30335 (cmaster.Mox = tx — loads XmitBit the EP2 packer reads).
+    // Lyra collapses HdwMOXChanged + cmaster.Mox into ONE atomic
+    // since the EP2 packer's C0-bit-0 emission IS XmitBit.
     mox_.store(true, std::memory_order_release);
 
-    // TX-1 component 7 — bring up the TX-DSP + injection gate at this
-    // same moment (wire MOX bit just went hot).
+    // §15.25 keydown ordering CORRECTED 2026-06-09 per Thetis
+    // console.cs:30342-30345 read 3× verified:
+    //   line 30342-30343:  if (rf_delay > 0) Thread.Sleep(rf_delay);
+    //   line 30344:        AudioMOXChanged(tx);
+    //   line 30345:        WDSP.SetChannelState(WDSP.id(1, 0), 1, 0);
     //
-    // Reference parity (§3.9-5 revert, operator-rejected 2026-06-06):
-    // the previous Lyra build wrapped this with a cos² MoxEdgeFade
-    // amplitude envelope.  Reference does not envelope-shape SSB TX
-    // I/Q (WDSP TXAUslewCheck returns 0 for SSB modes).  Hot-switch
-    // protection for external linears is `rfDelayMs_` alone (the
-    // reference's mechanism).  The producer still has the rfDelayMs
-    // window to pre-fill its EP2 hand-off buffer; the first SSB
-    // datagram after rf_delay carries WDSP's own settled output
-    // without a host-side amplitude ramp.
+    // i.e. WDSP TXA channel start happens AFTER rf_delay, NOT BEFORE.
+    // The previous Lyra ordering (startFn + setInjectTxIq before the
+    // QTimer) began the WDSP TXA cos² up-ramp while the gateware T/R
+    // relay was still settling for the full rfDelayMs_ window — an
+    // external linear with hot-switch protection saw TX I/Q on the
+    // wire during its own settle period.  Fixed by moving startFn()
+    // and setInjectTxIq(true) into fsmKeydownSettled (after the rf_delay
+    // QTimer fires), which is exactly Thetis's order.
+    QTimer::singleShot(rfDelayMs_, this,
+                       [this]() { fsmKeydownSettled(); });
+}
+
+void HL2Stream::fsmKeydownSettled() {
+    if (!requestedMox_) {
+        // Cancelled mid-rf_delay — wire MOX already went on (set in
+        // fsmKeydownPostMox), but WDSP TXA has NOT started yet (the
+        // §15.25 keydown-ordering CORRECTION moved that to here).
+        // Unwind through the real keyup chain: stopFn() is a no-op
+        // when the channel was never started (TxChannel.stop guards
+        // on running_), so the unwind is safe.
+        safetyLog(QStringLiteral(
+            "TX: keydown cancelled mid-rf_delay; initiating keyup"));
+        QTimer::singleShot(spaceMoxDelayMs_, this,
+                           [this]() { fsmKeyupPostSpace(); });
+        return;
+    }
+    // §15.25 keydown ordering CORRECTED 2026-06-09 per Thetis
+    // console.cs:30344-30345 (read 3× verified):
+    //   line 30344:  AudioMOXChanged(tx);     // audio routing FIRST
+    //   line 30345:  WDSP.SetChannelState(WDSP.id(1, 0), 1, 0);
+    //                                          // TX TXA start LAST
+    //
+    // setInjectTxIq(true) is the Lyra equivalent of AudioMOXChanged
+    // (arms the EP2 packer's SSB-IQ branch); startFn() is the Lyra
+    // equivalent of SetChannelState(id(1,0),1,0) (starts the WDSP
+    // TXA cos² up-ramp).  This runs AFTER the rfDelayMs_ QTimer
+    // fired — so the gateware T/R relay has settled and the linear's
+    // hot-switch protection window has elapsed before any TX I/Q
+    // hits the wire.  Reference parity restored.
+    setInjectTxIq(true);
     {
         std::function<void()> startFn;
         {
@@ -1491,26 +1529,9 @@ void HL2Stream::fsmKeydownPostMox() {
         }
         if (startFn) startFn();
     }
-    setInjectTxIq(true);
-
-    QTimer::singleShot(rfDelayMs_, this,
-                       [this]() { fsmKeydownSettled(); });
-}
-
-void HL2Stream::fsmKeydownSettled() {
-    if (!requestedMox_) {
-        // Cancelled mid-rf_delay — wire MOX already went on, must
-        // unwind through a real keyup (space → clear → ptt_out →
-        // restore att).  Schedule the keyup chain directly.
-        safetyLog(QStringLiteral(
-            "TX: keydown cancelled mid-rf_delay; initiating keyup"));
-        QTimer::singleShot(spaceMoxDelayMs_, this,
-                           [this]() { fsmKeyupPostSpace(); });
-        return;
-    }
     moxActive_ = true;
     emit moxActiveChanged(true);
-    safetyLog(QStringLiteral("TX: MOX_TX (wire MOX bit settled)"));
+    safetyLog(QStringLiteral("TX: MOX_TX (wire MOX + TXA settled)"));
     fsmRunning_ = false;
     // If the operator already requested off again during rf_delay
     // (rare), pick it up now.
@@ -1530,27 +1551,46 @@ void HL2Stream::fsmKeyupPostSpace() {
         return;
     }
 
-    // §3.9-5 revert (operator-rejected 2026-06-06): MoxEdgeFade
-    // deleted — reference does not envelope-shape SSB TX I/Q.
-    // §15.25 keyup ordering invariant (reference-faithful):
-    //   (1) Clear inject_tx_iq (SSB EP2 branch goes silent)
-    //   (2) Stop TX DSP channel (blocking flush)
-    //   (3) mox_delay sleep (txStopDelayMs_)
-    //   (4) Clear wire MOX bit
-    //   (5) ptt_out_delay sleep
-    //   (6) RX-channel restart
-    setInjectTxIq(false);
-    fsmKeyupTxOff();
-}
-
-void HL2Stream::fsmKeyupTxOff() {
-    // TX-1 component 7 — fade-out has reached zero; now we can stop
-    // the WDSP TXA channel (blocking flush) without any audible chop
-    // on the gateware side.  Matches the verified reference's
-    //   WDSP.SetChannelState(WDSP.id(1,0), 0, 1)
-    // at the equivalent point in the keyup chain.  BLOCKING (≤100 ms
-    // for WDSP internal drain) — same Qt-main-thread block the
-    // reference's own UI thread takes via Thread.Sleep.
+    // §15.25 keyup ordering CORRECTED 2026-06-09 — read Thetis
+    // console.cs:30350-30383 THREE TIMES verified.  The previous
+    // codification of this invariant said "(1) Clear inject_tx_iq
+    // first" which was REFERENCE-DIVERGENT — Thetis actually does:
+    //   line 30352-30353:  if (space_mox_delay > 0)
+    //                          Thread.Sleep(space_mox_delay);
+    //   line 30355:        _mox = tx;  // C# in-memory only
+    //   line 30357:        WDSP.SetChannelState(WDSP.id(1,0), 0, 1);
+    //                                            // TXA stop BLOCKING (FIRST)
+    //   line 30367-30368:  if (mox_delay > 0)
+    //                          Thread.Sleep(mox_delay);
+    //   line 30373:        AudioMOXChanged(tx);  // EP2 branch zero
+    //   line 30374:        HdwMOXChanged(tx, freq);  // SetPttOut(0)
+    //   line 30376:        cmaster.Mox = tx;     // XmitBit = 0
+    //   line 30377-30378:  if (ptt_out_delay > 0)
+    //                          Thread.Sleep(ptt_out_delay);
+    //   line 30379:        WDSP.SetChannelState(WDSP.id(0,0), 1, 0);
+    //                                            // RX restart
+    //
+    // The KEY: WDSP TXA stop BLOCKING is FIRST (so the cos² downslew
+    // tail flows out fexchange0 → EP2 packer → wire WHILE XmitBit is
+    // still 1).  AudioMOXChanged (= Lyra's setInjectTxIq(false)) only
+    // fires AFTER mox_delay.  HdwMOXChanged + cmaster.Mox (= Lyra's
+    // mox_.store(false)) fire right after — they're the actual wire
+    // MOX-bit drop.  Then ptt_out_delay → RX restart.
+    //
+    // Lyra ordering (post-correction):
+    //   fsmKeyupPostSpace:  stopFn() BLOCKING, then QTimer(txStopDelayMs_)
+    //                       → fsmKeyupTxOff
+    //   fsmKeyupTxOff:      setInjectTxIq(false), mox_.store(false),
+    //                       then QTimer(pttOutDelayMs_) → fsmKeyupSettled
+    //   fsmKeyupSettled:    (RX restart N/A in Lyra-cpp v0.2.0 SSB —
+    //                       RX-DSP stays running through TX with audio
+    //                       muted via _tx_rx_muted gate; re-evaluate at
+    //                       v0.2.2 CW work).  Cleanup + emit.
+    //
+    // The fsmKeyupInFlight stage in the previous design folded into
+    // fsmKeyupTxOff post-correction (its only job — clear wire MOX bit
+    // after txStopDelayMs_ — now happens in fsmKeyupTxOff alongside
+    // setInjectTxIq).
     {
         std::function<void()> stopFn;
         {
@@ -1559,25 +1599,36 @@ void HL2Stream::fsmKeyupTxOff() {
         }
         if (stopFn) stopFn();
     }
-    // Schedule the in-flight clear wait BEFORE the wire MOX clears.
-    // Reference-faithful match to:
-    //   Thread.Sleep(mox_delay);  // default 10, allows in-flight
-    //                                samples to clear
-    // Lets UDP datagrams already-sent or in-OS-buffer (with MOX=1
-    // + non-zero samples) actually reach + be processed by the HL2
-    // BEFORE we flip the wire state — so the gateware processes
-    // them as the keyed samples they were when sent, not as bogus
-    // "MOX=0 with TX I/Q" samples.
+    // Schedule the in-flight clear wait.  Thetis line 30367-30368
+    // mox_delay (default 10 ms) lets WDSP-internal cos² downslew
+    // samples emitted post-stop reach the HL2 + be packed at the
+    // wire WHILE XmitBit is still 1, so the operator's keyed-tail
+    // SSB envelope arrives on-air cleanly rather than being chopped
+    // by a premature AudioMOXChanged.
     QTimer::singleShot(txStopDelayMs_, this,
-                       [this]() { fsmKeyupInFlight(); });
+                       [this]() { fsmKeyupTxOff(); });
 }
 
-void HL2Stream::fsmKeyupInFlight() {
-    // TX-1 component 7 — in-flight UDP datagrams have cleared; now
-    // safe to flip the wire MOX bit.  Next composeCC pass on each
-    // EP2 datagram will read this as 0 → C0 bit-0 = 0 → gateware
-    // T/R transition begins.
+void HL2Stream::fsmKeyupTxOff() {
+    // §15.25 keyup ordering CORRECTED 2026-06-09 — this step now
+    // implements Thetis console.cs:30373-30376 (the two-step wire
+    // teardown: AudioMOXChanged → HdwMOXChanged + cmaster.Mox).
+    //
+    // (1) setInjectTxIq(false) is Lyra's AudioMOXChanged equivalent
+    //     — arms the EP2 packer's else-branch (zero TX I/Q) regardless
+    //     of XmitBit.  Until this fires, the EP2 packer continues to
+    //     emit whatever the (stopped) WDSP TXA chain has left in
+    //     out[0] — which after stopFn() BLOCKING + txStopDelayMs_ is
+    //     a fully-faded silent buffer.
+    //
+    // (2) mox_.store(false) is Lyra's HdwMOXChanged + cmaster.Mox
+    //     equivalent — flips C0 bit 0 on the next EP2 datagram, which
+    //     the HL2 gateware sees as PTT-out drop + T/R relay release.
+    setInjectTxIq(false);
     mox_.store(false, std::memory_order_release);
+    // ptt_out_delay (Thetis line 30377-30378) gives the hardware T/R
+    // relay time to physically switch back to RX before any RX-side
+    // restoration logic runs.  Then fsmKeyupSettled does cleanup.
     QTimer::singleShot(pttOutDelayMs_, this,
                        [this]() { fsmKeyupSettled(); });
 }
@@ -1597,10 +1648,11 @@ void HL2Stream::fsmKeyupSettled() {
     // forward-compat for a future operator-tunable RX step-att).
     setTxStepAttnDb(savedTxStepAttn_);
     // Switch the OC pattern back to the RX-side per-band bits.  This
-    // happens AFTER the wire MOX bit has cleared (in fsmKeyupPostSpace)
-    // AND ptt_out_delay has elapsed — so the filter board only returns
-    // to RX configuration when no RF is being emitted.  Mirror of the
-    // fsmAdvance keydown raise; symmetric hot-switch safety.
+    // happens AFTER the wire MOX bit has cleared (in fsmKeyupTxOff per
+    // the §15.25 corrected order) AND ptt_out_delay has elapsed — so
+    // the filter board only returns to RX configuration when no RF is
+    // being emitted.  Mirror of the fsmAdvance keydown raise; symmetric
+    // hot-switch safety.
     updateOcPattern(/*transmitting=*/false);
     moxActive_ = false;
     emit moxActiveChanged(false);
