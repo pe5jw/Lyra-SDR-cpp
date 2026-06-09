@@ -301,16 +301,29 @@ void create_rnet() {
         // not implmented — matches reference comment verbatim.
         break;
     }
-    SendpOutboundTx([](int id, int nsamples, double* buff) {
-        (void) id;
-        (void) nsamples;
-        // Stage A NO-OP body: ilv doesn't exist yet, so this
-        // callback is never invoked.  Stage C ilv port wires it
-        // via SetILVOutputPointer; eventual body calls
-        // outbound_push_iq(buff) — byte-shape-equivalent of
-        // reference's xilv → OutBound chain.
-        (void) buff;
-    });
+    // Stage C.3-fix (parity with B.6.b-fix at line 272 above):
+    // the Stage A NO-OP `SendpOutboundTx(stub)` registration that
+    // USED to live here is REMOVED.  Cause: `SendpOutboundTx(stub)`
+    // now runs `SetILVOutputPointer(0, stub)` (CMaster.cpp:88,
+    // wired in Stage C.3), which clobbers `pilv[0]->Outbound` with
+    // the no-op lambda.  Once Stage D's xcmaster pump constructs
+    // ILV at id=0 and the operator-supplied TX-out dispatcher
+    // (routing TX I/Q to the EP2 wire via outbound_push_iq) is
+    // registered via `SendpOutboundTx`, the no-op stub here would
+    // overwrite that registration on every `create_rnet()` -- the
+    // exact silent-TX defect class that bit Stage B.6.b for RX
+    // (where the SendpOutboundRx stub at line 272 clobbered
+    // aaMix_->Outbound ~1 ms after openRx1 wired the real lambda).
+    //
+    // The eventual real registration the Stage-A comment promised
+    // ("body calls outbound_push_iq(buff) ... reference xilv ->
+    // OutBound chain") lives at the TX-channel-open site (Stage E
+    // TxChannel reconciliation work), where the operator-supplied
+    // dispatcher has access to the per-xmtr context the global
+    // `pcm` cannot reach.  Re-introducing a default registration
+    // here would re-clobber that lambda; future codec-id /
+    // family-specific TX-out routing needs to be reference-
+    // faithful AT the xmtr-open site, NOT at create_rnet.
 
     // ---- §15.26 PA-OFF-at-startup safety (Task #114, 2026-06-08) ----
     //

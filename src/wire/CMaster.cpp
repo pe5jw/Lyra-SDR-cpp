@@ -24,6 +24,7 @@
 
 #include "wire/CMaster.h"
 #include "wdsp/AAMix.h"
+#include "wdsp/ILV.h"
 
 namespace lyra::wire {
 
@@ -75,14 +76,25 @@ void SendpOutboundRx(OutboundCallback cb)
 //       SetILVOutputPointer(0, pcm->OutboundTx);
 //   }
 //
-// Stage A: stores callback only.  The
-// `SetILVOutputPointer(0, pcm->OutboundTx)` call lands when Stage C
-// (ilv port) ships.
+// Stage C.3 wire-up: push the registered callback into ILV's
+// central pointer-bank slot 0 (the conventional TX-out interleaver
+// id matching reference cmaster.c:418 `SetILVOutputPointer(0,
+// pcm->OutboundTx)`).  Safe when no ILV exists at that slot yet
+// (pilv[0] == nullptr before Stage D's create_ilv call site): the
+// setter's resolve_ilv returns nullptr and the setter early-
+// returns without effect.  Once Stage D ports the xmtr xcmaster
+// pump to construct ILV at id=0, this call wires the operator-
+// registered TX-out callback into xilv's Outbound dispatch
+// automatically; no further plumbing change needed.
+//
+// Mirror of the SendpOutboundRx Stage B.5 wire-up at line 67
+// above — identical hand-off discipline, identical reference
+// pattern (cmaster.c:411 vs :418).
 
 void SendpOutboundTx(OutboundCallback cb)
 {
     pcm->OutboundTx = std::move(cb);
-    // Stage C PENDING: SetILVOutputPointer(0, pcm->OutboundTx);
+    lyra::wdsp::SetILVOutputPointer(0, pcm->OutboundTx);
 }
 
 // ===== SendpOutboundTCIRxIQ =====
