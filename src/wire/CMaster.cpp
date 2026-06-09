@@ -23,6 +23,7 @@
 // body, etc.) plug into.
 
 #include "wire/CMaster.h"
+#include "wire/CmBuffs.h"   // Phase C — create_cmbuffs / destroy_cmbuffs / pcm_in
 #include "wire/Router.h"
 #include "wdsp/AAMix.h"
 #include "wdsp/ILV.h"
@@ -68,19 +69,44 @@ void create_cmaster()
     // -----------------------------------------------------------------
     // Reference cmaster.c:276-286 — per-stream init.
     //
-    // DEFERRED [Phase C cmbuffs port — Task #112 follow-on]:
-    //   * Per-stream CriticalSection / std::mutex (`pcm->update[i]`)
-    //   * create_cmbuffs(i, accept=1, cmMAXInbound[i],
-    //                    getbuffsize(cmMAXInRate), xcm_insize[i])
-    //   * pcm->in[i] = malloc0(getbuffsize(cmMAXInRate) * sizeof(complex))
+    // PHASE C 2026-06-09: Thetis-faithful CMB ring port shipped (see
+    // src/wire/CmBuffs.{h,cpp}).  Per-stream `create_cmbuffs(id, accept,
+    // max_insize, max_outsize, outsize)` populates the elastic CMB ring
+    // + semaphore + spawns the cm_main pump thread.  This block now
+    // calls create_cmbuffs for stream id=1 (TX) — the only stream Lyra-
+    // cpp v0.2.0 SSB drives through the central pump.  RX streams (0
+    // and 2 in Thetis nddc=4) stay on the WdspEngine direct dispatch
+    // path per the Lyra-cpp pre-existing RX architecture (see Stage E.0
+    // audit + the create_rcvr defer comment below).
     //
-    // Lyra-cpp v0.2.0 SSB has NO per-stream input rings yet — the TX
-    // path is consumer-driven via Hl2Ep6MicSource::Consumer →
-    // xcmasterTickTx (the operator-explicit data-ownership Lyra-native
-    // idiom translation, see CMaster.h §"xcmasterTickTx" docstring).
-    // The Thetis `pcm->in[stream]` central buffer + `cm_main` pump
-    // thread architecture is the Phase C work item; once it lands here,
-    // this block populates the per-stream mutex + ring + buffer.
+    // Stream 1 (TX) parameter values per Thetis cmsetup.c posture for
+    // HL2 SSB v0.2:
+    //   * max_insize   = 256 complex samples — generous upper bound on
+    //                    HL2 mic block size per EP6 datagram (typical
+    //                    9-19 complex samples per Inbound call after
+    //                    decimation to 48 kHz; 256 gives ~13× headroom
+    //                    for any decimation-factor change).
+    //   * max_outsize  = 64  complex samples — referenceBuffsize(48000)
+    //                    = 64 per cmsetup.c:106-111 (= TxChannel's
+    //                    inSize_ — see TxChannel.cpp).
+    //   * outsize      = 64  complex samples — the cm_main pump's
+    //                    per-iteration drain target == max_outsize.
+    //   * accept       = 1   — open the Inbound() gate immediately
+    //                    (HL2 mic is always-on; cmbuffs accepts
+    //                    samples even when MOX=off, the TX-IQ-on-wire
+    //                    gating happens downstream at the EP2 packer's
+    //                    `injectTxIq_` flag).
+    //
+    // The ring is wire-quiescent until Stage 7.5 wires Hl2Ep6MicSource's
+    // consumer to call lyra::wire::Inbound(1, n, mic_iq) — no producer
+    // = semaphore never released = pump thread idle = no behavior
+    // change.  xcmaster(1)'s case-1 body (below in this file) also
+    // safely no-ops on empty pxmtr[0] until Stage 7.2-7.3 publishes
+    // the TxChannel via create_xmtr_hl2.  Safe to land + run today.
+    create_cmbuffs(/*id=*/1, /*accept=*/1,
+                   /*max_insize=*/256,
+                   /*max_outsize=*/64,
+                   /*outsize=*/64);
     // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
@@ -222,8 +248,28 @@ void destroy_cmaster()
     // -----------------------------------------------------------------
     // Reference cmaster.c:331-336 — per-stream teardown.
     //
-    // DEFERRED [Phase C cmbuffs port — Task #112 follow-on, sibling
-    // of the create_cmaster per-stream init defer].
+    // PHASE C 2026-06-09: tears down the per-stream CMB ring + cm_main
+    // pump thread + per-stream pcm->in[] buffer.  Reverse-order match
+    // to create_cmaster's create_cmbuffs above.
+    //
+    // Stream 1 (TX) teardown.  destroy_cmbuffs() coordinates with the
+    // pump thread (shuts Inbound gate → traps cm_main → joins the
+    // jthread → cleans up) — see CmBuffs.cpp destroy_cmbuffs body.
+    //
+    // SHUTDOWN-ORDER RATIONALE:
+    //   Lyra-cpp's aboutToQuit handler chain (main.cpp) runs in order:
+    //     handler-1: stream->registerTx{IqSource,Control}({}) [TX cbs]
+    //     handler-2: stream->close()                          [EP6 join]
+    //     handler-3: delete micSource                         [mic-source dtor]
+    //     handler-4: destroy_cmaster()                        [this code]
+    //   By the time destroy_cmbuffs runs here:
+    //     * EP6 thread is JOINED (handler-2) -> no more Inbound() calls
+    //     * micSource is destroyed (handler-3) -> consumer registration
+    //                                              has been cleared
+    //   So the pump thread is idle (waiting on Sem_BuffReady with no
+    //   producer); destroy_cmbuffs releases the sem + traps the thread
+    //   + joins cleanly.  No race.
+    destroy_cmbuffs(/*id=*/1);
     // -----------------------------------------------------------------
 }
 
@@ -547,25 +593,60 @@ void xcmaster(int stream)
         // if/when warranted.
         break;
     case 1: {
-        // case 1 — standard transmitter.  Stage D HL2 SSB body
-        // dispatches to xcmasterTickTx for the fexchange0 + xilv
-        // work.  Mic input comes from the consumer thread's caller
-        // context (not the reference's pcm->in[stream] central
-        // buffer — see CMaster.h xcmasterTickTx docstring for the
-        // explicit-parameter Lyra-native idiom translation).
+        // case 1 — standard transmitter.
         //
-        // xcmaster(stream) itself is the no-mic-passing variant for
-        // reference signature parity.  The active TX pump entry is
-        // xcmasterTickTx(xmtr_id, mic_in, n).  Until the rebuild
-        // wires a caller, this branch is reached only by direct
-        // unit tests (which exercise xcmasterTickTx directly with
-        // explicit mic_in).
-        const int tx = txid_stub(stream);
-        (void) tx;
-        // Intentional no-op for the bare xcmaster() call -- the
-        // mic-input data has to come from somewhere, and Stage D
-        // expects callers that have mic data to use xcmasterTickTx
-        // directly (operator-explicit data ownership).
+        // PHASE C 2026-06-09: real Thetis-faithful dispatch.  Per
+        // cmaster.c:377-398 (the reference's case 1 body), the central
+        // pump entry reads `pcm->in[stream]` (the per-stream input
+        // buffer the cm_main pump drained from the CMB ring via cmdata
+        // at cmbuffs.c:164) and calls fexchange0 + xilv + supporting
+        // stages.
+        //
+        // Lyra-cpp's equivalent:
+        //   * mic_in = pcm_in(stream)   — the cm_main pump just wrote
+        //                                  r1OutSize complex samples
+        //                                  here via cmdata() at
+        //                                  CmBuffs.cpp:cm_main loop
+        //   * n       = pcm_in_size(stream)
+        //                                = r1OutSize set in
+        //                                  create_cmbuffs (64 for
+        //                                  HL2 SSB v0.2 = 48 kHz mic).
+        //   * xmtr_id = txid_stub(stream) — stream 1 → xmtr 0 today.
+        //
+        // xcmasterTickTx does the reduced HL2-SSB-v0.2 subset of the
+        // reference case-1 body: TxChannel.process (= fexchange0) +
+        // xilv(pilv[0], outBuffers).  Deferred reference stages:
+        //   * asioIN (cmaster.c:379)               — no Lyra ASIO yet
+        //   * use_tci_audio override (380-386)     — TCI defer
+        //   * xpipe (387)                          — Lyra-native sink
+        //   * xdexp (388)                          — VOX defer (v0.2.3)
+        //   * xsidetone (391)                      — CW defer (v0.2.2)
+        //   * xpipe (392)                          — Lyra-native sink
+        //   * xMixAudio monitor (394)              — monitor defer
+        //   * xtxgain (395)                        — PS defer (v0.3)
+        //   * xeer (396)                           — EER defer (HL2 N/A)
+        //
+        // Each deferred stage is documented in CMaster.cpp xcmasterTickTx
+        // (or via Stage E.0 audit) — none block first-RF SSB.
+        //
+        // Wire-quiescent invariant: until Stage 7.2-7.3 publishes the
+        // TxChannel via create_xmtr_hl2(0, tx_channel, ilv_xmtr_id),
+        // pxmtr[0] is empty.  resolve_xmtr returns nullptr +
+        // xcmasterTickTx early-returns safely (Stage D.2 unit-test
+        // verified).  So even though the cm_main pump is alive in
+        // Phase C, case 1 here no-ops cleanly until Stage 7.x wires
+        // the consumer side.  No bench regression today; first-RF
+        // becomes possible when Stage 7.x publishes pxmtr[0].
+        const int tx     = txid_stub(stream);
+        double*   mic_in = pcm_in(stream);
+        const int n      = pcm_in_size(stream);
+        if (mic_in && n > 0) {
+            xcmasterTickTx(tx, mic_in, n);
+        }
+        // else: cmbuffs not yet created for this stream (impossible
+        // if create_cmaster was called per the documented contract
+        // — but defensive null-check matches the Lyra-native safer-
+        // than-reference posture documented in resolve_xmtr).
         break;
     }
     case 2:

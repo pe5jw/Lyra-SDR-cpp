@@ -67,6 +67,15 @@ qt_add_executable(lyra
     src/wire/RadioNet.cpp
     src/wire/CMaster.h
     src/wire/CMaster.cpp
+    # Phase C — Thetis-faithful TX-input decouple architecture.  Ports
+    # ChannelMaster/cmbuffs.{h,c} (CMB ring + cm_main pump thread) at
+    # the central producer/consumer hand-off the reference uses between
+    # the EP6 read thread (Inbound producer) and the cm_main pump
+    # thread (cmdata consumer → xcmaster → fexchange0 + xilv → wire).
+    # See src/wire/CmBuffs.h header preamble for the threading +
+    # ownership contract + the C → C++23 idiom-translation log.
+    src/wire/CmBuffs.h
+    src/wire/CmBuffs.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
