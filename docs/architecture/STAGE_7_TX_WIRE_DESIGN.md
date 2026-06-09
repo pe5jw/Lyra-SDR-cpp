@@ -271,6 +271,157 @@ I won't proceed to code until you signal on these. Stage E.1 (TX analyzer port t
 
 ---
 
+## 11. v2 reconciliation — 2-agent red-team + §6 verify-don't-guess + Stage 7.4 do-as-Thetis (2026-06-09 PM)
+
+**Status:** v1 (§§1-10) is HISTORY. v2 is authoritative. Implement per v2 only.
+
+**Methodology:** Operator directive "2 agent red team pass — YES DEFINITELY RESOLVE THE PUSH vs PULL TX-IQ; Stage 7.4 do as Thetis does no drift no patching." Two independent senior C++23/Qt6/SDR agents reviewed §§1-10 (concurrency lens + reference-parity lens) and converged BLOCKS-SHIP on §6 with consistent amendments. The §6 question was resolved by reading `hl2_stream.cpp` directly; Stage 7.4 scope resolved by reading `hl2_stream.cpp:1486-1559` + `:1956-1976` (HL2Stream's own internal keying FSM + setInjectTxIq forwarder).
+
+### 11.1 §6 RESOLVED — PULL via `registerTxIqSource`, NOT push-deque
+
+**Definitive evidence (hl2_stream.cpp, read 2026-06-09):**
+- `hl2_stream.cpp:2034` — `void HL2Stream::registerTxIqSource(TxIqSource src)` swaps the source under `txIqSourceMtx_`.
+- `hl2_stream.cpp:2470-2489` — EP2 packer body, on the EP2 writer thread, at ~380 Hz wire cadence:
+  ```cpp
+  std::complex<float> ssbBuf[126];
+  bool emitSsb = false;
+  if (moxBit && injectTxIq_.load(std::memory_order_acquire) && !emitTone) {
+      TxIqSource src;
+      { std::lock_guard<std::mutex> lk(txIqSourceMtx_); src = txIqSource_; }
+      if (src && src(ssbBuf)) { emitSsb = true; }
+      else { txIqUnderruns_.fetch_add(1, std::memory_order_relaxed); }
+  }
+  ```
+- `TxIqSource = std::function<bool(std::complex<float>*)>` — callback fills a stack-allocated 126-element `std::complex<float>` buffer per EP2 datagram, returns `true` if filled, `false` on starve → zero-fill fall-through. MUST be non-blocking.
+- `main.cpp:370` — production teardown already uses the seam: `stream->registerTxIqSource({})`.
+- **No `_tx_iq` deque exists for TX I/Q.** `_tx_audio` is L+R audio bytes; the v1 plan-paper's "mirror `_tx_audio`" framing is fiction for this path.
+
+**Implication:** v1's `pushTxIqDoubles` API (§3) and Surface 2 lambda design (`s->pushTxIqDoubles(iq, n_samples)`) are architecturally wrong and **DELETED in v2**. The correct shape is the seam HL2Stream already exposes — `registerTxIqSource` with a closure backed by an SPSC ring.
+
+### 11.2 §3 DELETED — no new `HL2Stream` API needed
+
+The Stage 7.1 sub-commit's body changes: instead of adding `HL2Stream::pushTxIqDoubles`, Stage 7.1 ships the **SPSC ring class** (`lyra::dsp::TxIqRing` — fixed-capacity, single-producer/single-consumer, complex<float>, lock-bounded under uncontested 380 Hz cadence). The ring is the producer/consumer decoupler between the rx-loop thread (fills) and the EP2 writer thread (drains via TxIqSource closure). No HL2Stream surface change.
+
+### 11.3 Surface 2 REWRITTEN — PULL closure with SPSC ring + doubles→float conversion
+
+**Replace v1 §2 Surface 2 lambda with:**
+
+```cpp
+// In Radio::start(), after TxChannel::open() + create_ilv + create_xmtr_hl2:
+
+auto txIqRing = std::make_shared<lyra::dsp::TxIqRing>(/*capacity=*/512);  // ~336 ms cushion at 380 Hz
+txIqRing_ = txIqRing;  // Radio holds shared_ptr for lifetime + teardown
+
+// Producer side — fires on the Ep6 rx-loop thread when xilv dispatches Outbound.
+// Converts the WDSP double-precision interleaved {I, Q} into complex<float>
+// and pushes one block into the ring.  Reference's TxIqSource contract is
+// complex<float>; the conversion happens here (NOT at the wire) so the ring
+// already carries wire-format samples.
+lyra::wire::SendpOutboundTx(
+    [ring = std::weak_ptr<lyra::dsp::TxIqRing>(txIqRing)]
+    (int /*obid*/, int n_samples, double* iq_doubles) {
+        auto r = ring.lock();
+        if (!r) return;
+        r->pushFromInterleavedDoubles(iq_doubles, n_samples);  // drop-oldest on overflow
+    });
+
+// Consumer side — registered on HL2Stream; EP2 writer thread pulls 126 samples
+// per datagram via this closure.  Returns true iff the ring had a full block.
+hl2Stream_->registerTxIqSource(
+    [ring = std::weak_ptr<lyra::dsp::TxIqRing>(txIqRing)]
+    (std::complex<float>* out126) -> bool {
+        auto r = ring.lock();
+        if (!r) return false;
+        return r->popBlock126(out126);  // non-blocking; false on starve → zero-fill
+    });
+```
+
+**Two-thread design (corrects v1's "single-thread sequential dispatch" claim):**
+- **Producer (Ep6 rx-loop thread):** mic → xcmasterTickTx → TxChannel::process → fexchange0 → xilv → SendpOutboundTx → `ring.pushFromInterleavedDoubles`. Mic-block-size driven (whatever Hl2Ep6MicSource delivers per EP6 datagram).
+- **Consumer (EP2 writer thread):** ~380 Hz timer-paced pull via the TxIqSource closure; 126 complex<float> per call. Drops to zero-fill (existing EP2 packer behaviour) when ring empty.
+- **Ring decouples:** mic-block-size ≠ EP2-block-size by construction. SPSC, no lock-contention on the hot path; ring depth absorbs mic/wire cadence mismatch.
+- **Underrun observable:** existing `txIqUnderruns_` counter at `hl2_stream.cpp:2487` already counts source-returned-false events — exposed to the operator banner for bench diagnostic.
+
+### 11.4 Stage 7.4 scope LOCKED — "do as Thetis does no drift no patching"
+
+**Verified (hl2_stream.cpp:1486-1559 + :1956-1976):** HL2Stream owns the keying FSM (`fsmKeydown` / `fsmKeydownSettled` / `fsmKeyupPostSpace` / `fsmKeyupTxOff`). Per the §15.25 keyup-ordering invariant explicitly cited in the body comments at `:1535-1543`:
+
+- **Keydown (`hl2_stream.cpp:1486-1497`):** `txControl_.start()` (= TxChannel start, cos² up-ramp) → `setInjectTxIq(true)` → `QTimer::singleShot(rfDelayMs_, fsmKeydownSettled)`.
+- **Keyup (`hl2_stream.cpp:1542-1559`):** `setInjectTxIq(false)` → `fsmKeyupTxOff` → `txControl_.stop()` (= TxChannel stop, dmode=1 BLOCKING flush).
+- **setInjectTxIq forwarder (`hl2_stream.cpp:1956-1976`):** flips internal `injectTxIq_` atomic AND calls `txControl_.setInjectTxIq` for producer-side lockstep.
+
+This IS the Thetis keydown/keyup chain (see §15.25 ground truth in MEMORY: "TX DSP channel start (cos² up-ramp LAST)" / "TX DSP channel stop dmode=1 BLOCKING flush"). HL2Stream's internal FSM is already reference-faithful.
+
+**Stage 7.4 TxControl lambdas — do as Thetis does:**
+- `ctl.start` = `[tx = txChannel_.get()]() { tx->start(); }` — invoked by HL2Stream::fsmKeydown.
+- `ctl.stop` = `[tx = txChannel_.get()]() { tx->stop(); }` — invoked by HL2Stream::fsmKeyupTxOff. Blocking flush per `cmaster.c:265`.
+- `ctl.setInjectTxIq` = `[](bool) {}` — INTENTIONAL no-op. Thetis has no separate producer-side inject gate; the WDSP TXA channel start/stop IS the producer gate (xtxa runs only when channel is active). Lyra's setInjectTxIq covers the consumer side (the EP2-packer `injectTxIq_` flag at hl2_stream.cpp:1957); the producer side is gated by `ctl.start`/`ctl.stop`. NO DRIFT — the lambda body is empty by Thetis-faithfulness, not by omission.
+- `ctl.setMode` / `setBandpass` / `setMicGainDb` / `setAlc*` / `setLeveler*` — straight WDSP cffi forwarders as in v1 §2 Surface 4 (these are already Thetis-faithful operator-axis setters).
+
+**Surface 1 CORRECTION (v1 step 6 was wrong):** Radio::start() does NOT call `txChannel->start()` at construction. The TxChannel is `open()`-ed (buffers allocated + `OpenChannel(1, …)`) but the WDSP TXA channel state stays OFF until HL2Stream::fsmKeydown invokes `ctl.start()` on the MOX edge. This matches Thetis's cmaster.c lifecycle: `OpenChannel` at create_xmtr time; `SetChannelState(…, 1, 0)` only at keydown. **v1 Surface 1 step 6 (`txChannel->start();`) is DELETED in v2.**
+
+### 11.5 Teardown ordering PINNED — clean-shutdown invariant
+
+**Replace v1 §2 Surface 1 teardown with:**
+
+1. **`setInjectTxIq(false)`** — EP2 packer immediately stops invoking TxIqSource (gate condition `moxBit && injectTxIq_` goes false).
+2. **Sleep one EP2 tick (~2.7 ms)** — ensures any in-flight `txIqSource_` call on the writer thread has returned. (Or: spin on a token until the writer publishes "one tick observed", same effect.)
+3. **`hl2Stream_->registerTxIqSource({})`** — clear the consumer closure. Any later writer iteration is in zero-fill fall-through path, no ring access.
+4. **`lyra::wire::SendpOutboundTx({})`** — clear the producer registration (Stage C.3 B.6.b discipline).
+5. **`txChannel_->stop()`** — blocking flush, drains in-flight WDSP TXA state.
+6. **`destroy_xmtr_hl2(0, txChannel_.get())`** + **`destroy_ilv(ilv, 0)`** + **`txChannel_->close()`** + **`txChannel_.reset()`**.
+7. **`txIqRing_.reset()`** — last shared_ptr ref dropped; ring destroyed. Both producer (weak_ptr in SendpOutboundTx lambda) and consumer (weak_ptr in TxIqSource closure) have been cleared in steps 3-4 so `.lock()` returns empty if either fires post-teardown.
+
+**Rationale:** without step 1+2, the EP2 writer thread can call into a torn-down ring. weak_ptr.lock() handles the case where the ring is destroyed, but the writer thread is still touching the closure's internals during the call. Quiescing the writer first is the discipline.
+
+### 11.6 Charter §6 answers — re-asked under v2
+
+**(a) Will this cause TX hangs/break-up/stutter under full TX/PS/EQ/Combinator/RTA load?**
+
+No, and the v2 PULL+ring answer is *better* than the v1 push-deque answer for future load:
+- **Two-thread decoupling** (rx-loop fills ring; EP2-writer drains) is the same pattern the parent Python project's MEMORY §15.7/§15.26 spent multi-week effort *moving toward* (lock-free SPSC ring + timer-paced wire writer). Lyra-cpp ships it natively in v2 with no rework needed when PS/EQ/Combinator land.
+- **CPU budget on rx-loop:** one mic block of WDSP TXA work per EP6 datagram (~ms). PS/EQ/Combinator are additional TXA stages (WDSP cffi or Lyra-native pre-processors per §15.19) inside the existing budget; if a future feature exceeds rx-loop budget, *that* feature is responsible for moving off-thread.
+- **CPU budget on EP2-writer:** one ring pop + memcpy per ~2.7 ms tick. Constant-time, no DSP work, no scaling concern.
+- **Ring underrun signal:** `txIqUnderruns_` already exposed to operator banner. Future load that starts to starve the wire is immediately observable.
+
+**(b) How do Thetis / HPSDR family handle this?**
+
+Reference parity is faithful:
+- Thetis `cmaster.c:381-407` xcmaster case 1 + Inbound() CMB-ring + `pcm->OutboundTx`-registered → EP2 packer pulls from filled `outIQbufp` + MOX-bit zero-mask = the exact PULL-with-elastic-buffer-between-DSP-and-wire pattern v2 implements.
+- Thetis cmaster pump thread is driven by cmbuffs semaphores (separate from EP6 read thread). Lyra-cpp's Hl2Ep6MicSource ticks xcmasterTickTx directly from the Ep6 rx-loop thread — Lyra-native simplification, justified by the parent project's §15.25/§15.26 "wire-clock-master + bounded per-block CPU" discipline. Charter §6(a) bounds the CPU; this divergence is documented + safe.
+- EP2 packer's `!moxBit` zero-mask at `hl2_stream.cpp:2470-2488` mirrors `networkproto1.c:1227` `if (!XmitBit) memset(outIQbufp, 0, ...)` byte-for-byte. **MUST keep this invariant** at 7.1 code-time — Stage 7 does not modify the EP2 packer body.
+
+### 11.7 Honest collision call — Stage 2b / Stage 7 hl2_stream.cpp
+
+Stage 2b touches `Ep6RecvThread` + HL2Stream RX worker rip + `txSeq_` migration. Stage 7 v1 claimed "zero file overlap" with Stage 2b. v2 corrects this: **Stage 7.1 (ring + TxIqSource registration consumer) and Stage 7.4 (TxControl population) leave the EP2 writer body byte-untouched**, but Stage 2b is also rewriting that file (rxWorker_ retire, jthread restructure). Both stages CAN land in either order with one mechanical merge at the integration commit — not a code conflict, but operator should sequence them so the second one rebases cleanly rather than ships fast-forward.
+
+### 11.8 Updated sub-commit plan (v2)
+
+| Commit | Scope | Wire effect |
+|---|---|---|
+| **7.1** | `lyra::dsp::TxIqRing` class (SPSC, complex<float>, fixed capacity, `pushFromInterleavedDoubles` + `popBlock126`). Unit-tested: producer/consumer ordering, drop-oldest discipline, doubles→float conversion bit-pattern, multi-thread stress. No HL2Stream change. | Inert (no caller). |
+| **7.2** | `Radio` constructs + owns `TxChannel` (Surface 1 steps 1-2). `txChannel->open()` at stream start; `close()` at stop. **No start() call** (v2 correction — Surface 1 step 6 deleted). No ILV, no xmtr, no consumer. | TxChannel.cpp objects built/destroyed; WDSP TXA channel 1 opened but not running. |
+| **7.3** | `Radio` calls `create_ilv` + `create_xmtr_hl2` at start; symmetric destroy at stop. pxmtr[0] populated. | xcmasterTickTx has a valid bank slot — no consumer calls it. |
+| **7.4** | `Radio` registers real `SendpOutboundTx` lambda (Surface 2 producer side — fills ring) + `registerTxIqSource` closure (consumer side — pulls from ring) + populates `HL2Stream::TxControl` (Surface 4 — start/stop wire txChannel start/stop, setInjectTxIq INTENTIONALLY no-op per §11.4). Teardown ordering pin (§11.5). | TX-out chain wired end-to-end except: no producer driving xcmasterTickTx yet. |
+| **7.5** | `Radio` constructs `Hl2Ep6MicSource` + registers consumer lambda calling `xcmasterTickTx(0, …)` (Surface 3 + 5). **FIRST-RF CANDIDATE COMMIT.** Operator HL2 bench-gate per v1 §7 (unchanged). | Mic samples flow; TX chain produces RF on MOX. |
+
+Each independently revertable; 7.5 is the first-RF gate.
+
+### 11.9 v2 verdict
+
+**LAND STAGE 7 PER v2.** All v1 §§1, 4, 5, 7, 8, 9, 10 stay as written *except*:
+- §2 Surface 1 step 6 DELETED.
+- §2 Surface 2 lambda REWRITTEN per §11.3.
+- §2 Surface 4 setInjectTxIq scope CLARIFIED per §11.4 (intentional no-op, Thetis-faithful).
+- §3 DELETED (no new HL2Stream API).
+- §4 sub-commit table REPLACED per §11.8.
+- §6 RESOLVED — PULL per §11.1; §6 status closed.
+- §8 (a) (b) AMENDED per §11.6.
+
+Operator sign-off required on the v2 reconciliation before Stage 7.1 code lands.
+
+---
+
 ## 10. References
 
 - This audit: `docs/architecture/STAGE_E_TXCHANNEL_AUDIT.md` (Stage E.0, scope-anchor for Stage 7)
