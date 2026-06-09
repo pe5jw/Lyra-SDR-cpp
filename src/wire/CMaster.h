@@ -56,17 +56,51 @@
 //     into `SetILVOutputPointer(0, cb)` so ILV invokes the registered
 //     callback on every TX I/Q frame.
 //
-//   Stage D (PENDING): port `xcmaster()` pump body — the per-stream
-//     RX-case (xpipe → xanb → xnob → Spectrum0 → analyzers →
-//     fexchange0 → xpipe → xMixAudio) + TX-case (asioIN → xpipe →
-//     xdexp → fexchange0 → xsidetone → xpipe → xMixAudio (monitor) →
-//     xtxgain → xeer → xilv).  Existing audio_mixer + TxDspWorker
-//     migrate from direct outbound_push_lr/iq invocation to driving
-//     the xcmaster pump.
+//   Stage D (PARTIAL — D.0 THIS COMMIT): port `xcmaster()` pump body.
+//     For HL2 SSB v0.2 the case-1 TX body reduces (per Stage E.0
+//     audit findings) to:  fexchange0 → xilv.  All other reference
+//     stages (xdexp / xsidetone / monitor xMixAudio / xtxgain / xeer)
+//     are reference-`run=0` for HL2 OR deferred-by-design features
+//     (CW sidetone v0.2.2, VOX v0.2.3, Penelope/PS v0.3) — same
+//     posture the reference's create_xmtr takes.  Lyra-cpp ports the
+//     full `xcmaster(int stream)` switch signature for reference-
+//     shape fidelity; case 0 (RX) is a documented stub (Lyra dispatches
+//     RX via WdspEngine, pre-existing architecture); case 2 (special
+//     panadapter stitching) is not used.
 //
-//   Stage E+ (PENDING): port supporting modules (vox/dexp, txgain,
-//     sidetone, pipe, sync, analyzers, cmbuffs, cmsetup,
-//     bandwidth_monitor, etc.) as each becomes needed.
+//     Stage D sub-commits:
+//       D.0 (this commit) — skeleton: pxmtr[] central bank + 4 decls
+//                           (create_xmtr_hl2 / destroy_xmtr_hl2 /
+//                            xcmaster / xcmasterTickTx).  Wire-inert.
+//       D.1 — TxChannel::outBuffers() API extension (returns the
+//             3 internal buffer ptrs as the reference pcm->xmtr[i]
+//             .out[3] equivalent, needed for the xilv() double**
+//             argument).
+//       D.2 — Function bodies in CMaster.cpp.
+//       D.3 — scratch/test_xcmaster.cpp synthetic-mic Outbound
+//             capture test, asserting bit-exact TX I/Q dispatch
+//             (ILV bypass mode per cmaster.c:227 run=0).
+//
+//     Stage D ships the xcmaster module wire-inert (no production
+//     caller yet — the rebuild's consumer-side, currently in_progress
+//     per Task #112/#117, wires it).  The unit test is the bench
+//     gate for Stage D itself; the first-RF HL2 bench gate lands
+//     with whichever later commit wires the rebuild's consumer
+//     thread to call into xcmasterTickTx.
+//
+//   Stage E.0 (DONE) — TxChannel reference-parity audit (zero must-fix
+//     except the surface #5 TX analyzer port, deferred to Stage E.1
+//     post-Stage-D per PureSignal v0.3 prerequisite).  See
+//     docs/architecture/STAGE_E_TXCHANNEL_AUDIT.md.
+//
+//   Stage E.1 (PENDING — post-D) — TX analyzer port to reference
+//     parity (XCreateAnalyzer at TX-channel-open, retarget
+//     TXASetSipDisplay, stop MOX-edge SetAnalyzer reconfigure).
+//     PS prereq.  Task #140.
+//
+//   Stage E+ (PENDING) — port supporting modules (vox/dexp, txgain,
+//     sidetone, pipe, sync, cmbuffs, cmsetup, bandwidth_monitor,
+//     etc.) as each becomes needed by the rebuild + feature work.
 //
 // Each stage ships independently with a build-green + push step.
 // HL2 bench gate per stage (RX audio path stays working until the
@@ -82,8 +116,14 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
+
+// Forward decl — TxChannel full def in src/wdsp/TxChannel.h.  Kept
+// out of this header's #includes to avoid pulling the WDSP cffi
+// surface into every wire-layer translation unit.
+namespace lyra::wdsp { class TxChannel; }
 
 namespace lyra::wire {
 
@@ -179,5 +219,109 @@ void SendpInboundTCITxAudio(InboundCallback cb);
 
 // ===== SetTCIRun (reference cmaster.c:434-437) =====
 void SetTCIRun(int active);
+
+// ===== Stage D — xcmaster pump + per-xmtr context bank =====
+//
+// Reference cmaster.c reaches the per-xmtr context (TxChannel-
+// equivalent + pilv-equivalent) via the central `pcm->xmtr[tx]`
+// struct — populated by `create_xmtr()` (cmaster.c:112-253) and
+// torn down by `destroy_xmtr()` (cmaster.c:255-271).  Lyra-cpp
+// doesn't have the full pcm->xmtr struct (Stage E would build it
+// out — see Stage E.0 audit findings), so this central bank serves
+// the same routing role: Stage D's `xcmaster(int stream)` pump
+// resolves stream → xmtr_id → XmtrSlot and dispatches to the
+// configured TxChannel + pilv slot.
+//
+// Same Lyra-native sidestep AAMix's paamix[] (Stage B) and ILV's
+// pilv[] (Stage C) use — preserves reference call-site portability
+// without painting Stage E's full reconciliation into a corner.
+
+// Process-wide bank size.  v0.2 = single transmitter; bumped when
+// RX2-era split-transmit lands.
+inline constexpr int MAX_EXT_XMTR = 1;
+
+// Per-xmtr slot: ties together the WDSP TXA channel wrapper +
+// the ILV bank slot id.  Both pointers/ids are non-owning views;
+// lifetime is managed by whoever calls create_xmtr_hl2.
+struct XmtrSlot {
+    // The TXA channel wrapper.  Stage D pump body calls
+    // tx_channel->process(mic_in, n) which runs fexchange0 + fills
+    // its out[0..2] buffers.  nullptr slot = no transmitter
+    // configured (xcmaster pump tick is a safe no-op).
+    lyra::wdsp::TxChannel* tx_channel = nullptr;
+
+    // The ILV bank slot id for this xmtr (passed to xilv() lookup).
+    // Matches reference convention: ILV xmtr_id == TX xmtr_id == 0
+    // for the single-transmitter case.
+    int ilv_xmtr_id = 0;
+};
+
+// [Lyra-native] Process-wide xmtr bank.  Populated by
+// create_xmtr_hl2 (xmtr_id < MAX_EXT_XMTR), cleared by
+// destroy_xmtr_hl2.  Used by xcmaster's TX-case dispatch to
+// resolve stream → per-xmtr context.  Definition in CMaster.cpp.
+extern std::array<XmtrSlot, MAX_EXT_XMTR> pxmtr;
+
+// ===== create_xmtr_hl2 / destroy_xmtr_hl2 =====
+//
+// Lyra-cpp HL2 SSB minimum equivalent of reference
+// cmaster.c:112-253 `create_xmtr()` / 255-271 `destroy_xmtr()`.
+// The reference allocates 9 per-xmtr surfaces (out[0..2] / DEXP /
+// anti-VOX AAMix / OpenChannel / Analyzer / TXGain / EER / ILV /
+// sidetone); per Stage E.0 audit, 4 of those (out / OpenChannel /
+// ILV) ship and 5 (DEXP / anti-VOX / Analyzer / TXGain / EER /
+// sidetone) are reference-`run=0` for HL2 or deferred-by-design
+// (CW v0.2.2, VOX v0.2.3, PS v0.3, TX analyzer Stage E.1).
+//
+// Lyra's create_xmtr_hl2 takes pre-constructed TxChannel + an
+// already-created ILV bank slot id (via lyra::wdsp::create_ilv) —
+// the wiring code outside CMaster is responsible for the lifecycle
+// of those parts.  This commit only populates the central pxmtr[]
+// bank so xcmaster can find them.  Returns nothing; out-of-range
+// xmtr_id is a silent no-op.
+void create_xmtr_hl2(int xmtr_id,
+                     lyra::wdsp::TxChannel* tx_channel,
+                     int ilv_xmtr_id);
+
+// Clears the central pxmtr[] bank slot for xmtr_id (defensive
+// against the create-then-destroy race: only clears if the slot
+// still references tx_channel).  Does NOT destroy the TxChannel
+// or ILV — caller owns those lifetimes.
+void destroy_xmtr_hl2(int xmtr_id, lyra::wdsp::TxChannel* tx_channel);
+
+// ===== xcmaster (reference cmaster.c:340) =====
+//
+// Reference signature: `PORT void xcmaster(int stream)`.  Switches
+// on stype(stream): case 0 = RX, case 1 = TX, case 2 = special
+// upper-panadapter stitch.  Lyra-cpp implements case 1 for HL2 SSB
+// v0.2; case 0 is a documented stub (RX is dispatched via
+// WdspEngine in Lyra-cpp's pre-existing architecture); case 2 is a
+// documented stub (special-panadapter stitch is not used).
+//
+// Reference shape ported faithfully even though only case 1 has a
+// body — future stages (RX migration into the central pump if/when
+// the architecture warrants) plug into the existing switch without
+// signature churn.
+void xcmaster(int stream);
+
+// ===== xcmasterTickTx (Lyra-native pump entry) =====
+//
+// Lyra-cpp helper that the xcmaster TX case-1 dispatches to.  In
+// the reference, the case-1 body is inline; Lyra factors it into
+// a named entry so consumer threads (the rebuild's TX pump) can
+// call it directly with an explicit mic-input buffer + sample
+// count — without needing the reference's pcm->in[stream] central
+// buffer indirection.
+//
+// `xmtr_id` resolves through pxmtr[]; `mic_in` is interleaved
+// {I=mic, Q=0} doubles per reference TxReadBufp convention
+// (networkproto1.c:404-407 / :570-573); `n_samples` is the
+// complex-tuple count (= reference's pcm->xcm_insize[stream] / 2).
+//
+// Pump body for HL2 SSB v0.2: TxChannel->process(mic_in, n) →
+// xilv(pilv[ilv_xmtr_id], tx_channel->outBuffers().data()).
+// The xilv call dispatches to ILV.Outbound which is the
+// operator-registered SendpOutboundTx callback (the EP2 wire side).
+void xcmasterTickTx(int xmtr_id, double* mic_in, int n_samples);
 
 }  // namespace lyra::wire
