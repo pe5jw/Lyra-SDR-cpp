@@ -20,6 +20,7 @@
 // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  TX wiring below collapses
 // to a stub until the new components land.
 #include "wdsp_native.h"
+#include "wdsp/TxChannel.h"  // Stage 7.2 — TX-1 OpenChannel / SetChannelState lifecycle
 #include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster()
 
 #include <algorithm>
@@ -327,9 +328,25 @@ int main(int argc, char *argv[])
     //      running; the captured `this` is also safe — no reader
     //      can be inside the lambda once close() returns).
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
-    // TX-rip Phase 1 (Q2): txWorker / tciMicSource pointer declarations
-    // removed — TX DSP worker + TCI mic source are being rebuilt from
-    // empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
+    // Stage 7.2 (2026-06-09) — TxChannel ptr at outer scope for the
+    // aboutToQuit handler-1.5 (close + delete BEFORE handler-2
+    // stream->close).  Reference cmaster.c:112-253 `create_xmtr`
+    // (called inside create_cmaster:288); Lyra-cpp defers the
+    // construction to the QTimer block below because WDSP DLL must
+    // be loaded first (Lyra runtime-loads WDSP; Thetis statically
+    // links).  Captured by reference in the QTimer lambda so the
+    // handler-1.5 lambda sees whichever value is live at app exit
+    // (nullptr if wdsp->load() failed or operator closed before the
+    // timer fired -- `delete nullptr` is a well-defined no-op).
+    //
+    // Reference posture preserved: at create-time the TX channel is
+    // OPEN but NOT STARTED (TXA's run flag stays 0 until keydown;
+    // cmaster.c:178 OpenChannel sets state=0 = stopped).  Lyra's
+    // TxChannel::open() matches -- start() is invoked later via the
+    // TxControl.start callback at the keydown FSM step (Phase A
+    // CORRECTED-ordering puts that in fsmKeydownSettled AFTER
+    // rf_delay; will land in Stage 7.4 TxControl wiring).
+    lyra::wdsp::TxChannel *txChannel = nullptr;
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -380,6 +397,36 @@ int main(int argc, char *argv[])
             qWarning("[shutdown] handler-1 step b: done");
         }
         qWarning("[shutdown] handler-1 EXIT");
+    });
+
+    // Stage 7.2 (2026-06-09) — handler-1.5: TxChannel close + delete.
+    //
+    // Reference cmaster.c:255-271 `destroy_xmtr` — closes the WDSP TXA
+    // channel (CloseChannel inside cmaster.c:265, NO preceding
+    // SetChannelState dmode=1 per the reference design; the blocking-
+    // flush stop belongs at keyup not at destroy-time) + frees the
+    // out[0..2] buffers + tears down dexp/ilv/eer/txgain/sidetone.
+    //
+    // Lyra ordering: between handler-1 (clears stream->registerTx{
+    // IqSource,Control}({}) -- no more callbacks fire after this point)
+    // and handler-2 (stream->close -- joins EP6 thread).  This window
+    // is when the TxChannel is safe to tear down: no producer can fire
+    // SendpOutboundTx (handler-1 cleared), no consumer can pull
+    // TxIqSource (handler-1 cleared).
+    //
+    // TxChannel::close() = CloseChannel only (reference cmaster.c:265
+    // posture); destructor handles RAII cleanup of the out[0..2]
+    // std::vector buffers.  Idempotent: if open() failed earlier
+    // (txChannel == nullptr), `delete nullptr` is a well-defined no-op.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     [&txChannel]() {
+        qWarning("[shutdown] handler-1.5 ENTRY (TxChannel close+delete)");
+        if (txChannel) {
+            txChannel->close();
+            delete txChannel;
+            txChannel = nullptr;
+        }
+        qWarning("[shutdown] handler-1.5 EXIT");
     });
 
     // Task #26 — auto-mute RX1 audio while the wire MOX bit is live so
@@ -581,7 +628,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource]() {
+                                  &micSource, &txChannel]() {
         if (wdsp->load()) {
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
@@ -600,13 +647,75 @@ int main(int argc, char *argv[])
             // the channel at app exit.
             wdspEngine->openRx1();
 
-            // TX-1 Path A: construct micSource + txWorker NOW that
-            // the WDSP DLL is loaded.  TxChannel::open requires the
-            // DLL; constructing earlier (e.g. right after the
-            // wdspEngine setup) silently spawned an inert worker
-            // and logged `[tx] open: WDSP DLL not loaded`.  This
-            // ordering matches the C reference's create_cmaster
-            // flow: TXA channel-open follows WDSP init.
+            // Stage 7.2 (2026-06-09) — TxChannel construction.
+            //
+            // Reference: ChannelMaster/cmaster.c:112-253 `create_xmtr`
+            // (called inside create_cmaster:288 AFTER create_rcvr).
+            // Lyra's structural-equivalent ordering: TxChannel here
+            // AFTER wdspEngine->openRx1() (= reference's create_rcvr
+            // equivalent) so RX init happens before TX init exactly
+            // as the reference does.
+            //
+            // The OpenChannel call inside TxChannel::open() matches
+            // reference cmaster.c:177-190 BYTE-EXACT:
+            //   OpenChannel(channel=1, in_size, dsp_size=4096,
+            //               in_rate=48000, dsp_rate=96000,
+            //               out_rate=48000, type=1 (TX), state=0,
+            //               tdelayup=0.000, tslewup=0.010,
+            //               tdelaydown=0.000, tslewdown=0.010,
+            //               block=1)
+            // — TxConfig{} defaults match all 13 args verbatim (see
+            // TxChannel.h:114-124).  type=1 == TX channel; state=0
+            // == OPEN-but-NOT-STARTED (reference's create-time
+            // posture; start happens later via TxControl.start at
+            // keydown).
+            //
+            // Reference also allocates 3 output buffers per cmaster.c:
+            // 126-127 (`xmtr[i].out[0..2]` for TX-IQ / EER / sidetone);
+            // TxChannel::open() does the same via out{,1,2}Buf_.assign()
+            // (TxChannel.cpp:28-30).  EER/sidetone slots stay unused
+            // until those subsystems land in their own stages (HL2 has
+            // no EER hardware; CW sidetone is v0.2.2).
+            //
+            // Reference deferred subsystems also created in
+            // create_xmtr (cmaster.c:130-250) but deferred per Stage
+            // E.0 audit:
+            //   * create_dexp(VOX)        - reference run=0; v0.2.3
+            //   * create_aamix(antivox)   - reference tied to dexp
+            //   * create_txgain(Penelope) - reference run=0; PS v0.3
+            //   * create_eer              - reference run=0; HL2 N/A
+            //   * create_ilv              - Stage 7.3 (next commit)
+            //   * create_sidetone(CW)     - reference run_tx=0; v0.2.2
+            //   * XCreateAnalyzer(TX)     - Stage E.1 (PS v0.3 prereq)
+            //
+            // Each is documented as deferred-by-design in the Stage
+            // E.0 audit doc + the TxChannel.h header.  None block
+            // first-RF SSB.  Stage 7.2 ships ONLY the open()/close()
+            // lifecycle — channel is wire-quiescent (no producer
+            // calls fexchange0 on it, no consumer pulls from
+            // outBuffers()) until Stages 7.3-7.5 wire it.
+            txChannel = new lyra::wdsp::TxChannel(*wdsp, /*channel_id=*/1);
+            if (!txChannel->open()) {
+                qWarning("[tx] TxChannel::open() failed — "
+                         "WDSP DLL or OpenChannel symbol missing.  "
+                         "TX path will stay inert; RX unaffected.");
+                delete txChannel;
+                txChannel = nullptr;
+            } else {
+                qInfo("[tx] TxChannel opened (WDSP TXA channel 1, "
+                      "OpenChannel(1, %d, 4096, 48000, 96000, 48000, "
+                      "type=1, state=0, ...) per cmaster.c:177-190)",
+                      txChannel->inSize());
+            }
+
+            // TX-1 Path A: construct micSource NOW that the WDSP DLL
+            // is loaded.  Mic-source construction order RELATIVE to
+            // TxChannel: micSource AFTER txChannel because the
+            // eventual Stage 7.5 mic-consumer-lambda (which calls
+            // lyra::wire::Inbound(1, n, mic_iq) -> CMB ring ->
+            // cm_main pump -> xcmaster(1) -> xcmasterTickTx ->
+            // txChannel->process via pxmtr[0].tx_channel) requires
+            // txChannel to be live when the first Inbound fires.
             //
             // Pointers are captured by reference from main()'s
             // outer scope so the aboutToQuit lambda (connected
