@@ -23,6 +23,7 @@
 // body, etc.) plug into.
 
 #include "wire/CMaster.h"
+#include "wire/Router.h"
 #include "wdsp/AAMix.h"
 #include "wdsp/ILV.h"
 #include "wdsp/TxChannel.h"
@@ -37,6 +38,194 @@ namespace lyra::wire {
 // per-radio-family init writing the same value for HL2/HL2+.
 CMasterState  cm  {};
 CMasterState* pcm = &cm;
+
+// =====================================================================
+// create_cmaster — reference cmaster.c:273-320
+// =====================================================================
+//
+// Ports the STRUCTURE of `create_cmaster` at the central app-startup
+// lifecycle point.  Every Thetis subsystem-create is enumerated below
+// (either as a real Lyra-cpp call or as a `// DEFERRED [where]` comment
+// citing the exact reference line + the Lyra-cpp location of the
+// equivalent work) so a future audit can grep + verify nothing was
+// silently dropped from the reference scaffold.
+//
+// Reference body (cmaster.c:273-320), step-by-step:
+//
+//   line 276-286:  for each stream:
+//                    InitializeCriticalSectionAndSpinCount
+//                    create_cmbuffs(...)
+//                    pcm->in[i] = malloc0(...)
+//   line 287:      create_rcvr()
+//   line 288:      create_xmtr()
+//   line 289-314:  create_aamix(0, 0, ..., pcm->OutboundRx, ...)
+//   line 315:      create_cmasio()
+//   line 316:      create_router(0)
+//   line 317:      pcm->panalalloc = create_analyzer_alloc(32, 40)
+//
+void create_cmaster()
+{
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:276-286 — per-stream init.
+    //
+    // DEFERRED [Phase C cmbuffs port — Task #112 follow-on]:
+    //   * Per-stream CriticalSection / std::mutex (`pcm->update[i]`)
+    //   * create_cmbuffs(i, accept=1, cmMAXInbound[i],
+    //                    getbuffsize(cmMAXInRate), xcm_insize[i])
+    //   * pcm->in[i] = malloc0(getbuffsize(cmMAXInRate) * sizeof(complex))
+    //
+    // Lyra-cpp v0.2.0 SSB has NO per-stream input rings yet — the TX
+    // path is consumer-driven via Hl2Ep6MicSource::Consumer →
+    // xcmasterTickTx (the operator-explicit data-ownership Lyra-native
+    // idiom translation, see CMaster.h §"xcmasterTickTx" docstring).
+    // The Thetis `pcm->in[stream]` central buffer + `cm_main` pump
+    // thread architecture is the Phase C work item; once it lands here,
+    // this block populates the per-stream mutex + ring + buffer.
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:287 — create_rcvr().
+    //
+    // DEFERRED [WdspEngine]:
+    //   Lyra-cpp's RX path lives in `WdspEngine` (`src/dsp/WdspEngine.h`)
+    //   — operator-constructed in `main.cpp` after `wdsp->load()`
+    //   succeeds.  `WdspEngine::openRx1()` is the Lyra-cpp equivalent
+    //   of Thetis `create_rcvr`'s WDSP RXA OpenChannel + per-RX-config
+    //   path.  This is the Stage E.0 audit's documented architectural
+    //   decision (RX lifecycle in WdspEngine, not in CMaster).
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:288 — create_xmtr().
+    //
+    // DEFERRED [Stage 7.2-7.3, main.cpp QTimer block @ ~line 576]:
+    //   Lyra-cpp's TX channel construction (`TxChannel`) + ILV setup
+    //   (`create_ilv`) + per-xmtr bank publication (`create_xmtr_hl2`,
+    //   in this file ~line 196) happen INSIDE the post-wdsp->load()
+    //   QTimer block in main.cpp.  This split is forced by Lyra's
+    //   runtime-loaded WDSP.dll (vs Thetis's static link) — TxChannel
+    //   construction must defer until WDSP DLL symbols resolve.
+    //   See `docs/architecture/STAGE_7_TX_WIRE_DESIGN.md` for the
+    //   construction-site rationale.
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:289-314 — create_aamix(0, 0, ...) RX mixer.
+    //
+    // DEFERRED [Stage B AAMix port — already shipped]:
+    //   Lyra-cpp's AAMix lives in `src/wdsp/AAMix.{h,cpp}` (Stage B
+    //   port, shipped).  The RX-side create_aamix call at cmaster.c:
+    //   297-313 is realized in Lyra by the `WdspEngine` constructor
+    //   building its own AAMix instance at id=0 + wiring `pcm->
+    //   OutboundRx` via `SetAAudioMixOutputPointer(nullptr, 0, cb)`
+    //   inside `SendpOutboundRx` (this file, line 55).
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:315 — create_cmasio() ASIO setup.
+    //
+    // DEFERRED [Stage E+ — no Lyra-cpp ASIO yet]:
+    //   Lyra-cpp v0.2.x ships HL2 EP6 audio + AK4951 codec path only.
+    //   ASIO is a future-stage item for non-HL2 hardware classes
+    //   (per CLAUDE.md §15.12 + the Stage E+ ASIO entry).  Marker
+    //   FIXMEs already exist in `RadioNet.cpp:267,296`.
+    // -----------------------------------------------------------------
+
+    // Reference cmaster.c:316 — create_router(0).
+    //
+    // This IS the call that previously lived in main.cpp:234 as the
+    // bare wire-shell stand-in for create_cmaster().  Now it's where
+    // the reference puts it — inside create_cmaster — so the call-
+    // graph matches reference shape.  process-singleton Router slot 0
+    // (the only Lyra-cpp router slot today; RX/TX share it).
+    create_router(0);
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:317 — pcm->panalalloc = create_analyzer_alloc(32, 40).
+    //
+    // DEFERRED [Stage E.1 — Task #140]:
+    //   TX-side spectrum analyzer (separate from the RX panadapter
+    //   analyzer Lyra already has in `WdspEngine`).  PureSignal v0.3
+    //   prerequisite per Stage E.0 audit + the `calcc.c` IMD-
+    //   measurement dependency.  Marker exists in `wdsp_engine.cpp`
+    //   around line 775-788.  Until Stage E.1 ships, `pcm->panalalloc`
+    //   stays nullptr; no Lyra-cpp code reads it yet.
+    // -----------------------------------------------------------------
+}
+
+// =====================================================================
+// destroy_cmaster — reference cmaster.c:322-337
+// =====================================================================
+//
+// REVERSE-ORDER teardown of create_cmaster.  Mirrors:
+//
+//   line 325:      destroy_analyzer_alloc()
+//   line 326:      destroy_router(0, 0)
+//   line 327:      destroy_cmasio()
+//   line 328:      destroy_aamix(0, 0)
+//   line 329:      destroy_xmtr()
+//   line 330:      destroy_rcvr()
+//   line 331-336:  for each stream:
+//                    DeleteCriticalSection
+//                    destroy_cmbuffs(i)
+//                    _aligned_free(pcm->in[i])
+//
+void destroy_cmaster()
+{
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:325 — destroy_analyzer_alloc().
+    //
+    // DEFERRED [Stage E.1 sibling — Task #140].
+    // -----------------------------------------------------------------
+
+    // Reference cmaster.c:326 — destroy_router(0, 0).
+    //
+    // Previously lived in main.cpp:445 handler-4 as the bare wire-shell
+    // stand-in for destroy_cmaster().  Now inside destroy_cmaster
+    // matching reference call-graph.  The two args are (id, variant);
+    // both 0 for the Lyra-cpp single-router slot.
+    destroy_router(0, 0);
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:327 — destroy_cmasio().
+    //
+    // DEFERRED [Stage E+, no Lyra-cpp ASIO yet — sibling of the
+    // create_cmasio defer above].
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:328 — destroy_aamix(0, 0).
+    //
+    // DEFERRED [Stage B sibling — owned by WdspEngine].
+    //   Lyra-cpp's WdspEngine destructor handles its own AAMix(id=0)
+    //   destruction symmetric to its construction.  No CMaster-level
+    //   destroy_aamix needed (matches the "construction in WdspEngine"
+    //   architectural decision).
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:329 — destroy_xmtr().
+    //
+    // DEFERRED [Stage 7.x main.cpp aboutToQuit handler]:
+    //   Lyra-cpp's TxChannel teardown (handler between handler-1 and
+    //   handler-2 per the §11.5 v2 plan-paper) calls TxChannel::stop()
+    //   + close() + destroy_xmtr_hl2() + destroy_ilv() in reverse
+    //   construction order — matches reference destroy_xmtr posture.
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:330 — destroy_rcvr().
+    //
+    // DEFERRED [WdspEngine destructor — sibling of create_rcvr defer].
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Reference cmaster.c:331-336 — per-stream teardown.
+    //
+    // DEFERRED [Phase C cmbuffs port — Task #112 follow-on, sibling
+    // of the create_cmaster per-stream init defer].
+    // -----------------------------------------------------------------
+}
 
 // ===== SendpOutboundRx =====
 //

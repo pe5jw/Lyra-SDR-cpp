@@ -20,6 +20,7 @@
 // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  TX wiring below collapses
 // to a stub until the new components land.
 #include "wdsp_native.h"
+#include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster()
 
 #include <algorithm>
 #include <atomic>
@@ -221,17 +222,21 @@ int main(int argc, char *argv[])
     // (QQmlEngine refuses cross-thread connect from QML).
     auto *discovery = new lyra::ipc::HL2Discovery(&app);
 
-    // Stage 2b2-fix-v2 — Router process-singleton create.  Mirrors
-    // the reference's `create_router(0)` call inside `create_cmaster()`
-    // at `cmaster.c:316`, which runs once at console init BEFORE any
-    // consumer (the EP6 thread, sink registrations) touches it.
+    // Reference cmaster.c:273-320 — `create_cmaster()` is the central
+    // process-wide CMaster lifecycle init.  Ports the structure of the
+    // reference call + enumerates every deferred subsystem inline (see
+    // `src/wire/CMaster.cpp` for the per-Thetis-line audit trail).
+    // The router create at cmaster.c:316 is inside this call.  Phase B
+    // 2026-06-09 replaced the bare `lyra::wire::create_router(0)` that
+    // previously lived here as a stand-in.
+    //
     // Must be called BEFORE HL2Stream construction (which wires the
     // EP6 thread to router_instance(0) on open) AND BEFORE the
-    // `register_sink(...)` call below.  Process-lifetime; the
-    // matching `destroy_router(0, 0)` runs in the aboutToQuit
-    // handler AFTER all consumers (the HL2Stream itself) have
-    // been torn down.
-    lyra::wire::create_router(0);
+    // `register_sink(...)` call below.  Process-lifetime; the matching
+    // `destroy_cmaster()` runs in the aboutToQuit handler-4 AFTER all
+    // consumers (the HL2Stream itself) have been torn down — matches
+    // the reference's destroy_cmaster reverse-order discipline.
+    lyra::wire::create_cmaster();
 
     // Step 2a: the stream object opens the EP6 RX path to a
     // selected radio on its OWN dedicated OS thread (std::jthread
@@ -431,18 +436,20 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-3 EXIT");
     });
 
-    // Stage 2b2-fix-v2 — Router process-singleton destroy.  Mirrors
-    // the reference's `destroy_router(0, 0)` call inside
-    // `destroy_cmaster()` at `cmaster.c`.  MUST run AFTER handler-2
+    // Reference cmaster.c:322-337 — `destroy_cmaster()` is the central
+    // process-wide CMaster lifecycle teardown.  Reverse-order match to
+    // create_cmaster (which destroy_router(0,0) at line 326 is part of).
+    // Phase B 2026-06-09 replaced the bare `lyra::wire::destroy_router(0,0)`
+    // that previously lived here as a stand-in.  MUST run AFTER handler-2
     // above (stream->close → joins the EP6 thread → guarantees no
-    // in-flight xrouter() dispatch through &router_instance(0) at
-    // the moment we free the Router slot).  Qt connects in
-    // registration order and fires aboutToQuit handlers in that
-    // same order, so this lambda runs after handler-2 and the
-    // Stage-2b2c micSource-delete handler-3.
+    // in-flight xrouter() dispatch through &router_instance(0) at the
+    // moment we free the Router slot).  Qt connects in registration
+    // order and fires aboutToQuit handlers in that same order, so this
+    // lambda runs after handler-2 and the Stage-2b2c micSource-delete
+    // handler-3.
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
-        qWarning("[shutdown] handler-4 ENTRY (destroy_router(0,0))");
-        lyra::wire::destroy_router(0, 0);
+        qWarning("[shutdown] handler-4 ENTRY (destroy_cmaster)");
+        lyra::wire::destroy_cmaster();
         qWarning("[shutdown] handler-4 EXIT");
     });
 

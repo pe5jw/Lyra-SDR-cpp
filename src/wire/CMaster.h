@@ -220,6 +220,32 @@ void SendpInboundTCITxAudio(InboundCallback cb);
 // ===== SetTCIRun (reference cmaster.c:434-437) =====
 void SetTCIRun(int active);
 
+// =====================================================================
+// Reference cmaster.c:273-337 — process-wide CMaster lifecycle.
+// =====================================================================
+//
+// Ports the STRUCTURE of Thetis `create_cmaster` (cmaster.c:273-320) +
+// `destroy_cmaster` (cmaster.c:322-337) at THE central lifecycle
+// entry/exit points.  Each Thetis subsystem-create that lives elsewhere
+// in Lyra-cpp is enumerated as a `// DEFERRED [where]` comment in the
+// body so a future reader can grep + verify nothing was silently
+// dropped from the reference scaffold.
+//
+// Replaces the bare `create_router(0)` / `destroy_router(0,0)` calls
+// in main.cpp that previously stood in for the full cmaster lifecycle.
+//
+// Initialize the CMaster process-singleton.  MUST be called ONCE at
+// app startup BEFORE any consumer (the EP6 thread, sink registrations,
+// TxChannel construction) touches the cmaster.  Mirrors the reference's
+// `create_cmaster` ordering (cmaster.c:273-320).
+void create_cmaster();
+//
+// Tear down the CMaster process-singleton.  MUST be called ONCE at
+// app shutdown AFTER all consumers (the HL2Stream itself, TxChannel,
+// etc.) have been torn down — reverse-order match to `create_cmaster`.
+// Mirrors `destroy_cmaster` (cmaster.c:322-337).
+void destroy_cmaster();
+
 // ===== Stage D — xcmaster pump + per-xmtr context bank =====
 //
 // Reference cmaster.c reaches the per-xmtr context (TxChannel-
