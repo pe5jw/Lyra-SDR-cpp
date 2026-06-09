@@ -53,6 +53,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 
 namespace lyra::dsp {
@@ -211,6 +212,28 @@ public:
     // Reference: `xmtr[i].out[0]` (cmaster.c:127).
     const double* outIq() const noexcept { return outBuf_.data(); }
     int           outSize() const noexcept { return outSize_; }
+
+    // Three-buffer view for the Stage D xilv() dispatch.  Matches
+    // reference's `pcm->xmtr[i].out[3]` layout byte-for-byte:
+    //   [0] = TX I/Q output       (post-TXA)        -- outBuf_
+    //   [1] = EER output          (reserved/zeros)  -- out1Buf_
+    //   [2] = sidetone output     (reserved/zeros)  -- out2Buf_
+    //
+    // Used at the xcmaster TX-case-1 site (cmaster.c:407
+    // `xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out)`); Lyra's
+    // equivalent passes the result of this method as the `double**`
+    // argument.  Returns non-const pointers because xilv writes into
+    // its own outbuff but READS from data[i] -- the WDSP API has C
+    // const-discipline gaps in the read path (same Rule 26 idiom
+    // translation TxChannel::process() applies to the `mic_iq`
+    // fexchange0 parameter; not a semantic deviation).
+    //
+    // Stable for the channel's lifetime.  Content of out[0] is
+    // overwritten per process() call; out[1] / out[2] stay zero
+    // until EER / sidetone helpers land in their own queued stages.
+    std::array<double*, 3> outBuffers() noexcept {
+        return { outBuf_.data(), out1Buf_.data(), out2Buf_.data() };
+    }
 
     // Reference-derived input block size: `getbuffsize(inRate)`.
     int inSize() const noexcept { return inSize_; }

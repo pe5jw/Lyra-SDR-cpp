@@ -169,7 +169,7 @@ void TxChannel::setBandpass(double lo_hz, double hi_hz)
     api.SetTXABandpassFreqs(channel_, lo_hz, hi_hz);
 }
 
-int TxChannel::process(const double* mic_iq, int n_samples)
+int TxChannel::process(const double* mic_iq, [[maybe_unused]] int n_samples)
 {
     // Rule 26 RAII state guard -- the reference assumes caller
     // has set the channel up; we make that explicit at the API
@@ -187,6 +187,15 @@ int TxChannel::process(const double* mic_iq, int n_samples)
     //                pcm->xmtr[tx].out[0], &error);
     // Lyra: pass mic_iq through as the input buffer (no copy);
     // out_buf is our internal outBuf_ (2 * outSize_ doubles).
+    //
+    // `n_samples` parameter is INFORMATIONAL only — it documents
+    // the caller-side buffer shape (2 * n_samples doubles in
+    // mic_iq).  fexchange0's input size is bound to OpenChannel's
+    // `in_size` argument (== inSize_), not the per-call parameter;
+    // a caller passing n_samples != inSize_ is misusing the API
+    // (defensive check could be added but matches reference's
+    // non-defensive posture).  [[maybe_unused]] silences the
+    // /W4 warning the unused parameter would otherwise raise.
     //
     // const_cast: WDSP's fexchange0 cdef is `double*` for
     // historical C reasons but it only READS through the input
