@@ -41,7 +41,10 @@
 
 class QAudioSink;
 
-namespace lyra::wdsp { struct AAMix; }
+// P0.c direct port — the reference `aamix, *AAMIX` twin typedef
+// (full definition in wire/AAMix.h; repeating the typedef against
+// the incomplete struct here keeps windows.h out of this header).
+namespace lyra::wire { struct _aamix; typedef struct _aamix aamix, *AAMIX; }
 
 namespace lyra::dsp {
 
@@ -600,6 +603,15 @@ private:
     // so the helper can be called from either feedIq or an AAMix
     // Outbound callback unchanged.
     void dispatchAudioFrame(const double *audio, int nframes);
+    // P0.c direct port: AAMix's Outbound is the reference raw
+    // `void(*)(int,int,double*)` fn ptr, so the RX hand-off is a
+    // static member (converts to that exact fn-ptr type; can reach
+    // the private dispatchAudioFrame) routed through a TU-scope
+    // self pointer in wdsp_engine.cpp — the same free-function +
+    // global-context shape the reference's outbound consumers use.
+    // Set before create_aamix in openRx1; cleared after
+    // destroy_aamix in closeRx1.
+    static void aamixOutbound(int id, int nsamples, double *buff);
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
@@ -868,7 +880,9 @@ private:
     // SetChannelState(channel,1); destroyed in closeRx1() after
     // SetChannelState(0,1) blocking-flush / before CloseChannel.
     // Null-check in feedIq covers the brief close-then-reopen race.
-    lyra::wdsp::AAMix* aaMix_ = nullptr;
+    // P0.c: `AAMIX` is the reference twin typedef (= aamix*) from
+    // the verbatim wire/AAMix.h direct port.
+    lyra::wire::AAMIX aaMix_ = nullptr;
 };
 
 } // namespace lyra::dsp

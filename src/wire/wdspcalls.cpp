@@ -30,10 +30,11 @@ void (*SetInputSamplerate)(int, int) = nullptr;
 void (*SetDSPSamplerate)(int, int) = nullptr;
 void (*SetOutputSamplerate)(int, int) = nullptr;
 void (*fexchange0)(int, double*, double*, int*) = nullptr;
-void* (*create_resample)(int, int, double*, double*, int, int,
-                         double, int, double) = nullptr;
-void (*destroy_resample)(void*) = nullptr;
-int  (*xresample)(void*) = nullptr;
+RESAMPLE (*create_resample)(int, int, double*, double*, int, int,
+                            double, int, double) = nullptr;
+void (*destroy_resample)(RESAMPLE) = nullptr;
+void (*flush_resample)(RESAMPLE) = nullptr;
+int  (*xresample)(RESAMPLE) = nullptr;
 void (*XCreateAnalyzer)(int, int*, int, int, int, char*) = nullptr;
 void (*DestroyAnalyzer)(int) = nullptr;
 void (*Spectrum0)(int, int, int, int, double*) = nullptr;
@@ -77,6 +78,7 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(fexchange0)           \
     X(create_resample)      \
     X(destroy_resample)     \
+    X(flush_resample)       \
     X(xresample)            \
     X(XCreateAnalyzer)      \
     X(DestroyAnalyzer)      \

@@ -338,7 +338,7 @@ using fn_destroy_resampleFV_t  = void  (*)(void *ptr);
 // The corresponding `resample` struct layout (with `in`/`out`/
 // `size` fields written directly by the consumer per the WDSP
 // public ABI in resample.h) is replicated under
-// src/wdsp/Resample.h (Stage B.1) with full GPL attribution —
+// src/wire/resample.h (P0.c direct port) with full GPL attribution —
 // required because the accessor setters
 // (setBuffers_resample / setSize_resample / setInRate_resample /
 // setOutRate_resample) are `extern` only, NOT
@@ -454,11 +454,12 @@ struct WdspApi {
     fn_create_resampleFV_t    create_resampleFV    = nullptr;
     fn_xresampleFV_t          xresampleFV          = nullptr;
     fn_destroy_resampleFV_t   destroy_resampleFV   = nullptr;
-    // Stage B (Thetis ChannelMaster port — AAMix): complex-double
-    // resampler (resample.c).  Consumed by ported AAMix at
-    // src/wdsp/AAMix.* (lands in Stage B.1+).  See typedef block
-    // header for the rationale on replicating the public resample
-    // struct rather than using the extern-only accessor setters.
+    // Complex-double resampler (resample.c) cdefs.  The P0.c
+    // direct-port AAMix at src/wire/AAMix.* resolves these through
+    // wire/wdspcalls.h instead (the operator-approved seam); these
+    // WdspApi entries remain for any future non-ported consumer.
+    // See typedef block header for the public-resample-struct
+    // rationale.
     fn_create_resample_t      create_resample      = nullptr;
     fn_destroy_resample_t     destroy_resample     = nullptr;
     fn_flush_resample_t       flush_resample       = nullptr;

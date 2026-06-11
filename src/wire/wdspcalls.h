@@ -33,6 +33,8 @@
 
 #pragma once
 
+#include "wire/resample.h"   // RESAMPLE — the WDSP public resampler ABI typedef
+
 namespace lyra::wire {
 
 // ---- channel lifecycle -------------------------------------------------
@@ -69,18 +71,22 @@ extern void (*SetOutputSamplerate)(int channel, int samplerate);
 extern void (*fexchange0)(int channel, double* in, double* out, int* error);
 
 // ---- resampler (aamix.c dependency) -------------------------------------
-// wdsp/resample.h:61-70.  RESAMPLE is an opaque struct pointer from
-// the caller's side — declared void* here (the reference's RESAMPLE
-// typedef is private to resample.h's struct definition):
+// wdsp/resample.h (dllexport set, complex-double version).  RESAMPLE
+// is the PUBLIC struct typedef ported verbatim at wire/resample.h —
+// the reference ChannelMaster pokes rsmp->run/->in/->out/->size
+// directly, so the type is public ABI, not opaque (the earlier
+// "private typedef" note here was wrong and is corrected):
 //   RESAMPLE create_resample (int run, int size, double* in, double* out,
 //       int in_rate, int out_rate, double fc, int ncoef, double gain);
 //   void destroy_resample (RESAMPLE a);
+//   void flush_resample (RESAMPLE a);       // resample.c:113-118
 //   int  xresample (RESAMPLE a);
-extern void* (*create_resample)(int run, int size, double* in, double* out,
-                                int in_rate, int out_rate, double fc,
-                                int ncoef, double gain);
-extern void (*destroy_resample)(void* a);
-extern int  (*xresample)(void* a);
+extern RESAMPLE (*create_resample)(int run, int size, double* in, double* out,
+                                   int in_rate, int out_rate, double fc,
+                                   int ncoef, double gain);
+extern void (*destroy_resample)(RESAMPLE a);
+extern void (*flush_resample)(RESAMPLE a);
+extern int  (*xresample)(RESAMPLE a);
 
 // ---- display analyzer (create_xmtr / xcmaster dependency) ---------------
 // wdsp/analyzer.h:175-184, :205-206:

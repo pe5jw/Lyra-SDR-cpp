@@ -26,7 +26,7 @@
 #include "wire/CMaster.h"
 #include "wire/CmBuffs.h"   // create_cmbuffs / destroy_cmbuffs / CmBuffs
 #include "wire/Router.h"
-#include "wdsp/AAMix.h"
+#include "wire/AAMix.h"   // P0.c direct port (reference aamix.h verbatim)
 #include "wire/ILV.h"   // P0.b direct port (reference ilv.h verbatim)
 #include "wdsp/TxChannel.h"
 
@@ -250,8 +250,8 @@ void create_cmaster()
     // Reference cmaster.c:289-314 -- create_aamix(0, 0, ...) RX
     // mixer.
     //
-    // DEFERRED [Stage B AAMix port -- already shipped]:
-    //   Lyra-cpp's AAMix lives in src/wdsp/AAMix.{h,cpp} (Stage B
+    // DEFERRED [P0.c AAMix direct port -- already shipped]:
+    //   Lyra-cpp's AAMix lives in src/wire/AAMix.{h,cpp} (verbatim
     //   port).  The RX-side create_aamix call at cmaster.c:297-313
     //   is realised in Lyra by the WdspEngine constructor building
     //   its own AAMix instance at id=0 + wiring pcm->OutboundRx via
@@ -348,16 +348,18 @@ void destroy_cmaster()
 //     SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx);
 //   }
 //
-// Pushes the registered callback into the ported AAMix's central
-// pointer-bank slot 0 (the conventional RX mixer id matching
-// reference cmaster.c:411).  Safe when no AAMix exists at that
-// slot yet (paamix[0] == nullptr before the WdspEngine
-// create_aamix call site): the setter's resolve_aamix returns
-// nullptr and the setter early-returns without effect.
-void SendpOutboundRx(OutboundCallback cb)
+// P0.c: VERBATIM port — raw fn ptr in, stored, pushed into the
+// id-0 mixer via SetAAudioMixOutputPointer(0, 0, ...) which
+// resolves paamix[0] exactly as aamix.c:513-519 does.  NO
+// null-bank guard (the reference has none): callers register
+// AFTER the id-0 mixer exists, matching the reference's
+// netInterface ordering.  (No current Lyra caller — the RX
+// wire-up lives at WdspEngine::openRx1; the Stage-A stub that
+// used to call this was deleted at B.6.b-fix1 `8b8e0da`.)
+void SendpOutboundRx(void (*Outbound)(int id, int nsamples, double* buff))
 {
-    pcm->OutboundRx = std::move(cb);
-    lyra::wdsp::SetAAudioMixOutputPointer(nullptr, 0, pcm->OutboundRx);
+    pcm->OutboundRx = Outbound;
+    SetAAudioMixOutputPointer(0, 0, pcm->OutboundRx);
 }
 
 // =====================================================================

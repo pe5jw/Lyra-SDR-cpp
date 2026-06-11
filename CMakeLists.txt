@@ -96,6 +96,13 @@ qt_add_executable(lyra
     # retrofit and its operator-rejected deviations.
     src/wire/ILV.h
     src/wire/ILV.cpp
+    # P0.c — aamix.{h,c} DIRECT PORT (verbatim: `aamix, *AAMIX` twin
+    # typedef, raw Outbound fn ptr, paamix[] bank private to the .cpp,
+    # RESAMPLE public-ABI typedef at wire/resample.h).  Supersedes the
+    # retired src/wdsp/AAMix retrofit + src/wdsp/Resample.h.
+    src/wire/resample.h
+    src/wire/AAMix.h
+    src/wire/AAMix.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
@@ -118,15 +125,9 @@ qt_add_executable(lyra
     src/wdsp/TxChannel.cpp
     src/wdsp/TxaCffi.h
     src/wdsp/ChannelLifecycle.h
-    # Stage B (Thetis ChannelMaster port — AAMix).  Header-only at
-    # Stage B.1; the .cpp body lands in Stage B.2-B.5.  Resample.h
-    # replicates the WDSP public ABI struct so AAMix can do the
-    # direct ->in/->out/->size field writes the upstream aamix.c
-    # uses.  See src/wdsp/AAMix.h header preamble for the full
-    # B.0-B.6 stage plan.
-    src/wdsp/AAMix.h
-    src/wdsp/AAMix.cpp
-    src/wdsp/Resample.h
+    # (Stage B src/wdsp/AAMix.{h,cpp} + src/wdsp/Resample.h RETIRED
+    # 2026-06-11 — replaced by the P0.c verbatim direct port at
+    # src/wire/AAMix.{h,cpp} + src/wire/resample.h above.)
     # (Stage C src/wdsp/ILV.{h,cpp} RETIRED 2026-06-11 — replaced by
     # the P0.b verbatim direct port at src/wire/ILV.{h,cpp} above.)
     # TX-rip Phase 1 step 1c-c — dsp/ empty skeletons.  Populated

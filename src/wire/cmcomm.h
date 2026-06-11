@@ -35,19 +35,35 @@
 
 #pragma once
 
+// Reference ChannelMaster/cmcomm.h:27-32 include set (Windows.h /
+// process.h / intrin.h / math.h / time.h / avrt.h), plus the C
+// stdlib headers the wdsp/comm.h surface supplies transitively.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 
+#include <process.h>
 #include <intrin.h>
+#include <math.h>
+#include <time.h>
+#include <avrt.h>
+
 #include <stdlib.h>
 #include <string.h>
+
+#pragma comment(lib, "avrt.lib")   // AvSetMmThreadCharacteristics/Priority
 
 // Reference wdsp/comm.h: `#define PORT __declspec(dllexport)`.
 // Lyra-cpp builds the ported family into the executable — expands
 // empty so PORT-tagged reference functions port byte-for-byte.
 #ifndef PORT
 #define PORT
+#endif
+
+// Reference wdsp/comm.h:133 (verbatim):
+//   #define PI 3.1415926535897932
+#ifndef PI
+#define PI								3.1415926535897932
 #endif
 
 namespace lyra::wire {

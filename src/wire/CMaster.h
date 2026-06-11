@@ -224,11 +224,12 @@ struct CMasterState
     // ILV (TX) downstream so the callbacks fire on every frame
     // those modules produce.  Rule-#8 carve-out: std::function so
     // existing public setters can pass capturing lambdas.
-    OutboundCallback OutboundRx;
-    // P0.b: the TX outbound is the reference raw function pointer
-    // VERBATIM (cmaster.h:66) — it is stored into ILV's `Outbound`
-    // field by create_ilv / SetILVOutputPointer, so it must be the
-    // exact reference type.  RX-side callbacks convert in P0.c/P0.d.
+    // P0.b/P0.c: the RX + TX outbounds are the reference raw
+    // function pointers VERBATIM (cmaster.h:65-66) — they are
+    // stored into AAMix's / ILV's raw `Outbound` fields by the
+    // Sendp* setters, so they must be the exact reference type.
+    // The remaining TCI callbacks convert in P0.d.
+    void (*OutboundRx)(int id, int nsamples, double* buff) = nullptr;
     void (*OutboundTx)(int id, int nsamples, double* buff) = nullptr;
     OutboundCallback OutboundTCIRxIQ;
     InboundCallback  InboundTCITxAudio;
@@ -255,12 +256,13 @@ extern CMasterState* pcm;
 //   void SendpOutboundTx (void (*Outbound)(int id, int nsamples, double* buff))
 //   void SendpOutboundTCIRxIQ (void (*Outbound)(int id, int nsamples, double* buff))
 //   void SendpInboundTCITxAudio (void (*Inbound)(int nsamples, double* buff))
-void SendpOutboundRx(OutboundCallback cb);
-// P0.b: verbatim reference signature (cmaster.c:414) — the stored
-// pointer flows straight into ILV's raw `Outbound` field.  NOTE the
-// verbatim body has NO null-pilv guard (reference cmaster.c:418 →
-// ilv.c:97-101): callers must register AFTER create_xmtr has
-// populated pcm->xmtr[0].pilv, exactly as the reference orders it.
+// P0.b/P0.c: verbatim reference signatures (cmaster.c:407/:414) —
+// the stored pointers flow straight into AAMix's / ILV's raw
+// `Outbound` fields.  NOTE the verbatim bodies have NO null guard
+// (reference cmaster.c:411/:418 → aamix.c:513-519 / ilv.c:97-101):
+// callers must register AFTER the id-0 mixer / pcm->xmtr[0].pilv
+// exist, exactly as the reference orders it.
+void SendpOutboundRx(void (*Outbound)(int id, int nsamples, double* buff));
 void SendpOutboundTx(void (*Outbound)(int id, int nsamples, double* buff));
 void SendpOutboundTCIRxIQ(OutboundCallback cb);
 void SendpInboundTCITxAudio(InboundCallback cb);

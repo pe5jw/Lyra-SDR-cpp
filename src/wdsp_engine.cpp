@@ -11,7 +11,7 @@
 #include <QAudioSink>
 #include <QByteArray>
 
-#include "wdsp/AAMix.h"  // Stage B.6.b-retry: reference-faithful AAMix wire-up
+#include "wire/AAMix.h"  // P0.c direct port (reference aamix.h verbatim)
 #include <QDataStream>
 #include <QDateTime>
 #include <QDebug>
@@ -35,6 +35,19 @@
 namespace lyra::dsp {
 
 namespace {
+
+// P0.c direct port — the engine instance the aamixOutbound static
+// member dispatches into.  AAMix's Outbound is the reference raw
+// `void(*)(int,int,double*)` fn ptr, so the RX hand-off uses the
+// reference's own free-function + global-context shape (the
+// reference registers free functions that reach globals; cf.
+// netInterface's OutBound consumers).  Written on the Qt thread in
+// openRx1 BEFORE create_aamix (so it is live before mix_main can
+// fire) and cleared in closeRx1 AFTER destroy_aamix (the mixer
+// thread is gone by then per aamix.c:215-218).  Single-engine
+// today; an RX2-era second engine registers its own outbound at
+// its own paamix id exactly as the reference banks per-id mixers.
+lyra::dsp::WdspEngine* g_aamixOutboundSelf = nullptr;
 
 // Mode / AGC integer constants, verified against the Python tree's
 // wdsp_native.py (RxaMode / AgcMode) which in turn matches the
@@ -836,22 +849,22 @@ bool WdspEngine::openRx1()
     // dormant since active=0 + nactive=0 -> no mix_main yet).
     if (aaMix_ != nullptr) {
         // Defensive: a previous closeRx1 should have cleared this.
-        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        lyra::wire::destroy_aamix(aaMix_, 0);
         aaMix_ = nullptr;
     }
     {
         int inrates[1] = { cfg_.outRate };
-        // Outbound lambda captures `this` so mix_main can call
-        // dispatchAudioFrame (the Stage B.6.a helper -- byte-
-        // identical-to-pre-B.6.a inline body).  WdspEngine outlives
-        // AAMix (destroyed in closeRx1 before WdspEngine dtor) so
-        // `this` is valid throughout AAMix lifetime.
-        auto outbound =
-            [this](int /*id*/, int nsamples, double *buff) {
-                dispatchAudioFrame(buff, nsamples);
-            };
-        aaMix_ = lyra::wdsp::create_aamix(
-            *wdsp_,
+        // P0.c direct port: AAMix's Outbound is the reference raw
+        // fn ptr, so the hand-off is the aamixOutbound static
+        // member (free-function shape) reaching this engine through
+        // the TU-scope self pointer -- the same free-function +
+        // global-context pattern the reference's outbound consumers
+        // use.  Registered BEFORE create_aamix so the pointer is
+        // live before mix_main can ever fire (mix_main starts
+        // inside SetAAudioMixState's open_mixer below).  WdspEngine
+        // outlives AAMix (destroyed in closeRx1 before the dtor).
+        g_aamixOutboundSelf = this;
+        aaMix_ = (lyra::wire::AAMIX) lyra::wire::create_aamix(
             /*id*/             0,
             /*outbound_id*/    0,
             /*ringinsize*/     outSize_,
@@ -863,7 +876,7 @@ bool WdspEngine::openRx1()
             /*ring_size*/      4096,       // REFERENCE: literal 4096
             /*inrates*/        inrates,
             /*outrate*/        cfg_.outRate,
-            /*Outbound*/       outbound,
+            /*Outbound*/       &WdspEngine::aamixOutbound,
             /*tdelayup*/       0.000,      // REFERENCE: 0
             /*tslewup*/        0.010,      // REFERENCE: 10ms
             /*tdelaydown*/     0.000,      // REFERENCE: 0
@@ -871,7 +884,8 @@ bool WdspEngine::openRx1()
 
         // Reference cmaster.c:411 defensive Outbound re-set --
         // safe regardless of whether create_aamix already stored it.
-        lyra::wdsp::SetAAudioMixOutputPointer(aaMix_, 0, outbound);
+        lyra::wire::SetAAudioMixOutputPointer(aaMix_, 0,
+                                              &WdspEngine::aamixOutbound);
 
         // Reference activation pattern (cmaster.c:534-536):
         //   SetAAudioMixState(ptr, id, mix_in_id, 0)   // ensure inactive
@@ -883,7 +897,7 @@ bool WdspEngine::openRx1()
         // The activation call below is what triggers the
         // close_mixer/open_mixer atom -- the bench-validated
         // reference path that brings mix_main online.
-        lyra::wdsp::SetAAudioMixState(aaMix_, 0, /*stream*/ 0,
+        lyra::wire::SetAAudioMixState(aaMix_, 0, /*stream*/ 0,
                                       /*active*/ 1);
     }
     emitLog(QStringLiteral(
@@ -917,13 +931,17 @@ void WdspEngine::closeRx1()
         api.SetChannelState(channel_, 0, 1);
     }
     // Stage B.6.b-retry: destroy AAMix BEFORE CloseChannel so
-    // mix_main joins (its Outbound stops calling dispatchAudioFrame)
+    // mix_main exits (its Outbound stops calling dispatchAudioFrame)
     // while WdspEngine sink-dispatch state remains valid.
-    // destroy_aamix's first action (Stage B.4) = clear run + release
-    // every Ready semaphore + request_stop + join mix_thread.
+    // destroy_aamix's first action (aamix.c:215-218) = clear run +
+    // release every Ready semaphore + Sleep(2) for the thread to die.
     if (aaMix_ != nullptr) {
-        lyra::wdsp::destroy_aamix(aaMix_, 0);
+        lyra::wire::destroy_aamix(aaMix_, 0);
         aaMix_ = nullptr;
+        // P0.c: clear the outbound context AFTER the mixer thread
+        // is gone (destroy_aamix's Sleep(2) posture) so a late
+        // Outbound can never run against a stale engine.
+        g_aamixOutboundSelf = nullptr;
     }
     if (nbCreated_ && api.destroy_nobEXT) {
         api.destroy_nobEXT(channel_);
@@ -2402,6 +2420,20 @@ void WdspEngine::setAudioOutputDevice(int index)
 // the refactor (B.6.a) from the wire-up (B.6.b) keeps each step
 // individually revertable + individually bench-gateable per the
 // locked methodology.
+// P0.c direct port — AAMix's raw-fn-ptr Outbound target.  Static
+// member (exact `void(*)(int,int,double*)` type; reaches the
+// private dispatchAudioFrame) routed through the TU-scope
+// g_aamixOutboundSelf context — the reference's free-function +
+// global-context outbound shape.  Lifetime contract documented at
+// the g_aamixOutboundSelf definition.
+void WdspEngine::aamixOutbound(int /*id*/, int nsamples, double *buff)
+{
+    WdspEngine *self = g_aamixOutboundSelf;
+    if (self != nullptr) {
+        self->dispatchAudioFrame(buff, nsamples);
+    }
+}
+
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
     // Two mute paths OR together: the operator's manual mute_
@@ -2595,7 +2627,7 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         // then-reopen race window; skip the push (one block of
         // silence ~21 ms, operator-imperceptible).
         if (aaMix_ != nullptr) {
-            lyra::wdsp::xMixAudio(aaMix_, 0, /*stream*/ 0,
+            lyra::wire::xMixAudio(aaMix_, 0, /*stream*/ 0,
                                   outBuf_.data());
         }
 
