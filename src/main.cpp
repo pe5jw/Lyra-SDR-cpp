@@ -23,6 +23,7 @@
 #include "wdsp/TxChannel.h"  // Stage 7.2 — TX-1 OpenChannel / SetChannelState lifecycle
 #include "wdsp/ILV.h"       // Stage 7.3 — create_ilv / destroy_ilv (cmaster.c:226-232)
 #include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() + pcm->xmtr[].pTxChannel direct assignment
+#include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
 #include <algorithm>
 #include <atomic>
@@ -684,6 +685,26 @@ int main(int argc, char *argv[])
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
                                   &micSource, &txChannel, &ilv]() {
         if (wdsp->load()) {
+            // P0.a (2026-06-09) — resolve the ChannelMaster-port WDSP
+            // call table from the now-loaded wdsp.dll.  MUST run after
+            // load() and BEFORE any ported ChannelMaster code calls
+            // OpenChannel/fexchange0/xresample/pscc/etc through the
+            // table.  Includes the full PureSignal entry-point family
+            // (operator-committed feature; all exports verified present
+            // in the bundled DLL via dumpbin 2026-06-09).
+            {
+                const int missing = lyra::wire::resolve_wdsp_calls();
+                if (missing == 0) {
+                    qInfo("[wdspcalls] ChannelMaster + PureSignal call "
+                          "table fully resolved from wdsp.dll");
+                } else {
+                    qWarning("[wdspcalls] %d UNRESOLVED entry points — "
+                             "ported ChannelMaster paths touching them "
+                             "would crash; see preceding log lines",
+                             missing);
+                }
+            }
+
             // Step 3c-i: ensure FFTW wisdom is loaded BEFORE the first
             // OpenChannel anywhere.  Without it, WDSP's PATIENT
             // planning runs in-process on first channel-open and

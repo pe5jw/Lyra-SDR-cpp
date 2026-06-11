@@ -76,6 +76,14 @@ qt_add_executable(lyra
     # ownership contract + the C → C++23 idiom-translation log.
     src/wire/CmBuffs.h
     src/wire/CmBuffs.cpp
+    # P0.a — WDSP call table: the single operator-approved linkage
+    # seam for the ChannelMaster direct port (function pointers
+    # carrying the WDSP exports' exact names, resolved once from the
+    # loaded wdsp.dll; includes the full PureSignal entry-point
+    # family).  See src/wire/wdspcalls.h preamble for the seam
+    # rationale + per-entry signature citations.
+    src/wire/wdspcalls.h
+    src/wire/wdspcalls.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
