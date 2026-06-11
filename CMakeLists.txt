@@ -84,6 +84,18 @@ qt_add_executable(lyra
     # rationale + per-entry signature citations.
     src/wire/wdspcalls.h
     src/wire/wdspcalls.cpp
+    # P0.b — ChannelMaster family common header (reference cmcomm.h
+    # surface: complex typedef + PORT + malloc0 ported verbatim from
+    # wdsp/utilities.c:37-43, which is NOT a DLL export).  Grows to
+    # the full reference cmcomm.h umbrella in P0.d.
+    src/wire/cmcomm.h
+    src/wire/cmcomm.cpp
+    # P0.b — ilv.{h,c} DIRECT PORT (verbatim: `ilv, *ILV` twin
+    # typedef, raw Outbound fn ptr, pcm->xmtr[].pilv setters,
+    # malloc0/_aligned_free).  Supersedes the retired src/wdsp/ILV
+    # retrofit and its operator-rejected deviations.
+    src/wire/ILV.h
+    src/wire/ILV.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
@@ -115,13 +127,8 @@ qt_add_executable(lyra
     src/wdsp/AAMix.h
     src/wdsp/AAMix.cpp
     src/wdsp/Resample.h
-    # Stage C (Thetis ChannelMaster port — ILV / TX I/Q interleaver).
-    # Header at Stage C.0; constructor/destructor/xilv body at C.1;
-    # 7 setters + central bank + unit test at C.2; CMaster wire-up
-    # at C.3.  See src/wdsp/ILV.h header preamble for the full
-    # C.0-C.4 stage plan.
-    src/wdsp/ILV.h
-    src/wdsp/ILV.cpp
+    # (Stage C src/wdsp/ILV.{h,cpp} RETIRED 2026-06-11 — replaced by
+    # the P0.b verbatim direct port at src/wire/ILV.{h,cpp} above.)
     # TX-rip Phase 1 step 1c-c — dsp/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3.
     src/dsp/StreamThread.h

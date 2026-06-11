@@ -27,7 +27,7 @@
 #include "wire/CmBuffs.h"   // create_cmbuffs / destroy_cmbuffs / CmBuffs
 #include "wire/Router.h"
 #include "wdsp/AAMix.h"
-#include "wdsp/ILV.h"
+#include "wire/ILV.h"   // P0.b direct port (reference ilv.h verbatim)
 #include "wdsp/TxChannel.h"
 
 #include <intrin.h>          // _InterlockedExchange
@@ -101,11 +101,10 @@ void create_xmtr(int xmtr_id)
     //       3,                                  // which streams to interleave
     //       pcm->OutboundTx);                   // Outbound callback
     //
-    // Lyra-cpp's create_ilv extends the signature with a leading
-    // `xmtr_id` (the documented [Lyra-native] divergence per
-    // ILV.h:174-185) so the central pilv[] bank can resolve the
-    // pointer via SetILV* setters -- the analogous AAMix
-    // create_aamix(id, ...) pattern.
+    // P0.b: create_ilv is the reference signature VERBATIM (no
+    // leading xmtr_id, raw Outbound fn ptr — the former retrofit's
+    // central pilv[] bank is gone; the reference reaches the ILV
+    // via pcm->xmtr[xmtr_id].pilv and so does Lyra-cpp now).
     //
     // ch_outsize is derived from the published pTxChannel's
     // outSize() (the Lyra-native seam for runtime-loaded WDSP):
@@ -117,14 +116,13 @@ void create_xmtr(int xmtr_id)
     }
     x.ch_outsize = ch_outsize;
 
-    x.pilv = lyra::wdsp::create_ilv(
-        /*xmtr_id=*/ i,
-        /*run=*/ 0,
-        /*outbound_id=*/ 1,
-        /*insize=*/ ch_outsize,
-        /*ninputs=*/ 2,
-        /*what=*/ 3,
-        /*Outbound=*/ pcm->OutboundTx);
+    x.pilv = create_ilv(
+        0,                                  // run (bypass mode)
+        1,                                  // id to use in Outbound
+        x.ch_outsize,                       // insize
+        2,                                  // maximum number of inputs
+        3,                                  // which streams to interleave
+        pcm->OutboundTx);                   // Outbound callback
 }
 
 // =====================================================================
@@ -154,7 +152,13 @@ void destroy_xmtr(int xmtr_id)
     int i = xmtr_id;
     CMasterXmtr& x = pcm->xmtr[i];
     if (x.pilv != nullptr) {
-        lyra::wdsp::destroy_ilv(x.pilv, /*xmtr_id=*/ i);
+        // Reference cmaster.c:258 -- destroy_ilv(pcm->xmtr[i].pilv).
+        // P0.b: verbatim signature (no xmtr_id param; the bank is
+        // gone).  The null guard + slot clear stay because Lyra's
+        // teardown can run against a partially-failed startup
+        // (reference frees unconditionally inside its all-or-
+        // nothing create/destroy pairing).
+        destroy_ilv(x.pilv);
         x.pilv = nullptr;
     }
 }
@@ -367,16 +371,16 @@ void SendpOutboundRx(OutboundCallback cb)
 //     SetILVOutputPointer(0, pcm->OutboundTx);
 //   }
 //
-// Pushes the registered callback into ILV's central pointer-bank
-// slot 0 (the conventional TX-out interleaver id matching
-// reference cmaster.c:418).  Safe when no ILV exists at that slot
-// yet (pilv[0] == nullptr before create_xmtr's create_ilv call
-// site): the setter's resolve_ilv returns nullptr and the setter
-// early-returns without effect.
-void SendpOutboundTx(OutboundCallback cb)
+// P0.b: VERBATIM port — raw fn ptr in, stored, pushed into the
+// ILV via SetILVOutputPointer(0, ...) which reads
+// pcm->xmtr[0].pilv exactly as ilv.c:97-101 does.  NO null-pilv
+// guard (the reference has none): callers register AFTER
+// create_xmtr has populated the xmtr slot, matching the
+// reference's netInterface ordering.
+void SendpOutboundTx(void (*Outbound)(int id, int nsamples, double* buff))
 {
-    pcm->OutboundTx = std::move(cb);
-    lyra::wdsp::SetILVOutputPointer(0, pcm->OutboundTx);
+    pcm->OutboundTx = Outbound;
+    SetILVOutputPointer(0, pcm->OutboundTx);
 }
 
 // =====================================================================
@@ -585,7 +589,7 @@ void xcmaster(int stream)
         // the EP2 wire).
         if (x.pilv != nullptr) {
             auto bufs = x.pTxChannel->outBuffers();
-            lyra::wdsp::xilv(x.pilv, bufs.data());
+            xilv(x.pilv, bufs.data());
         }
         break;
     }

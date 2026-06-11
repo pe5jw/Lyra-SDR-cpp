@@ -21,7 +21,7 @@
 // to a stub until the new components land.
 #include "wdsp_native.h"
 #include "wdsp/TxChannel.h"  // Stage 7.2 — TX-1 OpenChannel / SetChannelState lifecycle
-#include "wdsp/ILV.h"       // Stage 7.3 — create_ilv / destroy_ilv (cmaster.c:226-232)
+#include "wire/ILV.h"       // P0.b direct port — reference ilv.h verbatim (pcm->xmtr[].pilv)
 #include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() + pcm->xmtr[].pTxChannel direct assignment
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
@@ -349,29 +349,13 @@ int main(int argc, char *argv[])
     // CORRECTED-ordering puts that in fsmKeydownSettled AFTER
     // rf_delay; will land in Stage 7.4 TxControl wiring).
     lyra::wdsp::TxChannel *txChannel = nullptr;
-    // Stage 7.3 (2026-06-09) — ILV pointer + xmtr bank-slot lifetime.
-    //
-    // Reference cmaster.c:226-232 (inside create_xmtr):
-    //   xmtr[i].pilv = create_ilv(
-    //       /*run*/ 0,
-    //       /*obid*/ 1,
-    //       /*insize*/ ch_outsize,    // = TxChannel.outSize() (= 64 @ 48k)
-    //       /*ninputs*/ 2,
-    //       /*what*/ 3,               // bits 0+1 (both inputs active)
-    //       &xmtr[i].outbound);       // Outbound fn ptr slot
-    //
-    // Lyra creates the ILV at xmtr_id=0 publishing into the pilv[0]
-    // central bank (== reference's `pcm->xmtr[0].pilv`).  Outbound
-    // is empty {} at create-time; SendpOutboundTx in Stage 7.4 wires
-    // the real producer lambda via SetILVOutputPointer(0, cb).
-    //
-    // Lyra also publishes pxmtr[0] via create_xmtr_hl2 so the
-    // xcmaster TX-case 1 dispatch (Phase C-wired) reaches a real
-    // TxChannel + ILV-slot.  Once Stage 7.5 wires Inbound, the
-    // full cm_main pump -> xcmaster -> xcmasterTickTx ->
-    // TxChannel.process -> xilv -> SendpOutboundTx chain becomes
-    // wire-effective.
-    lyra::wdsp::ILV *ilv = nullptr;
+    // P0.b (2026-06-11) — NO local ILV pointer.  The ILV lives where
+    // the reference keeps it: pcm->xmtr[0].pilv, created by
+    // create_xmtr (cmaster.c:226-232) and torn down by destroy_xmtr
+    // (cmaster.c:258).  main.cpp never holds the ILV — exactly the
+    // reference shape.  SendpOutboundTx (P3) wires the raw Outbound
+    // fn ptr via SetILVOutputPointer(0, ...) AFTER create_xmtr, per
+    // the reference's registration ordering.
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -444,38 +428,24 @@ int main(int argc, char *argv[])
     // std::vector buffers.  Idempotent: if open() failed earlier
     // (txChannel == nullptr), `delete nullptr` is a well-defined no-op.
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [&txChannel, &ilv]() {
+                     [&txChannel]() {
         qWarning("[shutdown] handler-1.5 ENTRY (xmtr_hl2 + ILV + "
                  "TxChannel close+delete)");
 
-        // Stage 7.3 (2026-06-09) — tear down in REVERSE construction
+        // P0.b (2026-06-11) — tear down in REVERSE construction
         // order (reference cmaster.c:255-271 destroy_xmtr): clear the
-        // pxmtr[] bank slot FIRST so cm_main / xcmaster can no longer
-        // dispatch TX-case 1 against this xmtr; THEN destroy the ILV
-        // (clears pilv[0], frees outbuff via std::vector RAII); THEN
-        // close + delete the TxChannel.  The defensive guards in
-        // destroy_xmtr_hl2 (only clears pxmtr[0] if it still
-        // references this tx_channel) and destroy_ilv (only clears
-        // pilv[0] if xmtr_id >= 0) keep the teardown idempotent
-        // against a partially-failed startup (e.g. txChannel->open()
-        // failed earlier; ilv == nullptr → destroy_ilv(nullptr, 0)
-        // is a well-defined no-op per ILV.cpp).
-        // 2026-06-09 byte-faithful retrofit: the prior
-        // create_xmtr_hl2/destroy_xmtr_hl2 Lyra-native split is
-        // reverted; main.cpp now publishes/clears the TxChannel
-        // pointer via direct field assignment on the reference
-        // pcm->xmtr[i] struct (the single Lyra-native carve-out
-        // documented in CMaster.h xmtr substruct: TxChannel's
-        // RAII lifetime is owned by main.cpp because WDSP.dll
-        // loads at runtime, but the publish point IS the
-        // reference-shaped per-xmtr struct slot).
+        // pcm->xmtr[0].pTxChannel slot FIRST so cm_main / xcmaster
+        // can no longer dispatch TX-case 1 against this xmtr; THEN
+        // destroy_xmtr(0) — the verbatim-ported reference teardown
+        // (destroy_ilv(pcm->xmtr[0].pilv) inside, with a null-pilv
+        // guard for partially-failed startups); THEN close + delete
+        // the TxChannel (RAII lifetime owned by main.cpp because
+        // WDSP.dll loads at runtime — the single documented
+        // carve-out in CMaster.h's xmtr substruct).
         if (txChannel) {
             lyra::wire::pcm->xmtr[0].pTxChannel = nullptr;
         }
-        if (ilv) {
-            lyra::wdsp::destroy_ilv(ilv, /*xmtr_id=*/ 0);
-            ilv = nullptr;
-        }
+        lyra::wire::destroy_xmtr(0);
         if (txChannel) {
             txChannel->close();
             delete txChannel;
@@ -683,7 +653,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource, &txChannel, &ilv]() {
+                                  &micSource, &txChannel]() {
         if (wdsp->load()) {
             // P0.a (2026-06-09) — resolve the ChannelMaster-port WDSP
             // call table from the now-loaded wdsp.dll.  MUST run after
@@ -808,52 +778,35 @@ int main(int argc, char *argv[])
                 //                                  // mode means `what`
                 //                                  // is unused; reference
                 //                                  // sets it anyway)
-                //       &xmtr[i].outbound);        // function pointer
-                //                                  // slot inside the
-                //                                  // xmtr struct (set
-                //                                  // later by Stage 7.4
+                //       pcm->OutboundTx);          // raw fn ptr (null
+                //                                  // until P3 wires
                 //                                  // SendpOutboundTx →
                 //                                  // SetILVOutputPointer)
                 //
-                // Lyra extends create_ilv's signature with a leading
-                // `xmtr_id` (the documented [Lyra-native] divergence
-                // per ILV.h:228-234) so the central pilv[] bank can
-                // resolve the pointer via SetILV* setters — the
-                // analogous AAMix create_aamix(id, ...) pattern.
-                // Outbound is empty {} at create time; Stage C.3 wired
-                // SendpOutboundTx -> SetILVOutputPointer(0, cb) so the
-                // real producer lambda lands there in Stage 7.4.
-                // 2026-06-09 byte-faithful retrofit: publish
-                // TxChannel into the reference pcm->xmtr[0]
-                // substruct via direct field assignment (the
-                // single Lyra-native carve-out documented in
-                // CMaster.h xmtr substruct -- TxChannel's RAII
-                // lifetime is owned by main.cpp because WDSP.dll
-                // loads at runtime, but the publish point IS the
-                // reference-shaped per-xmtr struct slot).  Then
-                // invoke create_xmtr(0) which ports the reference
-                // cmaster.c:226-232 body byte-faithful (creates
-                // ILV via lyra::wdsp::create_ilv, deriving insize
-                // from pTxChannel->outSize() the same way the
-                // reference derives it from the just-opened WDSP
-                // channel's output size).  ILV is then accessible
-                // via pcm->xmtr[0].pilv (reference cmaster.c
-                // dispatch pattern at :397).  Local `ilv` ref
-                // captured for handler-1.5 teardown's
-                // destroy_ilv(ilv, 0) hook.
+                // P0.b direct port: create_ilv is the reference
+                // signature VERBATIM (no extra params, raw Outbound
+                // fn ptr; the former retrofit's pilv[] bank is gone).
+                // Publish TxChannel into the reference pcm->xmtr[0]
+                // substruct via direct field assignment (the single
+                // Lyra-native carve-out documented in CMaster.h's
+                // xmtr substruct -- TxChannel's RAII lifetime is
+                // owned by main.cpp because WDSP.dll loads at
+                // runtime, but the publish point IS the reference-
+                // shaped per-xmtr struct slot).  Then create_xmtr(0)
+                // runs the verbatim reference body; the ILV lives at
+                // pcm->xmtr[0].pilv (dispatch pattern cmaster.c:397)
+                // and handler-1.5 tears it down via destroy_xmtr(0).
                 lyra::wire::pcm->xmtr[0].pTxChannel = txChannel;
                 lyra::wire::create_xmtr(/*xmtr_id=*/ 0);
-                ilv = lyra::wire::pcm->xmtr[0].pilv;
 
-                qInfo("[tx] byte-faithful retrofit: pcm->xmtr[0]."
+                qInfo("[tx] P0.b direct port: pcm->xmtr[0]."
                       "pTxChannel=%p; create_xmtr(0) populated "
-                      "pcm->xmtr[0].pilv=%p (xmtr_id=0, run=0 "
-                      "bypass, obid=1, insize=%d, ninputs=2, "
-                      "what=3) -- xcmaster case 1 dispatch now "
-                      "reaches live TxChannel + ILV slot via "
-                      "reference pcm->xmtr[tx] indirection",
+                      "pcm->xmtr[0].pilv=%p (run=0 bypass, obid=1, "
+                      "insize=%d, ninputs=2, what=3) -- xcmaster "
+                      "case 1 dispatch reaches live TxChannel + ILV "
+                      "via reference pcm->xmtr[tx] indirection",
                       static_cast<void*>(txChannel),
-                      static_cast<void*>(ilv),
+                      static_cast<void*>(lyra::wire::pcm->xmtr[0].pilv),
                       txChannel->outSize());
             }
 

@@ -49,11 +49,13 @@
 //     match the setter types byte-for-byte so the value stored is
 //     the value dispatched -- no thunk, no parallel storage.
 //
-//   * ILV* in the xmtr substruct stays typed as `lyra::wdsp::ILV*`
-//     (ILV's struct tag is preserved per the sibling ILV retrofit
-//     deviation #1).  The reference uses `ILV` which IS `ilv*`
-//     under its twin typedef -- semantics identical.
+//   * (RESOLVED P0.b 2026-06-11) The xmtr substruct's `pilv` is now
+//     the reference `ILV` typedef verbatim (src/wire/ILV.h direct
+//     port), and `OutboundTx` / `SendpOutboundTx` carry the
+//     reference's raw `void(*)(int,int,double*)` — the former
+//     "rule-#8" std::function deviation on the TX side is gone.
 //
+
 //   * One Lyra-cpp carve-out: `pTxChannel` field in the xmtr
 //     substruct.  Operator-acknowledged: Lyra-cpp's `TxChannel` is
 //     a C++23 RAII class constructed in main.cpp (vs the reference
@@ -77,11 +79,12 @@
 #include <cstddef>
 #include <functional>
 
+#include "wire/ILV.h"   // P0.b direct port — the reference `ilv, *ILV` typedef
+
 // Forward decls -- full defs in src/wdsp/ + src/wire/CmBuffs.h.
 // Kept out of this header's #includes to avoid pulling the WDSP
 // cffi surface into every wire-layer translation unit.
 namespace lyra::wdsp { class TxChannel; }
-namespace lyra::wdsp { struct ILV; }
 namespace lyra::wire { struct CmBuffs; }
 
 namespace lyra::wire {
@@ -152,7 +155,9 @@ struct CMasterXmtr
     // Populated by create_xmtr's create_ilv call (cmaster.c:226-232);
     // dispatched by xcmaster case 1 (cmaster.c:397
     // `xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);`).
-    lyra::wdsp::ILV* pilv = nullptr;
+    // P0.b: `ILV` is the reference twin typedef (= `ilv*`) from the
+    // verbatim src/wire/ILV.h direct port.
+    ILV pilv = nullptr;
 
     // Reference cmcomm.h:96 `volatile long use_tci_audio;`.
     // Set via SetTXTCIAudio(); read at xcmaster case-1 TCI dispatch
@@ -220,7 +225,11 @@ struct CMasterState
     // those modules produce.  Rule-#8 carve-out: std::function so
     // existing public setters can pass capturing lambdas.
     OutboundCallback OutboundRx;
-    OutboundCallback OutboundTx;
+    // P0.b: the TX outbound is the reference raw function pointer
+    // VERBATIM (cmaster.h:66) — it is stored into ILV's `Outbound`
+    // field by create_ilv / SetILVOutputPointer, so it must be the
+    // exact reference type.  RX-side callbacks convert in P0.c/P0.d.
+    void (*OutboundTx)(int id, int nsamples, double* buff) = nullptr;
     OutboundCallback OutboundTCIRxIQ;
     InboundCallback  InboundTCITxAudio;
 
@@ -247,7 +256,12 @@ extern CMasterState* pcm;
 //   void SendpOutboundTCIRxIQ (void (*Outbound)(int id, int nsamples, double* buff))
 //   void SendpInboundTCITxAudio (void (*Inbound)(int nsamples, double* buff))
 void SendpOutboundRx(OutboundCallback cb);
-void SendpOutboundTx(OutboundCallback cb);
+// P0.b: verbatim reference signature (cmaster.c:414) — the stored
+// pointer flows straight into ILV's raw `Outbound` field.  NOTE the
+// verbatim body has NO null-pilv guard (reference cmaster.c:418 →
+// ilv.c:97-101): callers must register AFTER create_xmtr has
+// populated pcm->xmtr[0].pilv, exactly as the reference orders it.
+void SendpOutboundTx(void (*Outbound)(int id, int nsamples, double* buff));
 void SendpOutboundTCIRxIQ(OutboundCallback cb);
 void SendpInboundTCITxAudio(InboundCallback cb);
 
