@@ -1,0 +1,12 @@
+# Binary document/asset types — never line-ending-normalize.
+# (Added 2026-06-12: git auto-detected the reportlab-generated
+# THETIS_DIRECT_PORT_PLAN.pdf as TEXT because its ASCII85 streams
+# contain no NUL bytes; a checkout under core.autocrlf=true would
+# have rewritten LF -> CRLF inside it and corrupted the file.)
+*.pdf  binary
+*.docx binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.dll  binary
+*.bundle binary
