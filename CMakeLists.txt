@@ -83,6 +83,12 @@ qt_add_executable(lyra
     # caller creates the rings.
     src/wire/ObBuffs.h
     src/wire/ObBuffs.cpp
+    # P2.c — network.c PARTIAL DIRECT PORT (sendOutbound verbatim,
+    # network.c:1237-1341): the consumer-side hand-off ob_main calls
+    # — P1-branch outLRbufp/outIQbufp memcpy + semaphore handshake
+    # LIVE; ETH branch DEFERRED (Protocol 2/ANAN = v0.4).  Dormant
+    # until P3/P4.
+    src/wire/Network.cpp
     # P0.d — cmsetup.{h,c} DIRECT PORT (verbatim: the five cmMAX*
     # sizing macros, the stream/channel-id helpers rxid/txid/sp0id/
     # stype/chid/inid/mixinid/getbuffsize, SetRadioStructure +

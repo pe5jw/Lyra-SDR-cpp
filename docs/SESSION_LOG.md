@@ -19,10 +19,19 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 - `wire/CMaster.cpp`: all four deferred eer sites RESTORED verbatim — create_xmtr `create_eer(run=0, ...)` 12-arg block (cmaster.c:212-224); destroy_xmtr `destroy_eer` (:262, after destroy_ilv per reference order); xcmaster `xeer(pcm->xmtr[tx].peer)` (no-op at run=0 with in==out — verified in eer.c:86-122); SetXmtrChannelOutrate pSetEERSamplerate/pSetEERSize.  Restored-lines verbatim-subset check PASS (18 lines).
 - Runtime impact: create_xmtr now also creates/destroys one run=0 eer object per xmtr (heap + CS only); xeer in the TX pump body never executes today (stream-1 pump has no producer).  RX path untouched.  Clean build, zero warnings.
 
-### NEXT (P2 continues)
-1. **P2.b** — prn outbound surface verbatim: `outLRbufp`/`outIQbufp`/`OutBufp` std::vector -> reference `double*`/`char*` calloc fields (netInterface.c:1606-1608) + the verbatim HANDLE quartet fields (hsendLRSem/hsendIQSem/hsendEventHandles[2]/hobbuffsRun[2], dormant until P4's StartAudio equivalent); callers bend (OutboundRing/Ep2SendThread `.data()` sites).
-2. **P2.c** — `wire/Network.cpp` (partial network.c port): `sendOutbound` verbatim (P1 branch LIVE, ETH branch carried as DEFERRED reference text — Protocol 2/ANAN is v0.4 scope) + restore the DEFERRED `sendOutbound(id, a->out)` call in wire/ObBuffs.cpp ob_main.
-3. Then P3 (outbound registrations AFTER create_xmtr) -> P4 Wire-LIVE (one commit, HL2 bench gate; retires the OutboundRing/Ep2SendThread translations).
+### P2.b SHIPPED (same session) — prn outbound surface verbatim
+- `outLRbufp`/`outIQbufp`/`OutBufp` std::vector -> the VERBATIM reference pointer fields (network.h:64-66) + the verbatim calloc set at create_rnet (netInterface.c:1606-1608, mechanical subset PASS).  Lifetime = process (create_rnet call-once) = reference.
+- Verbatim HANDLE quartet declared on prn (hsendLRSem/hsendIQSem/hsendEventHandles[2]/hobbuffsRun[2], network.h:92-95) — DORMANT/nullptr until P4's StartAudio equivalent; the Step-14 cv+flags translation stays alongside until P4 retires its consumers.
+- Callers bent: OutboundRing `.data()` ×6 -> raw; Ep2SendThread pack casts -> char; `write_main_loop_hl2` parameter -> `const char*` (reference type).  Wire-inert (only create_rnet's allocation runs live).  The lone C4456 in hl2_stream.cpp:776 is PRE-EXISTING (file untouched; surfaced by the header-triggered recompile) — flagged for a separate cleanup.
+
+### P2.c SHIPPED (same session) — sendOutbound verbatim + ob_main restore
+- NEW `src/wire/Network.cpp` — network.c PARTIAL direct port: `sendOutbound` verbatim (network.c:1237-1341).  P1 branch LIVE (the outLRbufp/outIQbufp memcpy + hsendLRSem/hsendIQSem release + hobbuffsRun wait handshake, incl. the EER de-interleave sub-branch with its function-local static ptr); ETH branch carried as DEFERRED reference text (Protocol 2/ANAN = v0.4; WriteUDPFrame/udpOUT unported).  Accommodations, each documented inline: the RadioNet.h enum-class mapping on the protocol gate; suppress 4101 (ETH-only locals) + 4456 (the reference's own loop-scope `i` shadowing its function-scope `i`, network.c:1239 vs :1298).  Mechanical diff vs network.c:1237-1341 = IDENTICAL (whitespace-normalized, deferred text restored).
+- `wire/ObBuffs.cpp` ob_main: the DEFERRED `sendOutbound(id, a->out)` hand-off RESTORED verbatim — the P1 TU is now reference-complete.
+- Still dormant end-to-end: no create_obbuffs caller until P3/P4; the semaphore quartet is created by P4's StartAudio equivalent before the pump can deliver, the same ordering the reference relies on.  Clean build, zero warnings.
+
+### P2 COMPLETE.  NEXT
+1. **P3** — netInterface outbound registrations: `SendpOutboundRx(OutBound)` / `SendpOutboundTx(OutBound)` per netInterface.c:1749-1761 — MUST register AFTER create_xmtr (verbatim setters have NO null guards); plus the create_obbuffs(0/1) sites (netInterface.c:1856-1857) at the Lyra equivalent of UpdateRadioProtocolSampleSize.
+2. **P4** — Wire-LIVE switchover (one commit, full HL2 bench gate): verbatim sendProtocol1Samples thread + the semaphore-quartet creation + WriteMainLoop_HL2 hand-off; retires the OutboundRing/Ep2SendThread cv translations.
 
 ---
 

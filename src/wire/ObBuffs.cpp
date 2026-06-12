@@ -40,17 +40,13 @@
 //         accommodation as CmBuffs.cpp cm_main / AAMix.cpp
 //         mix_main.
 //
-// DEFERRED inside an otherwise-verbatim body (marked inline):
-//   * ob_main: the `sendOutbound(id, a->out);` hand-off — the
-//     reference defines sendOutbound in ChannelMaster/
-//     network.c:1237 (P1 branch :1285-1340 = the outIQbufp/
-//     outLRbufp + hsendIQSem/hsendLRSem/hobbuffsRun handshake that
-//     WriteMainLoop_HL2 consumes).  That unit is P2 scope; the
-//     call is carried in place as reference text and goes live
-//     when P2 lands.  Until P3 registers OutBound and a caller
-//     creates the rings, this whole TU is dormant (no Lyra call
-//     site for create_obbuffs yet — the reference creates rings
-//     0/1 in netInterface.c:1856-1857).
+// The ob_main `sendOutbound(id, a->out)` hand-off was DEFERRED at
+// P1 and RESTORED VERBATIM at P2.c (2026-06-12) — sendOutbound is
+// now ported at wire/Network.cpp (network.c:1237-1341; P1 branch
+// live, ETH branch deferred).  Until P3 registers OutBound and a
+// caller creates the rings, this whole TU remains dormant (no
+// Lyra call site for create_obbuffs yet — the reference creates
+// rings 0/1 in netInterface.c:1856-1857).
 //
 // See NOTICE.md and CREDITS.md (repo root) for full attribution.
 
@@ -219,7 +215,7 @@ void ob_main (void *pargs)
 		EnterCriticalSection (&a->csOUT);
 		LeaveCriticalSection (&a->csOUT);
 		obdata (id, a->out);
-		// sendOutbound(id, a->out);   // DEFERRED — network.c:1237 sendOutbound unported (P2); call restored verbatim when P2 lands
+		sendOutbound(id, a->out);
 		// if (id == 0) WriteAudio(15.0, 48000, 126, a->out, 3);
 	}
 	_endthread();
