@@ -549,9 +549,19 @@ public:
     std::vector<double>              RxReadBufp;   // interleave staging (twist output)
     std::vector<double>              TxReadBufp;   // mic-sample staging (host→radio scratch)
     std::vector<std::uint8_t>        ReadBufp;     // P2 inbound buffer (HL2 P1 = inert — HL2 uses `FPGAReadBufp` file-scope, not `_radionet`); declared for P2-family forward-compat parity
-    std::vector<std::uint8_t>        OutBufp;      // EP2 send buffer (1024 bytes)
-    std::vector<double>              outLRbufp;    // LR audio scratch
-    std::vector<double>              outIQbufp;    // TX I/Q scratch
+
+    // P2.b (2026-06-12): the three OUTBOUND buffers converted from
+    // the Step-14 std::vector idiom translation back to the
+    // VERBATIM reference field declarations (network.h:64-66) —
+    // required so the P2.c verbatim `sendOutbound` port compiles
+    // byte-identical (`memcpy(prn->outIQbufp + 720, ...)` etc. is
+    // pointer arithmetic the vector form cannot express).
+    // Allocation is the verbatim calloc set at create_rnet
+    // (netInterface.c:1606-1608); lifetime = process (create_rnet
+    // is call-once), matching the reference.
+    char* OutBufp{nullptr};
+    double* outLRbufp{nullptr};
+    double* outIQbufp{nullptr};
 
     // --- RX seq counters (network.h:86-87) ---
     unsigned int cc_seq_no{0};
@@ -579,6 +589,22 @@ public:
     std::counting_semaphore<1> hWriteThreadInitSem{0};
 
     // --- Outbound producer/consumer sync (network.h:92-95) ---
+    //
+    // P2.b (2026-06-12): the VERBATIM reference HANDLE quartet is
+    // now declared below (network.h:92-95) for the P2.c verbatim
+    // `sendOutbound` port + the P4 verbatim `sendProtocol1Samples`
+    // port.  DORMANT until P4's StartAudio-equivalent creates them
+    // (CreateSemaphore(NULL, 0, 1, NULL) ×4, netInterface.c:68-71)
+    // — nullptr until then; the verbatim consumers only run after
+    // that creation, matching the reference's thread-start order.
+    HANDLE hsendLRSem{nullptr};
+    HANDLE hsendIQSem{nullptr};
+    HANDLE hsendEventHandles[2]{nullptr, nullptr};
+    HANDLE hobbuffsRun[2]{nullptr, nullptr};
+
+    // The Step-14 idiom translation below (ONE cv + ONE mutex +
+    // FOUR bool flags) remains for the OutboundRing/Ep2SendThread
+    // translations until P4 retires them:
     //
     // Reference has FOUR paired HANDLE fields:
     //   - hsendLRSem / hsendIQSem (signaling, lines 92-93)

@@ -80,7 +80,7 @@ namespace lyra::wire {
 // from the reference's monolithic shape.  The §10.2 sign-off
 // 2026-06-04 was reversed under the strict-fidelity rule; this
 // function is now the full reference-faithful equivalent.
-void write_main_loop_hl2(const std::uint8_t* out_bufp);
+void write_main_loop_hl2(const char* out_bufp);   // P2.b: reference parameter type (WriteMainLoop_HL2(char* bufp), networkproto1.c:869); const added — the body only reads
 
 // ===== Setter surface (§4a-scope, §1-C Stage 4F.2: free functions) =====
 //

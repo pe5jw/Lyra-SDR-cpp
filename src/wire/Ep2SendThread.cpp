@@ -243,7 +243,7 @@ bool Ep2SendThread::process_one_pair() {
     //
     // §10.2-revert (2026-06-08, Task #121, operator directive
     // "do as reference, period, NO PATCHING"):
-    // `write_main_loop_hl2(prn->OutBufp.data())` is now the
+    // `write_main_loop_hl2(prn->OutBufp)` is now the
     // FULL MONOLITHIC equivalent of reference
     // `WriteMainLoop_HL2(prn->OutBufp)` at `:1262` — it composes
     // sync + C&C bytes into its own TU-scope FPGA write buffer,
@@ -254,7 +254,7 @@ bool Ep2SendThread::process_one_pair() {
     // this site is a thin caller matching reference's thin call
     // site exactly.
     if (hpsdrModel == HPSDRModel::HERMESLITE) {
-        write_main_loop_hl2(prn->OutBufp.data());
+        write_main_loop_hl2(prn->OutBufp);
     } else {
         // FIXME (Task #119 / non-HL2 hardware availability): the
         // reference's generic `WriteMainLoop(prn->OutBufp)` at
@@ -344,9 +344,9 @@ void Ep2SendThread::quantize_and_pack(const double* lr_buf,
                 const std::size_t off =
                     static_cast<std::size_t>(8 * i + 4 * j + 2 * k);
                 prn->OutBufp[off + 0] =
-                    static_cast<uint8_t>((temp >> 8) & 0xff);
+                    static_cast<char>((temp >> 8) & 0xff);
                 prn->OutBufp[off + 1] =
-                    static_cast<uint8_t>( temp       & 0xff);
+                    static_cast<char>( temp       & 0xff);
             }
         }
     }

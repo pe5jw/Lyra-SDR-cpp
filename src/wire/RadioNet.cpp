@@ -203,22 +203,17 @@ void create_rnet() {
     // (netInterface.c:1605) — 1444 bytes
     prn->ReadBufp.assign(1444, 0);
 
-    // `prn->OutBufp = calloc(1, sizeof(char)*1440);`
-    // (netInterface.c:1606) — 1440 bytes
-    prn->OutBufp.assign(1440, 0);
-
-    // `prn->outLRbufp = calloc(1, sizeof(double)*1440);`
-    // (netInterface.c:1607) — 1440 doubles
-    prn->outLRbufp.assign(1440, 0.0);
-
-    // `prn->outIQbufp = calloc(1, sizeof(double)*1440);`
-    // (netInterface.c:1608) — 1440 doubles.  Note: reference at
-    // networkproto1.c:1225 reads `outIQbufp + 256` in EER mode
-    // (per `pcm->xmtr[0].peer->run && XmitBit`), which would
-    // overrun a smaller allocation — the 1440-double size is
-    // load-bearing for EER mode, even though current HL2 SSB
-    // bring-up uses only the front 252 doubles.
-    prn->outIQbufp.assign(1440, 0.0);
+    // P2.b (2026-06-12): the three OUTBOUND buffers are now the
+    // VERBATIM reference allocations (netInterface.c:1606-1608) —
+    // raw calloc onto the verbatim pointer fields (network.h:64-66),
+    // replacing the Step-14 std::vector idiom.  Lifetime = process
+    // (create_rnet is call-once), matching the reference.  Note:
+    // networkproto1.c:1225 reads `outIQbufp + 256` in EER mode and
+    // network.c:1296 writes `outIQbufp + 720` — the 1440-double
+    // size is load-bearing.
+    prn->OutBufp = (char*)calloc(1, sizeof(char) * 1440);
+    prn->outLRbufp = (double*)calloc(1, sizeof(double) * 1440);
+    prn->outIQbufp = (double*)calloc(1, sizeof(double) * 1440);
 
     // ---- prbpfilter / prbpfilter2 (netInterface.c:1727-1733) ----
     prbpfilter = new RbpFilter();

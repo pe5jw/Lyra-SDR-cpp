@@ -753,7 +753,7 @@ void compose_case_9(unsigned char& C0, unsigned char& C1,
 //     overlay frames)
 //   - Post-switch packet packing into txbptr[3..7]
 
-void write_main_loop_hl2(const std::uint8_t* out_bufp) {
+void write_main_loop_hl2(const char* out_bufp) {
     // No defensive `assert(prn != nullptr); assert(prbpfilter !=
     // nullptr);` — reference `WriteMainLoop_HL2` at
     // `networkproto1.c:869` has no such asserts; caller owns the

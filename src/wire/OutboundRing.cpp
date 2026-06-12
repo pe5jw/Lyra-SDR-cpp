@@ -97,7 +97,7 @@ void outbound_init() {
 
 void outbound_push_lr(const double* src) {
     std::unique_lock<std::mutex> lk(prn->mu_outbound);
-    std::memcpy(prn->outLRbufp.data(), src,
+    std::memcpy(prn->outLRbufp, src,
                 kOutboundDoublesPerBuffer * sizeof(double));
     prn->lr_ready = true;
     prn->cv_outbound.notify_one();
@@ -114,7 +114,7 @@ void outbound_push_lr(const double* src) {
 
 void outbound_push_iq(const double* src) {
     std::unique_lock<std::mutex> lk(prn->mu_outbound);
-    std::memcpy(prn->outIQbufp.data(), src,
+    std::memcpy(prn->outIQbufp, src,
                 kOutboundDoublesPerBuffer * sizeof(double));
     prn->iq_ready = true;
     prn->cv_outbound.notify_one();
@@ -161,10 +161,10 @@ bool outbound_wait_pair_ready() {
 // and the next `outbound_notify_consumed_pair()`.  No locking —
 // the consumer holds exclusive access via the cv handshake.
 
-const double* outbound_lr_buf()     { return prn->outLRbufp.data(); }
-const double* outbound_iq_buf()     { return prn->outIQbufp.data(); }
-double*       outbound_lr_buf_mut() { return prn->outLRbufp.data(); }
-double*       outbound_iq_buf_mut() { return prn->outIQbufp.data(); }
+const double* outbound_lr_buf()     { return prn->outLRbufp; }
+const double* outbound_iq_buf()     { return prn->outIQbufp; }
+double*       outbound_lr_buf_mut() { return prn->outLRbufp; }
+double*       outbound_iq_buf_mut() { return prn->outIQbufp; }
 
 // ---- outbound_notify_consumed_pair ----
 //
