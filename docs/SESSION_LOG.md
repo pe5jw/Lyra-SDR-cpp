@@ -4,9 +4,11 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
-## 2026-06-12 (Friday — P0.d CmBuffs/CMaster/cmsetup verbatim direct port SHIPPED)
+## 2026-06-12 (Friday — P0.d CmBuffs/CMaster/cmsetup verbatim direct port SHIPPED + ✅ HL2 RX-regression bench PASSED)
 
 **Branch:** `tx-rebuild` HEAD = `afc7950`, pushed to `origin/tx-rebuild`.
+
+**✅ OPERATOR HL2 BENCH (same day): RX-regression gate PASSED** ("RX still working") — clean RX on the new per-stream cmbuffs pump/ring layout (two cm_main threads, stream 0 idle by design).  P0.d is fully closed; **P1 (obbuffs.c verbatim port) is UNBLOCKED** and starts next session.
 
 ### Shipped (one commit, `afc7950`)
 - **NEW `src/wire/cmsetup.{h,cpp}`** — reference cmsetup.{h,c} verbatim: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates.  CreateRadio/DestroyRadio carried with the unported pipe/sync calls commented.
@@ -26,8 +28,8 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 - destroy ordering: handler-1.5 destroy_xmtr() (gated) → handler-4 destroy_cmaster() = reference relative order.
 
 ### NEXT
-1. **Operator HL2 RX-regression bench** (the P0.d gate): RX must still work; clean stop/restart; no startup/teardown hangs (watch the new pump threads join in destroy_cmbuffs).
-2. Then **P1 = obbuffs.c port** (TX-out seam, separate TU) → P2 sendOutbound audit → P3 netInterface registration (outbounds AFTER create_xmtr) → P4 Wire-LIVE (one commit, HL2 bench gate).
+1. ~~**Operator HL2 RX-regression bench** (the P0.d gate)~~ — ✅ **PASSED 2026-06-12** (RX working; gate cleared).
+2. **P1 = obbuffs.c port** (TX-out seam, separate TU from cmbuffs) → P2 sendOutbound audit → P3 netInterface registration (outbounds AFTER create_xmtr) → P4 Wire-LIVE (one commit, HL2 bench gate).
 
 ---
 

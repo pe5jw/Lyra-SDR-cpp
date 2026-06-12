@@ -133,9 +133,9 @@ Format: per-file or per-component row.  Status emoji:
 | WDSP exports linkage (`OpenChannel`/`fexchange0`/analyzers/PS family) | `src/wire/wdspcalls.{h,cpp}` (P0.a)  | ✅     | **P0.a `e0c0f4a` 2026-06-09.** The single operator-approved linkage seam: fn-ptr table carrying the WDSP exports' exact names, resolved once from the loaded wdsp.dll. PureSignal entry family complete (verified vs dumpbin). RESAMPLE-typed + `flush_resample` added at P0.c. |
 | `ChannelMaster\cmcomm.h` (family common header) | `src/wire/cmcomm.{h,cpp}` (P0.b → P0.d)  | ✅     | `complex` typedef + PORT + verbatim malloc0 (wdsp/utilities.c:37-43) + PI + the reference include surface. P0.d added the opaque verbatim twin typedefs for deferred-subsystem types (ANB/NOB/EER/VOX/TXGAIN/ANALYZERS) + the umbrella-mapping note (.cpp files include explicit family headers — an include-list umbrella would be circular under `#pragma once`). |
 | `ChannelMaster\ilv.c` (TX I/Q interleaver) | `src/wire/ILV.{h,cpp}` (P0.b)                | ✅     | **P0.b `1f49d98` 2026-06-11.** VERBATIM direct port (`ilv,*ILV` twin typedef, raw Outbound fn ptr, `pcm->xmtr[].pilv` setters, malloc0/_aligned_free). Mechanical diff vs ilv.{h,c} = whitespace-only. The earlier `src/wdsp/ILV` retrofit + its pilv[] bank are retired. scratch/test_ilv ALL PASS. |
-| `ChannelMaster\cmbuffs.{h,c}` (CMB ring + cm_main pump) | `src/wire/CmBuffs.{h,cpp}` (P0.d)   | 🟡     | **P0.d `afc7950` 2026-06-12.** VERBATIM rewrite (`cmb,*CMB`, `#define CMB_MULT (3)`, malloc0/_aligned_free; the Phase-C retrofit's calloc/intptr_t/guard deviations removed; `pcm->in[]` alloc moved back to create_cmaster per reference). Mechanical diff = whitespace-only. 🟡 pending the P0.d operator HL2 RX-regression bench. |
-| `ChannelMaster\cmsetup.{h,c}` (radio structure + id helpers) | `src/wire/cmsetup.{h,cpp}` (P0.d, NEW) | 🟡     | **P0.d `afc7950`.** VERBATIM: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates. main.cpp config: SetRadioStructure(2,1,1,1,0,…) → chid(0,0)=0 RX1 / chid(1,0)=1 TX matches the live channel layout. 🟡 pending the same bench. |
-| `ChannelMaster\cmaster.{h,c}` (FULL: struct + create/destroy + xcmaster + setters) | `src/wire/CMaster.{h,cpp}` (P0.d)   | 🟡     | **P0.d `afc7950`.** VERBATIM rewrite: full `_cmaster` struct (cmaster.h:39-99 incl. the PS surface — out[3]/panalalloc/pgain/peer), `cmaster,*CMASTER`, raw TCI callback fn ptrs, `enum AudioCODEC`, `cm = {0}`. Verbatim no-arg create_xmtr/destroy_xmtr (out[0..2] malloc0 + OpenChannel(ch 1) + XCreateAnalyzer(TX disp 1) + create_ilv through the wdspcalls seam — **the TxChannel RAII carve-out is DELETED**, `src/wdsp/TxChannel.{h,cpp}` retired). create_cmaster/destroy_cmaster verbatim per-stream loops (update[] CS + cmbuffs + in[] for all cmSTREAM streams). xcmaster verbatim (update[] CS restored, real stype/txid/chid, TCI memset restored; fexchange0 + monitor xMixAudio + xilv live). All Sendp*/Set* setters ported. Deferred subsystem lines (dexp/anti-vox/txgain/eer/sidetone/pipe/cmasio/analyzers.c/create_rcvr-body) carried IN PLACE as reference text with DEFERRED tags. Sole code accommodation: `(char*)""` at XCreateAnalyzer. 🟡 pending the P0.d bench. |
+| `ChannelMaster\cmbuffs.{h,c}` (CMB ring + cm_main pump) | `src/wire/CmBuffs.{h,cpp}` (P0.d)   | ✅     | **P0.d `afc7950` 2026-06-12.** VERBATIM rewrite (`cmb,*CMB`, `#define CMB_MULT (3)`, malloc0/_aligned_free; the Phase-C retrofit's calloc/intptr_t/guard deviations removed; `pcm->in[]` alloc moved back to create_cmaster per reference). Mechanical diff = whitespace-only. ✅ **P0.d operator HL2 RX-regression bench PASSED 2026-06-12.** |
+| `ChannelMaster\cmsetup.{h,c}` (radio structure + id helpers) | `src/wire/cmsetup.{h,cpp}` (P0.d, NEW) | ✅     | **P0.d `afc7950`.** VERBATIM: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates. main.cpp config: SetRadioStructure(2,1,1,1,0,…) → chid(0,0)=0 RX1 / chid(1,0)=1 TX matches the live channel layout. ✅ Bench PASSED 2026-06-12. |
+| `ChannelMaster\cmaster.{h,c}` (FULL: struct + create/destroy + xcmaster + setters) | `src/wire/CMaster.{h,cpp}` (P0.d)   | ✅     | **P0.d `afc7950`.** VERBATIM rewrite: full `_cmaster` struct (cmaster.h:39-99 incl. the PS surface — out[3]/panalalloc/pgain/peer), `cmaster,*CMASTER`, raw TCI callback fn ptrs, `enum AudioCODEC`, `cm = {0}`. Verbatim no-arg create_xmtr/destroy_xmtr (out[0..2] malloc0 + OpenChannel(ch 1) + XCreateAnalyzer(TX disp 1) + create_ilv through the wdspcalls seam — **the TxChannel RAII carve-out is DELETED**, `src/wdsp/TxChannel.{h,cpp}` retired). create_cmaster/destroy_cmaster verbatim per-stream loops (update[] CS + cmbuffs + in[] for all cmSTREAM streams). xcmaster verbatim (update[] CS restored, real stype/txid/chid, TCI memset restored; fexchange0 + monitor xMixAudio + xilv live). All Sendp*/Set* setters ported. Deferred subsystem lines (dexp/anti-vox/txgain/eer/sidetone/pipe/cmasio/analyzers.c/create_rcvr-body) carried IN PLACE as reference text with DEFERRED tags. Sole code accommodation: `(char*)""` at XCreateAnalyzer. ✅ **Operator HL2 RX-regression bench PASSED 2026-06-12** (RX working on the new per-stream pump/ring layout). |
 | `ChannelMaster\obbuffs.c` (TX-out ring/seam) | `src/wire/ObBuffs.{h,cpp}` (P1, NEW)       | ⏸     | **P1 — NEXT after the P0.d bench gate.** The TX-out seam (OutBound/obdata/ob_main/sendOutbound consumer side). SEPARATE TU from cmbuffs (which is inbound-only). |
 | `ChannelMaster\networkproto1.c` (HL2 wire writer) | `src/hl2_stream.cpp` (LIVE) + `src/wire/*` (Step 14 pieces) | 🟡     | This is the file the Step 14 plan was attacking. Currently a MIX of Step 14 Lyra-native rewrites + the original `hl2_stream.cpp` body. P2 = sendOutbound/sendProtocol1Samples fidelity audit of the dormant wire layer; P4 = Wire-LIVE switchover (one commit, full HL2 bench gate). |
 | `ChannelMaster\network.c` (UDP + keepalive) | `src/wire/Ep2SendThread.{h,cpp}` + `src/wire/Ep6RecvThread.{h,cpp}` | 🟡     | Step 14 Lyra-native rewrites shipped (§5/§6); could be re-ported direct from reference, OR left as-is if reference-parity audit passes. Operator call (folds into P2/P4). |
@@ -201,8 +201,8 @@ HL2 bench gate.
 | **P0.a** | ✅ DONE | `wire/wdspcalls.{h,cpp}` — the single approved WDSP linkage seam (exact export names, PS entry family complete) | `e0c0f4a` 2026-06-09 |
 | **P0.b** | ✅ DONE | ilv.{h,c} verbatim → `wire/ILV.{h,cpp}` + new `wire/cmcomm.{h,cpp}` | `1f49d98` 2026-06-11; test_ilv ALL PASS |
 | **P0.c** | ✅ DONE | aamix.{h,c} verbatim → `wire/AAMix.{h,cpp}` + `wire/resample.h` RESAMPLE ABI | `e0f2584`; ✅ operator HL2 RX bench PASSED 2026-06-11 |
-| **P0.d** | 🟡 SHIPPED | cmbuffs/cmaster/cmsetup verbatim → `wire/CmBuffs`/`wire/CMaster`/`wire/cmsetup`; full `_cmaster` struct (PS surface); TxChannel carve-out DELETED | `afc7950` 2026-06-12; ⚠ **operator HL2 RX-regression bench PENDING — the gate before P1** |
-| **P1**  | ⏸ NEXT | obbuffs.c verbatim → `wire/ObBuffs.{h,cpp}` (the TX-out seam; separate TU from cmbuffs) | after the P0.d bench |
+| **P0.d** | ✅ DONE | cmbuffs/cmaster/cmsetup verbatim → `wire/CmBuffs`/`wire/CMaster`/`wire/cmsetup`; full `_cmaster` struct (PS surface); TxChannel carve-out DELETED | `afc7950` 2026-06-12; ✅ **operator HL2 RX-regression bench PASSED 2026-06-12** |
+| **P1**  | ⏸ NEXT | obbuffs.c verbatim → `wire/ObBuffs.{h,cpp}` (the TX-out seam; separate TU from cmbuffs) | UNBLOCKED — P0.d bench passed |
 | **P2**  | ⏸      | sendOutbound / sendProtocol1Samples fidelity audit of the dormant wire layer | |
 | **P3**  | ⏸      | netInterface outbound registrations (SendpOutboundTx(OutBound) etc.) — MUST register AFTER create_xmtr (verbatim setters have NO null guards) | |
 | **P4**  | ⏸      | Wire-LIVE switchover | ONE commit, full HL2 bench gate |
@@ -283,7 +283,7 @@ unilaterally — surface them when picking up tomorrow:
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
 
-### 2026-06-12 — P0.d cmbuffs/cmaster/cmsetup VERBATIM port (HL2 bench pending)
+### 2026-06-12 — P0.d cmbuffs/cmaster/cmsetup VERBATIM port (✅ HL2 bench PASSED)
 
 - **P0.d `afc7950`** on `tx-rebuild`: NEW `wire/cmsetup.{h,cpp}`
   (cmMAX* 16/4/4/2/32 + the 8 id helpers + SetRadioStructure +
@@ -310,9 +310,8 @@ arc details.
 - New at startup: TWO cm_main pump threads (streams 0+1; stream 0
   idles — no Inbound producer); TX stays wire-quiescent
   (OutboundTx null until P3).
-- ⚠ **GATE: operator HL2 RX-regression bench** (RX works; clean
-  stop/restart; clean exit — pump threads must join in
-  destroy_cmbuffs) **before P1 (obbuffs.c) starts.**
+- ✅ **GATE PASSED 2026-06-12: operator HL2 RX-regression bench**
+  ("RX still working") — P1 (obbuffs.c) is unblocked.
 
 ### 2026-06-09 → 2026-06-11 — P0.a/P0.b/P0.c verbatim-rewrite arc
 
