@@ -11,9 +11,10 @@
 // callers of the new wire layer for the first time; nothing reads
 // the bound state yet (rxWorkerLoop / txWorkerLoop are still the
 // live RX/TX path until later stages).
-#include "wire/RadioNet.h"      // RadioNet, prn, radio_net()
+#include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
 #include "wire/OutboundRing.h"  // outbound_init
+#include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -703,32 +704,46 @@ void HL2Stream::open(const QString &ip) {
     // wire-bind + sync-flag reset.
     //
     // Reference provenance:
-    //   - `create_rnet()` allocator (heap-allocates `_radionet`
-    //     struct + all buffers + scalar/sub-struct init):
-    //     netInterface.c:1590-1763.  Called once by C# console
-    //     init in the reference; Lyra calls from open() with an
-    //     idempotent guard so re-open doesn't re-allocate.
+    //   - `create_rnet()` allocator: netInterface.c:1590-1763.
+    //     P3 (2026-06-12): the call MOVED to the main.cpp QTimer
+    //     block AFTER create_xmtr() — the reference's once-per-
+    //     process C#-init ordering.  The per-open call that lived
+    //     here re-allocated prn on every stop/start (leak +
+    //     wire-state reset, contradicting the close() "prn stays
+    //     alive for re-open" contract), and its new tail
+    //     registration SendpOutboundTx(OutBound) derefs
+    //     pcm->xmtr[0].pilv with NO null guard — it must follow
+    //     create_xmtr.
     //   - `prn` non-null contract before session-open body proceeds:
     //     netInterface.c:40 (`if (... || prn == NULL) return 3;`).
+    //   - `UpdateRadioProtocolSampleSize()` at session-open:
+    //     netInterface.c:45 — per-protocol sample sizes + the
+    //     obbuffs ring pair (ring 0 rx audio / ring 1 tx I/Q; each
+    //     create starts its ob_main pump thread, blocked on its
+    //     Sem_BuffReady until a producer delivers — ring 0 has no
+    //     producer until P4's RX switchover; ring 1's producer is
+    //     xilv in the stream-1 cm pump, quiescent until P4 feeds
+    //     Inbound(1,...)).  destroy_obbuffs(0/1) at close() per
+    //     StopAudio netInterface.c:112-113.
     //   - `prn->hsendEventHandles[0,1]` + `prn->hobbuffsRun[0,1]`
     //     per-session semaphore allocation (= Lyra-native
     //     bool-flag reset in `outbound_init`):
-    //     netInterface.c:68-71.
+    //     netInterface.c:68-71.  The VERBATIM HANDLE quartet
+    //     creation lands at P4 with the sendProtocol1Samples
+    //     thread start it pairs with.
     //   - file-scope `listenSock` global bound at session-open
     //     (= TU-scope socket fd set by `metis_wire_bind`):
     //     implicit at every `sendPacket(listenSock, ...)` call site
     //     (e.g. networkproto1.c:55, 89, 234).
-    //
-    // Wire-INERT: these three calls populate the new wire-layer
-    // state but no new code path reads it yet.  rxWorkerLoop /
-    // txWorkerLoop remain the live RX/TX path until step 14
-    // stages 2-6 retire them.
     {
-        lyra::wire::create_rnet();  // first call allocates +
-                                    // initializes; reference is
-                                    // single-call (no idempotency
-                                    // guard), so caller owns the
-                                    // call-once discipline.
+        // Reference per-session contract (netInterface.c:40).
+        if (lyra::wire::prn == nullptr) {
+            qCritical("[hl2] open(): wire layer not initialized — "
+                      "create_rnet() has not run (main.cpp QTimer "
+                      "init incomplete?)");
+            return;
+        }
+        lyra::wire::UpdateRadioProtocolSampleSize();  // :45 — sizes + obbuffs ring pair
         // Bind the wire socket + extract radio IPv4 (network byte
         // order) for the per-call sockaddr_in construct in
         // `send_packet` — matches reference's `MetisAddr` file-
@@ -955,6 +970,16 @@ void HL2Stream::close() {
     // next session-open (it points at a static _radionet struct), so
     // operator can re-open cleanly without re-allocating.
     lyra::wire::metis_wire_bind(-1, 0);
+
+    // P3 (2026-06-12) — reference StopAudio (netInterface.c:112-113):
+    // tear down the per-session obbuffs ring pair created by
+    // UpdateRadioProtocolSampleSize at open().  destroy_obbuffs'
+    // verbatim `obp.pcbuff[0] == NULL` guard covers close-before-
+    // first-open; close()'s own NO-OP early-return above prevents a
+    // double-close double-free (the reference does not clear the
+    // obp aliases after free — P1 verbatim).
+    lyra::wire::destroy_obbuffs(0);
+    lyra::wire::destroy_obbuffs(1);
 
     statsTimer_.stop();
     autoLnaTimer_.stop();

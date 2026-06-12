@@ -41,6 +41,7 @@ void set_cmdefault_rates (int* xcm_inrates, int aud_outrate,
 	int* rcvr_ch_outrates, int* xmtr_ch_outrates);
 void create_xmtr();
 void destroy_xmtr();
+void create_rnet();   // P3 — once-per-process, AFTER create_xmtr (see QTimer block)
 }  // namespace lyra::wire
 
 #include <algorithm>
@@ -788,6 +789,24 @@ int main(int argc, char *argv[])
                   "pcm->xmtr[0].pilv=%p (run=0 bypass, obid=1, "
                   "insize=64, ninputs=2, what=3)",
                   static_cast<void*>(lyra::wire::pcm->xmtr[0].pilv));
+
+            // P3 (2026-06-12) — create_rnet() ONCE per process, HERE,
+            // matching the reference's init order (create_cmaster ->
+            // create_xmtr -> create_rnet -> StartAudio).  The ordering
+            // is LOAD-BEARING: create_rnet's tail registration
+            // SendpOutboundTx(OutBound) derefs pcm->xmtr[0].pilv with
+            // NO null guard (the verbatim SetILVOutputPointer), so it
+            // must follow create_xmtr above.  Previously called from
+            // HL2Stream::open() on EVERY stop/start — re-allocating
+            // prn each cycle (leak + wire-state reset).  open() now
+            // asserts the prn-non-null contract (netInterface.c:40)
+            // instead; if wdsp.dll failed to load this block never
+            // runs and open() refuses with a clear qCritical (no
+            // WDSP = no radio, the reference posture).
+            lyra::wire::create_rnet();
+            qInfo("[wire] P3: create_rnet() — prn allocated, "
+                  "SendpOutboundTx(OutBound) registered "
+                  "(pcm->OutboundTx -> xmtr[0].pilv)");
 
             // TX-1 Path A: construct micSource NOW that the WDSP DLL
             // is loaded.  Mic-source construction order RELATIVE to

@@ -707,20 +707,33 @@ extern RadioNet* prn;
 //     (kept as fixed-size C arrays per the §1-C reverted struct
 //     layout; `adc[MAX_ADC]` / `rx[MAX_RX_STREAMS]` / etc.).
 //
-// Contract: **call exactly once** at HL2 session start, matching
-// the reference's single call site (`create_rnet()` is called
-// once from the C# console init path; lyra calls from
-// `HL2Stream::open()` first time the stream comes up).  No
-// idempotency guard — matches reference verbatim per the
+// Contract: **call exactly once** at app init, matching the
+// reference's single call site (`create_rnet()` is called once
+// from the C# console init path).  P3 (2026-06-12): the Lyra call
+// site MOVED from HL2Stream::open() — which ran it on EVERY
+// stop/start re-open, re-allocating prn each cycle (a leak + a
+// wire-state reset that contradicted the close() "prn stays alive
+// for re-open" contract) — to the main.cpp QTimer block AFTER
+// create_xmtr(), the reference's init ordering.  That ordering is
+// LOAD-BEARING: create_rnet's tail registration
+// `SendpOutboundTx(OutBound)` derefs pcm->xmtr[0].pilv with NO
+// null guard (SetILVOutputPointer, the verbatim reference shape).
+// No idempotency guard — matches reference verbatim per the
 // operator-locked "do as reference, period" rule (reference
 // unconditionally `prn = malloc(sizeof(radionet))`; second call
-// would leak the prior allocation).  Caller (HL2Stream::open)
-// owns the call-once discipline + guards against re-entry on
-// re-open cycles externally.
+// would leak the prior allocation).
 //
 // Lifetime: heap-allocated; never freed (reference does the same
 // — `prn` lives for the lifetime of the audio driver process).
 void create_rnet();
+
+// P3 (2026-06-12) — reference netInterface.c:1836-1858 (verbatim;
+// body in RadioNet.cpp): per-protocol sample sizes + the obbuffs
+// ring pair (ring 0 = rx audio, ring 1 = tx I/Q).  Called per
+// session-open from HL2Stream::open() at the reference's
+// StartAudio position (netInterface.c:45); destroy_obbuffs(0/1)
+// at close() per StopAudio (netInterface.c:112-113).
+void UpdateRadioProtocolSampleSize();
 
 // ===== §3.4 — Dispatch-relevant runtime globals =====
 //

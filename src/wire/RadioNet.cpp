@@ -7,6 +7,7 @@
 #include "wire/RadioNet.h"
 #include "wire/CMaster.h"    // SendpOutboundRx/Tx + enum AudioCODEC for create_rnet wire-up
 #include "wire/RbpFilter.h"  // prbpfilter / prbpfilter2 allocator targets
+#include "wire/ObBuffs.h"    // OutBound + create_obbuffs (P3 registration + ring pair)
 
 namespace lyra::wire {
 
@@ -301,29 +302,31 @@ void create_rnet() {
         // not implmented — matches reference comment verbatim.
         break;
     }
-    // Stage C.3-fix (parity with B.6.b-fix at line 272 above):
-    // the Stage A NO-OP `SendpOutboundTx(stub)` registration that
-    // USED to live here is REMOVED.  Cause: `SendpOutboundTx(stub)`
-    // now runs `SetILVOutputPointer(0, stub)` (CMaster.cpp:88,
-    // wired in Stage C.3), which clobbers `pilv[0]->Outbound` with
-    // the no-op lambda.  Once Stage D's xcmaster pump constructs
-    // ILV at id=0 and the operator-supplied TX-out dispatcher
-    // (routing TX I/Q to the EP2 wire via outbound_push_iq) is
-    // registered via `SendpOutboundTx`, the no-op stub here would
-    // overwrite that registration on every `create_rnet()` -- the
-    // exact silent-TX defect class that bit Stage B.6.b for RX
-    // (where the SendpOutboundRx stub at line 272 clobbered
-    // aaMix_->Outbound ~1 ms after openRx1 wired the real lambda).
+    // P3 (2026-06-12) — the reference TX-out registration RESTORED
+    // at the reference site (netInterface.c:1761).  `OutBound` is
+    // the verbatim obbuffs ring producer (wire/ObBuffs.cpp);
+    // SendpOutboundTx stores it in pcm->OutboundTx AND pushes it
+    // into pcm->xmtr[0].pilv via SetILVOutputPointer — which has NO
+    // null guard, so create_rnet MUST run AFTER create_xmtr.  Lyra
+    // guarantees that by construction: create_rnet now runs ONCE
+    // from the main.cpp QTimer block after create_xmtr() (the
+    // reference's C#-init ordering), replacing the per-open call
+    // that re-allocated prn on every stop/start.
     //
-    // The eventual real registration the Stage-A comment promised
-    // ("body calls outbound_push_iq(buff) ... reference xilv ->
-    // OutBound chain") lives at the TX-channel-open site (Stage E
-    // TxChannel reconciliation work), where the operator-supplied
-    // dispatcher has access to the per-xmtr context the global
-    // `pcm` cannot reach.  Re-introducing a default registration
-    // here would re-clobber that lambda; future codec-id /
-    // family-specific TX-out routing needs to be reference-
-    // faithful AT the xmtr-open site, NOT at create_rnet.
+    // The Stage C.3-fix note that previously lived here ("the real
+    // registration lives at the xmtr-open site, NOT create_rnet")
+    // is SUPERSEDED: it protected against a Step-14 NO-OP stub
+    // re-clobbering a Lyra-native dispatcher on every per-open
+    // create_rnet.  Under the direct port the reference site IS
+    // correct — OutBound -> obbuffs ring 1 -> ob_main pump ->
+    // sendOutbound (wire/Network.cpp) is the verbatim TX-out chain,
+    // create_rnet is call-once, and there is no competing TX
+    // registration to clobber.  (The RX side is different: the
+    // HERMES case above stays EMPTY until P4 because WdspEngine's
+    // openRx1 owns the RX audio dispatch in the operator-approved
+    // hybrid layout — registering OutBound for RX here would
+    // clobber it and kill live RX audio, the exact B.6.b defect.)
+    SendpOutboundTx(OutBound);
 
     // ---- §15.26 PA-OFF-at-startup safety (Task #114, 2026-06-08) ----
     //
@@ -342,6 +345,44 @@ void create_rnet() {
     // global declarations at the bottom of this file documents the
     // safe-state pairing.
     ApolloFilt = 0x04;
+}
+
+// P3 (2026-06-12) — reference netInterface.c:1836-1858 (verbatim).
+// Called per session-open from HL2Stream::open() at the reference's
+// StartAudio position (netInterface.c:45): sets the per-protocol
+// sample sizes AND creates the obbuffs ring pair (ring 0 = rx
+// audio, ring 1 = tx I/Q) — each create starts its ob_main pump
+// thread (blocked on its own Sem_BuffReady until a producer
+// delivers).  destroy_obbuffs(0/1) at HL2Stream::close() per
+// StopAudio (netInterface.c:112-113).
+//
+// Accommodations (documented packaging, NOT code changes):
+//   * `RadioProtocol == USB` -> `radioProtocol == RadioProtocol::USB`
+//     (the RadioNet.h:156 enum-class mapping).
+//   * MAX_RX_STREAMS / MAX_TX_STREAMS / MAX_AUDIO_STREAMS -> the
+//     documented kMax* constants (RadioNet.h:72-74).
+void UpdateRadioProtocolSampleSize()
+{
+	int i;
+
+	prn->mic.spp = radioProtocol == RadioProtocol::USB ? 63 : 64;              // I-samples per packet
+
+	for (i = 0; i < kMaxRxStreams; i++)
+	{
+		prn->rx[i].spp = radioProtocol == RadioProtocol::USB ? 63 : 238;		// IQ-samples per packet
+	}
+	for (i = 0; i < kMaxTxStreams; i++)
+	{
+		prn->tx[i].spp = radioProtocol == RadioProtocol::USB ? 126 : 240;	    // IQ-samples per packet
+	}
+
+	for (i = 0; i < kMaxAudioStreams; i++)
+	{
+		prn->audio[i].spp = radioProtocol == RadioProtocol::USB ? 126 : 64;    // LR-samples per packet
+	}
+
+	create_obbuffs(0, 1, 2048, prn->audio[0].spp);	// rx audio - last parameter is number of samples per packet
+	create_obbuffs(1, 1, 2048, prn->tx[0].spp);    // tx mic audio
 }
 
 // §3.4 — Dispatch-relevant runtime globals.
