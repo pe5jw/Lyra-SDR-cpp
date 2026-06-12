@@ -724,7 +724,12 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
     // for the per-DDC IQ staging.  Defensive bounds check so
     // we don't blow past a wrongly-sized RxBuff.
     if (static_cast<int>(prn->RxBuff.size()) < clamped_ddc) return;
-    if (static_cast<int>(prn->TxReadBufp.size()) < 4 * spr) return;
+    // P4.a: TxReadBufp is now the verbatim reference `double*`
+    // (network.h:62); capacity is the fixed create_rnet calloc of
+    // 2*720 doubles (netInterface.c:1604), >= 4*spr for every
+    // valid nddc (worst case nddc=1: 4*63 = 252).  The old
+    // vector-size guard reduces to a null check.
+    if (prn->TxReadBufp == nullptr) return;
 
     // ---- Per-DDC IQ unpack (DDC-major, matches reference structure)
     //
@@ -754,7 +759,7 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
         if (router_) {
             twist(spr,
                   prn->RxBuff[0].data(), prn->RxBuff[1].data(),
-                  prn->TxReadBufp.data(),
+                  prn->TxReadBufp,
                   /*source=*/0,
                   router_, router_id_);
         }
@@ -767,7 +772,7 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
             xrouter(router_, router_id_, 0, spr, prn->RxBuff[0].data());
             twist(spr,
                   prn->RxBuff[2].data(), prn->RxBuff[3].data(),
-                  prn->TxReadBufp.data(),
+                  prn->TxReadBufp,
                   /*source=*/1,
                   router_, router_id_);
             xrouter(router_, router_id_, 2, spr, prn->RxBuff[1].data());
@@ -780,12 +785,12 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
         if (router_ && clamped_ddc >= 5) {
             twist(spr,
                   prn->RxBuff[0].data(), prn->RxBuff[1].data(),
-                  prn->TxReadBufp.data(),
+                  prn->TxReadBufp,
                   /*source=*/0,
                   router_, router_id_);
             twist(spr,
                   prn->RxBuff[3].data(), prn->RxBuff[4].data(),
-                  prn->TxReadBufp.data(),
+                  prn->TxReadBufp,
                   /*source=*/1,
                   router_, router_id_);
             xrouter(router_, router_id_, 2, spr, prn->RxBuff[2].data());
@@ -829,7 +834,7 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
     if (mic_sink_ && mic_sample_count > 0) {
         // Reference: `Inbound(inid(1, 0), mic_sample_count,
         // prn->TxReadBufp);`
-        mic_sink_(mic_sample_count, prn->TxReadBufp.data());
+        mic_sink_(mic_sample_count, prn->TxReadBufp);
     }
 }
 

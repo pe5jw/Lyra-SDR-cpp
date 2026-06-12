@@ -196,9 +196,10 @@ void create_rnet() {
     // (netInterface.c:1603) — 480 doubles
     prn->RxReadBufp.assign(2 * 240, 0.0);
 
-    // `prn->TxReadBufp = calloc(1, 2*sizeof(double)*720);`
-    // (netInterface.c:1604) — 1440 doubles
-    prn->TxReadBufp.assign(2 * 720, 0.0);
+    // netInterface.c:1604 (verbatim — P4.a converted the field
+    // from the Step-14 std::vector idiom back to the reference
+    // `double*`; see the RadioNet.h field comment):
+    prn->TxReadBufp = (double*)calloc(1, 2 * sizeof(double) * 720);
 
     // `prn->ReadBufp = calloc(1, sizeof(unsigned char)*1444);`
     // (netInterface.c:1605) — 1444 bytes

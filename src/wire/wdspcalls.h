@@ -121,6 +121,31 @@ extern void (*xeer)(EER a);
 extern void (*pSetEERSize)(EER a, int size);
 extern void (*pSetEERSamplerate)(EER a, int rate);
 
+// ---- TXA PostGen / gen1 (TUN re-home consumer, P4 — see
+// docs/architecture/P4_WIRE_LIVE_DESIGN.md §4) ------------------------------
+// The output-side TXA tone generator the reference uses for the TUN
+// carrier + the PS two-tone.  Pre-cdef audit per the §15.18
+// discipline (2026-06-12): NO header declares these — they are
+// PORT-exported definition sites in wdsp/gen.c only (the reference's
+// C# side P/Invokes them), so the citations are the gen.c definition
+// lines; exact casing + presence verified against the bundled
+// wdsp.dll export table (PE scan, 533 exports); signatures harvested
+// verbatim from the definition bodies.  TT (two-tone) pair included
+// per table rule #3 (PureSignal is a committed feature; the PS
+// calibration drive is the two-tone).
+//   gen.c:784  void SetTXAPostGenRun (int channel, int run);
+//   gen.c:792  void SetTXAPostGenMode (int channel, int mode);
+//   gen.c:800  void SetTXAPostGenToneMag (int channel, double mag);
+//   gen.c:808  void SetTXAPostGenToneFreq (int channel, double freq);
+//   gen.c:817  void SetTXAPostGenTTMag (int channel, double mag1, double mag2);
+//   gen.c:826  void SetTXAPostGenTTFreq (int channel, double freq1, double freq2);
+extern void (*SetTXAPostGenRun)(int channel, int run);
+extern void (*SetTXAPostGenMode)(int channel, int mode);
+extern void (*SetTXAPostGenToneMag)(int channel, double mag);
+extern void (*SetTXAPostGenToneFreq)(int channel, double freq);
+extern void (*SetTXAPostGenTTMag)(int channel, double mag1, double mag2);
+extern void (*SetTXAPostGenTTFreq)(int channel, double freq1, double freq2);
+
 // ---- PureSignal (calcc.c exports; committed feature, v0.3 consumer) ------
 // Signatures harvested from wdsp/calcc.c definition sites (PORT-
 // prefixed; line numbers cited in wdspcalls.cpp).  All verified

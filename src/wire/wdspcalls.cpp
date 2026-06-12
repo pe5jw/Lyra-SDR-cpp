@@ -44,6 +44,12 @@ void (*destroy_eer)(EER) = nullptr;
 void (*xeer)(EER) = nullptr;
 void (*pSetEERSize)(EER, int) = nullptr;
 void (*pSetEERSamplerate)(EER, int) = nullptr;
+void (*SetTXAPostGenRun)(int, int) = nullptr;
+void (*SetTXAPostGenMode)(int, int) = nullptr;
+void (*SetTXAPostGenToneMag)(int, double) = nullptr;
+void (*SetTXAPostGenToneFreq)(int, double) = nullptr;
+void (*SetTXAPostGenTTMag)(int, double, double) = nullptr;
+void (*SetTXAPostGenTTFreq)(int, double, double) = nullptr;
 void (*pscc)(int, int, double*, double*) = nullptr;
 void (*psccF)(int, int, float*, float*, float*, float*, int, int) = nullptr;
 void (*SetPSRunCal)(int, int) = nullptr;
@@ -94,6 +100,12 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(xeer)                 \
     X(pSetEERSize)          \
     X(pSetEERSamplerate)    \
+    X(SetTXAPostGenRun)     \
+    X(SetTXAPostGenMode)    \
+    X(SetTXAPostGenToneMag) \
+    X(SetTXAPostGenToneFreq)\
+    X(SetTXAPostGenTTMag)   \
+    X(SetTXAPostGenTTFreq)  \
     X(pscc)                 \
     X(psccF)                \
     X(SetPSRunCal)          \

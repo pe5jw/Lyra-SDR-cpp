@@ -547,7 +547,16 @@ public:
     // translation, no behavior change).
     std::vector<std::vector<double>> RxBuff;       // per-DDC IQ staging (sized per nddc at session start)
     std::vector<double>              RxReadBufp;   // interleave staging (twist output)
-    std::vector<double>              TxReadBufp;   // mic-sample staging (host→radio scratch)
+
+    // P4.a (2026-06-12): TxReadBufp converted from the Step-14
+    // std::vector idiom translation back to the VERBATIM reference
+    // field declaration (network.h:62 `double* TxReadBufp;`) —
+    // P4.b's verbatim mic feed `Inbound(inid(1,0), n,
+    // prn->TxReadBufp)` takes the raw pointer.  Allocation is the
+    // verbatim calloc at create_rnet (netInterface.c:1604);
+    // lifetime = process (create_rnet is call-once), matching the
+    // reference + the P2.b OutBufp/outLRbufp/outIQbufp precedent.
+    double* TxReadBufp{nullptr};                   // mic-sample staging (host→radio scratch)
     std::vector<std::uint8_t>        ReadBufp;     // P2 inbound buffer (HL2 P1 = inert — HL2 uses `FPGAReadBufp` file-scope, not `_radionet`); declared for P2-family forward-compat parity
 
     // P2.b (2026-06-12): the three OUTBOUND buffers converted from
@@ -576,7 +585,14 @@ public:
     // `prn->hReadThreadMain = std::thread([] { ... });` at
     // session-open.
     std::thread hReadThreadMain;     // EP6 RX thread (Ep6RecvThread body)
-    std::thread hWriteThreadMain;    // EP2 TX thread (Ep2SendThread body)
+
+    // P4.a (2026-06-12): hWriteThreadMain converted std::thread ->
+    // VERBATIM reference field type (network.h:90 `HANDLE
+    // hWriteThreadMain;`) — P4.b's StartAudio-equivalent assigns it
+    // the verbatim `_beginthreadex(..., sendProtocol1Samples, ...)`
+    // handle (netInterface.c:66).  nullptr until then (no user
+    // existed on the std::thread form — declaration-only).
+    HANDLE hWriteThreadMain{nullptr};// EP2 TX writer thread (sendProtocol1Samples, P4.b)
     std::thread hKeepAliveThread;    // P2 keep-alive thread (HL2 P1 = dead code on this path; declared for parity)
 
     // --- Init semaphores (network.h:89, 91) ---
