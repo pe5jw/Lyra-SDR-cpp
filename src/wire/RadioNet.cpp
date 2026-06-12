@@ -254,15 +254,20 @@ void create_rnet() {
     // subsequent stages plug into; byte-shape matches reference
     // create_rnet's final block.
     //
-    // The HERMES branch passes a thin wrapper around Lyra's existing
-    // `outbound_push_lr` producer (declared in OutboundRing.h) — the
-    // reference's `OutBound` function at network.c:1285-1340 is the
-    // producer-side that does `memcpy → ReleaseSemaphore(hsendLRSem)
-    // → WaitForSingleObject(hobbuffsRun)` for the RX audio path.
-    // Lyra's `outbound_push_lr` is the byte-shape-equivalent of that
-    // producer.  When Stage B's aamix lands, AAMIX will invoke this
-    // callback for every RX audio frame it produces — matching
-    // reference's `xMixAudio → AAMIX → OutboundRx → OutBound` chain.
+    // CITATION CORRECTED (P1, 2026-06-12): the reference's `OutBound`
+    // is at ChannelMaster/obbuffs.c:99-130 — the PRODUCER into the
+    // obbuffs ring (now ported verbatim at wire/ObBuffs.cpp).  The
+    // earlier citation here ("OutBound at network.c:1285-1340") was
+    // wrong: those lines are the PROTOCOL_1 branch of `sendOutbound`
+    // (network.c:1237), the CONSUMER-side hand-off that ob_main calls
+    // — it does the `memcpy → ReleaseSemaphore(hsendLRSem/hsendIQSem)
+    // → WaitForSingleObject(hobbuffsRun)` handshake WriteMainLoop_HL2
+    // consumes.  Full reference chain: xMixAudio → AAMIX → OutboundRx
+    // = OutBound (obbuffs ring producer) → ob_main pump → sendOutbound
+    // (P1 branch) → WriteMainLoop_HL2.  Lyra's `outbound_push_lr`
+    // (OutboundRing.h) is the Step-14-era equivalent of the
+    // sendOutbound P1-branch handshake — the P2 fidelity audit
+    // reconciles it against network.c:1237-1341 verbatim.
     //
     // The ASIO branch is a Stage E+ FIXME (cmasio.c port pending).
     // The WASAPI branch matches reference's `// not implmented`
