@@ -4,6 +4,33 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-12 (Friday — P0.d CmBuffs/CMaster/cmsetup verbatim direct port SHIPPED)
+
+**Branch:** `tx-rebuild` HEAD = `afc7950`, pushed to `origin/tx-rebuild`.
+
+### Shipped (one commit, `afc7950`)
+- **NEW `src/wire/cmsetup.{h,cpp}`** — reference cmsetup.{h,c} verbatim: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates.  CreateRadio/DestroyRadio carried with the unported pipe/sync calls commented.
+- **`src/wire/CmBuffs.{h,cpp}` rewritten verbatim** — `cmb,*CMB` twin typedef, `#define CMB_MULT (3)`, malloc0/_aligned_free, no calloc/intptr_t/guard deviations; pcm->in[] allocation moved back to create_cmaster (reference shape).
+- **`src/wire/CMaster.{h,cpp}` rewritten verbatim** — FULL `_cmaster` struct (cmaster.h:39-99, PS surface incl. out[3]/panalalloc/pgain/peer), `cmaster,*CMASTER`, raw TCI fn ptrs, `enum AudioCODEC`, `cm = {0}`.  **TxChannel RAII carve-out DELETED** (src/wdsp/TxChannel.{h,cpp} retired): verbatim no-arg create_xmtr opens the WDSP TXA channel (chid(1,0)=1) + TX analyzer (disp 1; pan analyzer = disp 0, no collision) + out[0..2] + create_ilv itself through the wdspcalls seam.  create_cmaster/destroy_cmaster verbatim per-stream loops (update[] CS + cmbuffs + in[] for all cmSTREAM streams; create_rcvr = deferred stub, RX hybrid).  xcmaster verbatim: update[] critical section restored, real stype/txid/chid, TCI-override memset restored; fexchange0 + monitor-mix xMixAudio (accept-gated, quiescent vs the 1-input WdspEngine mixer) + xilv live.  SetXcmInrate/SetCMAudioOutrate/SetRcvr-/SetXmtrChannelOutrate/SetRunPanadapter/SetAntiVOXSource* ported.  All deferred subsystem lines carried IN PLACE as reference text with DEFERRED tags.
+- **`src/wire/cmcomm.h`** — opaque verbatim twin typedefs ANB/NOB/EER/VOX/TXGAIN/ANALYZERS (tags match reference headers; completing a type later is source-compatible) + the umbrella-mapping note (.cpp files include explicit family headers — an include-list umbrella would be circular under #pragma once because the family headers include cmcomm.h for the base surface).
+- **main.cpp** — SetRadioStructure(2,1,1,1,0,…)/set_cmdefault_rates(48 k) config block BEFORE create_cmaster (derived ids match the live layout: chid(0,0)=0 = WdspEngine RX1 channel, chid(1,0)=1 = TX channel); create_xmtr() invoked in the QTimer block after resolve_wdsp_calls (the documented DEFERRED-CALLSITE accommodation); handler-1.5 = gated destroy_xmtr().  Consumer-side decls for the headerless PORT functions (test_ilv precedent).  RadioNet.cpp → enum AudioCODEC cases; scratch/test_ilv.cpp → verbatim `cmaster cm = {0};` globals.
+
+### Verification
+- Clean build, ZERO warnings (C4701 in getChannelOutputRate disabled function-wide with a documented verbatim-text-wins pragma — line-level suppress can't reach the code-gen-stage warning).
+- scratch/test_ilv.exe ALL PASS against the new verbatim globals.
+- Mechanical diff vs reference: CmBuffs.{h,cpp} / cmsetup.h / CMaster.h struct+decls+enum / all 10 fully-verbatim cmaster.c functions IDENTICAL (whitespace-normalized); cmsetup.cpp comment-only deltas; live-line-subset check PASS for the partially-deferred bodies.  Sole code accommodation: `(char *)""` at the XCreateAnalyzer call (C++ string-literal constness).
+
+### Behavior changes at startup (for the bench)
+- TWO cm_main pump threads now start (streams 0 + 1; stream 0 idles forever — no Inbound producer; the reference layout).  Stream rings sized from cmMAXInRate=384000 (in[] = 512 complex).
+- TX stays wire-quiescent: no Inbound() producer yet, pcm->OutboundTx null until P3.
+- destroy ordering: handler-1.5 destroy_xmtr() (gated) → handler-4 destroy_cmaster() = reference relative order.
+
+### NEXT
+1. **Operator HL2 RX-regression bench** (the P0.d gate): RX must still work; clean stop/restart; no startup/teardown hangs (watch the new pump threads join in destroy_cmbuffs).
+2. Then **P1 = obbuffs.c port** (TX-out seam, separate TU) → P2 sendOutbound audit → P3 netInterface registration (outbounds AFTER create_xmtr) → P4 Wire-LIVE (one commit, HL2 bench gate).
+
+---
+
 ## 2026-06-08 (Monday EOD — STAGE B aamix.c port COMPLETE + bench-validated)
 
 **Branch:** `tx-rebuild` HEAD = `533b06b`. Pushed to `origin/tx-rebuild` (0/0 in sync). `origin/main` deliberately untouched (different arc). **Backup:** `_backups/lyra-cpp-2026-06-08-aamix-stage-B-COMPLETE.bundle` (16 MB, `git bundle --all`).
