@@ -4,6 +4,30 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-12 (Friday PM — P1 obbuffs.c verbatim direct port SHIPPED)
+
+**Branch:** `tx-rebuild`, on top of `976062d` (the P0.d bench-PASS doc flip).
+
+### Shipped (one commit)
+- **NEW `src/wire/ObBuffs.{h,cpp}`** — reference obbuffs.{h,c} verbatim: `obb,*OBB` twin typedef + numRings/obMAXSIZE/OBB_MULT defines + the file-scope `_obpointers obp` four-alias bank + create/destroy/flush/OutBound/obdata/ob_main/SetOBRingOutsize.  The TX-OUT seam (WDSP output → ring → ob_main pump thread → sendOutbound → protocol packers); SEPARATE TU from cmbuffs (inbound-only).
+- The reference's own **2014-era idioms kept as shipped** (deliberately NOT harmonized to the cmbuffs sibling): calloc/free (not malloc0/_aligned_free), destroy-time `obp.pcbuff[0]==NULL` guard, obdata WITHOUT the MW0LGE CS wrap, the csOUT enter/leave pair at the top of the ob_main loop, the `out` work buffer inside the struct.
+- **Sole deferred line:** `sendOutbound(id, a->out);` in ob_main — the reference defines it at network.c:1237 (the P1 branch :1285-1340 is the outIQbufp/outLRbufp + hsendIQSem/hsendLRSem/hobbuffsRun handshake WriteMainLoop_HL2 consumes) = **P2 scope**.  Carried in place as reference text with a DEFERRED tag; decl in ObBuffs.h verbatim.
+- Provenance check resolved before code: the "OutBound at network.c:1285-1340" citation in older RadioNet.cpp comments is the PROTOCOL_1 **branch of sendOutbound**, not a second OutBound — obbuffs.c's OutBound is the one registered via SendpOutboundRx/Tx (P3).
+- Compiler accommodations: same set as CmBuffs.cpp (suppress 4312/4189/4311/4302 on the thread-arg casts + `(AVRT_PRIORITY) 2`), each marked inline.
+
+### Verification
+- Clean build, ZERO warnings.
+- Mechanical diff vs reference: **ObBuffs.cpp IDENTICAL** (code lines, whitespace-normalized); ObBuffs.h sole delta = the reference's include-guard `#define _obbuffs_h`, replaced by `#pragma once` (documented packaging difference, same as CmBuffs.h).  Live-line-subset PASS on both.
+
+### Wire impact
+- **NONE — the TU is dormant.**  No Lyra caller of create_obbuffs exists until P3/P4 (the reference creates rings 0/1 in netInterface.c:1856-1857).  No new threads at startup, wire bytes unchanged.  An operator RX smoke at convenience is prudent (binary changed) but this touches no live path.
+
+### NEXT
+1. **P2 = sendOutbound / sendProtocol1Samples fidelity audit** of the dormant wire layer (reconcile network.c:1237-1341 + networkproto1.c sendProtocol1Samples vs Lyra's Step-14-era OutboundRing/MetisFrame/Ep2SendThread surface), then restore the ob_main hand-off verbatim.
+2. P3 netInterface registration (SendpOutboundRx/Tx(OutBound) — AFTER create_xmtr, the verbatim setters have NO null guards) → P4 Wire-LIVE (one commit, full HL2 bench gate).
+
+---
+
 ## 2026-06-12 (Friday — P0.d CmBuffs/CMaster/cmsetup verbatim direct port SHIPPED + ✅ HL2 RX-regression bench PASSED)
 
 **Branch:** `tx-rebuild` HEAD = `afc7950`, pushed to `origin/tx-rebuild`.

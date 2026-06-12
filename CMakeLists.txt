@@ -75,6 +75,14 @@ qt_add_executable(lyra
     # and its operator-rejected deviations.
     src/wire/CmBuffs.h
     src/wire/CmBuffs.cpp
+    # P1 — obbuffs.{h,c} DIRECT PORT (verbatim: `obb, *OBB` twin
+    # typedef, file-scope obp four-alias bank, calloc/free 2014-era
+    # idioms kept as the reference ships them).  The TX-OUT seam:
+    # OutBound producer → ring → ob_main pump → sendOutbound
+    # (DEFERRED to P2).  Dormant until P3 registers OutBound and a
+    # caller creates the rings.
+    src/wire/ObBuffs.h
+    src/wire/ObBuffs.cpp
     # P0.d — cmsetup.{h,c} DIRECT PORT (verbatim: the five cmMAX*
     # sizing macros, the stream/channel-id helpers rxid/txid/sp0id/
     # stype/chid/inid/mixinid/getbuffsize, SetRadioStructure +
