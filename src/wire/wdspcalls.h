@@ -34,6 +34,7 @@
 #pragma once
 
 #include "wire/resample.h"   // RESAMPLE — the WDSP public resampler ABI typedef
+#include "wire/cmcomm.h"     // EER — the WDSP public eer ABI typedef (verbatim at P2.a)
 
 namespace lyra::wire {
 
@@ -98,6 +99,27 @@ extern void (*XCreateAnalyzer)(int disp, int* success, int m_size,
                                int m_LO, int m_stitch, char* app_data_path);
 extern void (*DestroyAnalyzer)(int disp);
 extern void (*Spectrum0)(int run, int disp, int ss, int LO, double* pbuff);
+
+// ---- eer (create_xmtr / xcmaster / SetXmtrChannelOutrate dependency) ----
+// wdsp/eer.h:51-75 (dllexport set; struct verbatim at wire/cmcomm.h
+// since P2.a).  All five verified present in the bundled wdsp.dll
+// exports (PE export-table scan 2026-06-12).  The reference creates
+// eer run=0 on HL2 (no EER hardware) — the object exists so the
+// `peer->run` derefs in sendOutbound/sendProtocol1Samples are valid:
+//   eer.h:51  EER  create_eer (int run, int size, double* in, double* out,
+//                 double* outM, int rate, double mgain, double pgain,
+//                 int rundelays, double mdelay, double pdelay, int amiq);
+//   eer.h:53  void destroy_eer (EER a);
+//   eer.h:57  void xeer (EER a);
+//   eer.h:73  void pSetEERSize (EER a, int size);
+//   eer.h:75  void pSetEERSamplerate (EER a, int rate);
+extern EER  (*create_eer)(int run, int size, double* in, double* out,
+                          double* outM, int rate, double mgain, double pgain,
+                          int rundelays, double mdelay, double pdelay, int amiq);
+extern void (*destroy_eer)(EER a);
+extern void (*xeer)(EER a);
+extern void (*pSetEERSize)(EER a, int size);
+extern void (*pSetEERSamplerate)(EER a, int rate);
 
 // ---- PureSignal (calcc.c exports; committed feature, v0.3 consumer) ------
 // Signatures harvested from wdsp/calcc.c definition sites (PORT-

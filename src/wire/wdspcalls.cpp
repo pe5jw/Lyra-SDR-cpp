@@ -38,6 +38,12 @@ int  (*xresample)(RESAMPLE) = nullptr;
 void (*XCreateAnalyzer)(int, int*, int, int, int, char*) = nullptr;
 void (*DestroyAnalyzer)(int) = nullptr;
 void (*Spectrum0)(int, int, int, int, double*) = nullptr;
+EER  (*create_eer)(int, int, double*, double*, double*, int, double,
+                   double, int, double, double, int) = nullptr;
+void (*destroy_eer)(EER) = nullptr;
+void (*xeer)(EER) = nullptr;
+void (*pSetEERSize)(EER, int) = nullptr;
+void (*pSetEERSamplerate)(EER, int) = nullptr;
 void (*pscc)(int, int, double*, double*) = nullptr;
 void (*psccF)(int, int, float*, float*, float*, float*, int, int) = nullptr;
 void (*SetPSRunCal)(int, int) = nullptr;
@@ -83,6 +89,11 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(XCreateAnalyzer)      \
     X(DestroyAnalyzer)      \
     X(Spectrum0)            \
+    X(create_eer)           \
+    X(destroy_eer)          \
+    X(xeer)                 \
+    X(pSetEERSize)          \
+    X(pSetEERSamplerate)    \
     X(pscc)                 \
     X(psccF)                \
     X(SetPSRunCal)          \

@@ -91,8 +91,18 @@ void *malloc0 (int size);
 //               (via ChannelMaster/znob.h wrappers; wdsp.dll-side impl)
 //   NOB       — wdsp/nobII.h:30-79        `typedef struct _nob {...} nob, *NOB;`
 //               (via ChannelMaster/znobII.h wrappers; wdsp.dll-side impl)
-//   EER       — wdsp/eer.h:30-49          `typedef struct _eer {...} eer, *EER;`
-//               (wdsp.dll-side impl; HL2 has no EER hardware)
+//   EER       — COMPLETED at P2.a (2026-06-12): full verbatim
+//               struct below (wdsp/eer.h:30-49); impl stays
+//               wdsp.dll-side, reached via the wdspcalls seam
+//               (create_eer/destroy_eer/xeer/pSetEER*).  HL2 has
+//               no EER hardware — the reference creates it run=0
+//               (cmaster.c:212-224) so the object EXISTS and the
+//               `peer->run` derefs in sendOutbound (network.c:1291)
+//               + sendProtocol1Samples (networkproto1.c:1222) are
+//               valid (always false on HL2).
+//   DELAY     — wdsp/delay.h:32-59       `typedef struct _delay {...} delay, *DELAY;`
+//               (opaque; the eer struct carries DELAY pointer
+//               fields; delay impl is wdsp.dll-side)
 //   VOX       — ChannelMaster/vox.h:30-42 `typedef struct _vox {...} vox, *VOX;`
 //               (vox.c unported — VOX is v0.2.3 scope)
 //   TXGAIN    — ChannelMaster/txgain.h:30-43
@@ -107,10 +117,34 @@ void *malloc0 (int size);
 // so completing the type later is source-compatible).
 typedef struct _anb anb, *ANB;
 typedef struct _nob nob, *NOB;
-typedef struct _eer eer, *EER;
+typedef struct _delay delay, *DELAY;
 typedef struct _vox vox, *VOX;
 typedef struct _txgain txgain, *TXGAIN;
 typedef struct _analyzers analyzers, *ANALYZERS;
+
+// Reference wdsp/eer.h:30-49 (verbatim — completed at P2.a; was the
+// opaque `typedef struct _eer eer, *EER;` line above):
+
+typedef struct _eer
+{
+	int run;
+	int amiq;
+	int size;
+	double* in;
+	double* out;
+	double* outM;
+	int rate;
+	double mgain;
+	double pgain;
+	int rundelays;
+	double mdelay;
+	double pdelay;
+	DELAY mdel;
+	DELAY pdel;
+	CRITICAL_SECTION cs_update;
+	double *legacy;																										////////////  legacy interface - remove
+	double *legacyM;																									////////////  legacy interface - remove
+} eer, *EER;
 
 }  // namespace lyra::wire
 

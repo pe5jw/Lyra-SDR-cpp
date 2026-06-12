@@ -4,6 +4,28 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-12 (Friday PM-3 — P2 audit complete + P2.a eer completion SHIPPED)
+
+**Branch:** `tx-rebuild`, on top of `2897756`.
+
+### P2 fidelity audit (the deliverable that scopes P2.b/c/P4)
+- **Reference TX-out chain (HL2 P1), fully read:** `ob_main` -> `sendOutbound` (network.c:1237; P1 branch :1285-1340) — id 1 memcpys 126 complex into `prn->outIQbufp` + Release(hsendIQSem) + Wait(hobbuffsRun[0]); id 0 -> `outLRbufp` + hsendLRSem + hobbuffsRun[1] -> `sendProtocol1Samples` thread (networkproto1.c:1204-1267): WaitForMultipleObjects(both, TRUE) -> eer overwrite if `peer->run && XmitBit` -> `!XmitBit => memset outIQbufp` -> swap_audio_channels -> 16-bit BE quantize + HL2 CW-bit overlay into `OutBufp` -> WriteMainLoop_HL2 -> MetisWriteFrame -> Release both hobbuffsRun.  Resources: bufs calloc'd netInterface.c:1606-1608; semaphore quartet created in StartAudio :68-71; obbuffs rings 0/1 created in UpdateRadioProtocolSampleSize :1856-1857; eer created run=0 per xmtr (cmaster.c:212-224).
+- **Lyra dormant Step-14 surface:** functionally-parallel idiom translations predating the verbatim mandate — prn buffers are std::vector (RadioNet.h:552-554), the semaphore quartet became OutboundRing's bool+cv, Ep2SendThread is the sendProtocol1Samples rewrite.  `XmitBit` is already verbatim (extern int, RadioNet.h:733).  Disposition: re-port verbatim, retire the translations at P4 Wire-LIVE.
+- **Landmine found:** BOTH reference functions deref `pcm->xmtr[0].peer->run`, but P0.d had deferred the eer creation — `peer` was NULL.  That made P2.a unambiguous and first.
+
+### P2.a SHIPPED — eer completion (verbatim)
+- `wire/cmcomm.h`: opaque `eer` typedef replaced by the FULL verbatim struct (wdsp/eer.h:30-49, mechanical diff IDENTICAL); opaque `DELAY` twin typedef added (wdsp/delay.h:32-59).
+- `wire/wdspcalls.{h,cpp}`: +5 seam entries — create_eer / destroy_eer / xeer / pSetEERSize / pSetEERSamplerate (signatures verbatim from eer.h:51-75; all five verified present in the bundled wdsp.dll via PE export-table scan).
+- `wire/CMaster.cpp`: all four deferred eer sites RESTORED verbatim — create_xmtr `create_eer(run=0, ...)` 12-arg block (cmaster.c:212-224); destroy_xmtr `destroy_eer` (:262, after destroy_ilv per reference order); xcmaster `xeer(pcm->xmtr[tx].peer)` (no-op at run=0 with in==out — verified in eer.c:86-122); SetXmtrChannelOutrate pSetEERSamplerate/pSetEERSize.  Restored-lines verbatim-subset check PASS (18 lines).
+- Runtime impact: create_xmtr now also creates/destroys one run=0 eer object per xmtr (heap + CS only); xeer in the TX pump body never executes today (stream-1 pump has no producer).  RX path untouched.  Clean build, zero warnings.
+
+### NEXT (P2 continues)
+1. **P2.b** — prn outbound surface verbatim: `outLRbufp`/`outIQbufp`/`OutBufp` std::vector -> reference `double*`/`char*` calloc fields (netInterface.c:1606-1608) + the verbatim HANDLE quartet fields (hsendLRSem/hsendIQSem/hsendEventHandles[2]/hobbuffsRun[2], dormant until P4's StartAudio equivalent); callers bend (OutboundRing/Ep2SendThread `.data()` sites).
+2. **P2.c** — `wire/Network.cpp` (partial network.c port): `sendOutbound` verbatim (P1 branch LIVE, ETH branch carried as DEFERRED reference text — Protocol 2/ANAN is v0.4 scope) + restore the DEFERRED `sendOutbound(id, a->out)` call in wire/ObBuffs.cpp ob_main.
+3. Then P3 (outbound registrations AFTER create_xmtr) -> P4 Wire-LIVE (one commit, HL2 bench gate; retires the OutboundRing/Ep2SendThread translations).
+
+---
+
 ## 2026-06-12 (Friday PM — P1 obbuffs.c verbatim direct port SHIPPED)
 
 **Branch:** `tx-rebuild`, on top of `976062d` (the P0.d bench-PASS doc flip).

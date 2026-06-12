@@ -65,8 +65,15 @@
 //     bodies would double-open WDSP channel chid(0,0)=0.
 //   * dexp/VOX + anti-vox mixer    — VOX is v0.2.3 scope.
 //   * txgain (Penelope)            — reference run=0 on HL2; PS v0.3.
-//   * eer                          — reference run=0; HL2 has no EER hw.
 //   * sidetone                     — CW v0.2.2.
+//
+// eer was on this list through P1; RESTORED VERBATIM at P2.a
+// (2026-06-12): create_eer(run=0)/destroy_eer/xeer/pSetEER* live
+// via the wdspcalls seam (struct verbatim at wire/cmcomm.h).  HL2
+// has no EER hardware — run stays 0, xeer is a no-op (in==out),
+// but the object EXISTS so the `peer->run` derefs in the P2
+// sendOutbound / P4 sendProtocol1Samples ports are valid, exactly
+// as the reference ships it (cmaster.c:212-224).
 //   * pipe / sync / cmasio / ivac / tci / znob / znobII /
 //     analyzers(.c) / amix        — unported ChannelMaster units.
 //   * the id-0 RX audio mixer      — WdspEngine constructs it
@@ -217,13 +224,20 @@ void create_xmtr()
 		//   pcm->xmtr[i].pgain = create_txgain(0, 0,
 		//   	pcm->xmtr[i].ch_outsize, pcm->xmtr[i].out[0],
 		//   	pcm->xmtr[i].out[0], 1.0, 1.0, 0, 50);
-		// DEFERRED [eer — reference run=0; HL2 has no EER hardware]
-		// — reference cmaster.c:212-225:
-		//   pcm->xmtr[i].peer = create_eer (0,
-		//   	pcm->xmtr[i].ch_outsize, pcm->xmtr[i].out[0],
-		//   	pcm->xmtr[i].out[0], pcm->xmtr[i].out[1],
-		//   	pcm->xmtr[i].ch_outrate, 1.0, 1.0, 0, 0.0, 0.0, 1);
-
+		// eer
+		pcm->xmtr[i].peer = create_eer (
+			0,									// run
+			pcm->xmtr[i].ch_outsize,			// size
+			pcm->xmtr[i].out[0],				// in
+			pcm->xmtr[i].out[0],				// out
+			pcm->xmtr[i].out[1],				// outM
+			pcm->xmtr[i].ch_outrate,			// sample rate
+			1.0,								// mgain
+			1.0,								// pgain
+			0,									// rundelays
+			0.0,								// mdelay
+			0.0,								// pdelay
+			1);									// amiq
 		// interleave (for eer)
 		pcm->xmtr[i].pilv = create_ilv(
 			0,									// run
@@ -254,8 +268,7 @@ void destroy_xmtr()
 		// DEFERRED [sidetone — CW v0.2.2]:
 		//   destroy_sidetone(i);
 		destroy_ilv (pcm->xmtr[i].pilv);
-		// DEFERRED [eer — HL2 N/A]:
-		//   destroy_eer (pcm->xmtr[i].peer);
+		destroy_eer (pcm->xmtr[i].peer);
 		// DEFERRED [txgain — PS v0.3]:
 		//   destroy_txgain (pcm->xmtr[i].pgain);
 		DestroyAnalyzer (inid (1, i));
@@ -418,8 +431,7 @@ void xcmaster (int stream)
 		xMixAudio (0, 0, chid (stream, 0), pcm->xmtr[tx].out[2]);								// mix monitor audio
 		// DEFERRED [txgain — PS v0.3]:
 		//   xtxgain (pcm->xmtr[tx].pgain);															// Gain for Penelope & amp_protect
-		// DEFERRED [eer — HL2 N/A]:
-		//   xeer (pcm->xmtr[tx].peer);																// EER transmission
+		xeer (pcm->xmtr[tx].peer);																// EER transmission
 		xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);											// interleave EER, call Outbound()
 		break;
 
@@ -628,9 +640,8 @@ void SetXmtrChannelOutrate (int xmtr_id, int rate, int state)	// 2014-11-24:  Ca
 																			//
 	// DEFERRED [txgain — PS v0.3]:
 	//   SetTXGainSize(pcm->xmtr[xmtr_id].pgain, size);						// set size for Penelope Gain Block
-	// DEFERRED [eer — HL2 N/A]:
-	//   pSetEERSamplerate(pcm->xmtr[xmtr_id].peer, rate);					// set rate for EER
-	//   pSetEERSize(pcm->xmtr[xmtr_id].peer, size);							// set size for EER
+	pSetEERSamplerate(pcm->xmtr[xmtr_id].peer, rate);						// set rate for EER
+	pSetEERSize(pcm->xmtr[xmtr_id].peer, size);								// set size for EER
 	pSetILVInsize(pcm->xmtr[xmtr_id].pilv, size);							// set size for Interleave & output
 	// PIPE - set Scope (leave in C# since scope is there)
 	// DEFERRED [ivac unported]:
