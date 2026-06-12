@@ -36,6 +36,11 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 - Power-outage recheck: all 4 edited files probe-verified intact, diff-vs-HEAD = exactly the P3 hunks, forced rebuild of the touched TUs clean (sole warning = the pre-existing hl2_stream C4456), mechanical diffs re-PASSED post-outage.
 - [DONE] **OPERATOR HL2 BENCH PASSED (same day)**: "rx fine" — RX working on the P3 lifecycle (once-per-process create_rnet, per-session obbuffs rings + 2 idle pump threads, TX registration live).  **P3 gate cleared; P4 Wire-LIVE unblocked.**
 
+### ⚠ Operator-flagged near-miss + bench-discipline correction (2026-06-12)
+- Operator accidentally pressed TUN a few sessions back and got REAL RF OUT, despite the rebuild-arc bench notes repeatedly saying "TX stays wire-quiescent / RX-only."  Code-verified: those statements were true of the NEW direct-port chain only.  The OLD hardware-validated TX-0c path — TUN DC-injection at the EP2 packer (hl2_stream.cpp:~2516) + the requestMox FSM + ATT-on-TX — was NEVER part of the TX rip (only the SSB voice DSP subsystem was removed) and has been LIVE on tx-rebuild the whole time.  RF required the operator's own persisted PA-enable opt-in + drive settings (the deliberate-arm gate worked as designed; it was armed from the first-RF benches and persisted).
+- **Operator decision: LEAVE IT** — it is the proven path, gated behind the PA-enable opt-in; P4 replaces it under its own full bench.  (Disarm anytime: un-tick Enable PA in Settings.)
+- **Discipline correction going forward:** every direct-port bench gate now includes an explicit "TX state unchanged" line (TUN/MOX behavior + PA-enable posture), and "RX-only / wire-quiescent" is reserved for statements about the WHOLE wire, not just the new chain.  Applies to the P4 gate and onward.
+
 ### P2 COMPLETE.  NEXT
 1. **P3** — netInterface outbound registrations: `SendpOutboundRx(OutBound)` / `SendpOutboundTx(OutBound)` per netInterface.c:1749-1761 — MUST register AFTER create_xmtr (verbatim setters have NO null guards); plus the create_obbuffs(0/1) sites (netInterface.c:1856-1857) at the Lyra equivalent of UpdateRadioProtocolSampleSize.
 2. **P4** — Wire-LIVE switchover (one commit, full HL2 bench gate): verbatim sendProtocol1Samples thread + the semaphore-quartet creation + WriteMainLoop_HL2 hand-off; retires the OutboundRing/Ep2SendThread cv translations.
