@@ -5,7 +5,7 @@
 // but not wired into HL2Stream until §10.3 step 14.
 
 #include "wire/RadioNet.h"
-#include "wire/CMaster.h"    // SendpOutboundRx/Tx + AudioCodecId for create_rnet wire-up
+#include "wire/CMaster.h"    // SendpOutboundRx/Tx + enum AudioCODEC for create_rnet wire-up
 #include "wire/RbpFilter.h"  // prbpfilter / prbpfilter2 allocator targets
 
 namespace lyra::wire {
@@ -268,7 +268,7 @@ void create_rnet() {
     // The WASAPI branch matches reference's `// not implmented`
     // empty body.
     switch (pcm->audioCodecId) {
-    case AudioCodecId::HERMES:
+    case HERMES:
         // Stage B.6.b-fix (2026-06-08): the Stage A NO-OP stub
         // registration that USED to live here is REMOVED.  Cause:
         // `SendpOutboundRx(stub)` runs `SetAAudioMixOutputPointer(
@@ -292,12 +292,12 @@ void create_rnet() {
         // switching needs to be reference-faithful AT openRx1, not
         // at create_rnet.
         break;
-    case AudioCodecId::ASIO:
+    case ASIO:
         // FIXME (Stage E+ cmasio.c port): pass asio_out wrapper.
         // For now: matches reference WASAPI empty branch (no
         // registration; ASIO path doesn't drive the wire).
         break;
-    case AudioCodecId::WASAPI:
+    case WASAPI:
         // not implmented — matches reference comment verbatim.
         break;
     }

@@ -39,8 +39,8 @@
 // The test's own cmaster globals (CMaster.h declares them extern;
 // CMaster.cpp is deliberately NOT linked here).
 namespace lyra::wire {
-CMasterState  cm;
-CMasterState* pcm = &cm;
+cmaster cm = {0};
+CMASTER  pcm = &cm;
 
 // The reference defines these in ilv.c as PORT (dllexport) WITHOUT
 // an ilv.h declaration — the external consumer (Thetis C# side)

@@ -79,4 +79,69 @@ typedef double complex[2];
 // free site (e.g. ilv.c:53-54).
 void *malloc0 (int size);
 
+// ---------------------------------------------------------------
+// P0.d — opaque twin typedefs for the deferred-subsystem types the
+// reference `_cmaster` struct (cmaster.h:39-99) carries as pointer
+// fields.  Each is a VERBATIM copy of the reference twin-typedef
+// line with the struct BODY elided (the implementations are not
+// yet ported; a pointer field only needs the incomplete type).
+// The reference reaches these via its cmcomm.h include umbrella:
+//
+//   ANB       — wdsp/nob.h:30-63          `typedef struct _anb {...} anb, *ANB;`
+//               (via ChannelMaster/znob.h wrappers; wdsp.dll-side impl)
+//   NOB       — wdsp/nobII.h:30-79        `typedef struct _nob {...} nob, *NOB;`
+//               (via ChannelMaster/znobII.h wrappers; wdsp.dll-side impl)
+//   EER       — wdsp/eer.h:30-49          `typedef struct _eer {...} eer, *EER;`
+//               (wdsp.dll-side impl; HL2 has no EER hardware)
+//   VOX       — ChannelMaster/vox.h:30-42 `typedef struct _vox {...} vox, *VOX;`
+//               (vox.c unported — VOX is v0.2.3 scope)
+//   TXGAIN    — ChannelMaster/txgain.h:30-43
+//               `typedef struct _txgain {...} txgain, *TXGAIN;`
+//               (txgain.c unported — Penelope gain, reference run=0 on HL2)
+//   ANALYZERS — ChannelMaster/analyzers.h:30-47
+//               `typedef struct _analyzers {...} analyzers, *ANALYZERS;`
+//               (analyzers.c unported — Stage E.1 / PS v0.3 surface)
+//
+// When a subsystem ports, its full verbatim header replaces the
+// opaque line here (the typedef tags match the reference exactly,
+// so completing the type later is source-compatible).
+typedef struct _anb anb, *ANB;
+typedef struct _nob nob, *NOB;
+typedef struct _eer eer, *EER;
+typedef struct _vox vox, *VOX;
+typedef struct _txgain txgain, *TXGAIN;
+typedef struct _analyzers analyzers, *ANALYZERS;
+
 }  // namespace lyra::wire
+
+// ---------------------------------------------------------------
+// P0.d — reference cmcomm.h include-umbrella mapping (cmcomm.h:34-53).
+// The reference cmcomm.h includes the WHOLE ChannelMaster family and
+// every .c includes only cmcomm.h.  Lyra-cpp CANNOT mirror that
+// umbrella directly: the ported family headers each include
+// wire/cmcomm.h for the base surface above (HANDLE / PORT / complex
+// / malloc0), so an include-list here would be circular under
+// #pragma once whenever a family header is the first include of a
+// TU.  Instead each ported .cpp includes the specific family
+// headers it consumes — a PACKAGING difference only.  The mapping:
+//
+//   aamix.h              -> wire/AAMix.h        (ported, P0.c)
+//   amix.h               -> [unported]
+//   analyzers.h          -> opaque ANALYZERS above
+//   bandwidth_monitor.h  -> [unported]
+//   cmasio.h             -> [unported — no Lyra ASIO]
+//   cmaster.h            -> wire/CMaster.h      (ported, P0.d)
+//   cmbuffs.h            -> wire/CmBuffs.h      (ported, P0.d)
+//   cmsetup.h            -> wire/cmsetup.h      (ported, P0.d)
+//   ilv.h                -> wire/ILV.h          (ported, P0.b)
+//   ivac.h               -> [unported]
+//   pipe.h               -> [unported]
+//   tci.h                -> [unported — Lyra TCI lives in tci_server]
+//   ring.h               -> [unported]
+//   router.h             -> wire/Router.h       (ported, Phase B)
+//   sidetone.h           -> [unported — CW v0.2.2]
+//   sync.h               -> [unported]
+//   txgain.h             -> opaque TXGAIN above
+//   cmUtilities.h        -> [unported]
+//   vox.h                -> opaque VOX above
+//   znob.h / znobII.h    -> opaque ANB / NOB above

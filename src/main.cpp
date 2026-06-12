@@ -20,10 +20,28 @@
 // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  TX wiring below collapses
 // to a stub until the new components land.
 #include "wdsp_native.h"
-#include "wdsp/TxChannel.h"  // Stage 7.2 — TX-1 OpenChannel / SetChannelState lifecycle
 #include "wire/ILV.h"       // P0.b direct port — reference ilv.h verbatim (pcm->xmtr[].pilv)
-#include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() + pcm->xmtr[].pTxChannel direct assignment
+#include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() / pcm
+#include "wire/cmsetup.h"   // P0.d direct port — reference cmsetup.h verbatim
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
+
+// P0.d — consumer-side declarations for the PORT-exported
+// ChannelMaster functions main.cpp calls.  The reference exports
+// these via dllexport with NO header declaration (the C# console
+// declares them consumer-side via DllImport); Lyra consumers
+// re-declare them the same way (scratch/test_ilv.cpp precedent for
+// the ILV PORT setters).  Definitions: wire/cmsetup.cpp
+// (SetRadioStructure / set_cmdefault_rates, cmsetup.c:29-86) and
+// wire/CMaster.cpp (create_xmtr / destroy_xmtr, cmaster.c:112-271).
+namespace lyra::wire {
+void SetRadioStructure (int cmSTREAM, int cmRCVR, int cmXMTR,
+	int cmSubRCVR, int cmNspc, int* cmSPC, int* cmMAXInbound,
+	int cmMAXInRate, int cmMAXAudioRate, int cmMAXTxOutRate);
+void set_cmdefault_rates (int* xcm_inrates, int aud_outrate,
+	int* rcvr_ch_outrates, int* xmtr_ch_outrates);
+void create_xmtr();
+void destroy_xmtr();
+}  // namespace lyra::wire
 
 #include <algorithm>
 #include <atomic>
@@ -225,13 +243,55 @@ int main(int argc, char *argv[])
     // (QQmlEngine refuses cross-thread connect from QML).
     auto *discovery = new lyra::ipc::HL2Discovery(&app);
 
+    // P0.d — radio-structure configuration, the reference's locked
+    // pre-create contract: "set radio structure, call this first"
+    // (SetRadioStructure, cmsetup.c:29) then "set default sample
+    // rates, call this before 'create'" (set_cmdefault_rates,
+    // cmsetup.c:58).  The reference's C# console drives these via
+    // DllImport before CreateRadio(); Lyra's operating-point VALUES
+    // are configuration (not ported code):
+    //
+    //   cmSTREAM   = 2  — stream 0 = RX1 (stream exists per the
+    //                     reference layout; its pump idles because
+    //                     Lyra's RX dispatch is router->WdspEngine,
+    //                     the operator-approved hybrid — no Inbound()
+    //                     producer feeds it), stream 1 = TX.
+    //   cmRCVR     = 1, cmXMTR = 1, cmSubRCVR = 1, cmNspc = 0.
+    //                     Derived ids then match the live channel
+    //                     layout exactly: chid(0,0)=0 (WdspEngine RX1
+    //                     channel), chid(1,0)=1 (TX channel),
+    //                     inid(1,0)=1, txid(1)=0.
+    //   cmMAXInbound  = 256/stream (max samples per Inbound() call —
+    //                     comfortably above the EP6 mic batch).
+    //   cmMAXInRate   = 384000 (HL2 max IQ rate).
+    //   cmMAXAudioRate / cmMAXTxOutRate = 48000 (AK4951 codec rate /
+    //                     fixed HL2 TX out rate, CLAUDE.md §3.5).
+    //   xcm_inrates   = 48000 per stream (TX mic-in rate; stream 0
+    //                     unused by the pump), audio out 48000,
+    //                     rcvr/xmtr ch_outrates 48000 -> every
+    //                     derived size = getbuffsize(48000) = 64.
+    {
+        int cmSPC[cmMAXspc]   = {0, 0};
+        int cmMAXInbound[2]   = {256, 256};
+        lyra::wire::SetRadioStructure(2, 1, 1, 1, 0, cmSPC,
+                                      cmMAXInbound, 384000, 48000, 48000);
+        int xcm_inrates[2]    = {48000, 48000};
+        int rcvr_outrates[1]  = {48000};
+        int xmtr_outrates[1]  = {48000};
+        lyra::wire::set_cmdefault_rates(xcm_inrates, 48000,
+                                        rcvr_outrates, xmtr_outrates);
+    }
+
     // Reference cmaster.c:273-320 — `create_cmaster()` is the central
-    // process-wide CMaster lifecycle init.  Ports the structure of the
-    // reference call + enumerates every deferred subsystem inline (see
-    // `src/wire/CMaster.cpp` for the per-Thetis-line audit trail).
-    // The router create at cmaster.c:316 is inside this call.  Phase B
-    // 2026-06-09 replaced the bare `lyra::wire::create_router(0)` that
-    // previously lived here as a stand-in.
+    // process-wide CMaster lifecycle init (P0.d verbatim port; every
+    // deferred subsystem is enumerated inline in src/wire/CMaster.cpp
+    // with the reference text carried in place).  The router create at
+    // cmaster.c:316 is inside this call; the per-stream CMB rings +
+    // pump threads + in[] buffers + update[] critical sections are
+    // created here per the reference per-stream loop.  create_xmtr()
+    // is the one DEFERRED-CALLSITE accommodation — it runs in the
+    // QTimer block below AFTER wdsp->load() + resolve_wdsp_calls()
+    // (its OpenChannel/XCreateAnalyzer calls need the resolved seam).
     //
     // Must be called BEFORE HL2Stream construction (which wires the
     // EP6 thread to router_instance(0) on open) AND BEFORE the
@@ -330,32 +390,34 @@ int main(int argc, char *argv[])
     //      running; the captured `this` is also safe — no reader
     //      can be inside the lambda once close() returns).
     lyra::dsp::Hl2Ep6MicSource *micSource = nullptr;
-    // Stage 7.2 (2026-06-09) — TxChannel ptr at outer scope for the
-    // aboutToQuit handler-1.5 (close + delete BEFORE handler-2
-    // stream->close).  Reference cmaster.c:112-253 `create_xmtr`
-    // (called inside create_cmaster:288); Lyra-cpp defers the
-    // construction to the QTimer block below because WDSP DLL must
-    // be loaded first (Lyra runtime-loads WDSP; Thetis statically
-    // links).  Captured by reference in the QTimer lambda so the
-    // handler-1.5 lambda sees whichever value is live at app exit
-    // (nullptr if wdsp->load() failed or operator closed before the
-    // timer fired -- `delete nullptr` is a well-defined no-op).
+    // P0.d (2026-06-12) — create_xmtr()/destroy_xmtr() gate flag at
+    // outer scope for the aboutToQuit handler-1.5.  The reference
+    // calls create_xmtr() inside create_cmaster (cmaster.c:288);
+    // Lyra-cpp's DEFERRED-CALLSITE accommodation (documented in
+    // wire/CMaster.cpp's preamble) invokes it from the QTimer block
+    // below AFTER wdsp->load() + resolve_wdsp_calls() succeed — the
+    // verbatim body's OpenChannel/XCreateAnalyzer calls resolve
+    // through the wire/wdspcalls.h seam and need the loaded DLL.
+    // The flag gates the matching destroy_xmtr() (handler-1.5) so a
+    // failed/never-run create never tears down through unresolved
+    // seam pointers.
     //
-    // Reference posture preserved: at create-time the TX channel is
-    // OPEN but NOT STARTED (TXA's run flag stays 0 until keydown;
-    // cmaster.c:178 OpenChannel sets state=0 = stopped).  Lyra's
-    // TxChannel::open() matches -- start() is invoked later via the
-    // TxControl.start callback at the keydown FSM step (Phase A
-    // CORRECTED-ordering puts that in fsmKeydownSettled AFTER
-    // rf_delay; will land in Stage 7.4 TxControl wiring).
-    lyra::wdsp::TxChannel *txChannel = nullptr;
-    // P0.b (2026-06-11) — NO local ILV pointer.  The ILV lives where
-    // the reference keeps it: pcm->xmtr[0].pilv, created by
-    // create_xmtr (cmaster.c:226-232) and torn down by destroy_xmtr
-    // (cmaster.c:258).  main.cpp never holds the ILV — exactly the
-    // reference shape.  SendpOutboundTx (P3) wires the raw Outbound
-    // fn ptr via SetILVOutputPointer(0, ...) AFTER create_xmtr, per
-    // the reference's registration ordering.
+    // The former `TxChannel` RAII carve-out is GONE: P0.d's verbatim
+    // create_xmtr opens the WDSP TXA channel itself (cmaster.c:
+    // 177-190 — OpenChannel(chid(inid(1,0),0)=1, 64, 4096, 48000,
+    // 96000, 48000, type=1, state=0, ...)) and allocates the
+    // xmtr[i].out[0..2] buffers (cmaster.c:126-127).  Reference
+    // posture preserved: at create-time the TX channel is OPEN but
+    // NOT STARTED (state=0; the keydown FSM keys it later via
+    // SetChannelState through the seam).
+    //
+    // No local ILV pointer either (P0.b): the ILV lives at
+    // pcm->xmtr[0].pilv, created by create_xmtr (cmaster.c:226-232)
+    // and torn down by destroy_xmtr (cmaster.c:258).  SendpOutboundTx
+    // (P3) wires the raw Outbound fn ptr via SetILVOutputPointer(0,
+    // ...) AFTER create_xmtr, per the reference's registration
+    // ordering.
+    bool xmtrCreated = false;
 
     // Task #40 — TX-triggered zombie shutdown watchdog.  REGISTERED
     // FIRST so it fires before any teardown handler and the
@@ -408,48 +470,39 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-1 EXIT");
     });
 
-    // Stage 7.2 (2026-06-09) — handler-1.5: TxChannel close + delete.
+    // P0.d (2026-06-12) — handler-1.5: destroy_xmtr().
     //
-    // Reference cmaster.c:255-271 `destroy_xmtr` — closes the WDSP TXA
-    // channel (CloseChannel inside cmaster.c:265, NO preceding
+    // Reference cmaster.c:255-271 `destroy_xmtr` — destroys the ILV
+    // (destroy_ilv), the TX analyzer (DestroyAnalyzer), closes the
+    // WDSP TXA channel (CloseChannel at cmaster.c:265, NO preceding
     // SetChannelState dmode=1 per the reference design; the blocking-
-    // flush stop belongs at keyup not at destroy-time) + frees the
-    // out[0..2] buffers + tears down dexp/ilv/eer/txgain/sidetone.
+    // flush stop belongs at keyup not at destroy-time) and frees the
+    // xmtr[i].out[0..2] buffers — the verbatim P0.d port in
+    // wire/CMaster.cpp does all four (the dexp/eer/txgain/sidetone
+    // lines stay DEFERRED with their subsystems).
     //
     // Lyra ordering: between handler-1 (clears stream->registerTx{
     // IqSource,Control}({}) -- no more callbacks fire after this point)
     // and handler-2 (stream->close -- joins EP6 thread).  This window
-    // is when the TxChannel is safe to tear down: no producer can fire
+    // is when the xmtr is safe to tear down: no producer can fire
     // SendpOutboundTx (handler-1 cleared), no consumer can pull
-    // TxIqSource (handler-1 cleared).
+    // TxIqSource (handler-1 cleared).  Running BEFORE handler-4's
+    // destroy_cmaster() preserves the reference's relative teardown
+    // order (destroy_xmtr before the per-stream cmbuffs teardown,
+    // cmaster.c:322-337) — see the DEFERRED-CALLSITE note in
+    // wire/CMaster.cpp.
     //
-    // TxChannel::close() = CloseChannel only (reference cmaster.c:265
-    // posture); destructor handles RAII cleanup of the out[0..2]
-    // std::vector buffers.  Idempotent: if open() failed earlier
-    // (txChannel == nullptr), `delete nullptr` is a well-defined no-op.
+    // Gated on xmtrCreated: if wdsp->load() failed or the operator
+    // closed before the QTimer fired, create_xmtr() never ran and
+    // the verbatim teardown (no null guards, reference posture) must
+    // not run against unresolved seam pointers / a never-opened
+    // channel.
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [&txChannel]() {
-        qWarning("[shutdown] handler-1.5 ENTRY (xmtr_hl2 + ILV + "
-                 "TxChannel close+delete)");
-
-        // P0.b (2026-06-11) — tear down in REVERSE construction
-        // order (reference cmaster.c:255-271 destroy_xmtr): clear the
-        // pcm->xmtr[0].pTxChannel slot FIRST so cm_main / xcmaster
-        // can no longer dispatch TX-case 1 against this xmtr; THEN
-        // destroy_xmtr(0) — the verbatim-ported reference teardown
-        // (destroy_ilv(pcm->xmtr[0].pilv) inside, with a null-pilv
-        // guard for partially-failed startups); THEN close + delete
-        // the TxChannel (RAII lifetime owned by main.cpp because
-        // WDSP.dll loads at runtime — the single documented
-        // carve-out in CMaster.h's xmtr substruct).
-        if (txChannel) {
-            lyra::wire::pcm->xmtr[0].pTxChannel = nullptr;
-        }
-        lyra::wire::destroy_xmtr(0);
-        if (txChannel) {
-            txChannel->close();
-            delete txChannel;
-            txChannel = nullptr;
+                     [&xmtrCreated]() {
+        qWarning("[shutdown] handler-1.5 ENTRY (destroy_xmtr)");
+        if (xmtrCreated) {
+            lyra::wire::destroy_xmtr();
+            xmtrCreated = false;
         }
         qWarning("[shutdown] handler-1.5 EXIT");
     });
@@ -653,7 +706,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource, &txChannel]() {
+                                  &micSource, &xmtrCreated]() {
         if (wdsp->load()) {
             // P0.a (2026-06-09) — resolve the ChannelMaster-port WDSP
             // call table from the now-loaded wdsp.dll.  MUST run after
@@ -692,132 +745,58 @@ int main(int argc, char *argv[])
             // the channel at app exit.
             wdspEngine->openRx1();
 
-            // Stage 7.2 (2026-06-09) — TxChannel construction.
+            // P0.d (2026-06-12) — create_xmtr(), the verbatim
+            // reference body (cmaster.c:112-253).
             //
-            // Reference: ChannelMaster/cmaster.c:112-253 `create_xmtr`
-            // (called inside create_cmaster:288 AFTER create_rcvr).
-            // Lyra's structural-equivalent ordering: TxChannel here
-            // AFTER wdspEngine->openRx1() (= reference's create_rcvr
-            // equivalent) so RX init happens before TX init exactly
-            // as the reference does.
+            // Reference: create_cmaster() calls create_xmtr() inline
+            // (cmaster.c:288, AFTER create_rcvr).  Lyra's DEFERRED-
+            // CALLSITE accommodation (see wire/CMaster.cpp preamble)
+            // invokes it HERE — after resolve_wdsp_calls() so the
+            // verbatim body's OpenChannel / XCreateAnalyzer calls
+            // resolve through the wire/wdspcalls.h seam, and after
+            // wdspEngine->openRx1() (= the reference's create_rcvr
+            // equivalent in the approved hybrid) so RX init precedes
+            // TX init exactly as the reference orders it.
             //
-            // The OpenChannel call inside TxChannel::open() matches
-            // reference cmaster.c:177-190 BYTE-EXACT:
-            //   OpenChannel(channel=1, in_size, dsp_size=4096,
-            //               in_rate=48000, dsp_rate=96000,
-            //               out_rate=48000, type=1 (TX), state=0,
-            //               tdelayup=0.000, tslewup=0.010,
-            //               tdelaydown=0.000, tslewdown=0.010,
-            //               block=1)
-            // — TxConfig{} defaults match all 13 args verbatim (see
-            // TxChannel.h:114-124).  type=1 == TX channel; state=0
-            // == OPEN-but-NOT-STARTED (reference's create-time
-            // posture; start happens later via TxControl.start at
-            // keydown).
+            // The verbatim body per xmtr: malloc0's xmtr[i].out[0..2]
+            // (cmaster.c:126-127), OpenChannel(chid(inid(1,0),0)=1,
+            // 64, 4096, 48000, 96000, 48000, type=1, state=0,
+            // 0.000, 0.010, 0.000, 0.010, block=1) (cmaster.c:
+            // 177-190 — state=0 == OPEN-but-NOT-STARTED, the
+            // reference's create-time posture; keydown keys it
+            // later), XCreateAnalyzer(inid(1,0)=1, ...) (cmaster.c:
+            // 192-198 — TX analyzer disp 1; WdspEngine's panadapter
+            // analyzer is disp 0, no collision), create_ilv(0, 1,
+            // ch_outsize=64, 2, 3, pcm->OutboundTx) (cmaster.c:
+            // 226-232).  The dexp/anti-vox/txgain/eer/sidetone lines
+            // stay DEFERRED with their subsystems (reference text
+            // carried in place in wire/CMaster.cpp).
             //
-            // Reference also allocates 3 output buffers per cmaster.c:
-            // 126-127 (`xmtr[i].out[0..2]` for TX-IQ / EER / sidetone);
-            // TxChannel::open() does the same via out{,1,2}Buf_.assign()
-            // (TxChannel.cpp:28-30).  EER/sidetone slots stay unused
-            // until those subsystems land in their own stages (HL2 has
-            // no EER hardware; CW sidetone is v0.2.2).
-            //
-            // Reference deferred subsystems also created in
-            // create_xmtr (cmaster.c:130-250) but deferred per Stage
-            // E.0 audit:
-            //   * create_dexp(VOX)        - reference run=0; v0.2.3
-            //   * create_aamix(antivox)   - reference tied to dexp
-            //   * create_txgain(Penelope) - reference run=0; PS v0.3
-            //   * create_eer              - reference run=0; HL2 N/A
-            //   * create_ilv              - Stage 7.3 (next commit)
-            //   * create_sidetone(CW)     - reference run_tx=0; v0.2.2
-            //   * XCreateAnalyzer(TX)     - Stage E.1 (PS v0.3 prereq)
-            //
-            // Each is documented as deferred-by-design in the Stage
-            // E.0 audit doc + the TxChannel.h header.  None block
-            // first-RF SSB.  Stage 7.2 ships ONLY the open()/close()
-            // lifecycle — channel is wire-quiescent (no producer
-            // calls fexchange0 on it, no consumer pulls from
-            // outBuffers()) until Stages 7.3-7.5 wire it.
-            txChannel = new lyra::wdsp::TxChannel(*wdsp, /*channel_id=*/1);
-            if (!txChannel->open()) {
-                qWarning("[tx] TxChannel::open() failed — "
-                         "WDSP DLL or OpenChannel symbol missing.  "
-                         "TX path will stay inert; RX unaffected.");
-                delete txChannel;
-                txChannel = nullptr;
-            } else {
-                qInfo("[tx] TxChannel opened (WDSP TXA channel 1, "
-                      "OpenChannel(1, %d, 4096, 48000, 96000, 48000, "
-                      "type=1, state=0, ...) per cmaster.c:177-190)",
-                      txChannel->inSize());
-
-                // Stage 7.3 (2026-06-09) — create_ilv + create_xmtr_hl2.
-                //
-                // Reference cmaster.c:226-232 (inside create_xmtr,
-                // which create_cmaster:288 invokes for xmtr 0):
-                //   xmtr[i].pilv = create_ilv(
-                //       /*run*/ 0,                 // bypass: xilv
-                //                                  // memcpy's input[0]
-                //                                  // straight to outbuff
-                //                                  // (ilv.c:82-87)
-                //       /*obid*/ 1,                // outbound id (the
-                //                                  // CMB ring id that
-                //                                  // the Outbound fn
-                //                                  // writes back into)
-                //       /*insize*/ ch_outsize,     // = TxChannel.outSize()
-                //                                  // = 64 frames @ 48k
-                //                                  // (matches xtxa
-                //                                  // out_size after
-                //                                  // rsmpout 96k->48k)
-                //       /*ninputs*/ 2,             // ILV can interleave
-                //                                  // up to 2 inputs
-                //       /*what*/ 3,                // bits 0+1 = both
-                //                                  // inputs active
-                //                                  // (HL2 SSB: bypass
-                //                                  // mode means `what`
-                //                                  // is unused; reference
-                //                                  // sets it anyway)
-                //       pcm->OutboundTx);          // raw fn ptr (null
-                //                                  // until P3 wires
-                //                                  // SendpOutboundTx →
-                //                                  // SetILVOutputPointer)
-                //
-                // P0.b direct port: create_ilv is the reference
-                // signature VERBATIM (no extra params, raw Outbound
-                // fn ptr; the former retrofit's pilv[] bank is gone).
-                // Publish TxChannel into the reference pcm->xmtr[0]
-                // substruct via direct field assignment (the single
-                // Lyra-native carve-out documented in CMaster.h's
-                // xmtr substruct -- TxChannel's RAII lifetime is
-                // owned by main.cpp because WDSP.dll loads at
-                // runtime, but the publish point IS the reference-
-                // shaped per-xmtr struct slot).  Then create_xmtr(0)
-                // runs the verbatim reference body; the ILV lives at
-                // pcm->xmtr[0].pilv (dispatch pattern cmaster.c:397)
-                // and handler-1.5 tears it down via destroy_xmtr(0).
-                lyra::wire::pcm->xmtr[0].pTxChannel = txChannel;
-                lyra::wire::create_xmtr(/*xmtr_id=*/ 0);
-
-                qInfo("[tx] P0.b direct port: pcm->xmtr[0]."
-                      "pTxChannel=%p; create_xmtr(0) populated "
-                      "pcm->xmtr[0].pilv=%p (run=0 bypass, obid=1, "
-                      "insize=%d, ninputs=2, what=3) -- xcmaster "
-                      "case 1 dispatch reaches live TxChannel + ILV "
-                      "via reference pcm->xmtr[tx] indirection",
-                      static_cast<void*>(txChannel),
-                      static_cast<void*>(lyra::wire::pcm->xmtr[0].pilv),
-                      txChannel->outSize());
-            }
+            // pcm->OutboundTx is still null here — P3 wires
+            // SendpOutboundTx -> SetILVOutputPointer AFTER this call,
+            // per the reference's netInterface registration ordering
+            // (the verbatim setters carry NO null guards).  Until P3
+            // + an Inbound() producer land, the TX stream stays
+            // wire-quiescent: nothing releases stream 1's
+            // Sem_BuffReady, so xcmaster(1) never fires.
+            lyra::wire::create_xmtr();
+            xmtrCreated = true;
+            qInfo("[tx] P0.d direct port: create_xmtr() — WDSP TXA "
+                  "channel chid(1,0)=1 opened (64, 4096, 48000, "
+                  "96000, 48000, type=1, state=0), TX analyzer "
+                  "disp 1 created, xmtr[0].out[0..2] allocated, "
+                  "pcm->xmtr[0].pilv=%p (run=0 bypass, obid=1, "
+                  "insize=64, ninputs=2, what=3)",
+                  static_cast<void*>(lyra::wire::pcm->xmtr[0].pilv));
 
             // TX-1 Path A: construct micSource NOW that the WDSP DLL
             // is loaded.  Mic-source construction order RELATIVE to
-            // TxChannel: micSource AFTER txChannel because the
+            // create_xmtr: micSource AFTER the xmtr because the
             // eventual Stage 7.5 mic-consumer-lambda (which calls
             // lyra::wire::Inbound(1, n, mic_iq) -> CMB ring ->
-            // cm_main pump -> xcmaster(1) -> xcmasterTickTx ->
-            // txChannel->process via pxmtr[0].tx_channel) requires
-            // txChannel to be live when the first Inbound fires.
+            // cm_main pump -> xcmaster(1) -> fexchange0 + xilv via
+            // pcm->xmtr[0]) requires the TX channel + ILV to be live
+            // when the first Inbound fires.
             //
             // Pointers are captured by reference from main()'s
             // outer scope so the aboutToQuit lambda (connected

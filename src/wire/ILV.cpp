@@ -8,11 +8,11 @@
 // License: GNU General Public License v2 or later
 //
 // DIRECT PORT 2026-06-11 (P0.b).  See ILV.h preamble for the
-// attribution + the packaging-only differences.  One interim
-// include note: the reference ilv.c includes cmcomm.h, whose
-// reference edition transitively declares `pcm`; Lyra-cpp's
-// cmcomm.h grows to that umbrella in P0.d — until then the pcm
-// declaration comes from wire/CMaster.h directly.
+// attribution + the packaging-only differences.  Include note:
+// the reference ilv.c includes cmcomm.h, whose reference edition
+// transitively declares `pcm`; per the P0.d umbrella-mapping note
+// in wire/cmcomm.h, Lyra-cpp .cpp files include the specific
+// family headers instead — pcm comes from wire/CMaster.h.
 
 #include "wire/cmcomm.h"
 #include "wire/ILV.h"

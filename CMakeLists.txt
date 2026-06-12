@@ -67,15 +67,20 @@ qt_add_executable(lyra
     src/wire/RadioNet.cpp
     src/wire/CMaster.h
     src/wire/CMaster.cpp
-    # Phase C — Thetis-faithful TX-input decouple architecture.  Ports
-    # ChannelMaster/cmbuffs.{h,c} (CMB ring + cm_main pump thread) at
-    # the central producer/consumer hand-off the reference uses between
-    # the EP6 read thread (Inbound producer) and the cm_main pump
-    # thread (cmdata consumer → xcmaster → fexchange0 + xilv → wire).
-    # See src/wire/CmBuffs.h header preamble for the threading +
-    # ownership contract + the C → C++23 idiom-translation log.
+    # P0.d — cmbuffs.{h,c} DIRECT PORT (verbatim: `cmb, *CMB` twin
+    # typedef, malloc0/_aligned_free, the CMB ring + cm_main pump
+    # thread at the central producer/consumer hand-off between the
+    # Inbound() producer and the cmdata consumer → xcmaster →
+    # fexchange0 + xilv → wire).  Supersedes the Phase-C retrofit
+    # and its operator-rejected deviations.
     src/wire/CmBuffs.h
     src/wire/CmBuffs.cpp
+    # P0.d — cmsetup.{h,c} DIRECT PORT (verbatim: the five cmMAX*
+    # sizing macros, the stream/channel-id helpers rxid/txid/sp0id/
+    # stype/chid/inid/mixinid/getbuffsize, SetRadioStructure +
+    # set_cmdefault_rates configuration surface).
+    src/wire/cmsetup.h
+    src/wire/cmsetup.cpp
     # P0.a — WDSP call table: the single operator-approved linkage
     # seam for the ChannelMaster direct port (function pointers
     # carrying the WDSP exports' exact names, resolved once from the
@@ -121,8 +126,10 @@ qt_add_executable(lyra
     src/wire/ForceCandC.cpp
     # TX-rip Phase 1 step 1c-b — wdsp/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §6.
-    src/wdsp/TxChannel.h
-    src/wdsp/TxChannel.cpp
+    # (src/wdsp/TxChannel.{h,cpp} RETIRED 2026-06-12 — the P0.d
+    # verbatim create_xmtr in src/wire/CMaster.cpp opens the WDSP
+    # TXA channel itself through the wire/wdspcalls.h seam; the
+    # runtime-DLL RAII carve-out the class existed for is gone.)
     src/wdsp/TxaCffi.h
     src/wdsp/ChannelLifecycle.h
     # (Stage B src/wdsp/AAMix.{h,cpp} + src/wdsp/Resample.h RETIRED
