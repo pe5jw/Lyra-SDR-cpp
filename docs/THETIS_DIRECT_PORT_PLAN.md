@@ -130,19 +130,22 @@ Format: per-file or per-component row.  Status emoji:
 
 | Source                                  | Target (lyra-cpp)                               | Status | Notes |
 |-----------------------------------------|-------------------------------------------------|--------|-------|
-| `ChannelMaster\cmaster.c` (stubs only)  | `src/wire/CMaster.{h,cpp}` (Stage A)            | ✅     | Stage A stubs shipped earlier. SendpOutboundRx wired to AAMix Stage B.5. SendpOutboundTx pending Stage C ilv.c port. SendpOutboundTCIRxIQ + SendpInboundTCITxAudio stubs only. |
-| `ChannelMaster\cmaster.c::create_xmtr`  | `src/wdsp/TxChannel.{h,cpp}`                    | 🟡     | TxChannel class shipped on `main` (TX-1 components 2-6); needs verify-against-reference pass to confirm parameter parity (the 2026-05-30 `fexchange0` arc forced an in-line reconciliation but TxChannel hasn't been formally registered as a direct-port). |
-| `ChannelMaster\ilv.c` (TX I/Q interleaver) | `src/wdsp/Ilv.{h,cpp}` (NEW, Stage C candidate) | ⏸     | Pairs with the SendpOutboundTx stub already wired in CMaster Stage A. Required for the TX I/Q path to reach the EP2 packer reference-faithfully. |
-| `ChannelMaster\cmaster.c::xcmaster` (pump body) | `src/wire/CMaster.cpp::xcmaster` (NEW, Stage D candidate) | ⏸     | Currently Lyra-cpp uses its own pump driver. Direct port would replace the Lyra-native driver loop. |
-| `ChannelMaster\networkproto1.c` (HL2 wire writer) | `src/hl2_stream.cpp` (LIVE) + `src/wire/*` (Step 14 pieces) | 🟡     | This is the file the Step 14 plan was attacking. Currently a MIX of Step 14 Lyra-native rewrites + the original `hl2_stream.cpp` body. Direct-port verdict pending operator decision (see "Open questions" below). |
-| `ChannelMaster\network.c` (UDP + keepalive) | `src/wire/Ep2SendThread.{h,cpp}` + `src/wire/Ep6RecvThread.{h,cpp}` | 🟡     | Step 14 Lyra-native rewrites shipped (§5/§6); could be re-ported direct from reference, OR left as-is if reference-parity audit passes. Operator call. |
-| `ChannelMaster\netInterface.c::create_rnet` | `src/wire/RadioNet.cpp::create_rnet` (LIVE)     | ✅     | Direct port shipped earlier. The Stage-A SendpOutboundRx no-op stub at line 272 was DELETED 2026-06-08 (B.6.b-fix1, commit `8b8e0da`) because it clobbered the AAMix wire-up; per the comment-block left in the deleted-case body, future codec-id switching for ASIO/WASAPI must NOT re-introduce a default registration here — it would re-clobber `aaMix_->Outbound`. |
+| WDSP exports linkage (`OpenChannel`/`fexchange0`/analyzers/PS family) | `src/wire/wdspcalls.{h,cpp}` (P0.a)  | ✅     | **P0.a `e0c0f4a` 2026-06-09.** The single operator-approved linkage seam: fn-ptr table carrying the WDSP exports' exact names, resolved once from the loaded wdsp.dll. PureSignal entry family complete (verified vs dumpbin). RESAMPLE-typed + `flush_resample` added at P0.c. |
+| `ChannelMaster\cmcomm.h` (family common header) | `src/wire/cmcomm.{h,cpp}` (P0.b → P0.d)  | ✅     | `complex` typedef + PORT + verbatim malloc0 (wdsp/utilities.c:37-43) + PI + the reference include surface. P0.d added the opaque verbatim twin typedefs for deferred-subsystem types (ANB/NOB/EER/VOX/TXGAIN/ANALYZERS) + the umbrella-mapping note (.cpp files include explicit family headers — an include-list umbrella would be circular under `#pragma once`). |
+| `ChannelMaster\ilv.c` (TX I/Q interleaver) | `src/wire/ILV.{h,cpp}` (P0.b)                | ✅     | **P0.b `1f49d98` 2026-06-11.** VERBATIM direct port (`ilv,*ILV` twin typedef, raw Outbound fn ptr, `pcm->xmtr[].pilv` setters, malloc0/_aligned_free). Mechanical diff vs ilv.{h,c} = whitespace-only. The earlier `src/wdsp/ILV` retrofit + its pilv[] bank are retired. scratch/test_ilv ALL PASS. |
+| `ChannelMaster\cmbuffs.{h,c}` (CMB ring + cm_main pump) | `src/wire/CmBuffs.{h,cpp}` (P0.d)   | 🟡     | **P0.d `afc7950` 2026-06-12.** VERBATIM rewrite (`cmb,*CMB`, `#define CMB_MULT (3)`, malloc0/_aligned_free; the Phase-C retrofit's calloc/intptr_t/guard deviations removed; `pcm->in[]` alloc moved back to create_cmaster per reference). Mechanical diff = whitespace-only. 🟡 pending the P0.d operator HL2 RX-regression bench. |
+| `ChannelMaster\cmsetup.{h,c}` (radio structure + id helpers) | `src/wire/cmsetup.{h,cpp}` (P0.d, NEW) | 🟡     | **P0.d `afc7950`.** VERBATIM: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates. main.cpp config: SetRadioStructure(2,1,1,1,0,…) → chid(0,0)=0 RX1 / chid(1,0)=1 TX matches the live channel layout. 🟡 pending the same bench. |
+| `ChannelMaster\cmaster.{h,c}` (FULL: struct + create/destroy + xcmaster + setters) | `src/wire/CMaster.{h,cpp}` (P0.d)   | 🟡     | **P0.d `afc7950`.** VERBATIM rewrite: full `_cmaster` struct (cmaster.h:39-99 incl. the PS surface — out[3]/panalalloc/pgain/peer), `cmaster,*CMASTER`, raw TCI callback fn ptrs, `enum AudioCODEC`, `cm = {0}`. Verbatim no-arg create_xmtr/destroy_xmtr (out[0..2] malloc0 + OpenChannel(ch 1) + XCreateAnalyzer(TX disp 1) + create_ilv through the wdspcalls seam — **the TxChannel RAII carve-out is DELETED**, `src/wdsp/TxChannel.{h,cpp}` retired). create_cmaster/destroy_cmaster verbatim per-stream loops (update[] CS + cmbuffs + in[] for all cmSTREAM streams). xcmaster verbatim (update[] CS restored, real stype/txid/chid, TCI memset restored; fexchange0 + monitor xMixAudio + xilv live). All Sendp*/Set* setters ported. Deferred subsystem lines (dexp/anti-vox/txgain/eer/sidetone/pipe/cmasio/analyzers.c/create_rcvr-body) carried IN PLACE as reference text with DEFERRED tags. Sole code accommodation: `(char*)""` at XCreateAnalyzer. 🟡 pending the P0.d bench. |
+| `ChannelMaster\obbuffs.c` (TX-out ring/seam) | `src/wire/ObBuffs.{h,cpp}` (P1, NEW)       | ⏸     | **P1 — NEXT after the P0.d bench gate.** The TX-out seam (OutBound/obdata/ob_main/sendOutbound consumer side). SEPARATE TU from cmbuffs (which is inbound-only). |
+| `ChannelMaster\networkproto1.c` (HL2 wire writer) | `src/hl2_stream.cpp` (LIVE) + `src/wire/*` (Step 14 pieces) | 🟡     | This is the file the Step 14 plan was attacking. Currently a MIX of Step 14 Lyra-native rewrites + the original `hl2_stream.cpp` body. P2 = sendOutbound/sendProtocol1Samples fidelity audit of the dormant wire layer; P4 = Wire-LIVE switchover (one commit, full HL2 bench gate). |
+| `ChannelMaster\network.c` (UDP + keepalive) | `src/wire/Ep2SendThread.{h,cpp}` + `src/wire/Ep6RecvThread.{h,cpp}` | 🟡     | Step 14 Lyra-native rewrites shipped (§5/§6); could be re-ported direct from reference, OR left as-is if reference-parity audit passes. Operator call (folds into P2/P4). |
+| `ChannelMaster\netInterface.c::create_rnet` | `src/wire/RadioNet.cpp::create_rnet` (LIVE)     | ✅     | Direct port shipped earlier. The Stage-A SendpOutboundRx no-op stub at line 272 was DELETED 2026-06-08 (B.6.b-fix1, commit `8b8e0da`) because it clobbered the AAMix wire-up; future codec-id switching must NOT re-introduce a default registration here. P3 = the outbound registrations (SendpOutboundTx(OutBound) etc.) — MUST register AFTER create_xmtr (the verbatim setters have NO null guards, reference ordering). |
 
 ### WDSP RX chain (port directly w/ attribution)
 
 | Source                       | Target (lyra-cpp)                  | Status | Notes |
 |------------------------------|------------------------------------|--------|-------|
-| `wdsp\aamix.{c,h}`           | `src/wdsp/AAMix.{h,cpp}`           | ✅     | **STAGE B COMPLETE 2026-06-08.** Full direct port w/ NR0V/WDSP GPL v3+ attribution. 538-line header + 1100-line cpp. Bench-validated end-to-end through both AK4951 and PC-Soundcard sinks. Idiom translations documented (Win32 → C++23). Reference-faithful create_aamix(active=0) + SetAAudioMixState(activate) pattern per cmaster.c:297-313. |
+| `ChannelMaster\aamix.{c,h}`  | `src/wire/AAMix.{h,cpp}` (P0.c)    | ✅     | **P0.c `e0f2584` 2026-06-11 — VERBATIM re-port** (supersedes the 2026-06-08 Stage-B C++23-idiom translation, which the operator rejected as a deviation class). `aamix,*AAMIX` twin typedef + anonymous slew struct, raw Outbound fn ptr, paamix[] bank private to the .cpp, Win32 primitives direct. Mechanical diff vs aamix.{h,c} = whitespace-only. `src/wire/resample.h` = the public RESAMPLE ABI verbatim. WdspEngine RX wire-up: capturing lambda → static member fn + TU-scope context ptr (the reference free-fn+global shape). ✅ **Operator HL2 RX bench PASSED 2026-06-11.** |
 | `wdsp\firmin.c` (filter cores) | (consumed via WDSP cffi)         | 🟫     | Used internally by WDSP RXA chain via cdef + dlsym. No source-level port needed (the DLL ships with Lyra-cpp via `_native/` per the Python-project pattern; cdef + dlsym in `wdsp_native.cpp`). WISDOM cache fix shipped on Python side; lyra-cpp's RX chain inherits the same path. |
 | `wdsp\wisdom.c`              | (consumed via WDSP cffi)           | 🟫     | Same as firmin.c. |
 
@@ -150,7 +153,7 @@ Format: per-file or per-component row.  Status emoji:
 
 | Source                           | Target (lyra-cpp)                              | Status | Notes |
 |----------------------------------|------------------------------------------------|--------|-------|
-| `wdsp\TXA.c` (channel scaffold)  | `src/wdsp/TxChannel.{h,cpp}` + cffi cdef       | 🟡     | TxChannel shipped on `main` (TX-1 components). `wdsp_native.{h,cpp}` carries 17 SetTXA*/GetTXAMeter cdefs. Reference-parity audit pass recommended for direct-port verdict. |
+| `wdsp\TXA.c` (channel scaffold)  | (consumed via `wire/wdspcalls` seam — P0.a/P0.d)| ✅     | **TxChannel class DELETED at P0.d `afc7950`** — the verbatim create_xmtr in `wire/CMaster.cpp` opens the WDSP TXA channel itself (OpenChannel/fexchange0/CloseChannel through the wdspcalls seam, cmaster.c:177-190 byte-exact), which removed the runtime-DLL RAII justification the class existed for. `wdsp_native.{h,cpp}` still carries the SetTXA*/GetTXAMeter cdefs for the operator-control surface. |
 | `wdsp\bandpass.c` (bp0/bp1)      | (consumed via WDSP cffi — SetTXABandpassFreqs) | 🟫     | The §15.23 trap (SetTXABandpassRun overrides bp1 to a stale state) is documented in CLAUDE.md + project_lyra_cpp_tx.md. cffi-only access is the correct posture. |
 | `wdsp\compress.c` (TX compressor) | `src/wdsp/Compress.{h,cpp}` OR cffi binding   | ⏸     | Operator choice: direct port (~150 LOC) for v0.2.1 EQ + dynamics ship, OR cffi-only binding if WDSP DLL exports are sufficient. Direct port recommended for parity with Lyra's existing UI control surface. |
 | `wdsp\cfcomp.c` (5-band CFC)     | `src/wdsp/CFComp.{h,cpp}` OR cffi binding      | ⏸     | Same operator-choice. ~600 LOC; one of the heavier ports. Replaced in Python Lyra plan by a Lyra-native Combinator per §15.19; cpp may take the same path (custom Combinator instead of WDSP CFC) — operator design call. |
@@ -183,26 +186,54 @@ Format: per-file or per-component row.  Status emoji:
 
 ## 📅 STAGE INDEX — ordered work plan
 
-Each stage is one focused sub-arc (1+ commits) with an
-operator HL2 bench gate.  Earlier stages must complete before
-later stages start unless explicitly tagged "independent".
+### P0 verbatim-rewrite arc (2026-06-09 → current; the ACTIVE plan)
+
+After the operator rejected the 2026-06-09 "rule-#8" retrofit
+deviations ("I said PORT!"), every TX-ported file is being
+rewritten VERBATIM (byte-faithful; only documented packaging
+differences — `lyra::wire` namespace, PORT-expands-empty, the
+wdspcalls seam for the statically-linked WDSP exports).  Each
+step ships with a mechanical diff vs the reference + an operator
+HL2 bench gate.
+
+| Step | Status | What | Commit / gate |
+|------|--------|------|---------------|
+| **P0.a** | ✅ DONE | `wire/wdspcalls.{h,cpp}` — the single approved WDSP linkage seam (exact export names, PS entry family complete) | `e0c0f4a` 2026-06-09 |
+| **P0.b** | ✅ DONE | ilv.{h,c} verbatim → `wire/ILV.{h,cpp}` + new `wire/cmcomm.{h,cpp}` | `1f49d98` 2026-06-11; test_ilv ALL PASS |
+| **P0.c** | ✅ DONE | aamix.{h,c} verbatim → `wire/AAMix.{h,cpp}` + `wire/resample.h` RESAMPLE ABI | `e0f2584`; ✅ operator HL2 RX bench PASSED 2026-06-11 |
+| **P0.d** | 🟡 SHIPPED | cmbuffs/cmaster/cmsetup verbatim → `wire/CmBuffs`/`wire/CMaster`/`wire/cmsetup`; full `_cmaster` struct (PS surface); TxChannel carve-out DELETED | `afc7950` 2026-06-12; ⚠ **operator HL2 RX-regression bench PENDING — the gate before P1** |
+| **P1**  | ⏸ NEXT | obbuffs.c verbatim → `wire/ObBuffs.{h,cpp}` (the TX-out seam; separate TU from cmbuffs) | after the P0.d bench |
+| **P2**  | ⏸      | sendOutbound / sendProtocol1Samples fidelity audit of the dormant wire layer | |
+| **P3**  | ⏸      | netInterface outbound registrations (SendpOutboundTx(OutBound) etc.) — MUST register AFTER create_xmtr (verbatim setters have NO null guards) | |
+| **P4**  | ⏸      | Wire-LIVE switchover | ONE commit, full HL2 bench gate |
+
+PureSignal is a committed feature — the P0.d `_cmaster` struct
+carries the full PS surface so v0.3 lands on top without a
+retrofit.
+
+### Historical stage index (pre-P0 lettered stages — superseded)
+
+The original lettered plan below is retained for history.  The
+P0 arc absorbed/superseded it: Stage C (ilv) = P0.b; Stage D
+(xcmaster) = P0.d; Stage E (TxChannel audit) = obsoleted by the
+P0.d TxChannel deletion; Stage B's idiom-translated AAMix was
+re-ported verbatim at P0.c.
 
 | Stage | Status | What                                              | Notes |
 |-------|--------|---------------------------------------------------|-------|
-| **A** | ✅ DONE | CMaster.cpp wire-up stubs (Send*Outbound* + SetTCIRun) | Foundation that subsequent stages build on. |
-| **B** | ✅ DONE | aamix.c direct port + wire into RX path           | **Shipped 2026-06-08, bench-validated end-to-end through both AK4951 and PC-Soundcard sinks.** Commits 27ac2fa → 7a50b07 on `tx-rebuild`. |
-| **C** | ⏸ TBD | ilv.c direct port (TX I/Q interleaver)            | Candidate next step. Pairs with the Stage-A SendpOutboundTx stub; required for the TX I/Q path to flow reference-faithfully into the EP2 packer. Ship pattern mirrors Stage B: header port w/ attribution → cpp port w/ idiom translations → wire-up at WdspEngine TX channel → operator HL2+ bench (TX I/Q on dummy load shows clean carrier at LO from a known mic input). |
-| **D** | ⏸ TBD | xcmaster pump body direct port                    | Replaces the current Lyra-native pump driver loop with the reference-verbatim version. Operator decision: do this OR keep the Lyra-native pump if reference-parity audit passes. |
-| **E** | ⏸ TBD | TxChannel reference-parity audit + reconciliation | TxChannel shipped on `main` (TX-1 components 2-6) was a forward-reasoning effort; this stage formally audits it against `cmaster.c::create_xmtr` lines 177-190 + `wdsp/TXA.c::create_txa` and merges any verified divergences. |
+| **A** | ✅ DONE | CMaster.cpp wire-up stubs (Send*Outbound* + SetTCIRun) | Superseded by the P0.d full verbatim CMaster port. |
+| **B** | ✅ DONE | aamix.c direct port + wire into RX path           | Shipped 2026-06-08 (idiom-translated); re-ported VERBATIM at P0.c. |
+| **C** | ✅ DONE (as P0.b) | ilv.c direct port (TX I/Q interleaver)   | Landed verbatim at `wire/ILV.{h,cpp}`. |
+| **D** | ✅ DONE (as P0.d) | xcmaster pump body direct port           | Landed verbatim in `wire/CMaster.cpp` (real stype/txid/chid + update[] CS). |
+| **E** | 🟫 OBSOLETE | TxChannel reference-parity audit + reconciliation | TxChannel DELETED at P0.d — the verbatim create_xmtr replaces it. |
 | **F** | ⏸ TBD | WDSP TXA chain components per CLAUDE.md §4.1 v0.2.1 | compress / cfcomp / eqp / wcpagc — operator-driven per-feature direct port vs cffi-only call. Order TBD. |
 | **G** | ⏸ TBD | PureSignal direct ports (v0.3)                    | iqc / calcc / xbuilder / delay. Lands when v0.3 PS work starts. Needs operator HL2+ with the PS hardware mod. |
 | **H** | ⏸ TBD | TX/PS auto-attenuator FSM port                    | C# study only (PSForm.cs); Lyra-native rewrite. |
 
-**Stage ordering note:** Stages C–H are not strictly linear.
-Operator picks which stage to land next based on what unlocks
-the most-useful operator-visible behavior.  The methodology
-(smallest revertable step + bench gate) applies within each
-stage regardless of cross-stage ordering.
+**Ordering note:** the P0→P4 sequence above is the active linear
+plan.  F–H land after P4 Wire-LIVE.  The methodology (smallest
+revertable step + mechanical diff + operator bench gate) applies
+within each step.
 
 ---
 
@@ -251,6 +282,58 @@ unilaterally — surface them when picking up tomorrow:
 
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
+
+### 2026-06-12 — P0.d cmbuffs/cmaster/cmsetup VERBATIM port (HL2 bench pending)
+
+- **P0.d `afc7950`** on `tx-rebuild`: NEW `wire/cmsetup.{h,cpp}`
+  (cmMAX* 16/4/4/2/32 + the 8 id helpers + SetRadioStructure +
+  set_cmdefault_rates); `wire/CmBuffs.{h,cpp}` rewritten verbatim
+  (`cmb,*CMB`, malloc0/_aligned_free; Phase-C retrofit deviations
+  removed); `wire/CMaster.{h,cpp}` rewritten verbatim (FULL
+  `_cmaster` struct incl. the PureSignal surface, `enum
+  AudioCODEC`, raw TCI fn ptrs, verbatim create/destroy_cmaster +
+  create/destroy_xmtr + xcmaster + all Sendp*/Set* setters).
+- **TxChannel RAII carve-out DELETED** (`src/wdsp/TxChannel.{h,cpp}`
+  retired) — the verbatim create_xmtr opens the WDSP TXA channel +
+  TX analyzer (disp 1) + out[0..2] + ILV itself through the
+  wdspcalls seam.
+- main.cpp: SetRadioStructure(2,1,1,1,0,…) config before
+  create_cmaster (chid(0,0)=0 RX1 / chid(1,0)=1 TX = the live
+  layout); create_xmtr() post-resolve_wdsp_calls (documented
+  DEFERRED-CALLSITE accommodation); handler-1.5 = gated
+  destroy_xmtr().
+- Verification: clean build ZERO warnings; test_ilv ALL PASS;
+  mechanical diffs IDENTICAL (CmBuffs.{h,cpp} / cmsetup.h /
+  CMaster.h / all 10 fully-verbatim cmaster.c functions) +
+  live-line-subset PASS for the partially-deferred bodies (sole
+  accommodation: `(char*)""` at XCreateAnalyzer).
+- New at startup: TWO cm_main pump threads (streams 0+1; stream 0
+  idles — no Inbound producer); TX stays wire-quiescent
+  (OutboundTx null until P3).
+- ⚠ **GATE: operator HL2 RX-regression bench** (RX works; clean
+  stop/restart; clean exit — pump threads must join in
+  destroy_cmbuffs) **before P1 (obbuffs.c) starts.**
+
+### 2026-06-09 → 2026-06-11 — P0.a/P0.b/P0.c verbatim-rewrite arc
+
+- Operator rejected the 2026-06-09 "rule-#8" retrofit deviations
+  ("I said PORT!") → every ported file rewritten VERBATIM.
+- **P0.a `e0c0f4a`**: `wire/wdspcalls.{h,cpp}` — the single
+  approved WDSP linkage seam (fn-ptr table, exact export names,
+  PureSignal entry family complete + dumpbin-verified).
+  `scratch/_typedef_fidelity_test.cpp` disproved the claimed
+  "C++ collisions" (twin typedef / `complex[2]` / raw fn ptr all
+  compile verbatim).
+- **P0.b `1f49d98`**: ilv.{h,c} verbatim → `wire/ILV.{h,cpp}`;
+  new `wire/cmcomm.{h,cpp}` (complex/PORT/malloc0/PI); pilv[]
+  bank gone; SendpOutboundTx raw fn ptr (register AFTER
+  create_xmtr — no null guards, reference ordering).  Mechanical
+  diff whitespace-only; test_ilv ALL PASS.
+- **P0.c `e0f2584`**: aamix.{h,c} verbatim → `wire/AAMix.{h,cpp}`
+  (supersedes the Stage-B idiom translation); `wire/resample.h` =
+  public RESAMPLE ABI; wdspcalls retyped + flush_resample;
+  WdspEngine outbound lambda → static fn + TU-scope context ptr.
+  ✅ **Operator HL2 RX bench PASSED 2026-06-11.**
 
 ### 2026-06-08 EOD — Stage B aamix.c port COMPLETE
 
