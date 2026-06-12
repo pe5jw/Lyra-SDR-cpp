@@ -4,6 +4,33 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-12 (Friday PM-4 — P4.a prep SHIPPED, both commits wire-inert)
+
+**Branch:** `tx-rebuild`, HEAD `baef866` (pushed).
+
+### P4.a-1 SHIPPED `a4aa8c3` — sendProtocol1Samples verbatim (DORMANT)
+- NEW `src/wire/NetworkProto1.cpp` — networkproto1.c PARTIAL: the EP2 writer thread `sendProtocol1Samples` verbatim (networkproto1.c:1204-1267).  Mechanical diff IDENTICAL (whitespace-normalized, accommodations mapped back); sole structural delta = braces around the DEFERRED non-HL2 else-branch (comment-only branch needs braces to compile).  Accommodations documented in the preamble: lyra::wire namespace; the HPSDRModel enum-class mapping; `write_main_loop_hl2(prn->OutBufp)` = the FrameComposer monolithic WriteMainLoop_HL2 equivalent (#121/#122 fold); generic WriteMainLoop (non-HL2/ANAN P1) carried as DEFERRED reference text; (AVRT_PRIORITY) cast + suppress 4100 on the verbatim signature.
+- `io_keep_running` global added (network.h:411 verbatim; init 0 so the loop body cannot run even if started prematurely) + the decl in RadioNet.h.
+- FrameComposer `write_main_loop_hl2` tail flipped from the Step-14 `outbound_notify_consumed_pair()` translation to the verbatim `ReleaseSemaphore(prn->hobbuffsRun[0/1], 1, 0)` pair.  Dormant-safe: nothing calls write_main_loop_hl2 until P4.b starts the writer; the hobbuffsRun handles are created at the P4.b open() with the quartet.
+- DORMANT: nothing `_beginthreadex`'s the function until P4.b's open() (reference start site = StartAudio, netInterface.c:66 + the quartet :68-71).  Build clean, zero new warnings.
+
+### P4.a-2 SHIPPED `baef866` — PostGen seam entries + verbatim field types
+- **wdspcalls**: SetTXAPostGen{Run,Mode,ToneMag,ToneFreq,TTMag,TTFreq} for the P4.b TUN re-home (legacy DC-injection TUN dies with the legacy EP2 packer; TUN becomes the reference TXA output-side tone generator).  Pre-cdef audit: NO header declares these — PORT-exported definition sites in wdsp/gen.c only (gen.c:784/792/800/808/817/826), signatures harvested from the definition bodies; presence + exact casing verified against the bundled wdsp.dll export table (PE scan, all 6 PRESENT of 533).  TT pair included per table rule #3 (PS committed; the PS calibration drive is the two-tone).
+- **TxReadBufp**: std::vector -> verbatim `double*` (network.h:62) + the verbatim calloc at create_rnet (netInterface.c:1604, 2*sizeof(double)*720, process lifetime — the P2.b OutBufp precedent).  Ep6RecvThread's 5 `.data()` sites -> bare pointer; the vector-size guard reduces to a null check (fixed 1440-double capacity >= 4*spr for every valid nddc).
+- **hWriteThreadMain**: std::thread -> verbatim HANDLE (network.h:90).  Zero users existed on the std::thread form; P4.b assigns the verbatim `_beginthreadex(sendProtocol1Samples)` handle.
+- Build clean (sole warning = the pre-existing hl2_stream C4456, untouched file).  Commit-message nit: a backtick-quoted literal got eaten by bash substitution again (the P2.b class) — citation survives, no force-push.
+
+### NEXT = P4.b (THE switchover — ONE commit, full operator HL2 bench gate)
+- open(): quartet CreateSemaphore ×4 + `prn->hWriteThreadMain = _beginthreadex(sendProtocol1Samples)` (io_keep_running=1 BEFORE start).
+- dispatchAudioFrame -> the asioOUT-pattern tee (HL2-jack = real audio into OutBound(0); PC = zeroed tee so EP2 pacing never starves) — the B.6.b-delicate RX switchover.
+- `Inbound(inid(1,0), mic_sample_count, prn->TxReadBufp)` at the live EP6 mic-harvest site (Ep6RecvThread, the block already mirrors networkproto1.c:560-579).
+- FSM re-home: TXA SetChannelState arming per the §15.25 ground truth + TUN -> SetTXAPostGen.
+- Control-plane mapping per the design doc §5 table; retirements per §7 (txWorkerLoop + keepalive + DC-TUN + slew-fill, OutboundRing, Ep2SendThread, FrameComposer cv tail).
+- Teardown: io_keep_running=0 -> release both hsend sems once -> join -> CloseHandle quartet -> destroy_obbuffs BEFORE destroy_xmtr.
+- Bench gate per design doc §8 incl. explicit TX-state lines + FIRST VOICE through the chain.
+
+---
+
 ## 2026-06-12 (Friday PM-3 — P2 audit complete + P2.a eer completion SHIPPED)
 
 **Branch:** `tx-rebuild`, on top of `2897756`.
