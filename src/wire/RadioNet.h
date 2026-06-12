@@ -770,6 +770,17 @@ void UpdateRadioProtocolSampleSize();
 // + read-at-use-site behavior preserved.
 
 extern int           XmitBit;
+
+// P4.a (2026-06-12) — reference network.h:411 (verbatim): the EP2
+// writer-thread run flag.  Set 1 before the thread starts (the
+// reference sets it in ReadThreadMain/MetisReadThreadMain at
+// session start); 0 stops the sendProtocol1Samples loop.
+extern int           io_keep_running;
+
+// P4.a — reference networkproto1.c:1204 (verbatim; body at
+// wire/NetworkProto1.cpp, DORMANT until P4.b starts the thread
+// per StartAudio netInterface.c:66):
+DWORD WINAPI sendProtocol1Samples(LPVOID n);
 extern HPSDRModel    hpsdrModel;
 extern RadioProtocol radioProtocol;
 

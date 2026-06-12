@@ -1012,14 +1012,16 @@ void write_main_loop_hl2(const char* out_bufp) {
     // reference, period."
     (void) metis_write_frame(kEp2Endpoint, g_fpga_write_bufp.data());
 
-    // Paired release.  Reference `:1199-1200`:
-    //     ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0);
-    //     ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);
-    // C++23-idiom equivalent: single `outbound_notify_consumed_pair()`
-    // sets both `lr_consumed`/`iq_consumed` flags + `notify_all`s
-    // the cv (mirrors OutboundRing.cpp:176-183 + the §1-C Stage
-    // 3 design rationale).
-    outbound_notify_consumed_pair();
+    // Paired release — reference `:1199-1200` (verbatim).  P4.a
+    // (2026-06-12): the cv-based `outbound_notify_consumed_pair()`
+    // translation is replaced by the verbatim semaphore pair (the
+    // P2.b HANDLE quartet on prn; created by P4.b's open()).
+    // Dormant-safe flip: nothing calls write_main_loop_hl2 until
+    // the P4.b sendProtocol1Samples thread runs — by which time
+    // the quartet exists.  The OutboundRing cv translation retires
+    // wholesale at P4.b.
+    ReleaseSemaphore(prn->hobbuffsRun[0], 1, 0);
+    ReleaseSemaphore(prn->hobbuffsRun[1], 1, 0);
 }
 
 }  // namespace lyra::wire

@@ -403,6 +403,10 @@ int           XmitBit       = 0;
 HPSDRModel    hpsdrModel    = HPSDRModel::HERMESLITE;
 RadioProtocol radioProtocol = RadioProtocol::USB;
 
+// P4.a — reference network.h:411 (verbatim; an uninitialized C
+// global = zero-init):
+int io_keep_running = 0;
+
 // §3.5 — Supplemental dispatch globals (`network.h:501-506`).
 //
 // `nddc` — per-family DDC count.  HL2 / HL2+ default is 4; per-

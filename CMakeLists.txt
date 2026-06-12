@@ -89,6 +89,10 @@ qt_add_executable(lyra
     # LIVE; ETH branch DEFERRED (Protocol 2/ANAN = v0.4).  Dormant
     # until P3/P4.
     src/wire/Network.cpp
+    # P4.a — networkproto1.c PARTIAL DIRECT PORT
+    # (sendProtocol1Samples verbatim, networkproto1.c:1204-1267):
+    # the EP2 writer thread.  DORMANT until P4.b starts it.
+    src/wire/NetworkProto1.cpp
     # P0.d — cmsetup.{h,c} DIRECT PORT (verbatim: the five cmMAX*
     # sizing macros, the stream/channel-id helpers rxid/txid/sp0id/
     # stype/chid/inid/mixinid/getbuffsize, SetRadioStructure +
