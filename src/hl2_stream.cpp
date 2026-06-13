@@ -788,8 +788,8 @@ void HL2Stream::open(const QString &ip) {
                                   reinterpret_cast<sockaddr*>(&dest),
                                   sizeof(dest));
         if (sent != startPkt.size()) {
-            const int err = ::WSAGetLastError();
-            onFatalError(QStringLiteral("START: %1").arg(winsockError(err)));
+            const int wsaErr = ::WSAGetLastError();
+            onFatalError(QStringLiteral("START: %1").arg(winsockError(wsaErr)));
             return;
         }
         emit logLine(QStringLiteral(
