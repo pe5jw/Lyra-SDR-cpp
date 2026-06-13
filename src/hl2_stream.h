@@ -477,6 +477,13 @@ public:
         // TxChannel SSB default; a separate operator Low spinbox is
         // a future enhancement per design doc §9.2).
         std::function<void(double, double)> setBandpass;
+        // P4.b TUN re-home — drive the WDSP TXA output-side tone
+        // generator (postgen / gen1) for the tune carrier.  on=true sets
+        // up + runs the single tone (SetTXAPostGenMode/ToneFreq/ToneMag/
+        // Run); on=false stops it.  The Thetis TUN mechanism (console.cs:
+        // 30787-30801) — replaces the retired legacy DC-injection that
+        // died with the EP2 packer.  Empty = no-op (pre-registration).
+        std::function<void(bool)> setTune;
     };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
@@ -523,6 +530,15 @@ public:
     static constexpr int kTxTimeoutDefaultSec = 600;   // 10 min default
     static constexpr int kTxTimeoutMinSec     = 60;    //  1 min floor
     static constexpr int kTxTimeoutMaxSec     = 1200;  // 20 min ceiling
+
+    // P4.b TUN — Thetis tune zero-beat offset (console.cs cw_pitch=600).
+    // The tune carrier is the WDSP postgen tone at ±kTuneCwPitchHz AND a
+    // TX-DDS offset of ∓kTuneCwPitchHz applied ONLY while tuning, which
+    // cancel so the on-air carrier lands at the dial (zero-beat) — a
+    // co-channel SSB listener hears nothing.  gen1 (main.cpp setTune)
+    // and the DDS offset (txDdsHzForTune) MUST use this same value so
+    // they cancel.  Public so the main.cpp postgen lambda shares it.
+    static constexpr int kTuneCwPitchHz = 600;
     bool    filterBoardEnabled() const { return filterBoardEnabled_; }
     int     ocBits()             const { return ocPattern_; }
     // TX-0a telemetry getters — convert the raw 12-bit EP6 ADC slots
@@ -846,6 +862,19 @@ public slots:
     // or if the callback is null.
     void setTxMode(int wdspMode);
 
+    // P4.b TUN — TX NCO freq for the current state: the dial when not
+    // tuning, dial ∓ kTuneCwPitchHz while tuning (USB −, LSB +) so the
+    // ±kTuneCwPitchHz postgen tone nets to a zero-beat carrier at the
+    // dial.  Mirrors Thetis's tx_freq computation gated on chkTUN
+    // (console.cs:32574-32587).
+    int txDdsHzForTune(quint32 dialHz) const;
+
+    // P4.b TUN display-honesty — the NCO−dial offset the panadapter crop
+    // needs (= txDdsHzForTune(dial) − dial, freq-independent): ∓kTuneCwPitchHz
+    // while tuning (USB −, LSB +), 0 otherwise.  Emitted via
+    // txAnalyzerOffsetChanged → WdspEngine::setTxAnalyzerOffsetHz.
+    int txAnalyzerOffsetHz() const;
+
     // TX-1 component 8c / Task #53 — operator TX bandpass.  Forwards
     // (low, high) Hz straight to TxControl.setBandpass.  Pulled
     // through from Prefs.filterLow (shared with the RX bandpass) +
@@ -925,6 +954,12 @@ signals:
     // TX-0c-tune — tune-tone armed state changed (via TX panel button,
     // operator unarm, or the moxActiveChanged(false) safety auto-clear).
     void tuneEnabledChanged(bool on);
+    // P4.b TUN display-honesty — the TX-analyzer NCO−dial offset (Hz)
+    // changed.  Wired to WdspEngine::setTxAnalyzerOffsetHz so the panadapter
+    // crop renders the TUN carrier at its true RF (the dial) rather than
+    // NCO-relative.  Fires from setTuneEnabled / setTxMode (the only places
+    // the tune DDS offset can change).  0 when not tuning.
+    void txAnalyzerOffsetChanged(int hz);
     // TX-1 component 6 — SSB I/Q injection gate edge.
     void injectTxIqChanged(bool on);
     // TX-1 component 5a — TR-sequencing + cos² envelope tuning.
@@ -1228,6 +1263,7 @@ private:
     std::atomic<quint32> txFreqHz_{7074000};   // TX NCO -> 0x02/0x08/0x0a
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
+    std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
     std::atomic<bool>    micBoost_{false};      // 0x12 C2 bit 0 (+20 dB HW boost)
     // TX-0c-tune — operator-armed tune-tone generator.  Atomic so the

@@ -1170,6 +1170,43 @@ int WdspEngine::spectrumPixelCount() const
     return kAnPixels;
 }
 
+double WdspEngine::txAnalyzerOffBins() const noexcept
+{
+    // Only TUN (TX owns the analyzer + a nonzero NCO−dial offset) shifts the
+    // crop; RX and voice TX (NCO == dial) leave it centred.
+    if (!txOwnsAnalyzer_.load(std::memory_order_acquire)) return 0.0;
+    const int off = txAnalyzerOffsetHz_.load(std::memory_order_relaxed);
+    if (off == 0) return 0.0;
+    const int span = txSpanHz_.load(std::memory_order_relaxed);
+    if (span <= 0) return 0.0;
+    return static_cast<double>(off) * kAnPixels / static_cast<double>(span);
+}
+
+void WdspEngine::cropSpectrum(const float *full, float *dst, int n,
+                              double offBins) const noexcept
+{
+    // Centre the displayed window on (analyzer DC − offBins) bins.  With
+    // offBins==0 this is the legacy centred zoom crop.  During TUN
+    // offBins = (NCO−dial) in bins, so the gen1 carrier (at −cw_pitch
+    // baseband relative to the NCO, i.e. AT the dial on air) lands at the
+    // display centre — on the SSB marker — instead of NCO-relative.
+    const double z    = zoom_.load(std::memory_order_relaxed);
+    const double keep = (z <= 1.0) ? static_cast<double>(kAnPixels)
+                                   : static_cast<double>(kAnPixels) / z;
+    const double lo    = (kAnPixels - keep) * 0.5 - offBins;
+    const double span  = (keep > 1.0) ? (keep - 1.0) : 1.0;
+    const int    denom = std::max(1, n - 1);
+    for (int i = 0; i < n; ++i) {
+        const double srcf = lo + (static_cast<double>(i) / denom) * span;
+        int    i0   = static_cast<int>(std::floor(srcf));
+        double frac = srcf - i0;
+        if (i0 < 0)              { i0 = 0;             frac = 0.0; }
+        if (i0 >= kAnPixels - 1) { i0 = kAnPixels - 2; frac = 1.0; }
+        dst[i] = static_cast<float>(full[i0] * (1.0 - frac)
+                                    + full[i0 + 1] * frac);
+    }
+}
+
 int WdspEngine::copySpectrum(float *dst, int maxN)
 {
     if (!analyzerOpen_ || dst == nullptr) {
@@ -1197,30 +1234,19 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
     const float *full = specCache_.data();
 
     const double z = zoom_.load(std::memory_order_relaxed);
-    if (z <= 1.0) {
-        // Full span — hand the cached spectrum straight back.
+    const double offBins = txAnalyzerOffBins();   // 0 unless TUN active
+    if (z <= 1.0 && offBins == 0.0) {
+        // Full span, no TUN shift — hand the cached spectrum straight back.
         std::memcpy(dst, full, static_cast<size_t>(n) * sizeof(float));
         return n;
     }
 
-    // Zoomed (old-Lyra method): crop the centre 1/zoom slice of the
-    // full-resolution spectrum and linearly resample it up to n display
-    // points.  Pure display-side crop — the analyzer is never
-    // reconfigured, so the trace can't be corrupted by a live re-setup.
-    const double keep = static_cast<double>(kAnPixels) / z;   // bins shown
-    const double lo   = (kAnPixels - keep) * 0.5;             // left edge
-    const double span = (keep > 1.0) ? (keep - 1.0) : 1.0;
-    const int    denom = std::max(1, n - 1);
-    for (int i = 0; i < n; ++i) {
-        const double srcf =
-            lo + (static_cast<double>(i) / denom) * span;
-        int    i0   = static_cast<int>(srcf);
-        double frac = srcf - i0;
-        if (i0 < 0)              { i0 = 0;             frac = 0.0; }
-        if (i0 >= kAnPixels - 1) { i0 = kAnPixels - 2; frac = 1.0; }
-        dst[i] = static_cast<float>(full[i0] * (1.0 - frac)
-                                    + full[i0 + 1] * frac);
-    }
+    // Zoomed and/or TUN-shifted (old-Lyra crop method + P4.b offset): crop
+    // the 1/zoom slice about a centre shifted by the NCO−dial offset and
+    // linearly resample up to n display points.  Pure display-side crop —
+    // the analyzer is never reconfigured, so the trace can't be corrupted
+    // by a live re-setup.
+    cropSpectrum(full, dst, n, offBins);
     return n;
 }
 
@@ -1264,25 +1290,13 @@ int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
     const float *full = wfCache_.data();
 
     const double z = zoom_.load(std::memory_order_relaxed);
-    if (z <= 1.0) {
+    const double offBins = txAnalyzerOffBins();   // 0 unless TUN active
+    if (z <= 1.0 && offBins == 0.0) {
         std::memcpy(dst, full, static_cast<size_t>(n) * sizeof(float));
         return n;
     }
-    // Zoom crop — same math as copySpectrum.
-    const double keep = static_cast<double>(kAnPixels) / z;
-    const double lo   = (kAnPixels - keep) * 0.5;
-    const double span = (keep > 1.0) ? (keep - 1.0) : 1.0;
-    const int    denom = std::max(1, n - 1);
-    for (int i = 0; i < n; ++i) {
-        const double srcf =
-            lo + (static_cast<double>(i) / denom) * span;
-        int    i0   = static_cast<int>(srcf);
-        double frac = srcf - i0;
-        if (i0 < 0)              { i0 = 0;             frac = 0.0; }
-        if (i0 >= kAnPixels - 1) { i0 = kAnPixels - 2; frac = 1.0; }
-        dst[i] = static_cast<float>(full[i0] * (1.0 - frac)
-                                    + full[i0 + 1] * frac);
-    }
+    // Zoom and/or TUN-shift crop — same math as copySpectrum.
+    cropSpectrum(full, dst, n, offBins);
     return n;
 }
 

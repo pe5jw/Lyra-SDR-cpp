@@ -1387,7 +1387,10 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
             const int hzi = static_cast<int>(hz);
             lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
             lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
-            lyra::wire::set_tx_freq(hzi);     // TX NCO + DDC2/3 (case 1/5/6)
+            // TX NCO + DDC2/3 (case 1/5/6).  txDdsHzForTune applies the
+            // ∓cw_pitch TUN offset when tuning (zero-beat) — recomputed
+            // on every dial change so a retune mid-tune stays zero-beat.
+            lyra::wire::set_tx_freq(txDdsHzForTune(hz));
         }
     }
 }
@@ -1516,27 +1519,80 @@ void HL2Stream::setMicBoost(bool on) {
                       : QStringLiteral("off (0 dB HW)")));
 }
 
+int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
+    // P4.b TUN zero-beat — Thetis tx_freq computation gated on chkTUN
+    // (console.cs:32574-32587): while tuning, offset the TX NCO by
+    // ∓cw_pitch (USB −, LSB +) so the ±cw_pitch postgen tone (main.cpp
+    // setTune) cancels to a carrier at the dial.  Not tuning → dial
+    // unchanged.  Same kTuneCwPitchHz both sides → they cancel.
+    if (!tuneEnabled_.load(std::memory_order_relaxed))
+        return static_cast<int>(dialHz);
+    const int off = (txMode_.load(std::memory_order_relaxed) == 1)
+        ? -kTuneCwPitchHz    // USB: dial − cw_pitch
+        : +kTuneCwPitchHz;   // LSB: dial + cw_pitch
+    return static_cast<int>(dialHz) + off;
+}
+
+int HL2Stream::txAnalyzerOffsetHz() const {
+    // = txDdsHzForTune(d) − d (freq-independent): the NCO−dial offset the
+    // panadapter crop must undo so the TUN carrier paints on the marker.
+    if (!tuneEnabled_.load(std::memory_order_relaxed)) return 0;
+    return (txMode_.load(std::memory_order_relaxed) == 1)
+        ? -kTuneCwPitchHz    // USB: NCO = dial − cw_pitch
+        : +kTuneCwPitchHz;   // LSB: NCO = dial + cw_pitch
+}
+
 void HL2Stream::setTuneEnabled(bool on) {
-    // Arms / disarms the host-streamed tune-carrier generator.  When
-    // ON and the wire-MOX bit is high, the EP2 writer fills each LRIQ
-    // tuple's TX-I bytes with a constant ~0.95-full-scale value and
-    // TX-Q with zero — DC injection that produces a pure carrier at
-    // LO exactly (zero-beat, at the dial freq, universal HF-rig TUN
-    // convention).  This is the carrier the HL2+ ak4951v4 gateware
-    // requires for any RF (per the gateware RTL, there is no internal
-    // tune carrier; the host must stream non-zero TX I/Q for the DAC
-    // to emit anything regardless of drive level).
+    // Arms / disarms the tune carrier.  P4.b re-home: the carrier now
+    // comes from the WDSP TXA output-side tone generator (postgen /
+    // gen1) via txControl_.setTune — the Thetis TUN mechanism
+    // (console.cs:30787-30801: SetTXAPostGenMode(0) single tone +
+    // ToneFreq ±pitch + ToneMag MAX_TONE_MAG + Run 1).  The legacy
+    // host-streamed DC injection (EP2 packer ~0.95-fs into TX-I) died
+    // with the wire-live switchover, so it's replaced here.  The TXA
+    // channel armed by the MOX keydown (requestMox, fired alongside this
+    // by the TUN button) processes the postgen tone → carrier → wire.
     //
-    // Drive % scales the on-air power; this just provides the I/Q
-    // amplitude for it to scale.  NOT persisted (TUN is an explicit
-    // operator gesture, not a configured state) and auto-cleared on
-    // every wire-MOX-off edge by the ctor's self-wired safety.
+    // Drive % scales the on-air power.  NOT persisted (TUN is an explicit
+    // gesture) and auto-cleared on every wire-MOX-off edge by the ctor's
+    // self-wired safety.
     const bool prev = tuneEnabled_.exchange(on, std::memory_order_relaxed);
     if (prev == on) return;
+    // Forward to the registered postgen callback (no-op if TX control
+    // not yet registered — same pattern as the other setters).
+    {
+        std::function<void(bool)> fwd;
+        {
+            std::lock_guard<std::mutex> lk(txControlMtx_);
+            fwd = txControl_.setTune;
+        }
+        if (fwd) fwd(on);
+    }
+    // P4.b TUN zero-beat: re-push the TX NCO so the ∓cw_pitch DDS offset
+    // is applied (on) / removed (off) — txDdsHzForTune reads the
+    // tuneEnabled_ just set above.  Pairs with the ±cw_pitch postgen tone
+    // (the setTune fwd) → net carrier at the dial (Thetis chkTUN order).
+    if (lyra::wire::prn != nullptr) {
+        const quint32 dial = txFreqHz_.load(std::memory_order_relaxed);
+        const int dds = txDdsHzForTune(dial);
+        lyra::wire::set_tx_freq(dds);
+        // TUN-zero-beat diagnostic: shows the dial vs the offset TX NCO so
+        // the bench log pins where the carrier should land vs where it does.
+        qInfo("[tx] TUN %s: dial=%u txDds(NCO)=%d off=%d mode=%d(USB=1) cw_pitch=%d"
+              "  (gen1 tone = %s%d; net carrier should = dial)",
+              on ? "ON" : "off",
+              dial, dds, dds - static_cast<int>(dial),
+              txMode_.load(std::memory_order_relaxed), kTuneCwPitchHz,
+              (txMode_.load(std::memory_order_relaxed) == 1) ? "+" : "-",
+              kTuneCwPitchHz);
+    }
     emit tuneEnabledChanged(on);
+    // P4.b TUN display-honesty: tell the panadapter the NCO−dial offset so
+    // its TX-state crop renders the carrier at the dial (on the marker).
+    emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
     safetyLog(QStringLiteral("TX: tune-carrier -> %1")
-              .arg(on ? QStringLiteral("ARMED  (zero-beat @ 0.95 fs — emits while MOX active)")
-                      : QStringLiteral("disarmed (TX I/Q back to silent)")));
+              .arg(on ? QStringLiteral("ARMED  (WDSP postgen single tone, ±1 kHz per sideband — emits while MOX active)")
+                      : QStringLiteral("disarmed (postgen stopped)")));
 }
 
 // ---------------------------------------------------------------
@@ -2174,6 +2230,9 @@ void HL2Stream::setLevelerDecayMs(int decay_ms) {
 // clamped to [0, 1] here as a defence against translator bugs.
 void HL2Stream::setTxMode(int wdspMode) {
     const int clamped = std::clamp(wdspMode, 0, 1);
+    // Mirror the WDSP TX mode so txDdsHzForTune signs the TUN DDS offset
+    // (USB −cw_pitch / LSB +cw_pitch) correctly.
+    txMode_.store(clamped, std::memory_order_relaxed);
     std::function<void(int)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
@@ -2191,6 +2250,16 @@ void HL2Stream::setTxMode(int wdspMode) {
           fwd ? "forwarded to TxControl.setMode"
               : "NO-OP (TxControl.setMode not registered)");
     if (fwd) fwd(clamped);
+    // If tuning when the sideband changes, re-push the TX NCO so the
+    // DDS offset flips sign with the mode (keeps the tune carrier
+    // zero-beat).  Rare (mode change mid-tune) but kept coherent.
+    if (tuneEnabled_.load(std::memory_order_relaxed) && lyra::wire::prn != nullptr) {
+        lyra::wire::set_tx_freq(
+            txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));
+        // P4.b TUN display-honesty: the NCO offset sign flipped with the
+        // sideband — re-tell the panadapter so the crop stays on the marker.
+        emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
+    }
 }
 
 // TX-1 component 8c + Task #53 — operator TX bandpass.  Forwards

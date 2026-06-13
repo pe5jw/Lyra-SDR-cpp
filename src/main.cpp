@@ -535,6 +535,15 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxOwnsAnalyzer);
 
+    // P4.b TUN display-honesty — feed the panadapter the TX-analyzer
+    // NCO−dial offset so its TX-state crop renders the TUN carrier at its
+    // true RF (the dial, on the SSB marker) instead of NCO-relative.  The
+    // TX analyzer's DC sits at the TX NCO (dial ∓ cw_pitch during TUN)
+    // while the panadapter axis is centred on the RX DDS (= dial); this
+    // closes that gap.  0 in RX and voice TX.  Same-thread AutoConnection.
+    QObject::connect(stream, &lyra::ipc::HL2Stream::txAnalyzerOffsetChanged,
+                     wdspEngine, &lyra::dsp::WdspEngine::setTxAnalyzerOffsetHz);
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still
@@ -912,6 +921,36 @@ int main(int argc, char *argv[])
                         txf->low  = lo;
                         txf->high = hi;
                         pushTxFilter();
+                    },
+                    .setTune = [txch, txf](bool on) {
+                        // P4.b TUN — WDSP TXA output-side tone generator
+                        // (postgen/gen1), the Thetis TUN mechanism
+                        // (console.cs:30787-30801): single tone (mode 0)
+                        // at ±cw_pitch, mag MAX_TONE_MAG.  Sign per mode
+                        // (USB +cw_pitch, LSB -cw_pitch).  This pairs with
+                        // the ∓cw_pitch TX-DDS offset (HL2Stream::
+                        // txDdsHzForTune) — they CANCEL so the on-air
+                        // carrier is zero-beat at the dial (a co-channel
+                        // SSB listener hears nothing).  MUST use the same
+                        // kTuneCwPitchHz as the DDS offset.  The MOX
+                        // keydown (TUN button) arms the TXA channel that
+                        // processes this tone.
+                        if (on) {
+                            constexpr double kMaxToneMag = 0.99999;   // Thetis MAX_TONE_MAG
+                            const double pitch = static_cast<double>(
+                                lyra::ipc::HL2Stream::kTuneCwPitchHz);
+                            const double freq = (txf->mode == 1) ? pitch : -pitch;  // USB +, LSB −
+                            lyra::wire::SetTXAPostGenMode(txch, 0);            // 0 = single tone
+                            lyra::wire::SetTXAPostGenToneFreq(txch, freq);
+                            lyra::wire::SetTXAPostGenToneMag(txch, kMaxToneMag);
+                            lyra::wire::SetTXAPostGenRun(txch, 1);
+                            qInfo("[tx] TUN postgen: run=1 mode=0(single) freq=%.0f mag=%.5f "
+                                  "(txf->mode=%d USB=1; pairs with the TX-DDS offset → dial)",
+                                  freq, kMaxToneMag, txf->mode);
+                        } else {
+                            lyra::wire::SetTXAPostGenRun(txch, 0);
+                            qInfo("[tx] TUN postgen: run=0 (stopped)");
+                        }
                     },
                 });
                 // registerTxControl() pushes the persisted mic gain / ALC

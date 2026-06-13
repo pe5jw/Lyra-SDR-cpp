@@ -336,6 +336,17 @@ public:
     // cache mirror of copySpectrum's pattern so dual consumers stay
     // fed across GetPixels' single-read ready-flag.
     int  copyWaterfallSpectrum(float *dst, int maxN);
+    // P4.b TUN display-honesty.  During TUN the TX analyzer's DC bin sits
+    // at the TX NCO (dial ∓ cw_pitch), but the panadapter axis is centred
+    // on the RX DDS (= dial).  Without correction the gen1 tune carrier
+    // (at −cw_pitch baseband relative to the NCO, i.e. AT the dial on air)
+    // paints cw_pitch Hz off the marker.  This setter feeds copySpectrum /
+    // copyWaterfallSpectrum the NCO−dial offset (Hz) so the TX-state crop
+    // is shifted to render the carrier at its true RF (on the SSB marker).
+    // 0 in RX and in voice TX (NCO == dial).  Set from HL2Stream tune state.
+    void setTxAnalyzerOffsetHz(int hz) {
+        txAnalyzerOffsetHz_.store(hz, std::memory_order_relaxed);
+    }
     // Display-only notch cut: pull the columns under each
     // active manual notch down to floorDb in a display dB array of `n`
     // points spanning the CURRENT displayed span.  Called by the
@@ -666,6 +677,16 @@ private:
     void configureAnalyzerForRx() noexcept;
     void configureAnalyzerForTx() noexcept;
 
+    // P4.b TUN display-honesty crop helpers (shared by copySpectrum +
+    // copyWaterfallSpectrum).  txAnalyzerOffBins() converts the live
+    // NCO−dial offset (Hz) into analyzer bins across the TX span; 0 unless
+    // TX owns the analyzer with a nonzero offset (= TUN active).
+    // cropSpectrum() crops+resamples the full kAnPixels dB array to n
+    // display points about a centre shifted left by offBins.
+    double txAnalyzerOffBins() const noexcept;
+    void   cropSpectrum(const float *full, float *dst, int n,
+                        double offBins) const noexcept;
+
     WdspNative *wdsp_    = nullptr;
     RxConfig    cfg_;
     // Serialises the WDSP channel lifecycle (open/close on the main
@@ -698,6 +719,9 @@ private:
     //   atomically without taking the lock (was a latent race).
     std::atomic<bool> txOwnsAnalyzer_{false};
     std::atomic<int>  txSpanHz_{96000};
+    // P4.b TUN display-honesty: NCO−dial offset (Hz) applied to the
+    // TX-state spectrum crop (setTxAnalyzerOffsetHz).  0 = no shift.
+    std::atomic<int>  txAnalyzerOffsetHz_{0};
     std::atomic<int>  txAnalyzerBfSize_{0};
     std::atomic<int>  inRateAtomic_{192000};
     // ── Task #44 Phase 2 — fine-grained analyzer mutex (amendment
