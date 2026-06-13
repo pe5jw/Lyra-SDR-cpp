@@ -136,10 +136,6 @@ qt_add_executable(lyra
     src/wire/Router.cpp
     src/wire/MetisFrame.h
     src/wire/MetisFrame.cpp
-    src/wire/Ep2SendThread.h
-    src/wire/Ep2SendThread.cpp
-    src/wire/OutboundRing.h
-    src/wire/OutboundRing.cpp
     src/wire/ForceCandC.h
     src/wire/ForceCandC.cpp
     # TX-rip Phase 1 step 1c-b — wdsp/ empty skeletons.  Populated

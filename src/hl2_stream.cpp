@@ -13,7 +13,6 @@
 // live RX/TX path until later stages).
 #include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize, SampleRateIn2Bits
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
-#include "wire/OutboundRing.h"  // outbound_init
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
 #include "wire/FrameComposer.h" // §5 control-plane mapping: set_rx_freq / set_tx_freq / set_rx_step_attn_db (P4.b RX side)
 
@@ -770,7 +769,11 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::prn->base_outbound_port = kRadioPort;
         lyra::wire::metis_wire_bind(static_cast<int>(socket_),
                                     ipv4.s_addr);
-        lyra::wire::outbound_init();  // per-session sync-flag reset
+        // (§7) The OutboundRing cv-translation + its per-session
+        // outbound_init() reset retired with the wire-LIVE switchover:
+        // the verbatim chain pairs/refills via prn->hsendLRSem /
+        // hsendIQSem / hobbuffsRun[] (created in the open() quartet),
+        // not the cv flags.
     }
 
     // ============== Stage 2b2 — Wire-LIVE migration ==============
