@@ -841,6 +841,32 @@ int main(int argc, char *argv[])
             // (id(1,0),0,1) keyup; SetTXA* at channel setup).
             {
                 const int txch = lyra::wire::chid(1, 0);   // stream 1, subrx 0 = TXA channel (=1)
+
+                // §15.23-class TX sideband fix (2026-06-13, operator
+                // 9100 bench: USB transmitted LSB).  WDSP derives the SSB
+                // sideband PURELY from the SIGN of the bandpass edges:
+                // TXASetupBPFilters (TXA.c:840) does
+                // CalcBandpassFilter(bp0, f_low, f_high) using f_low/f_high
+                // AS-IS for every SSB mode — SetTXAMode does NOT re-sign.
+                // So a mode change MUST re-push the sign-coded bandpass.
+                // Faithful restore of the old TxChannel::pushBandpassLocked
+                // (origin/main tx_channel.cpp:82-114): sign per the SSB
+                // convention (USB = +low/+high positive baseband; LSB =
+                // -high/-low negative baseband — the TX mirror of RX
+                // §14.2), SetTXABandpassFreqs FIRST then SetTXAMode.  My
+                // earlier wire-seam port wired setMode=SetTXAMode-only +
+                // setBandpass=raw, dropping both — that was the bug.
+                // Shared state so setMode + setBandpass re-push coherently.
+                struct TxFilter { int mode = 0; double low = 200.0; double high = 3100.0; };
+                auto txf = std::make_shared<TxFilter>();
+                auto pushTxFilter = [txch, txf]() {
+                    double lo, hi;
+                    if (txf->mode == 1) { lo =  txf->low;  hi =  txf->high; }  // USB: positive baseband
+                    else                { lo = -txf->high; hi = -txf->low;  }  // LSB: negative baseband
+                    lyra::wire::SetTXABandpassFreqs(txch, lo, hi);  // sign-coded edges FIRST
+                    lyra::wire::SetTXAMode(txch, txf->mode);        // then mode (re-runs TXASetupBPFilters)
+                };
+
                 stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
                     .start = [txch]() {
                         lyra::wire::SetChannelState(txch, 1, 0);   // arm — non-blocking cos² up-ramp
@@ -857,8 +883,12 @@ int main(int argc, char *argv[])
                         // XmitBit do the gating; this is now vestigial,
                         // but the FSM still calls it so keep it a no-op.
                     },
-                    .setMode = [txch](int wdspMode) {
-                        lyra::wire::SetTXAMode(txch, wdspMode);     // 0 = LSB, 1 = USB
+                    .setMode = [txf, pushTxFilter](int wdspMode) {
+                        // §15.23 fix: re-push the SIGN-CODED bandpass for
+                        // the new sideband, not just SetTXAMode (which
+                        // alone can't flip the sideband — see pushTxFilter).
+                        txf->mode = (wdspMode == 1) ? 1 : 0;        // 0 = LSB, 1 = USB
+                        pushTxFilter();
                     },
                     .setMicGainDb = [txch](double db) {
                         lyra::wire::SetTXAPanelGain1(txch, std::pow(10.0, db / 20.0));  // dB → linear
@@ -876,8 +906,12 @@ int main(int argc, char *argv[])
                     .setLevelerDecayMs = [txch](int ms) {
                         lyra::wire::SetTXALevelerDecay(txch, ms);
                     },
-                    .setBandpass = [txch](double lo, double hi) {
-                        lyra::wire::SetTXABandpassFreqs(txch, lo, hi);
+                    .setBandpass = [txf, pushTxFilter](double lo, double hi) {
+                        // Operator passes POSITIVE magnitudes; pushTxFilter
+                        // signs them per the current mode (§15.23).
+                        txf->low  = lo;
+                        txf->high = hi;
+                        pushTxFilter();
                     },
                 });
                 // registerTxControl() pushes the persisted mic gain / ALC

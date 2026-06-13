@@ -191,6 +191,33 @@ change).  With this, a keyed MOX sets `XmitBit=1` → the writer
 stops zeroing → the mic→TXA→OutBound(1) modulator I/Q reaches the
 wire = SSB voice.  `if(prn)` guards the pre-open window.
 
+### 5.3 TX SSB sideband sign-coding — FIXED + 9100-verified (2026-06-13)
+
+First-RF (commit 2) transmitted, but USB came out LSB (operator IC-9100
+monitor).  Root cause (verified against WDSP + Thetis source, not
+inferred): **WDSP selects the SSB sideband purely from the SIGN of the
+bandpass edges**, NOT from the mode.  `TXASetupBPFilters` (TXA.c:840)
+does `CalcBandpassFilter(bp0, f_low, f_high)` using `f_low/f_high`
+as-is for every SSB mode, and `SetTXAMode` for `TXA_LSB` vs `TXA_USB`
+is functionally identical (TXA.c:780-785 — both just the SSB path,
+ammod/fmmod/preemph off).  So `SetTXAMode`-alone can never flip the
+sideband.  My initial §4 re-home wired `setMode = SetTXAMode`-only +
+`setBandpass = SetTXABandpassFreqs(raw)`, dropping the per-mode
+sign-coding the old `TxChannel::pushBandpassLocked` did → USB stuck LSB.
+
+Fix (main.cpp TxControl provider): a shared `TxFilter{mode,low,high}` +
+`pushTxFilter()` that signs the edges per mode and pushes
+`SetTXABandpassFreqs(signed)` then `SetTXAMode` — both `setMode` and
+`setBandpass` call it.  Sign convention is **byte-identical to Thetis
+`console.cs::UpdateTXLowHighFilterForMode` (8079-8118)**:
+- USB/CWU/DIGU → `(+low, +high)` (positive baseband)
+- LSB/CWL/DIGL → `(-high, -low)` (negative baseband)
+Thetis drives it the same way: `SetTXFilters → SetTXABandpassFreqs(signed)`
+(console.cs:8138) **+** `SetTXAMode` (radio.cs:2692).  **9100-verified:
+USB→USB, LSB→LSB.**  Scope = SSB only; Thetis DSB/AM/SAM/FM/DRM signs
+(`-high/+high`, FM `±halfBw`, DRM 7000/17000) land with the v0.2.2
+AM/FM/CW modulators.
+
 **Deferred (NOT in commit 2):** TUN re-home to `SetTXAPostGen*` —
 the `TxControl` struct has no postgen callback yet, and the legacy
 `setTuneEnabled` DC-injection (dead with the legacy packer) needs
