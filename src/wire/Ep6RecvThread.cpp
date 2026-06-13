@@ -49,6 +49,8 @@
 #include "wire/MetisFrame.h"
 #include "wire/RadioNet.h"
 #include "wire/Router.h"
+#include "wire/CmBuffs.h"   // P4.b — Inbound(): mic → stream-1 TX input ring
+#include "wire/cmsetup.h"   // P4.b — inid()
 
 #include <QtGlobal>   // Q_ASSERT_X (sink-registration-time contract)
 #include <cstring>
@@ -395,6 +397,15 @@ void Ep6RecvThread::run_loop() {
     // the prior Lyra position (release AFTER priming +
     // WSAEventSelect) was a deviation introduced before the
     // §3.9 audit and is corrected here.
+    // P4.b — reference `MetisReadThreadMain` at `networkproto1.c:246`
+    // sets `io_keep_running = 1;` BEFORE releasing the init semaphore.
+    // The EP2 writer thread (`sendProtocol1Samples`, spawned by
+    // HL2Stream::open AFTER the init-sem handshake returns) loops on
+    // `while (io_keep_running != 0)` — so by the reference's own
+    // ordering the flag is guaranteed 1 before the writer ever tests
+    // it.  Lyra mirrors verbatim.
+    io_keep_running = 1;
+
     if (prn != nullptr) {
         prn->hReadThreadInitSem.release();
     }
@@ -831,11 +842,18 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
             ++mic_sample_count;
         }
     }
-    if (mic_sink_ && mic_sample_count > 0) {
-        // Reference: `Inbound(inid(1, 0), mic_sample_count,
-        // prn->TxReadBufp);`
-        mic_sink_(mic_sample_count, prn->TxReadBufp);
-    }
+    // Reference networkproto1.c:579 (verbatim, unconditional): hand the
+    // harvested mic block to the stream-1 TX input ring.  Inbound
+    // releases stream 1's Sem_BuffReady → cm_main pump → xcmaster(1) →
+    // fexchange0 (WDSP TXA) → xilv → OutBound(1) → obbuffs ring 1 →
+    // ob_main → sendOutbound → prn->outIQbufp + ReleaseSemaphore(
+    // hsendIQSem).  Flows every EP6 datagram regardless of MOX (the TXA
+    // channel parked at state=0 produces zeros; !XmitBit ⇒
+    // sendProtocol1Samples zeroes outIQbufp anyway) — this is the §1
+    // pacing leg that releases the writer's hsendIQSem.  (The OLD
+    // mic_sink_ → Hl2Ep6MicSource indirection is orphaned by this direct
+    // call — retired with the legacy TX path in the piece-6 sweep.)
+    Inbound(inid(1, 0), mic_sample_count, prn->TxReadBufp);
 }
 
 // ---- C&C-in header decode (`networkproto1.c:478-525`) ----

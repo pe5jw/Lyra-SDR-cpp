@@ -735,6 +735,12 @@ private:
     AudioRing          *audioRing_ = nullptr;
     QAudioSink         *audioSink_ = nullptr;
     std::vector<qint16> pcm16_;
+    // P4.b — interleaved L/R doubles handed to the verbatim
+    // OutBound(0) RX-audio tee (dispatchAudioFrame; the §2 asioOUT
+    // pattern).  sendProtocol1Samples does the reference 16-bit
+    // round-nearest quantize, so the wire path consumes doubles, not
+    // pcm16_.  Sized 2*outSize_ alongside pcm16_.
+    std::vector<double> lrWire_;
     // Slider defaults to 0.65 (≈ -14 dB taper, plus the HL2 path's extra
     // ~-10.5 dB) — a moderate, non-blast startup level.  muted_ is
     // restored from QSettings in the ctor (default UNMUTED).

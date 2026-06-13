@@ -146,6 +146,34 @@ extern void (*SetTXAPostGenToneFreq)(int channel, double freq);
 extern void (*SetTXAPostGenTTMag)(int channel, double mag1, double mag2);
 extern void (*SetTXAPostGenTTFreq)(int channel, double freq1, double freq2);
 
+// ---- TXA operator-control setters (P4.b TxControl re-home consumer) ------
+// The operator-facing TXA chain controls the FSM/Settings seam pushes
+// onto the verbatim TX channel (chid(1,0)=1): mode + bandpass (the
+// §15.23 discipline applies — pass SIGNED edges per mode; NEVER call
+// SetTXABandpassRun, it toggles the compressor-only bp1 and kills the
+// SSB path), mic gain (panel gain1), ALC ceiling/decay, leveler trio.
+// Pre-cdef audit per the §15.18 discipline (2026-06-12): signatures
+// harvested verbatim from the definition sites; exact casing + presence
+// verified against the bundled wdsp.dll export table (PE scan — all 8
+// PRESENT).
+//   TXA.c:752        void SetTXAMode (int channel, int mode);
+//   TXA.c:791        void SetTXABandpassFreqs (int channel, double f_low,
+//                        double f_high);
+//   patchpanel.c:209 void SetTXAPanelGain1 (int channel, double gain);
+//   wcpAGC.c:586     void SetTXAALCDecay (int channel, int decay);
+//   wcpAGC.c:604     void SetTXAALCMaxGain (int channel, double maxgain);
+//   wcpAGC.c:613     void SetTXALevelerSt (int channel, int state);
+//   wcpAGC.c:630     void SetTXALevelerDecay (int channel, int decay);
+//   wcpAGC.c:648     void SetTXALevelerTop (int channel, double maxgain);
+extern void (*SetTXAMode)(int channel, int mode);
+extern void (*SetTXABandpassFreqs)(int channel, double f_low, double f_high);
+extern void (*SetTXAPanelGain1)(int channel, double gain);
+extern void (*SetTXAALCDecay)(int channel, int decay);
+extern void (*SetTXAALCMaxGain)(int channel, double maxgain);
+extern void (*SetTXALevelerSt)(int channel, int state);
+extern void (*SetTXALevelerDecay)(int channel, int decay);
+extern void (*SetTXALevelerTop)(int channel, double maxgain);
+
 // ---- PureSignal (calcc.c exports; committed feature, v0.3 consumer) ------
 // Signatures harvested from wdsp/calcc.c definition sites (PORT-
 // prefixed; line numbers cited in wdspcalls.cpp).  All verified

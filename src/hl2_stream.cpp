@@ -11,10 +11,11 @@
 // callers of the new wire layer for the first time; nothing reads
 // the bound state yet (rxWorkerLoop / txWorkerLoop are still the
 // live RX/TX path until later stages).
-#include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize
+#include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize, SampleRateIn2Bits
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
 #include "wire/OutboundRing.h"  // outbound_init
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
+#include "wire/FrameComposer.h" // §5 control-plane mapping: set_rx_freq / set_tx_freq / set_rx_step_attn_db (P4.b RX side)
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -30,6 +31,7 @@
 #include <windows.h>
 #include <timeapi.h>     // timeBeginPeriod / timeEndPeriod (winmm)
 #include <iphlpapi.h>    // GetUdpStatisticsEx (Task #48 diagnostic)
+#include <process.h>     // _beginthreadex — EP2 writer thread (P4.b; reference StartAudioNative netInterface.c:66)
 
 #include <QByteArray>
 #include <QDebug>           // qInfo / qCritical for safety-event mirror
@@ -428,6 +430,13 @@ void HL2Stream::setLnaGainDb(int db)
         return;
     }
     lnaGainDb_.store(db, std::memory_order_relaxed);
+    // §5 control-plane mapping (RX side): case 11 (!XmitBit) reads
+    // prn->adc[0].rx_step_attn for the RX LNA gain.  +12 = the HPSDR P1
+    // 0x14 bias, byte-identical to the retired composeCC RX branch
+    // (0x40 | ((lnaGainDb_+12) & 0x3F)).  `db` is already clamped above.
+    if (lyra::wire::prn != nullptr) {
+        lyra::wire::set_rx_step_attn_db(db + 12, 0);
+    }
     QSettings().setValue(QStringLiteral("rx/lnaGainDb"), db);
     emit lnaGainChanged();
     emit lnaSetByOperator(db);   // manual change → BandMemory saves per-band
@@ -441,6 +450,11 @@ void HL2Stream::applyLnaGainNoPersist(int db)
         return;
     }
     lnaGainDb_.store(db, std::memory_order_relaxed);
+    // §5 control-plane mapping (RX side) — auto-LNA path; same home as
+    // setLnaGainDb (case 11 !XmitBit, +12 HPSDR P1 bias).  `db` clamped above.
+    if (lyra::wire::prn != nullptr) {
+        lyra::wire::set_rx_step_attn_db(db + 12, 0);
+    }
     emit lnaGainChanged();   // slider / dB readout / S-meter comp all track
 }
 
@@ -837,17 +851,94 @@ void HL2Stream::open(const QString &ip) {
     // EP6 thread after start() returns — same parallel-spawn
     // posture as reference (sendProtocol1Samples at :66 spawns
     // before the EP6 thread's priming completes).
+
+    // §5 control-plane mapping (RX side) — at-open seed.  The verbatim
+    // C&C composer (FrameComposer::write_main_loop_hl2) reads `prn` /
+    // `SampleRateIn2Bits`, NOT the hl2_stream legacy atomics that the
+    // retired composeCC read.  Seed those homes from the current
+    // persisted operator state HERE — before ep6Thread_.start() kicks
+    // off the priming pass (ForceCandCFrame reads prn->rx[0].frequency)
+    // and before the writer's first compose — so RX tunes correctly
+    // from the first frame instead of DDC0 sitting at 0 Hz until the
+    // operator first touches the dial (dead-RX, operator-confirmed
+    // 2026-06-13).  prn is guaranteed non-null here (the open() guard at
+    // the top returns if create_rnet hasn't run).  Each operator setter
+    // also writes its home on change (setRx1FreqHz / setLnaGainDb /
+    // setSampleRate / updateOcPattern); this is the open-time snapshot.
+    // Direct prn writes via the FrameComposer setters match the
+    // reference (Console writes prn->rx[] from the control thread) + the
+    // shipped AttOnTxPolicy precedent — no lock, no command queue.
+    {
+        const int rxHz =
+            static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed));
+        lyra::wire::set_rx_freq(0, rxHz);   // DDC0 RX1 (case 2/8/9)
+        lyra::wire::set_rx_freq(1, rxHz);   // DDC1 (case 3 — RX1-mirror until RX2)
+        lyra::wire::set_tx_freq(            // TX NCO + DDC2/3 mirror (case 1/5/6)
+            static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+        lyra::wire::set_rx_step_attn_db(    // LNA gain (case 11 !XmitBit)
+            std::clamp(lnaGainDb_.load(std::memory_order_relaxed),
+                       kLnaMinDb, kLnaMaxDb) + 12, 0);   // HPSDR P1 +12 bias
+        lyra::wire::SampleRateIn2Bits =     // sample-rate code (case 0 C1)
+            sampleRateBits_.load(std::memory_order_relaxed);
+        lyra::wire::prn->oc_output = ocPattern_;  // OC pins (case 0 C2)
+    }
+
     ep6Thread_.start(static_cast<int>(socket_));
 
-    // (4) — Spawn TX writer.  socket_ shared; no `ip` param needed
-    // (txWorkerLoop now sends via lyra::wire::metis_write_frame()
-    // which uses the TU-scope bound dest from metis_wire_bind()
-    // above — reference posture: sendPacket uses file-scope
-    // MetisAddr at network.c:1382-1402).
-    const SocketHandle sh = socket_;
-    txWorker_ = std::jthread([this, sh](std::stop_token stop) {
-        txWorkerLoop(std::move(stop), sh);
-    });
+    // (4) — EP2 writer thread (sendProtocol1Samples).  THE wire path
+    // now (P4.b switchover) — replaces the OLD txWorker_ jthread
+    // (txWorkerLoop, retired below).  VERBATIM reference order,
+    // StartAudioNative netInterface.c:65-71:
+    //   prn->hWriteThreadInitSem = CreateSemaphore(..);     // (see note)
+    //   prn->hWriteThreadMain    = _beginthreadex(.., sendProtocol1Samples, ..);
+    //   prn->hsendEventHandles[0] = (prn->hsendLRSem = CreateSemaphore(..));
+    //   prn->hsendEventHandles[1] = (prn->hsendIQSem = CreateSemaphore(..));
+    //   prn->hobbuffsRun[0] = CreateSemaphore(..);
+    //   prn->hobbuffsRun[1] = CreateSemaphore(..);
+    //
+    // Thread-FIRST then the four sems — exactly as the reference.  (An
+    // earlier pass reordered sems-before-thread "to remove a startup
+    // race"; reverted — that is the "I have a reason to differ" trap
+    // the DESIGN PRINCIPLE forbids.  The reference's order is safe in
+    // practice: the new thread's AvSetMmThreadCharacteristics setup
+    // gives this creating thread a large head start to finish the four
+    // CreateSemaphore calls before the writer first reaches
+    // WaitForMultipleObjects.  Decade-proven in Thetis; faithful port
+    // protects PureSignal correctness, which depends on byte-faithful
+    // wire behaviour.)
+    //
+    // hWriteThreadInitSem (reference netInterface.c:65): a
+    // create-but-never-waited-on init sem.  In Lyra the thread-init-sem
+    // MECHANISM is the Lyra-native std::counting_semaphore member
+    // (RadioNet.h:605) — the same sanctioned surrounding-architecture
+    // translation already used for hReadThreadInitSem; it is
+    // default-constructed with prn and (matching the reference)
+    // nothing waits on it, so there is no Win32 creation line to port.
+    //
+    // Packaging accommodation (NOT behavioral): the reference passes
+    // sendProtocol1Samples directly to _beginthreadex (C); C++ requires
+    // the _beginthreadex_proc_type cast — same documented class as the
+    // (AVRT_PRIORITY)2 cast in NetworkProto1.cpp.
+    //
+    // io_keep_running == 1 is already guaranteed here: ep6Thread_.start()
+    // above blocked on the read thread's init-sem, which Ep6RecvThread
+    // releases only AFTER setting io_keep_running = 1 (mirrors
+    // MetisReadThreadMain networkproto1.c:246).  The writer's
+    // `while (io_keep_running != 0)` loop then blocks on BOTH hsend
+    // sems until the RX OutBound(0) chain (hsendLRSem) AND the TX
+    // OutBound(1) chain (hsendIQSem) each deliver a buffer (the §1
+    // pacing model — no fresh data ⇒ writer blocks ⇒ silent wire, the
+    // reference stuck-carrier safety).
+    lyra::wire::prn->hWriteThreadMain = reinterpret_cast<HANDLE>(_beginthreadex(
+        nullptr, 0,
+        reinterpret_cast<_beginthreadex_proc_type>(&lyra::wire::sendProtocol1Samples),
+        nullptr, 0, nullptr));
+    lyra::wire::prn->hsendEventHandles[0] =
+        (lyra::wire::prn->hsendLRSem = ::CreateSemaphore(nullptr, 0, 1, nullptr));
+    lyra::wire::prn->hsendEventHandles[1] =
+        (lyra::wire::prn->hsendIQSem = ::CreateSemaphore(nullptr, 0, 1, nullptr));
+    lyra::wire::prn->hobbuffsRun[0] = ::CreateSemaphore(nullptr, 0, 1, nullptr);
+    lyra::wire::prn->hobbuffsRun[1] = ::CreateSemaphore(nullptr, 0, 1, nullptr);
 
     // Stage 2b2-fix: timer consumers START LAST — only after
     // create_rnet() above has allocated `prn` and the EP6/TX
@@ -929,20 +1020,69 @@ void HL2Stream::close() {
     // so the Settings checkbox stays at the operator's last explicit
     // setting across a Stop → next Start cycle.
 
-    // Stage 2b2: request_stop on tx worker FIRST so it stops
-    // emitting (bounded by waitable-timer wait cap 100 ms); then
-    // stop the EP6 thread (Ep6RecvThread::stop joins bounded by the
-    // run_loop's prn->wdt timeout per networkproto1.c:443); then
-    // join txWorker_.  Matches reference's IOThreadStop pattern at
-    // network.c:1434-1452: stop signal → bounded wait → join.
-    qWarning("[shutdown] HL2Stream::close request_stop on tx worker + stop ep6Thread_");
-    if (txWorker_.joinable()) txWorker_.request_stop();
+    // ============== P4.b — EP2 writer teardown ==============
+    //
+    // Reference IOThreadStop (network.c:1434-1469) + StopAudio
+    // (netInterface.c:96-114): io_keep_running=0 → wait the READ thread
+    // → CloseHandle(hWriteThreadMain) + the 4 P1 sems → [StopAudio]
+    // destroy_obbuffs(0/1).
+    //
+    // ⚠ DOCUMENTED LYRA DEVIATION (the ONLY P4.b deviation — operator-
+    // approved 2026-06-13; design §6; rule #2 surrounding-architecture):
+    // the reference does NOT wake or join sendProtocol1Samples — it
+    // CloseHandle's the writer while it is still parked in
+    // WaitForMultipleObjects(hsendEventHandles, INFINITE) and relies on
+    // process-exit to reap it (a CloseHandle-while-waiting = documented
+    // Win32 UB; the MW0LGE :1456 comment shows they fought crashes in
+    // this very block).  VERIFIED 2026-06-13: the only
+    // ReleaseSemaphore(hsend*) sites in the reference are inside
+    // sendOutbound (network.c:1311-1336, the runtime producer path) —
+    // there is NO shutdown-path wake anywhere in ChannelMaster, so the
+    // writer is deterministically orphaned at stop.  Lyra must stop/
+    // start cleanly (cb58bcb class; bench gate), so we WAKE the writer
+    // (release both hsend sems once) → it observes io_keep_running=0 →
+    // exits → then JOIN + CloseHandle.
+    //
+    // PURESIGNAL-SAFE: this runs ONLY at close(); it changes no WDSP
+    // call, no wire byte, no buffer (outLRbufp/outIQbufp/OutBufp), no
+    // MetisOutBoundSeqNum, and does NOT touch sendOutbound's runtime
+    // sem-release path (the verbatim P2.c port).  It only governs WHEN
+    // the writer THREAD stops — Lyra-native thread/process model.
+    // create_xmtr's PS surface (out[3]/peer/…) is NOT torn down here
+    // (that's app-quit destroy_xmtr), so it survives stop/start intact.
+    lyra::wire::io_keep_running = 0;                  // ref network.c:1438
     qWarning("[shutdown] HL2Stream::close ep6Thread_.stop() - start");
-    ep6Thread_.stop();
+    ep6Thread_.stop();   // ref: wait the read thread (producers quiesce; ob_main parks on Sem_BuffReady)
     qWarning("[shutdown] HL2Stream::close ep6Thread_.stop() - done");
-    qWarning("[shutdown] HL2Stream::close txWorker_.join() - start");
-    if (txWorker_.joinable()) txWorker_.join();
-    qWarning("[shutdown] HL2Stream::close txWorker_.join() - done");
+    if (lyra::wire::prn != nullptr) {
+        // Wake the parked writer (the accommodation the reference omits)
+        // so it exits rather than leaking on a closed handle.  One final
+        // EP2 frame may be emitted before it re-tests the flag — benign:
+        // MOX was force-cleared above ⇒ !XmitBit ⇒ zeroed TX I/Q.
+        if (lyra::wire::prn->hsendLRSem)
+            ::ReleaseSemaphore(lyra::wire::prn->hsendLRSem, 1, nullptr);
+        if (lyra::wire::prn->hsendIQSem)
+            ::ReleaseSemaphore(lyra::wire::prn->hsendIQSem, 1, nullptr);
+        qWarning("[shutdown] HL2Stream::close EP2 writer join - start");
+        if (lyra::wire::prn->hWriteThreadMain) {
+            ::WaitForSingleObject(lyra::wire::prn->hWriteThreadMain, 1000);
+            ::CloseHandle(lyra::wire::prn->hWriteThreadMain);   // ref network.c:1462
+            lyra::wire::prn->hWriteThreadMain = nullptr;
+        }
+        qWarning("[shutdown] HL2Stream::close EP2 writer join - done");
+        // Close the 4 P1 sems (ref network.c:1464-1467).  Safe here —
+        // BEFORE destroy_obbuffs as in the reference — because
+        // ep6Thread_.stop() + the writer join above quiesced every
+        // producer, so ob_main is parked on Sem_BuffReady and will not
+        // ReleaseSemaphore a closed handle.  Null-cleared for a clean
+        // re-open (open() recreates them).
+        if (lyra::wire::prn->hsendIQSem)     { ::CloseHandle(lyra::wire::prn->hsendIQSem);     lyra::wire::prn->hsendIQSem = nullptr; }
+        if (lyra::wire::prn->hsendLRSem)     { ::CloseHandle(lyra::wire::prn->hsendLRSem);     lyra::wire::prn->hsendLRSem = nullptr; }
+        if (lyra::wire::prn->hobbuffsRun[0]) { ::CloseHandle(lyra::wire::prn->hobbuffsRun[0]); lyra::wire::prn->hobbuffsRun[0] = nullptr; }
+        if (lyra::wire::prn->hobbuffsRun[1]) { ::CloseHandle(lyra::wire::prn->hobbuffsRun[1]); lyra::wire::prn->hobbuffsRun[1] = nullptr; }
+        lyra::wire::prn->hsendEventHandles[0] = nullptr;
+        lyra::wire::prn->hsendEventHandles[1] = nullptr;
+    }
 
     // Both workers stopped — main thread sends STOP, then closes
     // the socket.  Best-effort; if STOP doesn't reach the gateware
@@ -1219,6 +1359,20 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
         // is the only operator-facing tuner, so this captures every
         // dial gesture, band button, memory recall, TCI spot click, etc.
         txFreqHz_.store(hz, std::memory_order_relaxed);
+
+        // §5 control-plane mapping (RX side): the verbatim
+        // write_main_loop_hl2 tunes the DDCs from prn->rx[].frequency /
+        // prn->tx[0].frequency (NOT rx1FreqHz_ — that was the retired
+        // composeCC's source).  Write the verbatim homes on every dial
+        // change so DDC0 follows the operator.  `if (prn)` guards the
+        // pre-open window (a tune gesture before the wire layer is up
+        // is captured by the at-open seed in open()).
+        if (lyra::wire::prn != nullptr) {
+            const int hzi = static_cast<int>(hz);
+            lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
+            lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
+            lyra::wire::set_tx_freq(hzi);     // TX NCO + DDC2/3 (case 1/5/6)
+        }
     }
 }
 
@@ -2151,6 +2305,11 @@ void HL2Stream::setSampleRate(int hz) {
     default:     return;   // 48k excluded (EP2 cadence)
     }
     sampleRateBits_.store(bits, std::memory_order_relaxed);
+    // §5 control-plane mapping (RX side): compose_case_0 C1 reads the
+    // `SampleRateIn2Bits` global (NOT sampleRateBits_, the retired
+    // composeCC source).  Plain global — no prn guard needed; valid at
+    // all times.  The at-open seed covers the initial rate.
+    lyra::wire::SampleRateIn2Bits = bits;
     // TX Component 3 — keep the mic decimation factor coherent with
     // the new wire rate so the 48 kHz mic output stays at 48 kHz across
     // rate switches (matches the C reference's `SetDDCRate`
@@ -2350,8 +2509,16 @@ void HL2Stream::updateOcPattern(bool transmitting) {
         return;
     }
     ocPattern_ = pattern;
+    // §5 control-plane mapping (RX side): compose_case_0 C2 derives the
+    // OC pins as ((prn->oc_output << 1) & 0xFE).  Write the raw pattern
+    // home (composer does the shift) — the retired composeCC read ocC2_.
+    // `if (prn)` guards the pre-open window (covered by the at-open seed).
+    if (lyra::wire::prn != nullptr) {
+        lyra::wire::prn->oc_output = pattern;
+    }
     // C2[7:1] = OC pins; C2[0] (CW key bit) stays 0.  Atomic store so the
-    // EP2 writer thread picks it up on the next send.
+    // EP2 writer thread picks it up on the next send.  (ocC2_ is the
+    // retired composeCC source — left until the §7 retirement cleanup.)
     ocC2_.store(static_cast<std::uint8_t>((pattern << 1) & 0xFE),
                 std::memory_order_relaxed);
     emit ocBitsChanged(pattern);

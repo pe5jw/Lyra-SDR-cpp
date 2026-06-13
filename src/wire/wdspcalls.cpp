@@ -50,6 +50,14 @@ void (*SetTXAPostGenToneMag)(int, double) = nullptr;
 void (*SetTXAPostGenToneFreq)(int, double) = nullptr;
 void (*SetTXAPostGenTTMag)(int, double, double) = nullptr;
 void (*SetTXAPostGenTTFreq)(int, double, double) = nullptr;
+void (*SetTXAMode)(int, int) = nullptr;
+void (*SetTXABandpassFreqs)(int, double, double) = nullptr;
+void (*SetTXAPanelGain1)(int, double) = nullptr;
+void (*SetTXAALCDecay)(int, int) = nullptr;
+void (*SetTXAALCMaxGain)(int, double) = nullptr;
+void (*SetTXALevelerSt)(int, int) = nullptr;
+void (*SetTXALevelerDecay)(int, int) = nullptr;
+void (*SetTXALevelerTop)(int, double) = nullptr;
 void (*pscc)(int, int, double*, double*) = nullptr;
 void (*psccF)(int, int, float*, float*, float*, float*, int, int) = nullptr;
 void (*SetPSRunCal)(int, int) = nullptr;
@@ -106,6 +114,14 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(SetTXAPostGenToneFreq)\
     X(SetTXAPostGenTTMag)   \
     X(SetTXAPostGenTTFreq)  \
+    X(SetTXAMode)           \
+    X(SetTXABandpassFreqs)  \
+    X(SetTXAPanelGain1)     \
+    X(SetTXAALCDecay)       \
+    X(SetTXAALCMaxGain)     \
+    X(SetTXALevelerSt)      \
+    X(SetTXALevelerDecay)   \
+    X(SetTXALevelerTop)     \
     X(pscc)                 \
     X(psccF)                \
     X(SetPSRunCal)          \

@@ -14,7 +14,6 @@
 
 #include "wire/FrameComposer.h"
 #include "wire/MetisFrame.h"
-#include "wire/OutboundRing.h"
 #include "wire/RadioNet.h"
 #include "wire/RbpFilter.h"
 

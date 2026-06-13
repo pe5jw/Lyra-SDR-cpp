@@ -12,6 +12,7 @@
 #include <QByteArray>
 
 #include "wire/AAMix.h"  // P0.c direct port (reference aamix.h verbatim)
+#include "wire/ObBuffs.h" // P4.b — OutBound(0,…): RX audio → r1 ring → ob_main → sendOutbound (the asioOUT-pattern tee, cmasio.c:137-145)
 #include <QDataStream>
 #include <QDateTime>
 #include <QDebug>
@@ -284,6 +285,7 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     outBuf_.assign(static_cast<size_t>(2 * outSize_), 0.0);
     // int16 stereo scratch for the audio-ring push (Step 3e).
     pcm16_.assign(static_cast<size_t>(2 * outSize_), 0);
+    lrWire_.assign(static_cast<size_t>(2 * outSize_), 0.0);  // P4.b OutBound(0) tee buffer
     // Headroom for one in_size block + a couple of EP6 datagrams so
     // feedIq's append never reallocates in steady state.
     accum_.reserve(static_cast<size_t>(2 * (cfg_.inSize + 128)));
@@ -1154,6 +1156,7 @@ void WdspEngine::setSampleRate(int hz)
     }
     outBuf_.assign(static_cast<size_t>(2 * outSize_), 0.0);
     pcm16_.assign(static_cast<size_t>(2 * outSize_), 0);
+    lrWire_.assign(static_cast<size_t>(2 * outSize_), 0.0);  // P4.b OutBound(0) tee buffer
     accum_.clear();
     if (wasOpen) {
         openRx1();           // reopen at the new rate (recreates analyzer)
@@ -2471,19 +2474,42 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
         r *= rBal;
         l = std::clamp(l, -1.0, 1.0);
         r = std::clamp(r, -1.0, 1.0);
+        // Processed RX-audio doubles for the verbatim OutBound(0) tee
+        // (P4.b); pcm16_ still feeds the PC sound-card ring.
+        lrWire_[static_cast<size_t>(2 * f + 0)] = l;
+        lrWire_[static_cast<size_t>(2 * f + 1)] = r;
         pcm16_[static_cast<size_t>(2 * f + 0)] =
             static_cast<qint16>(l * 32767.0);
         pcm16_[static_cast<size_t>(2 * f + 1)] =
             static_cast<qint16>(r * 32767.0);
     }
+    // P4.b — RX audio → the verbatim EP2 writer via OutBound(0), per the
+    // reference asioOUT P1 posture (cmasio.c:137-145) + design §2.
+    // OutBound(0) appends to obbuffs ring 0 → ob_main → sendOutbound →
+    // prn->outLRbufp + ReleaseSemaphore(hsendLRSem); the writer
+    // (sendProtocol1Samples) does the reference 16-bit round-nearest
+    // quantize.  Called HERE — the AAMix Outbound consumer is the
+    // operator-approved hybrid registration site; create_rnet does NOT
+    // SendpOutboundRx (that no-op-stub registration was the B.6.b
+    // clobber, commit 8b8e0da — must stay deleted).
     if (hl2Out_) {
-        // HL2 onboard codec -- hand to the EP2 writer's ring.
-        if (hl2AudioPush_) hl2AudioPush_(pcm16_.data(), nframes);
+        // HL2 onboard codec (HERMES posture): the EP2 LR bytes ARE the
+        // headphone-jack audio — hand the processed doubles straight to
+        // OutBound(0).  Replaces the OLD hl2AudioPush_ EP2 ring (retired
+        // with txWorkerLoop).
+        lyra::wire::OutBound(0, nframes, lrWire_.data());
     } else {
-        // PC sound card -- audioMtx_ guards audioRing_ against a
-        // main-thread device switch / teardown.
-        std::lock_guard<std::mutex> lk(audioMtx_);
-        if (audioRing_) audioRing_->push(pcm16_.data(), nframes);
+        // PC sound card (ASIO posture): real audio to the PC ring, then
+        // ZERO the LR and OutBound(0) the zeroed buffer so the wire stays
+        // paced (the writer needs hsendLRSem every cycle) while the HL2
+        // jack is silent — exactly `memset(buff,0); OutBound(0,…)` at
+        // cmasio.c:143-144.
+        {
+            std::lock_guard<std::mutex> lk(audioMtx_);
+            if (audioRing_) audioRing_->push(pcm16_.data(), nframes);
+        }
+        std::fill_n(lrWire_.data(), static_cast<size_t>(2 * nframes), 0.0);
+        lyra::wire::OutBound(0, nframes, lrWire_.data());
     }
 }
 

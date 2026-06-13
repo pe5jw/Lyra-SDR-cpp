@@ -127,6 +127,46 @@ verified control-by-control):
 Rule: each setter writes the verbatim home; the legacy member
 stays only if UI reads it (single-writer discipline preserved).
 
+### 5.1 RX-side rows — IMPLEMENTED in the RX-out gate (2026-06-13)
+
+The operator-approved P4.b split (RX-out gate = pieces 1+2+3+7
+first, TX = 4+5+6 second) initially under-scoped §5: the RX gate
+shipped without ANY control-plane mapping, so the verbatim
+write_main_loop_hl2 (now THE live C&C composer once composeCC's
+txWorkerLoop launch retired) read empty `prn` → DDC0 at 0 Hz →
+**dead RX, no audio, no signals — operator-confirmed on the bench
+2026-06-13.**  The §5 line list always named "control-plane
+mapping" as a core P4.b piece; the omission was the split, not the
+plan.  Resolution (plan-faithful, NOT a patch): the **RX-relevant
+rows** of the §5 table land in the RX-out gate; the TX-only rows
+stay in commit 2 (TX-inert at RX, so the split holds).
+
+| §5 row | RX-gate home write | site |
+|---|---|---|
+| RX freq | `set_rx_freq(0,hz)`+`set_rx_freq(1,hz)`+`set_tx_freq(hz)` | `setRx1FreqHz` |
+| sample rate | `SampleRateIn2Bits = bits` | `setSampleRate` |
+| LNA gain | `set_rx_step_attn_db(db+12, 0)` (case 11 !XmitBit; +12 = field-proven HPSDR P1 bias, byte-identical to retired composeCC) | `setLnaGainDb` + `applyLnaGainNoPersist` |
+| OC bits | `prn->oc_output = pattern` (composer shifts `<<1 & 0xFE`) | `updateOcPattern` |
+
+Plus an **at-open seed** in `open()` (before `ep6Thread_.start()`,
+so the EP6 priming pass + first compose tune correctly) that
+writes all four homes from the persisted operator state — without
+it RX stays dead until the first dial gesture.  `prn` is non-null
+there (the open() guard returns otherwise); per-setter sites carry
+`if (prn)` for the pre-open window.  Writes go directly to `prn`
+via the FrameComposer setters — matches the reference (Console
+writes `prn->rx[]` from the control thread) + the shipped
+`AttOnTxPolicy` precedent; no lock, no command queue.
+
+**PureSignal-safe:** this only POPULATES freq/rate/gain/OC homes the
+verbatim composer already reads; it changes no WDSP call, no buffer,
+no `create_xmtr` PS surface.  TX-side rows (drive %, PA enable, TX
+step-att, MOX → XmitBit) remain commit 2.  `nddc=4` needs no mapping
+(correct by default global).  `prn->rx[0].preamp` left at default
+(composeCC never drove it; no operator preamp control).  The dead
+`composeCC` method + `ocC2_`/`sampleRateBits_` legacy members are a
+§7 retirement (orphaned, harmless until then).
+
 ## 6. Threads + lifecycle (verbatim homes)
 
 - Quartet creation + writer-thread start at open(), per StartAudio
@@ -152,6 +192,48 @@ stays only if UI reads it (single-writer discipline preserved).
   `src/wire/NetworkProto1.cpp` (networkproto1.c PARTIAL), calling
   Lyra's write_main_loop_hl2 (the monolithic WriteMainLoop_HL2
   equivalent, #121/#122).
+
+### 6.1 Teardown accommodation — VERIFIED + IMPLEMENTED + OPERATOR-APPROVED 2026-06-13
+
+The §6 "Verify the reference IOThreadStop body first" caveat is now
+resolved.  **Verification (2026-06-13):** reference `IOThreadStop`
+(network.c:1434-1469) sets `io_keep_running=0`, `WaitForSingleObject`
+on `hReadThreadMain` ONLY, then `CloseHandle`s `hWriteThreadMain` +
+the 4 P1 sems — it never wakes or joins `sendProtocol1Samples`.  The
+ONLY `ReleaseSemaphore(hsendIQSem/hsendLRSem)` sites in all of
+ChannelMaster are inside `sendOutbound` (network.c:1311-1336, the
+RUNTIME producer path); there is NO shutdown-path wake.  So the
+reference deterministically orphans the writer parked in
+`WaitForMultipleObjects(INFINITE)` — a `CloseHandle`-while-waiting
+(documented Win32 UB; the MW0LGE :1456 comment shows they fought
+crashes here) that relies on process-exit to reap the thread.
+
+**The ONE P4.b deviation (operator-approved 2026-06-13):** Lyra must
+stop/start cleanly (cb58bcb class; bench gate), so after
+`io_keep_running=0` + `ep6Thread_.stop()` (producers quiesce, ob_main
+parks on Sem_BuffReady), `HL2Stream::close()` releases both hsend sems
+once → the writer wakes, observes the flag, runs one final benign
+iteration (MOX force-cleared above ⇒ `!XmitBit` ⇒ zeroed TX I/Q),
+exits → `WaitForSingleObject(hWriteThreadMain)` + `CloseHandle`.  This
+also removes the reference's `CloseHandle`-while-waiting UB.
+
+**PureSignal-safe:** runs ONLY at `close()`; changes no WDSP call, no
+wire byte, no buffer (outLRbufp/outIQbufp/OutBufp), no
+MetisOutBoundSeqNum, and does NOT touch `sendOutbound`'s runtime
+sem-release path (verbatim P2.c).  It governs only WHEN the writer
+THREAD stops — Lyra-native thread/process model (rule #2).
+`create_xmtr`'s PS surface is not torn down here (app-quit
+`destroy_xmtr`), so it survives stop/start intact.
+
+**Ordering correction to the §6 sketch above:** the implemented order
+is the VERIFIED reference order — `CloseHandle` quartet (IOThreadStop)
+→ STOP send + socket close (StopReadThread) → `destroy_obbuffs(0/1)`
+(StopAudio :112-113) — i.e. quartet-close BEFORE `destroy_obbuffs`,
+the *reverse* of the §6 line-147 prose ("destroy → CloseHandle
+quartet").  Safe because the writer-join above leaves ob_main parked
+on Sem_BuffReady (no producer), so it never `ReleaseSemaphore`s a
+closed hsend handle and `destroy_obbuffs` stops it last, exactly as
+Thetis sequences StopAudio.
 
 ## 7. Retirements
 
