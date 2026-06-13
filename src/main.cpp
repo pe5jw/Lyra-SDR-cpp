@@ -822,17 +822,89 @@ int main(int argc, char *argv[])
             // earlier) sees them populated at teardown.
             micSource = new lyra::dsp::Hl2Ep6MicSource(*stream);
 
-            // TX-rip Phase 1 (Q2): TxDspWorker / TciMicSource
-            // construction + the entire TxControl/TxIqSource
-            // registration block + RX-mode→TX-mode propagation +
-            // TX-bandpass wiring REMOVED.  The TX DSP subsystem is
-            // being rebuilt from empty files per the signed Phase 0
-            // mapping (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
-            // HL2Stream's TX-I/Q source + TX control callbacks are
-            // left unregistered — the EP2 packer zero-fills TX I/Q
-            // and FSM keydown/keyup become no-ops, leaving the wire
-            // RX-only.  The RX path below (filterLow wiring +
-            // hwPttEnabled forwarder) is untouched.
+            // P4.b §4 — FSM re-home: re-wire the TxControl surface to
+            // the WIRE-LIVE WDSP TXA channel chid(1,0).  The TX-rip
+            // Phase 1 removal left txControl_ UNREGISTERED, so
+            // create_xmtr opened the TXA channel but the FSM never armed
+            // it (SetChannelState) and never pushed its mode / ALC /
+            // bandpass — it sat at create-time defaults, incl. the ALC
+            // max-gain trap that pins the TXA output chain to silence.
+            // Result: keyed TX (voice AND tune) emitted nothing on the
+            // wire (operator bench 2026-06-13).  The old provider drove
+            // a now-deleted TxDspWorker/TxChannel (origin/main:src/
+            // main.cpp:673); re-pointed here to the wdspcalls seam on
+            // chid(1,0), the wire-live owner of the TXA channel.  This
+            // is the Lyra-native FSM control seam; the SetChannelState /
+            // SetTXA* calls + values are reference-faithful (the
+            // reference's MOX handler calls them directly — console.cs:
+            // 30345 SetChannelState(id(1,0),1,0) keydown / :30357
+            // (id(1,0),0,1) keyup; SetTXA* at channel setup).
+            {
+                const int txch = lyra::wire::chid(1, 0);   // stream 1, subrx 0 = TXA channel (=1)
+                stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
+                    .start = [txch]() {
+                        lyra::wire::SetChannelState(txch, 1, 0);   // arm — non-blocking cos² up-ramp
+                    },
+                    .stop = [txch]() {
+                        lyra::wire::SetChannelState(txch, 0, 1);   // stop — BLOCKING down-ramp flush
+                    },
+                    .setInjectTxIq = [](bool) {
+                        // Wire-live: the cm pump feeds OutBound(1) every
+                        // cycle and the EP2 writer's `!XmitBit ⇒
+                        // memset(outIQbufp)` gate decides zero-vs-pass —
+                        // there is no separate inject branch (that was the
+                        // retired legacy EP2 packer).  Channel arm/stop +
+                        // XmitBit do the gating; this is now vestigial,
+                        // but the FSM still calls it so keep it a no-op.
+                    },
+                    .setMode = [txch](int wdspMode) {
+                        lyra::wire::SetTXAMode(txch, wdspMode);     // 0 = LSB, 1 = USB
+                    },
+                    .setMicGainDb = [txch](double db) {
+                        lyra::wire::SetTXAPanelGain1(txch, std::pow(10.0, db / 20.0));  // dB → linear
+                    },
+                    .setAlcMaxGainLinear = [txch](double lin) {
+                        lyra::wire::SetTXAALCMaxGain(txch, lin);    // un-trap the ALC ceiling
+                    },
+                    .setAlcDecayMs = [txch](int ms) {
+                        lyra::wire::SetTXAALCDecay(txch, ms);
+                    },
+                    .setLevelerOn = [txch](bool on, double top) {
+                        lyra::wire::SetTXALevelerSt(txch, on ? 1 : 0);
+                        lyra::wire::SetTXALevelerTop(txch, top);
+                    },
+                    .setLevelerDecayMs = [txch](int ms) {
+                        lyra::wire::SetTXALevelerDecay(txch, ms);
+                    },
+                    .setBandpass = [txch](double lo, double hi) {
+                        lyra::wire::SetTXABandpassFreqs(txch, lo, hi);
+                    },
+                });
+                // registerTxControl() pushes the persisted mic gain / ALC
+                // max-gain / ALC decay / leveler ONCE here, so the freshly
+                // armed channel is off the create-time ALC trap.
+                qInfo("[tx] P4.b §4: TxControl re-homed to WDSP TXA "
+                      "chid(1,0)=%d (arm/stop + mode/mic/ALC/leveler/"
+                      "bandpass via the wdspcalls seam)", txch);
+
+                // USB-stuck-LSB fix (origin/main TX-1 8a-tx-mode): TX
+                // tracks the operator's RX sideband.  Push the current
+                // mode now (channel sits at create-time 0=LSB otherwise)
+                // + on every RX-mode change.
+                auto wdspTxModeFor = [](const QString &uiMode) -> int {
+                    const QString m = uiMode.toUpper();
+                    if (m == QStringLiteral("LSB")  || m == QStringLiteral("CWL") ||
+                        m == QStringLiteral("DIGL") || m == QStringLiteral("DRMD"))
+                        return 0;   // WDSP TXA LSB
+                    return 1;       // WDSP TXA USB (USB/CWU/DIGU/AM/FM/DSB/SAM/...)
+                };
+                QObject::connect(wdspEngine,
+                                 &lyra::dsp::WdspEngine::modeChanged,
+                                 stream, [stream, wdspEngine, wdspTxModeFor]() {
+                    stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+                });
+                stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+            }
 
             // Task #53 — shared filterLow also drives the RX bandpass.
             // WdspEngine.setFilterLowHz triggers an internal

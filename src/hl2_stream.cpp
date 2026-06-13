@@ -881,6 +881,22 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::SampleRateIn2Bits =     // sample-rate code (case 0 C1)
             sampleRateBits_.load(std::memory_order_relaxed);
         lyra::wire::prn->oc_output = ocPattern_;  // OC pins (case 0 C2)
+
+        // §5 control-plane mapping (TX side) — seed the TX homes too so
+        // the first composed frame carries the operator's persisted TX
+        // state (PA defaults OFF; drive default low; XmitBit 0 at open =
+        // RX).  TX-inert at RX (gateware acts on these only during a
+        // keyed MOX), so this does not change RX behaviour — it just
+        // means the first keydown finds correct drive/PA/att already on
+        // the wire rather than create-time defaults.
+        lyra::wire::set_drive_level(            // drive level (case 10 C1)
+            static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed)));
+        lyra::wire::set_pa_on(                   // PA enable (case 10 C2/C3)
+            paOn_.load(std::memory_order_relaxed));
+        lyra::wire::set_tx_step_attn_db(         // TX step-att (case 4/11)
+            txStepAttnDb_.load(std::memory_order_relaxed));
+        lyra::wire::XmitBit =                    // wire MOX gate (0 = RX at open)
+            mox_.load(std::memory_order_relaxed) ? 1 : 0;
     }
 
     ep6Thread_.start(static_cast<int>(socket_));
@@ -1392,6 +1408,10 @@ void HL2Stream::setMox(bool on) {
     // dev/diag tools.
     const bool prev = mox_.exchange(on, std::memory_order_relaxed);
     if (prev != on) {
+        // §5 (TX): keep the wire gate (global XmitBit) coherent with the
+        // raw MOX bit so diag/test tools that bypass the FSM still gate
+        // the writer correctly.
+        lyra::wire::XmitBit = on ? 1 : 0;
         // Raw setter bypasses the FSM's TR-delay chain — if anything
         // ever calls this in production, the operator needs to know.
         // Diag/test tools use it deliberately; nothing else should.
@@ -1403,6 +1423,11 @@ void HL2Stream::setMox(bool on) {
 void HL2Stream::setTxFreqHz(quint32 hz) {
     const quint32 prev = txFreqHz_.exchange(hz, std::memory_order_relaxed);
     if (prev != hz) {
+        // §5 (TX): prn->tx[0].frequency (case 1/5/6).  In simplex,
+        // setRx1FreqHz mirrors this; the standalone setter covers
+        // split-mode / direct TX-freq paths.
+        if (lyra::wire::prn != nullptr)
+            lyra::wire::set_tx_freq(static_cast<int>(hz));
         emit logLine(QStringLiteral("TX freq -> %1 Hz (%2 MHz)")
                      .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
     }
@@ -1422,6 +1447,8 @@ void HL2Stream::setTxDriveLevel(int level) {
     const int clamped = std::clamp(level, 0, 255);
     const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
     if (prev == clamped) return;
+    // §5 (TX): prn->tx[0].drive_level (compose_case_10 C1).
+    if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
     QSettings().setValue(QStringLiteral("tx/driveLevel"), clamped);
     emit txDriveLevelChanged(clamped);
     // Operator-facing percent for the log line (gateware actually
@@ -1433,7 +1460,14 @@ void HL2Stream::setTxDriveLevel(int level) {
 }
 
 void HL2Stream::setTxStepAttnDb(int db) {
-    txStepAttnDb_.store(std::clamp(db, 0, 31), std::memory_order_relaxed);
+    const int clamped = std::clamp(db, 0, 31);
+    txStepAttnDb_.store(clamped, std::memory_order_relaxed);
+    // §5 (TX): compose_case_4 (C3, 5-bit) + compose_case_11 (C4, 6-bit,
+    // XmitBit-gated) read prn->adc[0].tx_step_attn.  set_tx_step_attn_db
+    // stores the HL2 (31 - db) wire encoding — byte-identical to the
+    // retired composeCC's (31 - txStepAttnDb_).  The FSM ATT-on-TX raise
+    // (fsmAdvance → setTxStepAttnDb(kAttOnTxDb)) reaches the wire here.
+    if (lyra::wire::prn != nullptr) lyra::wire::set_tx_step_attn_db(clamped);
 }
 
 void HL2Stream::setPaEnabled(bool on) {
@@ -1449,6 +1483,9 @@ void HL2Stream::setPaEnabled(bool on) {
     // modulated carrier reaches the antenna (~0 W into dummy load).
     const bool prev = paOn_.exchange(on, std::memory_order_relaxed);
     if (prev == on) return;
+    // §5 (TX): ApolloTuner/ApolloFilt globals + prn->tx[0].pa
+    // (compose_case_10 C2 bit3 active-high PA-enable + C3 legacy bit).
+    if (lyra::wire::prn != nullptr) lyra::wire::set_pa_on(on);
     QSettings().setValue(QStringLiteral("tx/paEnabled"), on);
     emit paEnabledChanged(on);
     safetyLog(QStringLiteral("TX: PA enable -> %1")
@@ -1653,6 +1690,15 @@ void HL2Stream::fsmKeydownPostMox() {
     // Lyra collapses HdwMOXChanged + cmaster.Mox into ONE atomic
     // since the EP2 packer's C0-bit-0 emission IS XmitBit.
     mox_.store(true, std::memory_order_release);
+    // §5 control-plane mapping (TX): the verbatim write_main_loop_hl2
+    // (compose_case_0 C0 + the writer's `!XmitBit ⇒ memset(outIQbufp)`
+    // gate) reads the GLOBAL XmitBit — NOT mox_, the FSM atomic the
+    // retired composeCC snapshotted.  Bridge it here, at the same site
+    // the reference loads it (cmaster.Mox = tx, console.cs:30335), so
+    // the wire MOX bit sets AND the writer stops zeroing — letting the
+    // mic→TXA→OutBound(1) modulator I/Q reach the wire.  Set alongside
+    // mox_ so the §15.25 keydown ordering already in place governs it.
+    lyra::wire::XmitBit = 1;
 
     // §15.25 keydown ordering CORRECTED 2026-06-09 per Thetis
     // console.cs:30342-30345 read 3× verified:
@@ -1805,6 +1851,12 @@ void HL2Stream::fsmKeyupTxOff() {
     //     the HL2 gateware sees as PTT-out drop + T/R relay release.
     setInjectTxIq(false);
     mox_.store(false, std::memory_order_release);
+    // §5 control-plane mapping (TX): drop the wire MOX gate alongside
+    // mox_ — the writer resumes `!XmitBit ⇒ memset(outIQbufp)` so TX I/Q
+    // goes silent.  Fires AFTER the keyup TXA-stop blocking flush +
+    // txStopDelayMs_ (§15.25), so the faded cos² tail already reached
+    // the wire while XmitBit was still 1.
+    lyra::wire::XmitBit = 0;
     // ptt_out_delay (Thetis line 30377-30378) gives the hardware T/R
     // relay time to physically switch back to RX before any RX-side
     // restoration logic runs.  Then fsmKeyupSettled does cleanup.

@@ -167,6 +167,42 @@ step-att, MOX → XmitBit) remain commit 2.  `nddc=4` needs no mapping
 `composeCC` method + `ocC2_`/`sampleRateBits_` legacy members are a
 §7 retirement (orphaned, harmless until then).
 
+### 5.2 TX-side rows — IMPLEMENTED in commit 2 (2026-06-13)
+
+Same gap class as §5.1, TX side: the verbatim composer reads `prn`
+/ the global `XmitBit`, which nothing wrote (`XmitBit` was declared
+`=0` and never assigned in production → the writer's `!XmitBit ⇒
+memset(outIQbufp)` gate stayed shut → keyed TX would emit silence).
+The TX-0c FSM (TXA arm/stop via `txControl_`, TR sequencing,
+ATT-on-TX, §15.25 keydown/keyup ordering, re-key collapse) is
+sound and unchanged — only the value mapping was wired:
+
+| §5 row | TX-gate home write | site |
+|---|---|---|
+| MOX | `XmitBit = 1/0` | FSM `fsmKeydownPostMox` (+1) / `fsmKeyupTxOff` (→0), alongside the existing `mox_` store at the §15.25-correct points; + `setMox` raw + at-open seed |
+| TX drive % | `set_drive_level(clamped)` | `setTxDriveLevel` |
+| PA enable | `set_pa_on(on)` (ApolloTuner/ApolloFilt + `tx[0].pa`) | `setPaEnabled` |
+| TX step-att | `set_tx_step_attn_db(db)` (HL2 `31-db` encoding, byte-identical to retired composeCC) | `setTxStepAttnDb` (FSM ATT-on-TX raise reaches the wire here) |
+| TX freq | `set_tx_freq(hz)` | `setTxFreqHz` (split-mode; simplex already via setRx1FreqHz) |
+
+Plus the TX homes added to the `open()` at-open seed (PA OFF /
+drive low / `XmitBit=0` = RX at open — TX-inert, no RX behaviour
+change).  With this, a keyed MOX sets `XmitBit=1` → the writer
+stops zeroing → the mic→TXA→OutBound(1) modulator I/Q reaches the
+wire = SSB voice.  `if(prn)` guards the pre-open window.
+
+**Deferred (NOT in commit 2):** TUN re-home to `SetTXAPostGen*` —
+the `TxControl` struct has no postgen callback yet, and the legacy
+`setTuneEnabled` DC-injection (dead with the legacy packer) needs
+re-pointing; SSB voice is the fundamental first-light test and
+needs neither.  §7 retirements (delete dead `composeCC`/
+`txWorkerLoop`/`buildEp2KeepaliveTemplate`/DC-TUN/slew-fill, drop
+`OutboundRing`/`Ep2SendThread`, orphaned mic_sink_) are a separate
+cleanup commit after the voice bench.  **PureSignal-safe:** wires
+only operator-control → prn/global homes the composer already
+reads; no WDSP call, no buffer, no `create_xmtr` PS surface
+touched.
+
 ## 6. Threads + lifecycle (verbatim homes)
 
 - Quartet creation + writer-thread start at open(), per StartAudio
