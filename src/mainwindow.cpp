@@ -90,10 +90,13 @@ constexpr QDockWidget::DockWidgetFeatures kUnlockedFeatures =
 
 MainWindow::MainWindow(QObject *discovery, QObject *stream,
                        QObject *wdsp, QObject *wdspEngine,
-                       Prefs *prefs, lyra::wx::WxService *wx, QWidget *parent)
+                       Prefs *prefs, lyra::wx::WxService *wx,
+                       lyra::profile::ProfileManager *profiles,
+                       QWidget *parent)
     : QMainWindow(parent),
       discovery_(discovery), stream_(stream),
-      wdsp_(wdsp), wdspEngine_(wdspEngine), prefs_(prefs), wx_(wx) {
+      wdsp_(wdsp), wdspEngine_(wdspEngine), prefs_(prefs), wx_(wx),
+      profiles_(profiles) {
     setWindowTitle(QStringLiteral(
         "Lyra — Hermes Lite 2 / 2+ — v" LYRA_VERSION " (C++23 / Qt 6)"));
     setObjectName(QStringLiteral("LyraMainWindow"));
@@ -661,7 +664,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, tci_, spots_, meter_, this);
+            wx_, memory_, eibi_, tci_, spots_, meter_, profiles_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();

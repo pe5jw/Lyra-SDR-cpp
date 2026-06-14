@@ -50,6 +50,7 @@
 #include "tci_server.h"
 #include "spotstore.h"
 #include "metermodel.h"
+#include "profile/ProfileManager.h"
 #include <QDesktopServices>
 #include <memory>
 #include <QVBoxLayout>
@@ -67,11 +68,12 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::wx::WxService *wx, MemoryStore *memory,
                                EibiStore *eibi, TciServer *tci,
                                SpotStore *spots, MeterModel *meter,
+                               lyra::profile::ProfileManager *profiles,
                                QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
-      meter_(meter) {
+      meter_(meter), profiles_(profiles) {
     setWindowTitle(tr("Lyra — Settings"));
     resize(640, 520);
 
@@ -92,6 +94,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     // HL2Stream setters).
     if (stream_) {
         tabs_->addTab(buildTxTab(), tr("TX"));
+    }
+    if (profiles_) {
+        tabs_->addTab(buildProfilesTab(), tr("Profiles"));
     }
     if (memory_ || eibi_) {
         tabs_->addTab(buildBandsTab(), tr("Bands"));
@@ -4050,6 +4055,223 @@ QWidget *SettingsDialog::buildWeatherTab() {
     }
 
     outer->addStretch(1);
+    return page;
+}
+
+// #49 — TX/RX Profile editor.  Whole-set capture/apply via
+// ProfileManager (decoupled from Prefs/stream/engine through
+// ProfileBindings).  Manual select only — no auto-detect by call;
+// the only automatic recall is the per-mode binding table below
+// (operator-opt-in, mirrors the Thetis "digital modes auto-switch
+// source" idiom).  PA-enable / HW-PTT / space-bar PTT are GLOBAL
+// (safety / input-method) and deliberately NOT profile fields.
+QWidget *SettingsDialog::buildProfilesTab() {
+    auto *page = new QWidget(this);
+    auto *outer = new QVBoxLayout(page);
+
+    auto *intro = new QLabel(
+        tr("A profile bundles the operator TX/RX chain (mode, bandwidth + "
+           "lock, mic source/gain, drive, TCI gains, AGC, auto-mute, TX "
+           "timeout) and is recalled as a unit.  Switching is manual; the "
+           "per-mode table at the bottom optionally auto-recalls a profile "
+           "when you change mode."), page);
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    // --- profile list + action buttons ---
+    auto *row = new QHBoxLayout();
+    auto *list = new QListWidget(page);
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    row->addWidget(list, 1);
+
+    auto *btnCol = new QVBoxLayout();
+    auto *saveBtn    = new QPushButton(tr("Save"), page);
+    auto *saveAsBtn  = new QPushButton(tr("Save As…"), page);
+    auto *loadBtn    = new QPushButton(tr("Load"), page);
+    auto *renameBtn  = new QPushButton(tr("Rename…"), page);
+    auto *deleteBtn  = new QPushButton(tr("Delete"), page);
+    auto *defaultBtn = new QPushButton(tr("Set Default"), page);
+    saveBtn->setToolTip(tr("Overwrite the active profile with the current "
+                           "live settings."));
+    saveAsBtn->setToolTip(tr("Capture the current live settings into a new "
+                             "named profile."));
+    defaultBtn->setToolTip(tr("Apply this profile automatically at startup."));
+    for (auto *b : {saveBtn, saveAsBtn, loadBtn, renameBtn, deleteBtn, defaultBtn})
+        btnCol->addWidget(b);
+    btnCol->addStretch(1);
+    row->addLayout(btnCol);
+    outer->addLayout(row);
+
+    auto *statusLbl = new QLabel(page);
+    outer->addWidget(statusLbl);
+
+    // --- per-mode auto-recall bindings ---
+    static const QStringList kModes = {
+        QStringLiteral("USB"), QStringLiteral("LSB"),
+        QStringLiteral("CWU"), QStringLiteral("CWL"),
+        QStringLiteral("DIGU"), QStringLiteral("DIGL"),
+        QStringLiteral("AM"), QStringLiteral("SAM"),
+        QStringLiteral("DSB"), QStringLiteral("FM")};
+    auto *bindGrp = new QGroupBox(tr("Auto-recall by mode"), page);
+    auto *bindForm = new QFormLayout(bindGrp);
+    auto *modeCombos = new QHash<QString, QComboBox *>();
+    for (const QString &m : kModes) {
+        auto *cb = new QComboBox(bindGrp);
+        modeCombos->insert(m, cb);
+        bindForm->addRow(m, cb);
+    }
+    outer->addWidget(bindGrp);
+    outer->addStretch(1);
+
+    // Repopulate the list + per-mode combos + status from the store.
+    // Captured raw pointers outlive the closures (children of the dialog).
+    auto refresh = [this, list, statusLbl, modeCombos]() {
+        const QStringList names = profiles_->names();
+        const QString active = profiles_->activeName();
+        const QString def    = profiles_->defaultName();
+
+        list->blockSignals(true);
+        list->clear();
+        for (const QString &n : names) {
+            QString label = n;
+            if (n == active) label += tr("  (active)");
+            if (n == def)    label += tr("  [default]");
+            auto *item = new QListWidgetItem(label, list);
+            item->setData(Qt::UserRole, n);   // the raw name
+            if (n == active) {
+                QFont f = item->font();
+                f.setBold(true);
+                item->setFont(f);
+                list->setCurrentItem(item);
+            }
+        }
+        list->blockSignals(false);
+
+        if (names.isEmpty())
+            statusLbl->setText(tr("No profiles yet — set up your chain, then "
+                                  "“Save As…”."));
+        else
+            statusLbl->setText(active.isEmpty()
+                ? tr("%n profile(s).", "", names.size())
+                : tr("Active: %1%2").arg(active,
+                      profiles_->isModified() ? tr("  ● modified") : QString()));
+
+        // Per-mode combos: "(none)" + every profile name.
+        for (auto it = modeCombos->cbegin(); it != modeCombos->cend(); ++it) {
+            QComboBox *cb = it.value();
+            cb->blockSignals(true);
+            cb->clear();
+            cb->addItem(tr("(none)"));
+            cb->addItems(names);
+            const QString bound = profiles_->modeBinding(it.key());
+            const int idx = bound.isEmpty() ? 0 : cb->findText(bound);
+            cb->setCurrentIndex(idx < 0 ? 0 : idx);
+            cb->blockSignals(false);
+        }
+    };
+
+    // Name of the currently-selected list profile ("" if none).
+    auto selectedName = [list]() -> QString {
+        auto *item = list->currentItem();
+        return item ? item->data(Qt::UserRole).toString() : QString();
+    };
+
+    refresh();
+
+    // Keep the editor live as profiles change (here or elsewhere).
+    connect(profiles_, &lyra::profile::ProfileManager::namesChanged,
+            this, [refresh]() { refresh(); });
+    connect(profiles_, &lyra::profile::ProfileManager::activeChanged,
+            this, [refresh](const QString &) { refresh(); });
+    connect(profiles_, &lyra::profile::ProfileManager::modifiedChanged,
+            this, [refresh](bool) { refresh(); });
+
+    connect(saveBtn, &QPushButton::clicked, this, [this, refresh]() {
+        if (profiles_->activeName().isEmpty()) {
+            // Nothing to overwrite — fall through to the Save As flow.
+            bool ok = false;
+            const QString name = QInputDialog::getText(
+                this, tr("Save Profile As"), tr("Profile name:"),
+                QLineEdit::Normal, QString(), &ok);
+            if (ok && !name.trimmed().isEmpty())
+                profiles_->saveAs(name.trimmed());
+        } else {
+            profiles_->saveActive();
+        }
+        refresh();
+    });
+
+    connect(saveAsBtn, &QPushButton::clicked, this, [this, refresh]() {
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Save Profile As"), tr("Profile name:"),
+            QLineEdit::Normal, QString(), &ok);
+        if (ok && !name.trimmed().isEmpty()) {
+            profiles_->saveAs(name.trimmed());
+            refresh();
+        }
+    });
+
+    connect(loadBtn, &QPushButton::clicked, this,
+            [this, selectedName, refresh]() {
+        const QString name = selectedName();
+        if (name.isEmpty()) return;
+        if (!profiles_->load(name)) {
+            QMessageBox::information(
+                this, tr("Can’t switch now"),
+                tr("Profiles can’t be switched while transmitting.  "
+                   "Drop out of transmit and try again."));
+        }
+        refresh();
+    });
+
+    connect(renameBtn, &QPushButton::clicked, this,
+            [this, selectedName, refresh]() {
+        const QString old = selectedName();
+        if (old.isEmpty()) return;
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Rename Profile"), tr("New name:"),
+            QLineEdit::Normal, old, &ok);
+        const QString trimmed = name.trimmed();
+        if (ok && !trimmed.isEmpty() && trimmed != old)
+            profiles_->rename(old, trimmed);
+        refresh();
+    });
+
+    connect(deleteBtn, &QPushButton::clicked, this,
+            [this, selectedName, refresh]() {
+        const QString name = selectedName();
+        if (name.isEmpty()) return;
+        if (QMessageBox::question(
+                this, tr("Delete Profile"),
+                tr("Delete profile “%1”?").arg(name))
+            == QMessageBox::Yes) {
+            profiles_->remove(name);
+            refresh();
+        }
+    });
+
+    connect(defaultBtn, &QPushButton::clicked, this,
+            [this, selectedName, refresh]() {
+        const QString name = selectedName();
+        if (name.isEmpty()) return;
+        profiles_->setDefault(name);
+        refresh();
+    });
+
+    // Per-mode binding combos.
+    for (auto it = modeCombos->cbegin(); it != modeCombos->cend(); ++it) {
+        const QString mode = it.key();
+        QComboBox *cb = it.value();
+        connect(cb, &QComboBox::activated, this, [this, mode, cb]() {
+            if (cb->currentIndex() <= 0)        // index 0 == "(none)"
+                profiles_->unbindMode(mode);
+            else
+                profiles_->bindMode(mode, cb->currentText());
+        });
+    }
+
     return page;
 }
 

@@ -15,6 +15,7 @@ class QTabWidget;
 namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
 namespace lyra::wx  { class WxService; }
+namespace lyra::profile { class ProfileManager; }
 
 namespace lyra::ui {
 
@@ -38,7 +39,9 @@ public:
                    UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                    lyra::wx::WxService *wx, MemoryStore *memory,
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
-                   MeterModel *meter, QWidget *parent = nullptr);
+                   MeterModel *meter,
+                   lyra::profile::ProfileManager *profiles,
+                   QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
     void selectTopic(const QString &topic);
@@ -55,6 +58,9 @@ private:
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
                                  // + cos² amplitude envelope (amp
                                  // hot-switch protection knobs)
+    QWidget *buildProfilesTab(); // #49 editor: profile list + Save/
+                                 // Save As/Load/Rename/Delete/Set-Default
+                                 // + per-mode auto-recall bindings
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
@@ -67,6 +73,7 @@ private:
     TciServer              *tci_       = nullptr;
     SpotStore              *spots_     = nullptr;
     MeterModel             *meter_     = nullptr;
+    lyra::profile::ProfileManager *profiles_ = nullptr;
     QTabWidget             *tabs_      = nullptr;
 };
 

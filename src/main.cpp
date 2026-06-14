@@ -792,7 +792,7 @@ int main(int argc, char *argv[])
     QObject::connect(prefs, &lyra::ui::Prefs::locationChanged,
                      wx, &lyra::wx::WxService::reloadConfig);
     auto *win = new lyra::ui::MainWindow(discovery, stream, wdsp,
-                                         wdspEngine, prefs, wx);
+                                         wdspEngine, prefs, wx, profiles);
     winRef = win;   // populate the aboutToQuit teardown handler's reference
     win->show();
 

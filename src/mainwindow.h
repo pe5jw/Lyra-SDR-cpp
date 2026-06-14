@@ -27,6 +27,7 @@ class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
+namespace lyra::profile { class ProfileManager; }
 namespace lyra::ui {
 
 class Prefs;
@@ -60,6 +61,7 @@ public:
     MainWindow(QObject *discovery, QObject *stream,
                QObject *wdsp, QObject *wdspEngine,
                Prefs *prefs, lyra::wx::WxService *wx,
+               lyra::profile::ProfileManager *profiles,
                QWidget *parent = nullptr);
 
     // TX-rip Phase 1 (Q2): setTciMicSource / setTxDspWorker removed —
@@ -204,6 +206,7 @@ private:
     SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
+    lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };
