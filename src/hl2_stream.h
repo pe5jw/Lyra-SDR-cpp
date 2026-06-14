@@ -621,18 +621,9 @@ public:
     // (decimated mic doubles interleaved as `{I=mic, Q=0.0}` per
     // sample).  No float bridge, no Q6.5 RMS bench instrument.
 
-    // Step 5: RX audio out via the HL2 onboard codec (AK4951).  The DSP
-    // engine pushes decoded 48 kHz stereo int16 here (from the RX worker
-    // thread, inline after fexchange0); the EP2 writer thread drains 126
-    // frames per datagram into the LRIQ tuple L/R fields so it plays out
-    // the radio's headphone jack — old Lyra's default HL2 audio path.
-    // Thread-safe (brief mutex hold, a few hundred int16 per call).
-    void pushAudio(const qint16 *lr, int nframes);
-    // Enable/disable EP2 audio injection.  When off, the EP2 frames
-    // carry silence (zero L/R) — the keepalive still flows.
-    void setInjectAudio(bool on) {
-        injectAudio_.store(on, std::memory_order_relaxed);
-    }
+    // (§7) Step 5 RX-audio-out (pushAudio / setInjectAudio) retired — RX
+    // audio reaches the AK4951 jack through WdspEngine (dispatchAudioFrame
+    // → OutBound(0) → the verbatim EP2 writer sendProtocol1Samples).
 
 public slots:
     // Open the stream to the radio at `ip`.  Creates one native UDP
@@ -1323,18 +1314,8 @@ private:
     // `(int n_samples, const double* iq_pairs)` matching the
     // reference's `Inbound(inid(1,0), n_samples, double*)` —
     // mic_source.cpp drives it).
-    // Step 5: EP2 RX-audio injection ring (interleaved stereo int16).
-    // Producer = RX worker (pushAudio, via the DSP engine); consumer =
-    // EP2 TX writer thread (drains 126 frames/datagram).  audioMtx_
-    // guards the ring indices (hold time = a short memcpy).
-    std::mutex            audioMtx_;
-    std::condition_variable audioCv_;         // EP2 writer waits on this
-    std::vector<qint16>   audioBuf_;          // 2*audioCap_ samples (L,R)
-    int                   audioCap_   = 0;    // capacity in frames
-    int                   audioRd_    = 0;
-    int                   audioWr_    = 0;
-    int                   audioCount_ = 0;    // frames currently buffered
-    std::atomic<bool>     injectAudio_{false};
+    // (§7) old EP2 RX-audio injection ring (audioBuf_/audioMtx_/audioCv_/
+    // injectAudio_) retired — RX audio is OutBound(0) via dispatchAudioFrame.
     double               dgPerSec_   = 0.0;
     double               txDgPerSec_ = 0.0;
     QString              targetIp_;

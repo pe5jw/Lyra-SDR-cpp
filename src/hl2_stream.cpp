@@ -28,7 +28,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <timeapi.h>     // timeBeginPeriod / timeEndPeriod (winmm)
 #include <iphlpapi.h>    // GetUdpStatisticsEx (Task #48 diagnostic)
 #include <process.h>     // _beginthreadex — EP2 writer thread (P4.b; reference StartAudioNative netInterface.c:66)
 
@@ -2452,36 +2451,5 @@ void HL2Stream::updateOcPattern(bool transmitting) {
     emit ocBitsChanged(pattern);
 }
 
-// ----------------------------------------------------------------
-// Step 5: producer — the DSP engine hands decoded 48 kHz stereo int16
-// here (from the RX worker thread).  Lazily sizes a ~100 ms ring; on
-// overflow it drops the oldest frame (the EP2 writer is the clock, so
-// a transient producer burst can't stall it).
-void HL2Stream::pushAudio(const qint16 *lr, int nframes) {
-    {
-        std::lock_guard<std::mutex> lk(audioMtx_);
-        if (audioCap_ == 0) {
-            audioCap_ = 4800;                   // 100 ms @ 48 kHz
-            audioBuf_.assign(static_cast<size_t>(audioCap_) * 2, 0);
-            audioRd_ = audioWr_ = audioCount_ = 0;
-        }
-        for (int f = 0; f < nframes; ++f) {
-            if (audioCount_ >= audioCap_) {      // overflow: drop oldest
-                audioRd_ = (audioRd_ + 1) % audioCap_;
-                --audioCount_;
-            }
-            audioBuf_[static_cast<size_t>(audioWr_) * 2 + 0] = lr[f * 2 + 0];
-            audioBuf_[static_cast<size_t>(audioWr_) * 2 + 1] = lr[f * 2 + 1];
-            audioWr_ = (audioWr_ + 1) % audioCap_;
-            ++audioCount_;
-        }
-    }
-    // Wake the EP2 writer — it sends a datagram as soon as a full 126-
-    // frame chunk is ready, so the send cadence follows the HL2 crystal
-    // (the audio is derived from the HL2's own IQ) instead of a free-
-    // running PC timer.  Single-crystal = no two-clock drift = no pops.
-
-    ::timeEndPeriod(1);
-}
 
 } // namespace lyra::ipc

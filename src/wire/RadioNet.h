@@ -618,51 +618,6 @@ public:
     HANDLE hsendEventHandles[2]{nullptr, nullptr};
     HANDLE hobbuffsRun[2]{nullptr, nullptr};
 
-    // The Step-14 idiom translation below (ONE cv + ONE mutex +
-    // FOUR bool flags) remains for the OutboundRing/Ep2SendThread
-    // translations until P4 retires them:
-    //
-    // Reference has FOUR paired HANDLE fields:
-    //   - hsendLRSem / hsendIQSem (signaling, lines 92-93)
-    //   - hsendEventHandles[2] (consumer wait-all, line 94)
-    //   - hobbuffsRun[2] (consumer-side drained pair, line 95)
-    //
-    // Lyra collapses to ONE `std::condition_variable` + ONE
-    // mutex + FOUR `bool` flags per the §1-C Stage 3 design —
-    // direct C↔C++23 mirror of reference's
-    // `WaitForMultipleObjects(2, hsendEventHandles, TRUE,
-    // INFINITE)` wait-all semantic at `networkproto1.c:1220`
-    // (C++20 `std::counting_semaphore` lacks a native wait-all
-    // primitive so this is the idiomatically-correct equivalent).
-    //
-    // Field naming intentionally Lyra-native (cv_outbound /
-    // mu_outbound / lr_ready / iq_ready / lr_consumed /
-    // iq_consumed) rather than mirror-named because the
-    // reference's HANDLE field names (hsendLRSem, hobbuffsRun)
-    // describe the Win32 primitive directly and don't translate
-    // idiomatically to the cv predicate model.
-    //
-    // All four flags init `false` per reference `CreateSemaphore
-    // (NULL, 0, 1, NULL)` initial-count-0 at `netInterface.c:
-    // 68-71` (first producer push BLOCKS until consumer first
-    // drains a pair).  An earlier Lyra-native `lr_consumed=true /
-    // iq_consumed=true` "matches reference first-iteration
-    // behavior" claim was wrong and was caught by 2026-06-06
-    // TX-Agent-4 C.109 audit.
-    std::condition_variable cv_outbound;
-    std::mutex              mu_outbound;
-    bool                    lr_ready    {false};
-    bool                    iq_ready    {false};
-    bool                    lr_consumed {false};
-    bool                    iq_consumed {false};
-    // No `outbound_stop` flag — reference has no shutdown signal
-    // for the EP2 producer/consumer pair (`io_keep_running = 0` +
-    // process termination interrupts WaitForMultipleObjects).
-    // Lyra uses bounded `wait_for` in `outbound_wait_pair_ready`
-    // for the C++23-idiom equivalent (see OutboundRing.cpp).
-    // An earlier Lyra-native `outbound_stop` was caught by
-    // 2026-06-06 TX-Agent C.9 audit and removed.
-
 #if defined(_WIN32)
     // --- Win32 waitable timer (network.h:97-98) ---
     //

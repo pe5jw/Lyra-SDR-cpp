@@ -345,14 +345,10 @@ int main(int argc, char *argv[])
             wdspEngine->feedIq(iq, n);
         });
 
-    // Step 5: route decoded RX audio the other way — engine → stream's
-    // EP2 writer — so it plays out the HL2 onboard codec (AK4951) jack
-    // when "HL2 audio jack" is the selected output (old Lyra's default).
-    // pushAudio runs on the RX worker thread (inline after feedIq);
-    // setInjectAudio toggles the EP2 L/R payload on/off.
-    wdspEngine->setHl2AudioSink(
-        [stream](const qint16 *lr, int n) { stream->pushAudio(lr, n); },
-        [stream](bool on) { stream->setInjectAudio(on); });
+    // Step 5: RX audio → HL2 onboard-codec (AK4951) jack is handled
+    // inside WdspEngine now — dispatchAudioFrame → OutBound(0) → the
+    // verbatim EP2 writer (sendProtocol1Samples).  The old
+    // setHl2AudioSink/pushAudio EP2-ring path retired in §7.
 
     // TX-1 components 3 + 4c — Path A construction ordering
     // (matches the C reference's create_cmaster + create_xmtr

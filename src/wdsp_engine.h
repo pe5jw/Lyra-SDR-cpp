@@ -524,11 +524,6 @@ public:
     Q_INVOKABLE int bandwidthForEdge(double edgeOffsetHz) const;
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
-    // Wire the HL2 onboard-codec audio path (reverse of setIqSink):
-    // `push` hands decoded stereo int16 to the stream's EP2 writer;
-    // `enable` turns EP2 audio injection on/off.  Set once at startup.
-    void setHl2AudioSink(std::function<void(const qint16 *, int)> push,
-                         std::function<void(bool)> enable);
 
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
@@ -888,10 +883,8 @@ private:
     int                 deviceIndex_ = 0;
     // Output routing: HL2 onboard codec (default — old Lyra's HL2 path)
     // vs a PC sound device.  When hl2Out_ the QAudioSink is not used;
-    // audio goes to the EP2 writer via hl2AudioPush_.
+    // RX audio reaches the jack via dispatchAudioFrame → OutBound(0).
     bool                hl2Out_ = true;
-    std::function<void(const qint16 *, int)> hl2AudioPush_;
-    std::function<void(bool)>                hl2AudioEnable_;
 
     // Stage B.6.b-retry (2026-06-08): ported AAMix instance for the RX
     // audio path.  THIS RETRY follows the bench-validated reference

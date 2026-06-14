@@ -1302,10 +1302,10 @@ int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
 
 bool WdspEngine::startAudio()
 {
-    // HL2 onboard-codec output: no QAudioSink — audio is injected into
-    // the EP2 stream instead.  Just arm injection.
+    // HL2 onboard-codec output: no QAudioSink — RX audio reaches the
+    // jack via dispatchAudioFrame → OutBound(0) (the verbatim EP2 writer)
+    // whenever hl2Out_ is set; no separate injection arming needed.
     if (hl2Out_) {
-        if (hl2AudioEnable_) hl2AudioEnable_(true);
         emitLog(QStringLiteral(
             "[wdsp] audio: HL2 audio jack (AK4951) — EP2 injection, "
             "MUTED, volume %1 dB")
@@ -1365,8 +1365,6 @@ bool WdspEngine::startAudio()
 
 void WdspEngine::stopAudio()
 {
-    // Always disarm EP2 audio injection (no-op if it was never armed).
-    if (hl2AudioEnable_) hl2AudioEnable_(false);
     // sink->stop() quiesces Qt's audio thread (no more readData) before
     // we delete the ring; audioMtx_ blocks the RX worker's push().
     std::lock_guard<std::mutex> lk(audioMtx_);
@@ -2353,14 +2351,6 @@ void WdspEngine::removeProfileFile(const StoredProfile &p)
     if (!p.file.isEmpty()) QFile::remove(p.file);
 }
 
-void WdspEngine::setHl2AudioSink(
-        std::function<void(const qint16 *, int)> push,
-        std::function<void(bool)> enable)
-{
-    hl2AudioPush_   = std::move(push);
-    hl2AudioEnable_ = std::move(enable);
-}
-
 QStringList WdspEngine::audioOutputDevices() const
 {
     // Index 0 is always the HL2 onboard codec (old Lyra's default HL2
@@ -2382,7 +2372,6 @@ void WdspEngine::setAudioOutputDevice(int index)
             QSettings().setValue(QStringLiteral("audio/output"),
                                  QStringLiteral("hl2"));
             if (running_) stopAudio();          // drop the QAudioSink
-            if (hl2AudioEnable_) hl2AudioEnable_(true);
             emit audioDeviceChanged();
             emitLog(QStringLiteral(
                 "[wdsp] audio: output -> HL2 audio jack (AK4951)"));
@@ -2399,7 +2388,6 @@ void WdspEngine::setAudioOutputDevice(int index)
     }
     hl2Out_      = false;
     deviceIndex_ = devIdx;
-    if (hl2AudioEnable_) hl2AudioEnable_(false);   // stop EP2 injection
     QSettings().setValue(QStringLiteral("audio/output"),
                          QStringLiteral("pc"));
     QSettings().setValue(QStringLiteral("audio/deviceName"),
