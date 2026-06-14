@@ -30,6 +30,8 @@ namespace lyra::solar { class SolarService; }
 namespace lyra::profile { class ProfileManager; }
 namespace lyra::ui {
 
+class ProfileUi;
+
 class Prefs;
 class SettingsDialog;
 class Help;
@@ -207,6 +209,7 @@ private:
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
+    ProfileUi                  *profileUi_ = nullptr;  // native Save-Profile dialog (front panel)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output
 };

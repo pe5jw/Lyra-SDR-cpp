@@ -18,6 +18,7 @@
 #include "tci_server.h"
 #include "metermodel.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
+#include "profileui.h"                // native Save-Profile dialog (front panel)
 #include "wdsp_engine.h"
 #include "help.h"
 #include "helpdialog.h"
@@ -319,6 +320,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     placeholder->setMaximumHeight(0);
     setCentralWidget(placeholder);
 
+    // Native Save-Profile dialog helper — must exist before buildDocks()
+    // (makeQuick exposes it to the ProfilePanel as the ProfileUi context
+    // property).  `this` is the dialog parent.
+    if (profiles_)
+        profileUi_ = new ProfileUi(profiles_, prefs_, this);
+
     buildDocks();      // populate docks_ (so the View menu can list them)
     buildMenus();      // File / View (dock toggles + Lock) / Help
     buildToolbar();
@@ -363,6 +370,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Meter"), meter_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Profiles"), profiles_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("ProfileUi"), profileUi_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
