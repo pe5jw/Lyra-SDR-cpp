@@ -99,6 +99,10 @@ std::atomic<bool> g_shutdown_complete{false};
 #include "mainwindow.h"
 #include "wxservice.h"
 #include "prefs.h"
+#include "profile/ProfileManager.h"   // Stage-0 TX/RX profiles
+#include "profile/ProfileBindings.h"
+#include "profile/ProfileStore.h"
+#include <QSettings>
 #include "logbuffer.h"
 #include "theme.h"
 #include <QTimer>
@@ -639,6 +643,69 @@ int main(int argc, char *argv[])
                          prefs, applyTciTxSource);
         applyTciTxSource();   // seed initial state
     }
+
+    // ---- TX/RX Profiles (Stage 0b — live wiring) ----------------------
+    // Named profile bundles recalled as a unit (Thetis TX-Profile idiom,
+    // Lyra-native; docs/architecture/PROFILE_MODEL_STAGE0_DESIGN.md).
+    // ProfileManager is decoupled from prefs/stream/wdspEngine via the
+    // capture/apply ProfileBindings built here (the only place all three
+    // are in scope).  Stage-0 = the EXISTING fields; VAC source/route
+    // land with the IVAC port (#158).  PA-enable + PTT-input stay GLOBAL.
+    // The Settings→Profiles tab (#49) + front ProfilePanel dock (#55)
+    // wire to `profiles` in Stage 0c; dirty-refresh signal fan-out lands
+    // there too (no consumer of modifiedChanged exists until the dock).
+    auto *profileSettings = new QSettings(&app);  // app org/app name (set at startup)
+    lyra::profile::ProfileBindings pb;
+    pb.isTxActive = [stream]() { return stream->moxActive(); };
+    pb.capture = [prefs, stream, wdspEngine]() {
+        lyra::profile::Profile p;
+        p.mode            = prefs->mode();
+        p.rxBandwidth     = prefs->rxBandwidth();
+        p.txBandwidth     = prefs->txBandwidth();
+        p.bwLocked        = prefs->bwLocked();
+        p.filterLow       = prefs->filterLow();
+        p.micSource       = prefs->micSource();
+        p.micGainDb       = stream->micGainDb();
+        p.micBoost        = stream->micBoost();
+        p.useTuneDrive    = prefs->useTuneDrive();
+        p.tuneDrivePct    = prefs->tuneDrivePct();
+        p.txDriveLevel    = stream->txDriveLevel();
+        p.tciRxGainDb     = prefs->tciRxGainDb();
+        p.tciTxGainDb     = prefs->tciTxGainDb();
+        p.agcMode         = wdspEngine->agcMode();
+        p.autoMuteOnTx    = wdspEngine->autoMuteOnTx();
+        p.txTimeoutSec    = stream->txTimeoutSec();
+        p.txTimeoutBypass = stream->txTimeoutBypass();
+        return p;
+    };
+    pb.apply = [prefs, stream, wdspEngine](const lyra::profile::Profile &p) {
+        // Apply order: mode -> BW/lock/filterLow -> source -> gains/dsp.
+        // (load() already guards this whole pass on !moxActive — §15.25.)
+        if (!p.mode.isEmpty()) prefs->setMode(p.mode);
+        prefs->setRxBandwidth(p.rxBandwidth);
+        prefs->setTxBandwidth(p.txBandwidth);
+        prefs->setBwLocked(p.bwLocked);
+        prefs->setFilterLow(p.filterLow);
+        prefs->setMicSource(p.micSource);   // fires the applyTciTxSource gate above
+        stream->setMicGainDb(p.micGainDb);
+        stream->setMicBoost(p.micBoost);
+        prefs->setUseTuneDrive(p.useTuneDrive);
+        prefs->setTuneDrivePct(p.tuneDrivePct);
+        stream->setTxDriveLevel(p.txDriveLevel);
+        prefs->setTciRxGainDb(p.tciRxGainDb);
+        prefs->setTciTxGainDb(p.tciTxGainDb);
+        wdspEngine->setAgcMode(p.agcMode);
+        wdspEngine->setAutoMuteOnTx(p.autoMuteOnTx);
+        stream->setTxTimeoutSec(p.txTimeoutSec);
+        stream->setTxTimeoutBypass(p.txTimeoutBypass);
+    };
+    auto *profiles = new lyra::profile::ProfileManager(
+        std::move(pb), lyra::profile::ProfileStore(profileSettings), &app);
+    // Per-mode auto-recall: switching to a mode bound to a profile recalls
+    // it (DIGU/DIGL -> TCI-source profile), mid-TX-guarded inside load().
+    QObject::connect(prefs, &lyra::ui::Prefs::modeChanged, profiles,
+                     [prefs, profiles]() { profiles->onModeChanged(prefs->mode()); });
+    profiles->applyDefaultAtStartup();   // no-op until a default profile exists
 
     // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
     // the operator arms TUN and Prefs.useTuneDrive is on, stash the

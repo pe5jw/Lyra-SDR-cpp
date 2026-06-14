@@ -70,6 +70,7 @@ private:
     Profile         baseline_;        // active profile as stored
     bool            hasBaseline_ = false;
     bool            lastModified_ = false;
+    bool            applying_ = false; // suppress dirty churn during apply
 };
 
 }  // namespace lyra::profile

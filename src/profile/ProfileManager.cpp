@@ -63,7 +63,9 @@ bool ProfileManager::load(const QString &name) {
         return false;
     }
     Profile p = store_.get(name);
+    applying_ = true;            // setter-storm below must not churn the dirty flag
     b_.apply(p);
+    applying_ = false;
     store_.setActive(name);
     baseline_ = p;
     hasBaseline_ = true;
@@ -118,6 +120,7 @@ void ProfileManager::onModeChanged(const QString &mode) {
 }
 
 void ProfileManager::refreshModified() {
+    if (applying_) return;       // mid-apply: capture is transient, ignore
     const bool m = isModified();
     if (m != lastModified_) {
         lastModified_ = m;
