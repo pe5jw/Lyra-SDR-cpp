@@ -254,6 +254,15 @@ class Prefs : public QObject {
     Q_PROPERTY(bool hwPttEnabled READ hwPttEnabled WRITE setHwPttEnabled
                NOTIFY hwPttEnabledChanged)
 
+    // Task #157 — space-bar PTT enable.  The space bar keys MOX (hold to
+    // transmit) when the main window has focus and no text field is being
+    // edited.  Default TRUE (the historical behaviour); operators who keep
+    // triggering TX by accidentally hitting space untick it — the on-screen
+    // MOX button, a hardware foot switch, and TCI/CAT keying are unaffected.
+    // Persisted: tx/space_bar_ptt_enabled.
+    Q_PROPERTY(bool spaceBarPttEnabled READ spaceBarPttEnabled
+               WRITE setSpaceBarPttEnabled NOTIFY spaceBarPttEnabledChanged)
+
     // Task #33 — TX mic source.  Operator-selected via Settings → TX
     // → Mic Source.  Token strings match the TCI v2 TRX source-token
     // convention (TCI spec §3.3) so a TCI client that sends
@@ -456,6 +465,10 @@ public:
     // safety-first posture).  Setter persists + emits.
     bool hwPttEnabled() const { return hwPttEnabled_; }
     void setHwPttEnabled(bool on);
+    // Task #157 — space-bar PTT opt-out.  Default true (historical
+    // behaviour).  Setter persists + emits.
+    bool spaceBarPttEnabled() const { return spaceBarPttEnabled_; }
+    void setSpaceBarPttEnabled(bool on);
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
@@ -536,6 +549,7 @@ signals:
     void panRound100Changed();
     void debugLoggingChanged();
     void hwPttEnabledChanged();
+    void spaceBarPttEnabledChanged();
     void micSourceChanged();
 
 private:
@@ -627,6 +641,9 @@ private:
     // Task #36 — HW PTT opt-in.  Default false; gated forwarder in
     // HL2Stream's RX loop reads the mirrored atomic.
     bool    hwPttEnabled_ = false;
+    // Task #157 — space-bar PTT opt-out.  Default true (historical
+    // behaviour); MainWindow's space-bar keydown/keyup gate reads it.
+    bool    spaceBarPttEnabled_ = true;
     // Task #33 — TX mic source token.  Default "mic1" matches the
     // v0.2.0..v0.2.2 ship behaviour.  Persisted: tx/mic_source.
     QString micSource_   = QStringLiteral("mic1");

@@ -86,6 +86,8 @@ constexpr auto kPanRound   = "panadapter/round_100hz";
 constexpr auto kDebugLog   = "debug/logging";
 // Task #36 — Hardware PTT input opt-in (default OFF per §10 Q#1).
 constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
+// Task #157 — space-bar PTT opt-out (default ON / historical behaviour).
+constexpr auto kSpaceBarPttEnabled = "tx/space_bar_ptt_enabled";
 constexpr auto kMicSource    = "tx/mic_source";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
@@ -223,6 +225,9 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // enable AFTER bench-verifying ptt_in is clean at RX rest on their
     // HL2 unit; see Settings → TX → Advanced tooltip).
     hwPttEnabled_ = s.value(kHwPttEnabled, false).toBool();
+    // Task #157 — space-bar PTT.  Default true preserves the historical
+    // always-on space-bar keying for existing operators.
+    spaceBarPttEnabled_ = s.value(kSpaceBarPttEnabled, true).toBool();
     // Task #33 — TX mic source token.  Validate against the known
     // token list; an unknown value (older Lyra, mistyped QSettings)
     // falls back to "mic1" so we never autoload into an inactive
@@ -982,6 +987,14 @@ void Prefs::setHwPttEnabled(bool on) {
         hwPttEnabled_ = on;
         QSettings().setValue(kHwPttEnabled, on);
         emit hwPttEnabledChanged();
+    }
+}
+
+void Prefs::setSpaceBarPttEnabled(bool on) {
+    if (on != spaceBarPttEnabled_) {
+        spaceBarPttEnabled_ = on;
+        QSettings().setValue(kSpaceBarPttEnabled, on);
+        emit spaceBarPttEnabledChanged();
     }
 }
 

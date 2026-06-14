@@ -1604,6 +1604,41 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(hwBox, 6, 0, 1, 2);
         }
 
+        // --- Task #157: Space-bar PTT enable/disable ---
+        // The space bar keys MOX (push-to-talk) when the main window has
+        // focus and no text field is being edited.  Convenient, but easy
+        // to fire by accident (operator-flagged: kept hitting space and
+        // triggering TX).  This opt-out turns the space-bar PTT off
+        // WITHOUT touching the on-screen MOX button, a hardware foot
+        // switch, or TCI/CAT keying.  Default ON (the historical
+        // behaviour) — sits right under the HW-PTT tickbox so all the
+        // PTT-source options live together.
+        if (prefs_) {
+            auto *sbBox = new QCheckBox(
+                tr("Space bar keys PTT (push-to-talk)"), grp);
+            sbBox->setChecked(prefs_->spaceBarPttEnabled());
+            sbBox->setToolTip(tr(
+                "When ON, holding the space bar transmits and releasing "
+                "it returns to receive — as long as the main window has "
+                "focus and you're not typing in a text field.\n\n"
+                "Untick if you keep keying TX by accidentally pressing "
+                "space.  The on-screen MOX button, a hardware foot "
+                "switch / hand-mic PTT, and TCI/CAT keying are all "
+                "unaffected."));
+            connect(sbBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (prefs_) prefs_->setSpaceBarPttEnabled(on);
+            });
+            connect(prefs_, &lyra::ui::Prefs::spaceBarPttEnabledChanged,
+                    sbBox, [this, sbBox]() {
+                const bool on = prefs_->spaceBarPttEnabled();
+                if (sbBox->isChecked() != on) {
+                    QSignalBlocker b(sbBox);
+                    sbBox->setChecked(on);
+                }
+            });
+            g->addWidget(sbBox, 7, 0, 1, 2);
+        }
+
         // Mic source picker + Mic Boost checkbox MOVED to the TX
         // tab's "Mic + ALC" group (signal-flow order: source →
         // HW boost → SW gain → ALC).  Hardware tab now carries

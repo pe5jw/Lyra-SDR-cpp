@@ -1460,7 +1460,11 @@ static bool isEditableFocus(QWidget *fw) {
 }
 
 void MainWindow::keyPressEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+    // Task #157 — space-bar PTT is operator-gated (Settings → Hardware →
+    // Transmit).  When disabled, fall through to default handling so the
+    // operator's accidental space presses no longer key MOX.
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()
+        && prefs_ && prefs_->spaceBarPttEnabled()) {
         if (!isEditableFocus(QApplication::focusWidget())) {
             if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
                 st->requestMox(true);
@@ -1473,7 +1477,8 @@ void MainWindow::keyPressEvent(QKeyEvent *event) {
 }
 
 void MainWindow::keyReleaseEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()
+        && prefs_ && prefs_->spaceBarPttEnabled()) {
         if (!isEditableFocus(QApplication::focusWidget())) {
             if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
                 st->requestMox(false);
