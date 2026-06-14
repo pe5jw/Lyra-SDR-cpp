@@ -142,6 +142,15 @@ PORT void destroy_ivac(int id)
 	destroy_resamps(a);
 	DeleteCriticalSection(&a->cs_ivac);
 	free (a);
+	pvac[id] = nullptr;
+}
+
+// Lyra-cpp Stage 2 accessor (see Ivac.h) — hand the Qt device layer the
+// engine instance for <id> (nullptr before create_ivac / after destroy).
+IVAC ivacGet(int id)
+{
+	if (id < 0 || id >= MAX_EXT_VACS) return nullptr;
+	return pvac[id];
 }
 
 PORT void xvacIN(int id, double* in_tx, int bypass)

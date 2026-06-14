@@ -95,6 +95,10 @@ typedef struct _cmaster
 	void (*OutboundTx)(int id, int nsamples, double* buff);			// pointer to Outbound function called by ilv with xmtr samples from the interleaver
 	void (*OutboundTCIRxIQ)(int id, int nsamples, double* buff);	// pointer to callback with receiver IQ samples
 	void (*InboundTCITxAudio)(int nsamples, double* buff);			// pointer to callback to fill TX audio input
+	// #158 Stage 4 — VAC-in (PC soundcard / USB mic / digital app) TX audio.
+	// Lyra-native, modeled on the TCI quartet above + the deferred asioIN
+	// seam (the reference's PC-mic input lived in cmasio.c, unported).
+	void (*InboundVacTxAudio)(int nsamples, double* buff);			// callback to fill TX audio input from VAC-in (xvacIN)
 	volatile long tci_run;											// run TCI RX IQ/audio callbacks
 	int	audioCodecId;
 	ANALYZERS panalalloc;											// pointer to additional analyzer data structure
@@ -123,6 +127,7 @@ typedef struct _cmaster
 		ILV pilv;													// interleave for EER
 		AAMIX pavoxmix;												// anti-vox mixer
 		volatile long use_tci_audio;								// use TCI TX audio instead of other TX sources
+		volatile long use_vac_audio;								// #158 Stage 4 — use VAC-in TX audio (PC mic/digital) instead of other sources
 	} xmtr[cmMAXxmtr];
 
 } cmaster, *CMASTER;
@@ -143,6 +148,9 @@ extern PORT void SendpOutboundTCIRxIQ (void (*Outbound)(int id, int nsamples, do
 extern PORT void SendpInboundTCITxAudio (void (*Inbound)(int nsamples, double* buff));
 extern PORT void SetTCIRun (int active);
 extern PORT void SetTXTCIAudio (int txid, int active);
+// #158 Stage 4 — VAC-in TX-audio source (Lyra-native, mirrors the TCI pair).
+extern PORT void SendpInboundVacTxAudio (void (*Inbound)(int nsamples, double* buff));
+extern PORT void SetTXVacAudio (int txid, int active);
 
 // Reference cmaster.h:120-126 (verbatim):
 

@@ -260,6 +260,12 @@ class Prefs : public QObject {
     // triggering TX by accidentally hitting space untick it — the on-screen
     // MOX button, a hardware foot switch, and TCI/CAT keying are unaffected.
     // Persisted: tx/space_bar_ptt_enabled.
+    // Auto-start (auto-connect) on launch.  Default TRUE (historical
+    // behaviour: Lyra opens the last radio at startup).  Operators who
+    // prefer to launch and click Start themselves untick it.  Persisted:
+    // hw/autoStartOnLaunch.
+    Q_PROPERTY(bool autoStartOnLaunch READ autoStartOnLaunch
+               WRITE setAutoStartOnLaunch NOTIFY autoStartOnLaunchChanged)
     Q_PROPERTY(bool spaceBarPttEnabled READ spaceBarPttEnabled
                WRITE setSpaceBarPttEnabled NOTIFY spaceBarPttEnabledChanged)
 
@@ -469,6 +475,8 @@ public:
     // behaviour).  Setter persists + emits.
     bool spaceBarPttEnabled() const { return spaceBarPttEnabled_; }
     void setSpaceBarPttEnabled(bool on);
+    bool autoStartOnLaunch() const { return autoStartOnLaunch_; }
+    void setAutoStartOnLaunch(bool on);
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
@@ -550,6 +558,7 @@ signals:
     void debugLoggingChanged();
     void hwPttEnabledChanged();
     void spaceBarPttEnabledChanged();
+    void autoStartOnLaunchChanged();
     void micSourceChanged();
 
 private:
@@ -644,6 +653,7 @@ private:
     // Task #157 — space-bar PTT opt-out.  Default true (historical
     // behaviour); MainWindow's space-bar keydown/keyup gate reads it.
     bool    spaceBarPttEnabled_ = true;
+    bool    autoStartOnLaunch_ = true;   // auto-connect last radio at launch
     // Task #33 — TX mic source token.  Default "mic1" matches the
     // v0.2.0..v0.2.2 ship behaviour.  Persisted: tx/mic_source.
     QString micSource_   = QStringLiteral("mic1");

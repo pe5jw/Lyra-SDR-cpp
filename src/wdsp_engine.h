@@ -46,6 +46,10 @@ class QAudioSink;
 // the incomplete struct here keeps windows.h out of this header).
 namespace lyra::wire { struct _aamix; typedef struct _aamix aamix, *AAMIX; }
 
+// #158 Stage 3 — the Qt device layer for VAC1 (full type in
+// src/ivac_audio.h; .cpp-only, so a forward decl keeps this header light).
+namespace lyra::ipc { class IvacAudio; }
+
 namespace lyra::dsp {
 
 // Defined in wdsp_engine.cpp — a QIODevice the QAudioSink pulls audio
@@ -525,6 +529,32 @@ public:
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
 
+    // ── #158 — VAC1 (virtual audio cable) operator controls (Settings →
+    // Audio).  enable + output-device (by description) + RX gain (dB).
+    // Persisted (QSettings vac1/*); applied live (rebuild on enable/device,
+    // SetIVACrxscale on gain).  vac1OutputDevices() is the PC output list
+    // for the picker (= IvacAudio::outputDevices()).
+    bool    vac1Enabled() const           { return vac1Enabled_; }
+    QString vac1OutputDeviceName() const  { return vac1OutName_; }
+    double  vac1RxGainDb() const          { return vac1RxGainDb_; }
+    // Reference "Auto Enable for Digital modes": when on, VAC1 follows the
+    // operating mode (live in DIGU/DIGL, off otherwise) and the manual
+    // Enable is the moot baseline; when off, the manual Enable applies.
+    bool    vac1AutoDigital() const       { return vac1AutoDigital_; }
+    Q_INVOKABLE QStringList vac1OutputDevices() const;
+    Q_INVOKABLE void setVac1Enabled(bool on);
+    Q_INVOKABLE void setVac1OutputDeviceName(const QString &name);
+    Q_INVOKABLE void setVac1RxGainDb(double db);
+    Q_INVOKABLE void setVac1AutoDigital(bool on);
+    // VAC-in (PC → TX): input device + TX gain (reference "Gain TX (dB)" →
+    // vac_preamp).  The captured PC audio reaches TX only when the mic-source
+    // selector picks "PC Soundcard (VAC1)" (use_vac_audio).
+    QString vac1InputDeviceName() const   { return vac1InName_; }
+    double  vac1TxGainDb() const          { return vac1TxGainDb_; }
+    Q_INVOKABLE QStringList vac1InputDevices() const;
+    Q_INVOKABLE void setVac1InputDeviceName(const QString &name);
+    Q_INVOKABLE void setVac1TxGainDb(double db);
+
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
     // Accumulates into in_size blocks; each full block runs
@@ -564,6 +594,7 @@ signals:
     void afGainChanged();
     void balanceChanged();
     void audioDeviceChanged();
+    void vac1Changed();   // #158 — VAC1 enable / device / RX gain
     void zoomChanged();
     void spanChanged();   // displayed span changed (rate OR zoom)
     void modeChanged();
@@ -906,6 +937,55 @@ private:
     // P0.c: `AAMIX` is the reference twin typedef (= aamix*) from
     // the verbatim wire/AAMix.h direct port.
     lyra::wire::AAMIX aaMix_ = nullptr;
+
+    // ── #158 Stage 3 — VAC1 VAC-out (radio RX audio → a PC output
+    // device, for WSJT-X / MSHV / etc.).  The IVAC engine instance
+    // (wire/Ivac, id kVac1Id) + its Qt device layer (IvacAudio).  RX
+    // audio is teed POST-RXA — the dispatchAudioFrame `audio` param,
+    // BEFORE the operator's monitor volume/mute/balance — so a digital
+    // app receives steady-level audio regardless of how the operator
+    // rides their speaker volume (matches the reference's separate
+    // VAC vs AF-gain paths).  Fed via xvacOUT(stream=1); IvacAudio
+    // drains rmatchOUT to the sink.  vac1Active_ gates the hot-path
+    // tee; vacMtx_ serialises the mix-thread xvacOUT against
+    // main-thread (re)build/teardown so destroy_ivac can never free a
+    // ring mid-xvacOUT.  Lifecycle hangs off openRx1/closeRx1, so a
+    // sample-rate reopen rebuilds at the new audio_size/audio_rate.
+    // Bench-enabled via LYRA_VAC1_OUT (Stage 6 adds the Settings UI);
+    // VAC-in (mic → TX) is Stage 4.
+    static constexpr int kVac1Id = 0;
+    void rebuildVac1();      // reconcile: teardown then (re)start iff should-be-on
+    void teardownVac1();     // stop IvacAudio + destroy_ivac; idempotent
+    void applyVacEnvOnce();  // read LYRA_VAC1_OUT / _VAC_SIZE once (bench hook)
+    // Desired live state: auto-digital mode → on iff the current mode is
+    // DIGU/DIGL; otherwise the operator's manual Enable.
+    bool vac1ShouldBeOn() const;
+    lyra::ipc::IvacAudio *vac1_ = nullptr;
+    std::atomic<bool>     vac1Active_{false};
+    std::mutex            vacMtx_;
+    bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
+    bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
+    QString               vac1OutName_;            // PC output device description ("" = none)
+    QString               vac1InName_;             // PC input device description ("" = none)
+    double                vac1TxGainDb_  = 3.0;    // VAC TX gain (reference default +3 dB) → vac_preamp
+    int                   vac1VacSize_   = 2048;   // VAC buffer (reference default 2048)
+    int                   vac1LatencyMs_ = 120;    // rmatchV ring depth (reference VAC default)
+    // VAC RX gain (reference "Gain RX (dB)" → vac_rx_scale → SetIVACrxscale
+    // → the mixer's input-0 gain).  Reference default 0 dB (unity).
+    // Operator-adjustable (env LYRA_VAC1_RX_GAIN_DB now; a dB spinner in
+    // Settings at Stage 6, mirroring the Thetis VAC dialog).  Stored as the
+    // linear scale SetIVACrxscale wants (0 dB = 1.0).  NOTE: the Stage-3 tap
+    // is post-RXA so it also tracks AF Gain — keep AF Gain nominal, then
+    // trim here, until a pre-AF tap lands.
+    double                vac1RxGainDb_  = 0.0;     // reference default 0 dB
+    bool                  vacEnvApplied_ = false;
+    // The IVAC mixer is a 2-input AAMix (RX audio + TX monitor) created
+    // active=3, so its mix_main WaitForMultipleObjects(…, TRUE) blocks
+    // until BOTH inputs signal Ready each block.  Stage 3 has no TX-monitor
+    // tap yet, so we feed input 1 (xvacOUT stream 2) a silence block every
+    // RX frame to keep the mixer synced — exactly as the reference feeds a
+    // silent TX monitor during RX.  Sized 2*outSize_ in rebuildVac1.
+    std::vector<double>   vacMonSilence_;
 };
 
 } // namespace lyra::dsp

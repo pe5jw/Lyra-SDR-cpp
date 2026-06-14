@@ -19,6 +19,10 @@ QJsonObject Profile::toJson() const {
     o["txDriveLevel"]  = txDriveLevel;
     o["tciRxGainDb"]   = tciRxGainDb;
     o["tciTxGainDb"]   = tciTxGainDb;
+    o["vac1Enabled"]     = vac1Enabled;
+    o["vac1AutoDigital"] = vac1AutoDigital;
+    o["vac1RxGainDb"]    = vac1RxGainDb;
+    o["vac1TxGainDb"]    = vac1TxGainDb;
     o["agcMode"]       = agcMode;
     o["autoMuteOnTx"]  = autoMuteOnTx;
     o["txTimeoutSec"]  = txTimeoutSec;
@@ -44,6 +48,10 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("txDriveLevel"))  p.txDriveLevel  = o["txDriveLevel"].toInt(p.txDriveLevel);
     if (o.contains("tciRxGainDb"))   p.tciRxGainDb   = o["tciRxGainDb"].toDouble(p.tciRxGainDb);
     if (o.contains("tciTxGainDb"))   p.tciTxGainDb   = o["tciTxGainDb"].toDouble(p.tciTxGainDb);
+    if (o.contains("vac1Enabled"))     p.vac1Enabled     = o["vac1Enabled"].toBool(p.vac1Enabled);
+    if (o.contains("vac1AutoDigital")) p.vac1AutoDigital = o["vac1AutoDigital"].toBool(p.vac1AutoDigital);
+    if (o.contains("vac1RxGainDb"))    p.vac1RxGainDb    = o["vac1RxGainDb"].toDouble(p.vac1RxGainDb);
+    if (o.contains("vac1TxGainDb"))    p.vac1TxGainDb    = o["vac1TxGainDb"].toDouble(p.vac1TxGainDb);
     if (o.contains("agcMode"))       p.agcMode       = o["agcMode"].toString(p.agcMode);
     if (o.contains("autoMuteOnTx"))  p.autoMuteOnTx  = o["autoMuteOnTx"].toBool(p.autoMuteOnTx);
     if (o.contains("txTimeoutSec"))  p.txTimeoutSec  = o["txTimeoutSec"].toInt(p.txTimeoutSec);
@@ -68,6 +76,10 @@ bool Profile::sameValues(const Profile &b) const {
         && txDriveLevel == b.txDriveLevel
         && dEq(tciRxGainDb, b.tciRxGainDb)
         && dEq(tciTxGainDb, b.tciTxGainDb)
+        && vac1Enabled == b.vac1Enabled
+        && vac1AutoDigital == b.vac1AutoDigital
+        && dEq(vac1RxGainDb, b.vac1RxGainDb)
+        && dEq(vac1TxGainDb, b.vac1TxGainDb)
         && agcMode == b.agcMode
         && autoMuteOnTx == b.autoMuteOnTx
         && txTimeoutSec == b.txTimeoutSec

@@ -408,8 +408,19 @@ void xcmaster (int stream)
 
 	case 1:  // standard transmitter
 		tx = txid (stream);
-		// DEFERRED [cmasio unported — no Lyra ASIO]:
-		//   asioIN(pcm->in[stream]);
+		// #158 Stage 4 — VAC-in (PC soundcard / USB mic / digital app) is the
+		// Lyra-native realization of the reference's PC-mic line
+		// (asioIN(pcm->in[stream]) — cmasio.c, unported).  Override the mic
+		// buffer from the VAC-in ring (xvacIN) when this xmtr's use_vac_audio
+		// is set, BEFORE the TCI override so the reference precedence holds
+		// (the mic-source selector keeps exactly one of {EP6, VAC, TCI} live).
+		if (_InterlockedAnd (&pcm->xmtr[tx].use_vac_audio, 1))
+		{
+			if (pcm->InboundVacTxAudio)
+				(*pcm->InboundVacTxAudio)(pcm->xcm_insize[stream], pcm->in[stream]);
+			else
+				memset (pcm->in[stream], 0, pcm->xcm_insize[stream] * sizeof (complex));
+		}
 		if (_InterlockedAnd (&pcm->xmtr[tx].use_tci_audio, 1))									// from tci tx audio, service asio above so we still get other rx output, but override with tci if needed
 		{
 			if (pcm->InboundTCITxAudio)
@@ -491,6 +502,21 @@ PORT
 void SetTXTCIAudio (int txid, int active)
 {
 	_InterlockedExchange (&pcm->xmtr[txid].use_tci_audio, active);
+}
+
+// #158 Stage 4 — VAC-in TX-audio source (Lyra-native, mirrors the TCI pair
+// SendpInboundTCITxAudio / SetTXTCIAudio above).
+
+PORT
+void SendpInboundVacTxAudio (void (*Inbound)(int nsamples, double* buff))
+{
+	pcm->InboundVacTxAudio = Inbound;
+}
+
+PORT
+void SetTXVacAudio (int txid, int active)
+{
+	_InterlockedExchange (&pcm->xmtr[txid].use_vac_audio, active);
 }
 
 // Reference cmaster.c:445-449 (verbatim):

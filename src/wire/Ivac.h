@@ -164,6 +164,14 @@ PORT void create_ivac (
 	int vac_size				// VAC buffer size
 	);
 
+// Lyra-cpp Stage 2 accessor (NOT in the reference): hand the Qt device
+// layer (src/ivac_audio.{h,cpp}) the engine instance for a given id so
+// it can read a->rmatchOUT / a->rmatchIN / a->vac_size / a->vac_rate /
+// a->run etc.  The reference reaches pvac[id] directly because the Qt
+// device-I/O replacement lives outside this TU (Qt must not enter the
+// wire/ layer).  Returns nullptr before create_ivac(id).
+IVAC ivacGet(int id);
+
 // Reference ivac.c SetIVAC* / diag surface (the reference defines
 // most of these as PORT in ivac.c WITHOUT an ivac.h declaration —
 // the external Thetis C# consumer re-declares them via DllImport;

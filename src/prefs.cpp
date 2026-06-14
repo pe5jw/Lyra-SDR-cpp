@@ -88,6 +88,7 @@ constexpr auto kDebugLog   = "debug/logging";
 constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 // Task #157 — space-bar PTT opt-out (default ON / historical behaviour).
 constexpr auto kSpaceBarPttEnabled = "tx/space_bar_ptt_enabled";
+constexpr auto kAutoStartOnLaunch  = "hw/autoStartOnLaunch";
 constexpr auto kMicSource    = "tx/mic_source";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
@@ -228,6 +229,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // Task #157 — space-bar PTT.  Default true preserves the historical
     // always-on space-bar keying for existing operators.
     spaceBarPttEnabled_ = s.value(kSpaceBarPttEnabled, true).toBool();
+    autoStartOnLaunch_  = s.value(kAutoStartOnLaunch, true).toBool();
     // Task #33 — TX mic source token.  Validate against the known
     // token list; an unknown value (older Lyra, mistyped QSettings)
     // falls back to "mic1" so we never autoload into an inactive
@@ -998,6 +1000,14 @@ void Prefs::setSpaceBarPttEnabled(bool on) {
     }
 }
 
+void Prefs::setAutoStartOnLaunch(bool on) {
+    if (on != autoStartOnLaunch_) {
+        autoStartOnLaunch_ = on;
+        QSettings().setValue(kAutoStartOnLaunch, on);
+        emit autoStartOnLaunchChanged();
+    }
+}
+
 // Task #33 — TX mic source.  Validates token against the known set
 // (silently falls back to "mic1" on unknown), persists, emits the
 // change signal.  main.cpp wires the signal to dispatch into
@@ -1029,7 +1039,7 @@ QString Prefs::micSourceLabel(const QString &token) {
     if (token == QLatin1String("mic1"))   return QStringLiteral("Mic In");
     if (token == QLatin1String("tci"))    return QStringLiteral("TCI (digital modes)");
     if (token == QLatin1String("mic2"))   return QStringLiteral("Line In");
-    if (token == QLatin1String("micpc"))  return QStringLiteral("VAC1");
+    if (token == QLatin1String("micpc"))  return QStringLiteral("PC Soundcard (VAC1)");
     if (token == QLatin1String("micpc2")) return QStringLiteral("VAC2");
     return token;
 }
@@ -1039,9 +1049,10 @@ QString Prefs::micSourceLabel(const QString &token) {
 // future-version status — same no-inert-UI precedent as the v0.2.0
 // Mode+Filter picker's COMP/ALC/MIC disabled-but-visible items.
 bool Prefs::micSourceEnabled(const QString &token) {
-    if (token == QLatin1String("mic1")) return true;
-    if (token == QLatin1String("tci"))  return true;
-    return false;   // mic2 / micpc / micpc2 — future v0.2.x
+    if (token == QLatin1String("mic1"))  return true;
+    if (token == QLatin1String("tci"))   return true;
+    if (token == QLatin1String("micpc")) return true;   // #158 Stage 4 — VAC1 in
+    return false;   // mic2 / micpc2 — future v0.2.x
 }
 
 QString Prefs::micSourceTooltip(const QString &token) {
@@ -1059,8 +1070,10 @@ QString Prefs::micSourceTooltip(const QString &token) {
             "codec side-channel which Lyra doesn't yet emit).");
     if (token == QLatin1String("micpc"))
         return QStringLiteral(
-            "Host PC audio capture (Virtual Audio Cable 1) — pending "
-            "v0.2.x (requires the host audio-capture subsystem).");
+            "PC audio in via VAC1 — a virtual cable from a digital app "
+            "(MSHV / WSJT-X) or a USB microphone for voice.  Set the VAC1 "
+            "Input device + TX gain in Settings → Audio; this routes that "
+            "captured audio to the transmitter (your codec mic is bypassed).");
     if (token == QLatin1String("micpc2"))
         return QStringLiteral(
             "Second host PC audio capture device (VAC2) — pending v0.2.x.");

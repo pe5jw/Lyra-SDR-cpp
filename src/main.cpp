@@ -634,14 +634,24 @@ int main(int argc, char *argv[])
     // Drop any stale TCI backlog when switching away from TCI.  Seed now +
     // track operator changes.
     {
-        auto applyTciTxSource = [prefs]() {
-            const bool tci = (prefs->micSource() == QStringLiteral("tci"));
+        // TX mic-source gate: exactly one of {codec mic, TCI, VAC1} drives TX.
+        //   "tci"   → use_tci_audio (TciTxBridge)
+        //   "micpc" → use_vac_audio (#158 Stage 4: VAC-in / PC mic / digital)
+        //   else    → HL2 codec EP6 mic (both overrides off)
+        // SetTX{TCI,Vac}Audio are interlocked; the VAC inbound cb is
+        // null-guarded so selecting VAC with VAC1 disabled is safe (falls
+        // back to the codec mic).
+        auto applyTxAudioSource = [prefs]() {
+            const QString src = prefs->micSource();
+            const bool tci = (src == QStringLiteral("tci"));
+            const bool vac = (src == QStringLiteral("micpc"));
             lyra::wire::SetTXTCIAudio(0, tci ? 1 : 0);
+            lyra::wire::SetTXVacAudio(0, vac ? 1 : 0);
             if (!tci) lyra::tci::TciTxBridge::instance().clear();
         };
         QObject::connect(prefs, &lyra::ui::Prefs::micSourceChanged,
-                         prefs, applyTciTxSource);
-        applyTciTxSource();   // seed initial state
+                         prefs, applyTxAudioSource);
+        applyTxAudioSource();   // seed initial state
     }
 
     // ---- TX/RX Profiles (Stage 0b — live wiring) ----------------------
@@ -675,6 +685,10 @@ int main(int argc, char *argv[])
         p.txDriveLevel    = stream->txDriveLevel();
         p.tciRxGainDb     = prefs->tciRxGainDb();
         p.tciTxGainDb     = prefs->tciTxGainDb();
+        p.vac1Enabled     = wdspEngine->vac1Enabled();
+        p.vac1AutoDigital = wdspEngine->vac1AutoDigital();
+        p.vac1RxGainDb    = wdspEngine->vac1RxGainDb();
+        p.vac1TxGainDb    = wdspEngine->vac1TxGainDb();
         p.agcMode         = wdspEngine->agcMode();
         p.autoMuteOnTx    = wdspEngine->autoMuteOnTx();
         p.txTimeoutSec    = stream->txTimeoutSec();
@@ -689,6 +703,16 @@ int main(int argc, char *argv[])
         prefs->setTxBandwidth(p.txBandwidth);
         prefs->setBwLocked(p.bwLocked);
         prefs->setFilterLow(p.filterLow);
+        // VAC (#158) — apply VAC config BEFORE micSource so the VAC1 engine
+        // is live (callback registered) when setMicSource arms use_vac_audio;
+        // else a micpc profile would arm the source against a null inbound cb
+        // (silent TX) until the next rebuild.  Gains/autoDigital first, then
+        // enable (final rebuild sees everything), then the source.  Devices
+        // stay global (Settings → Audio) — not profile fields.
+        wdspEngine->setVac1RxGainDb(p.vac1RxGainDb);
+        wdspEngine->setVac1TxGainDb(p.vac1TxGainDb);
+        wdspEngine->setVac1AutoDigital(p.vac1AutoDigital);
+        wdspEngine->setVac1Enabled(p.vac1Enabled);
         prefs->setMicSource(p.micSource);   // fires the applyTciTxSource gate above
         stream->setMicGainDb(p.micGainDb);
         stream->setMicBoost(p.micBoost);
@@ -1158,7 +1182,10 @@ int main(int argc, char *argv[])
         // radio is off/unreachable the UI just shows "RX stalled".
         const QString lastIp =
             QSettings().value(QStringLiteral("radio/lastIp")).toString();
-        if (!lastIp.isEmpty()) {
+        // Auto-start-on-launch opt-out (Settings → Hardware).  Default ON
+        // (historical behaviour).  When the operator unticks it Lyra loads
+        // but waits for an explicit Start instead of opening the radio.
+        if (!lastIp.isEmpty() && prefs->autoStartOnLaunch()) {
             stream->open(lastIp);
         }
     });

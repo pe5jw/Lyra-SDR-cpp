@@ -5,23 +5,104 @@ verified unaffected — `calcc.c`/`iqc.c` reference no audio device; PS
 feedback is a rate-configured IQ channel `SetPSFeedbackRate` calcc.c:1065).
 **Stage 0 DONE** (gate cleared — see §3 / R0). **Stage 1 DONE** (`52adff3`
 — `wire/Ivac.{h,cpp}` engine wire-inert + `test_ivac` ALL PASS; full app
-builds clean).  **NEXT = Stage 2** (Qt device I/O) — design captured in §3.
+builds clean).  **Stage 2 DONE** (`src/ivac_audio.{h,cpp}` +
+`scratch/test_ivac_audio.cpp` ALL PASS + full `lyra.exe` links clean).
+**Stage 3 DONE — BENCH-PASSED 2026-06-14** (operator HL2, 40 m FT8 →
+`Line 1 (Virtual Audio Cable)` → MSHV decoded cleanly at RX gain 0 dB
+with the monitor Volume at −60 dB — proving the VAC feed is independent
+of the monitor, the reference way).  Two bugs found + fixed during the
+bench: (a) zero-length rmatchV rings (latency never set → SetIVAC*Latency
+120 ms after create_ivac); (b) 2-input mixer starvation (TX-monitor input
+unfed → feed stream 2 silence each block).  Plus `vac_rx_scale` wired as
+the reference "Gain RX (dB)" (default 0 dB).
+**Stage 6 core landed early (operator request):** a full **Settings →
+Audio → "Virtual Audio Cable (VAC1)"** panel — Enable + output-device
+combo + RX-gain (dB) — all live + persisted (QSettings `vac1/*`); the
+env hooks (`LYRA_VAC1_*`) are now just dev overrides.  **NEXT = Stage 4
+(VAC-in LIVE).**
 
-▶ **RESUME (Stage 2):** new `src/ivac_audio.{h,cpp}` (`lyra::ipc::IvacAudio`),
-kept OUT of `wire/` (no Qt in the C-style wire layer; same separation as
-`wdsp_engine.cpp`).  Replaces the deferred PortAudio CallbackIVAC/Start/Stop.
-  • VAC-out (radio→PC): a render `QIODevice` mirroring the RX `AudioRing`
-    (`wdsp_engine.cpp:184-267`) — `readData()` drains the OUT ring via
-    `xrmatchOUT(rmatchOUT,…)` in `vac_size` chunks → double→int16 (×32767,
-    clamp) → int16 staging → `QAudioSink`; underrun pads silence so the
-    sink never stalls.
-  • VAC-in (PC→radio): `QAudioSource` capture → int16→double → accumulate
-    to `vac_size` → `xrmatchIN(rmatchIN,…)`; mono→stereo dup; Int16↔double.
-  • Add accessor `IVAC ivacGet(int id)` to `wire/Ivac.h` (struct is public)
-    so the Qt layer reads `a->rmatchOUT/rmatchIN/vac_size/vac_rate`.
+▶ **RESUME (Stage 3 — VAC-out LIVE, BENCH GATE):**
+
+Stage 3 as-built (in `wdsp_engine.{h,cpp}`):
+  • `WdspEngine` owns VAC1 = the IVAC engine instance (`wire/Ivac`,
+    `kVac1Id=0`) + its Qt device layer (`lyra::ipc::IvacAudio`).
+  • TAP POINT = `dispatchAudioFrame(audio, nframes)` — the RX audio is
+    teed from the `audio` param (POST-RXA: after AGC/NR/demod/AF-panel-
+    gain, BEFORE the operator monitor volume/mute/balance) into
+    `xvacOUT(kVac1Id, 1, audio)` → the IVAC AAMix input 0 → `rmatchOUT`.
+    Feeding pre-monitor-volume audio is deliberate (a digital app needs
+    steady level regardless of the operator's speaker volume — the
+    reference keeps VAC and AF-gain independent).
+  • `IvacAudio::pullRenderInt16` (Stage 2) drains `rmatchOUT` → the
+    `QAudioSink` on the chosen PC output device.
+  • `create_ivac(0, …)` is built with `audio_rate = outRate (48 k)`,
+    `audio_size = outSize_`, `vac_rate = 48 k`, `vac_size = 512`
+    (`LYRA_VAC1_VAC_SIZE` override).  `rmatchOUT` drift-corrects the two
+    independent crystals even at equal nominal rate.
+  • Lifecycle: `rebuildVac1()` at the end of `openRx1()` (idempotent — a
+    sample-rate reopen rebuilds at the new `audio_size`/`audio_rate`);
+    `teardownVac1()` at the top of `closeRx1()`.
+  • Hot-path safety: `vac1Active_` (atomic) gates the tee; the `xvacOUT`
+    runs under `vacMtx_`; teardown clears the flag under the lock, stops
+    `IvacAudio` (joins the sink), then `destroy_ivac` — so the ring can
+    never be freed mid-`xvacOUT` or mid-render.
+  • Bench enable (no Settings UI until Stage 6):
+      set LYRA_VAC1_OUT=<device index OR description substring>
+      (optional) set LYRA_VAC1_VAC_SIZE=<frames 64..8192, default 512>
+    e.g. `set LYRA_VAC1_OUT=CABLE Input` (VB-Audio Cable) → point the
+    digital app's INPUT at `CABLE Output`.  An unset/no-match var = VAC1
+    off (logs `[vac1] … matched no PC output device`).
+
+**Bench gate (operator):** with a virtual cable installed, set
+`LYRA_VAC1_OUT` to its playback endpoint, launch Lyra, tune a signal.
+Point WSJT-X/MSHV/etc. input at the cable's recording endpoint.  PASS =
+the digital app decodes clean radio audio with NO drift / dropouts over
+minutes, AND the operator's normal monitor (HL2 jack or PC) is
+unaffected, AND muting/changing monitor volume does NOT change what the
+digital app receives.  Watch the log for `[vac1] VAC-out LIVE …`.  THEN
+Stage 4 (VAC-in LIVE → mic-source selector, mutual-exclusion vs TCI).
+
+**MSHV / FT8 RX-decode bench recipe (operator, 2026-06-14):**
+  1. Install VB-Audio Virtual Cable → it adds `CABLE Input` (a PLAYBACK
+     device) + `CABLE Output` (a RECORDING device).  Lyra sends RX audio
+     TO `CABLE Input`; MSHV listens FROM `CABLE Output`.
+  2. Launch: `set LYRA_VAC1_OUT=CABLE Input` then run `build\lyra.exe`.
+     Log should show `[vac1] enabled → PC output device [N] CABLE Input`,
+     and after a signal is tuned `[vac1] VAC-out LIVE …`.
+  3. Lyra: connect HL2, tune an FT8 watering hole (e.g. 14.074 MHz),
+     mode USB or DIGU, RX filter ~200–3000 Hz (wide enough for the whole
+     FT8 sub-band).
+  4. MSHV: Soundcard Input = `CABLE Output`, 48000 Hz; mode FT8; dial =
+     Lyra's dial (14.074); PC clock time-synced (<~1 s).
+  5. **LEVEL = AF GAIN, not Volume.**  The VAC tap is post-RXA (after AF
+     panel gain + AGC) but BEFORE the monitor Volume/mute — so Volume and
+     Mute do NOT change MSHV's input, and AF Gain IS the VAC level knob.
+     Ride AF Gain to land MSHV's input meter ~30–50 dB (green, not red).
+  6. PASS: MSHV waterfall shows the sub-band; FT8 decodes every 15 s; no
+     dropouts over minutes.  If choppy: `set LYRA_VAC1_VAC_SIZE=1024`
+     (or 2048) and relaunch.  No device match in the log → use a numeric
+     index or the exact description substring the log printed.
+  (Honest note: coupling the VAC level to AF Gain is a Stage-3
+  simplification; a dedicated `vac_rx_scale` independent of AF Gain is a
+  Stage 5/6 refinement if the coupling proves annoying.)
+
+Stage 2 as-built (DONE):
+  • `src/ivac_audio.{h,cpp}` (`lyra::ipc::IvacAudio`), OUT of `wire/`.
+  • VAC-out: a render `QIODevice` (`IvacRenderDevice`) the `QAudioSink`
+    pulls — `readData()` drains `rmatchOUT` via `xrmatchOUT` in `vac_size`
+    chunks → double×32767 clamp → int16 staging; underrun pads silence
+    (rmatchV pads its own ring).
+  • VAC-in: `QAudioSource` (pull-mode `readyRead`) → int16/32768→double
+    accumulate to `vac_size` → `xrmatchIN`.  Int16/stereo/`vac_rate`;
+    mono-only capture devices are a documented Stage-2 limitation.
+  • `IVAC ivacGet(int id)` accessor added to `wire/Ivac.h` (returns null
+    before `create_ivac` / after `destroy_ivac`).
   • Device enum via `QMediaDevices::audioOutputs()/audioInputs()`.
-  • Standalone loopback test (tone → IN ring → OUT ring) BEFORE any radio
-    wiring.  Bench gate is Stage 3 (RX→PC live).
+  • `start(-1,-1)` = no-device setup path (caches sizes, opens nothing) —
+    used by the unit test to arm the converters without hardware.
+  • `test_ivac_audio` (CMake target, EXCLUDE_FROM_ALL): create_ivac →
+    push capture into rmatchIN → drive xvacOUT → drain via
+    pullRenderInt16 → diags sane → destroy = ALL PASS.
 Reference studied: Thetis 2.10.3.13 `ChannelMaster/ivac.c` (907) + `ivac.h`
 (133) + `Console/ivac.cs` (195) + `wdsp/rmatch.c` + `ChannelMaster/pipe.c`
 + `cmaster.c`, cross-referenced against the lyra-cpp ported `wire/` layer
@@ -89,22 +170,62 @@ devices (source + sink) is clean — we don't need one full-duplex stream.
   Fixed a heap-corruption bug from initial authoring (struct `malloc0`'d
   but `free`'d — `malloc0` is `_aligned_malloc`; restored reference
   `calloc`/`free`).  Full `lyra.exe` builds clean (engine wire-inert).
-- **Stage 2 — Qt device I/O.** `QAudioSource` (VAC-in) + `QAudioSink`+
-  QIODevice (VAC-out) mirroring `AudioRing`; device enumeration; int16↔
-  double + mono→stereo conversion. Standalone loopback (tone in → resample
-  → out) before touching the radio.
-- **Stage 3 — VAC-out LIVE (RX → PC).** Tap `WdspEngine` RX audio (+ TX
-  monitor) → AAMix → rmatchOUT → QAudioSink. **Bench gate:** a digital app
-  on the PC receives clean radio audio with no drift over minutes.
-- **Stage 4 — VAC-in LIVE (PC → TX).** `QAudioSource` → rmatchIN → xvacIN
-  → mic-source selector (mutual-exclusion vs TCI) → TX. **Bench gate:** PC
-  app audio transmits cleanly; selecting VAC disables TCI-in and vice-versa.
+- **Stage 2 — Qt device I/O. ✅ DONE.** `src/ivac_audio.{h,cpp}`
+  (`lyra::ipc::IvacAudio`): VAC-out render `QIODevice`+`QAudioSink`
+  (drains `rmatchOUT`), VAC-in `QAudioSource` (feeds `rmatchIN`),
+  Int16↔double + mono-accumulate-to-`vac_size`, device enum via
+  `QMediaDevices`, `start(outIdx,inIdx)`/`stop()`, `ivacGet(id)`
+  accessor on `wire/Ivac.h`.  `scratch/test_ivac_audio.cpp` (CMake
+  `test_ivac_audio`) exercises the converters against a live engine
+  with NO devices (`start(-1,-1)`) = ALL PASS; full `lyra.exe` links
+  clean (still wire-inert — no RX/TX tap yet).
+- **Stage 3 — VAC-out LIVE (RX → PC). ✅ DONE — BENCH-PASSED 2026-06-14**
+  (MSHV FT8 decode, monitor Volume −60 dB, RX gain 0 dB).  `WdspEngine`
+  tees post-RXA RX audio (`dispatchAudioFrame`'s `audio` param) →
+  `xvacOUT(0,1,…)` + a silence block on `xvacOUT(0,2,…)` to keep the
+  2-input mixer synced → IVAC AAMix → `rmatchOUT` → `IvacAudio`
+  `QAudioSink`.  `create_ivac` + `SetIVAC{Out,In}Latency(120ms)` +
+  `SetIVACrxscale` (Gain RX dB) on `openRx1`/`closeRx1`; `vacMtx_`+
+  `vac1Active_` race-safety.  Operator-facing via the **VAC1 Settings
+  panel** (Stage 6 core, landed early).  (TX-monitor real audio is
+  Stage 5; VAC-in is Stage 4.)
+- **Stage 4 — VAC-in LIVE (PC → TX). ✅ IMPLEMENTED — AWAITING TX BENCH.**
+  CMaster VAC quartet (`InboundVacTxAudio`/`use_vac_audio`/
+  `SendpInboundVacTxAudio`/`SetTXVacAudio`) + the `xcmaster` `asioIN`-seam
+  override (before the TCI override); VAC-in bridge `vacInboundCb → xvacIN`
+  (null-guarded so picking VAC mic with VAC1 off can't crash on TX);
+  `rebuildVac1` opens the input `QAudioSource` + `mic_size=getbuffsize(48000)
+  =64` (the §7.3 fix — TX insize, NOT RX-out 256) + VAC TX gain `vac_preamp`
+  (+3 dB); `IvacAudio` capture → `rmatchIN`.  Operator surface: VAC1
+  **Input device** + **TX gain** in Settings → Audio, and **"PC Soundcard
+  (VAC1)"** enabled in the Settings → TX mic-source selector (mutually
+  exclusive with TCI / codec mic via the main.cpp gate).  `lyra.exe` links
+  clean; RX/TX byte-identical until the PC mic source is selected.
+  **Bench gate (TX, dummy load):** MSHV TX → Line 2 → Lyra VAC-in → HL2
+  transmits cleanly; selecting VAC disables TCI and vice-versa.
 - **Stage 5 — MOX / monitor routing.** `SetIVACmox`/`SetIVACmon` →
   AAMix mute/monitor; wire to the PTT FSM (mute RX into VAC on TX, route
   TX-monitor). + raw-IQ output mode (#IQ) + swapIQ.
 - **Stage 6 — Settings UI (VAC1).** Settings → Audio: VAC1 enable, in/out
   device pickers, rate/latency, IQ mode, preamp; add **"PC Soundcard
   (VAC1)"** to the mic-source selector.
+  **Reference dialog spec (from `Y:\hold\screenshots\VAC1 and VAC2
+  important settings.jpg`, operator's working Thetis — mirror this):**
+  Driver (host API) + Input + Output device pickers + Enable VAC1;
+  Buffer Size **2048**; Sample Rate **48000**; Mono/**Stereo**; **Gain (dB)
+  RX 0 / TX +3** (the operator-facing VAC gains — RX = `vac_rx_scale`
+  via SetIVACrxscale; TX = the VAC input gain, `vac_preamp` /
+  SetIVACpreamp, default +3 dB); Direct I/O "Output to VAC" (raw-IQ,
+  Stage 5) + SwapIQ + Use RX2; Buffer Latency (ms) RingBuffer In/Out
+  **120/120** + PortAudio In/Out 120/120 (Manual); Auto-Enable "for
+  Digital modes, disable for all others"; "Allow PTT/SPACE/MOX to
+  override/bypass VAC for Phone"; "VOX uses MIC instead of VAC"; "Mute
+  will mute VAC"; "Combine VAC Input Channels"; VAC Monitor diagnostics
+  (Overflows / Underflows / Var Ratio / RingBuffer / RingBuff% for both
+  To-VAC(Out) and From-VAC(In) — these are the `getIVACdiags` values).
+  Stage-3/4 bench env hooks (`LYRA_VAC1_OUT`, `LYRA_VAC1_RX_GAIN_DB`,
+  `LYRA_VAC1_VAC_SIZE`) are the stand-ins for these controls until the
+  panel lands.
 - **Stage 7 — VAC2 (#103).** Second `Ivac` instance + second device pair +
   `txvac` selector (which VAC drives TX). The engine is already
   id-parameterised, so this is mostly UI + wiring.
@@ -155,3 +276,157 @@ devices (source + sink) is clean — we don't need one full-duplex stream.
   537-538/552-556, TCI-TX seam 413-418/475-478, RX-dispatch note 377-381),
   `wire/AAMix.{h,cpp}`, `wire/wdspcalls.h` (RESAMPLE surface 85-90 — to be
   extended with rmatchV), `mic_source.h`, `tci/TciTxBridge.h`.
+
+---
+
+## 7. Stage 4 design — VAC-in LIVE (PC → TX).  DRAFT 2026-06-14.
+
+**Goal:** a digital app on the PC (WSJT-X / MSHV / JTDX) transmits its
+audio out a virtual cable → Lyra captures it → it becomes the TX mic
+source → the HL2 transmits it.  VAC-in is selectable, MUTUALLY EXCLUSIVE
+with the TCI TX-audio source and the HL2/EP6 mic (locked decision §4.4).
+**Bench gate** like Stage 3 — needs the radio + a digital app.
+
+The capture half is ALREADY built: `IvacAudio` (Stage 2) opens a
+`QAudioSource` on the chosen PC INPUT device and pushes int16→double into
+`xrmatchIN(rmatchIN, …)` via `pushCaptureInt16`.  Stage 3 only opened the
+output (sink); Stage 4 opens BOTH (`start(outIdx, inIdx)`).  The new work
+is the TX-side consumer + the selector.
+
+### 7.1 The consumer seam — un-defer `asioIN` (the reference's PC-mic line)
+
+`xcmaster` case 1 (the transmitter, `wire/CMaster.cpp:409-436`) builds the
+TX mic buffer `pcm->in[stream]` then runs `fexchange0`.  Today:
+  • default — the EP6/codec mic is already in `pcm->in[stream]` (the
+    `Hl2Ep6MicSource` → CMB ring → cm_main pump path);
+  • `use_tci_audio` set → OVERRIDE via `InboundTCITxAudio(insize,
+    pcm->in[stream])` (CMaster.cpp:413-419).
+The reference's PC-mic input is the **DEFERRED `asioIN(pcm->in[stream])`
+line at CMaster.cpp:411-412** ("cmasio unported — no Lyra ASIO").  Lyra's
+VAC-in IS that PC mic.  So Stage 4 un-defers it as a Lyra-native
+realization, modeled VERBATIM on the proven TCI override quartet:
+
+New CMaster surface (mirror the TCI four — already in-tree + bench-proven):
+  • `pcm->InboundVacTxAudio` fn ptr  (mirror `InboundTCITxAudio`)
+  • `SendpInboundVacTxAudio(void(*)(int,double*))`  (mirror
+    `SendpInboundTCITxAudio`, CMaster.cpp:474-478)
+  • `pcm->xmtr[tx].use_vac_audio` interlocked flag  (mirror
+    `use_tci_audio`)
+  • `SetTXVacAudio(int txid, int active)`  (mirror `SetTXTCIAudio`,
+    CMaster.cpp:490-494)
+
+xcmaster case 1 — insert the VAC override at the `asioIN` seam, BEFORE the
+TCI override (so the precedence matches the reference's
+`asioIN` → `use_tci_audio` order; the selector keeps them exclusive
+anyway):
+```c
+// at CMaster.cpp:411-412 (replacing the DEFERRED asioIN comment):
+if (_InterlockedAnd(&pcm->xmtr[tx].use_vac_audio, 1)) {
+    if (pcm->InboundVacTxAudio)
+        (*pcm->InboundVacTxAudio)(pcm->xcm_insize[stream], pcm->in[stream]);
+    else
+        memset(pcm->in[stream], 0, pcm->xcm_insize[stream] * sizeof(complex));
+}
+// existing use_tci_audio block stays at :413-419
+```
+
+### 7.2 The VAC inbound bridge — `xvacIN`
+
+A small bridge (mirror `tci/TciTxBridge.h`'s `inboundCb`) registered via
+`SendpInboundVacTxAudio`.  Its body is one call:
+```c
+void vacInboundCb(int nsamples, double* buff) {
+    lyra::wire::xvacIN(kVac1Id, buff, /*bypass*/0);
+}
+```
+`xvacIN` (Ivac.cpp:156-170) drains `rmatchIN` into `buff` (the
+`xrmatchOUT(rmatchIN, buff)` consumer side), then does `combinebuff`
+(L+R, if `vac_combine_input`) + `scalebuff` by `vac_preamp` — exactly the
+reference mic path.  Runs on the cm_main TX pump thread; the rmatchV ring
+decouples it from the Qt capture thread (the two-clock correction).
+
+### 7.3 ⚠ The size/rate contract — `mic_size` MUST equal the TX insize
+
+`vacInboundCb` is handed `pcm->xcm_insize[stream]` (the TX channel input
+block) and `xvacIN` fills exactly `a->mic_size` complex samples → **the
+IVAC `create_ivac` `mic_size` must equal the TX channel's `xcm_insize`**,
+and `mic_rate` must equal the TX channel input rate (48 kHz).  Stage 3's
+`rebuildVac1()` currently passes `mic_size = outSize_` (the RX-out block)
+— that is fine while VAC-in is unused, but Stage 4 MUST set `mic_size` to
+the TX insize.  **Resolve at implementation:** read the live TX channel
+input size (the `create_xmtr_hl2` / `TxChannel` open `in_size`, = the
+`pcm->xcm_insize` for the TX stream) and pass it as `create_ivac`'s
+`mic_size`.  (RX-out `audio_size` and TX-in `mic_size` are independent
+fields of the SAME create_ivac call — get both right.)  rmatchIN was
+created `(mic_size, vac_size, mic_rate, vac_rate, …)` at Ivac.cpp:64-class
+— so a wrong `mic_size` mis-sizes the ring.
+
+### 7.4 The selector — extend `applyTciTxSource` (main.cpp:630-642)
+
+The mic source is `prefs->micSource()` (string; today "tci" vs the
+EP6/codec default).  The gate lambda at **main.cpp:638-639** does
+`SetTXTCIAudio(0, tci?1:0)` on `micSourceChanged`.  Stage 4 extends it to
+a 3-way mutually-exclusive selector — add a `"vac1"` value:
+```cpp
+const QString src = prefs->micSource();
+const bool tci  = (src == "tci");
+const bool vac1 = (src == "vac1");
+lyra::wire::SetTXTCIAudio(0, tci  ? 1 : 0);
+lyra::wire::SetTXVacAudio(0, vac1 ? 1 : 0);     // NEW
+// VAC1 capture device follows the selection:
+if (vac1) engine->enableVac1Input(<pc input device>);   // start QAudioSource
+else      engine->disableVac1Input();                    // stop capture only
+```
+Neither flag set ⇒ the EP6/codec mic flows (default).  Exactly one of
+{EP6, TCI, VAC1} is ever the live source — satisfies §4.4 + Risk
+"`use_tci_audio` mutual-exclusion (Task #33)".
+
+### 7.5 IvacAudio / WdspEngine surface for the input side
+
+`IvacAudio::start(outIdx, inIdx)` already opens the capture
+`QAudioSource` when `inIdx >= 0` (Stage 2).  Stage 4 adds to `WdspEngine`
+(beside the Stage-3 VAC-out members):
+  • `enableVac1Input(int inDev)` / `disableVac1Input()` — set the input
+    device + re-`start()` the SAME `IvacAudio` with both out/in indices
+    (VAC-out and VAC-in share one engine instance + one `IvacAudio`).
+  • `vac1InDev_` + bench env `LYRA_VAC1_IN` (mirror `LYRA_VAC1_OUT`).
+  • `rebuildVac1()` passes `mic_size`/`mic_rate` per §7.3 and
+    `start(vac1OutDev_, vac1InDev_)`.
+  • Register `vacInboundCb` via `SendpInboundVacTxAudio` once at TX setup
+    (where `SendpInboundTCITxAudio` is registered — main.cpp ~313).
+Note VAC-in and VAC-out are INDEPENDENT (own rmatch rings); either can be
+active alone.  A digital-mode op typically wants BOTH (hear + transmit).
+
+### 7.6 Stage 4 implementation checklist (each step builds clean)
+
+1. CMaster: add the VAC quartet (`InboundVacTxAudio` field +
+   `SendpInboundVacTxAudio` + `use_vac_audio` field + `SetTXVacAudio`),
+   verbatim-mirroring the TCI quartet.  Decl in `CMaster.h`.
+2. CMaster: xcmaster case 1 — add the `use_vac_audio` override at the
+   `asioIN` seam (§7.1).  RX/TX-quiescent regression: with `use_vac_audio`
+   never set, byte-identical to today.
+3. `VacTxBridge` (or fold into `IvacAudio`): `vacInboundCb` → `xvacIN`.
+   Register via `SendpInboundVacTxAudio` at TX setup.
+4. `WdspEngine`: `mic_size`/`mic_rate` reconciliation in `rebuildVac1`
+   (§7.3) + `enableVac1Input`/`disableVac1Input` + `LYRA_VAC1_IN`.
+5. main.cpp: extend `applyTciTxSource` to the 3-way selector (§7.4);
+   `prefs` gains `"vac1"` as a `micSource` value.
+6. **Bench gate:** WSJT-X TX → cable → Lyra VAC-in → HL2 TX is clean; and
+   selecting VAC1 disables TCI/EP6 (and vice-versa) — verify exclusivity.
+   (Settings UI for the source + device pickers is Stage 6; bench via
+   `LYRA_VAC1_IN` + setting `micSource=vac1`.)
+
+### 7.7 Open items for Stage 4
+
+- **mic_size source of truth** (§7.3) — confirm the exact TX
+  `xcm_insize`/`TxChannel` in_size at implementation; do NOT assume it
+  equals RX `outSize_`.
+- **Capture device rate** — `IvacAudio` opens the source at `vac_rate`
+  (48 k); if a cable only offers another rate, `isFormatSupported` fails
+  → log + VAC-in off (same posture as the output side).  rmatchIN handles
+  the radio-vs-cable drift; a fixed 48 k both ends is the simple case.
+- **PTT interaction** — VAC-in only matters during TX; capture can run
+  continuously (the ring just fills/drains).  Whether to gate capture on
+  MOX is a Stage 5 (MOX/monitor routing) refinement, not Stage 4.
+- **vac_combine_input / vac_preamp** — default unity / no-combine for the
+  bench; expose with the Stage 6 UI.

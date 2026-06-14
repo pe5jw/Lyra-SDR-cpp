@@ -4,13 +4,21 @@
 // (the Thetis TX-Profile idiom, ported Lyra-native — see
 // docs/architecture/AUDIO_IO_AND_PROFILES_PLAN.md +
 // PROFILE_MODEL_STAGE0_DESIGN.md).  Stage 0 = the EXISTING fields with
-// real setters today; VAC / EQ / Combinator / monitor are RESERVED
+// real setters today; EQ / Combinator / monitor are RESERVED
 // (added when those features land — schemaVersion gates migration).
 //
 // Whole-set capture/apply (operator decision 2026-06-14): a profile
 // holds the full Stage-0 set; per-field "include" granularity is a
 // deferred fast-follow.  PA-enable / HW-PTT-input / space-bar PTT are
 // deliberately GLOBAL (safety / input-method), NOT profile fields.
+//
+// VAC carried (2026-06-14, #158 Stage 4): a profile holds vac1Enabled /
+// vac1AutoDigital / vac1RxGainDb / vac1TxGainDb so a digital/VAC profile
+// flips source+enable as a unit while a TCI profile keeps tci.  Bench-
+// confirmed: VAC TX needs micSource=micpc AND vac1 "on" together (the
+// selector arms use_vac_audio; without the engine up the TX inbound cb is
+// null → silent).  Devices stay GLOBAL station setup (machine-specific
+// routing), NOT profile fields.
 
 #pragma once
 
@@ -47,6 +55,19 @@ struct Profile {
     // --- TCI gains ---
     double  tciRxGainDb = 0.0;
     double  tciTxGainDb = 0.0;
+
+    // --- VAC (Virtual Audio Cable, #158) ---
+    // Per-profile so a digital/VAC profile carries source(micpc)+enable
+    // while a TCI profile keeps tci — flip profiles, not three settings.
+    // vac1Enabled MUST ride with micSource=micpc: the mic-source selector
+    // arms use_vac_audio, but with VAC1 not "on" the TX inbound cb is null
+    // → silent TX.  Devices stay GLOBAL station setup (Settings → Audio),
+    // NOT profile fields — machine-specific routing.  Defaults match the
+    // engine (rx 0 dB, tx +3 dB).
+    bool    vac1Enabled     = false;
+    bool    vac1AutoDigital = false;
+    double  vac1RxGainDb    = 0.0;
+    double  vac1TxGainDb    = 3.0;
 
     // --- DSP / dynamics ---
     QString agcMode = QStringLiteral("med");     // off/fast/med/slow

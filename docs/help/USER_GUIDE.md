@@ -35,6 +35,7 @@ not programmers — if you can click a menu, you can use this.
 - [Display panel](#display-panel)
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
+- [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
 - [Updates](#updates)
@@ -818,6 +819,85 @@ external watt-meter / bias-tune an external amp.
 
 ---
 
+## Profiles (TX/RX chain presets)
+
+A **profile** is a named snapshot of your operator TX/RX *signal chain* —
+recalled as a single unit so you can flip between, say, an SSB-voice
+setup and an FT8/digital setup without re-touching a dozen controls. This
+is the openHPSDR "TX profile" idea, done Lyra-native.
+
+**What a profile stores:** RX bandwidth, TX bandwidth + the BW-lock,
+filter low edge; mic source, mic gain, 20 dB mic boost; the Tune-drive
+toggle + tune-drive %, and the TX drive level (your power knob); the TCI
+RX and TX gains; AGC mode; auto-mute-on-TX; and the TX safety-timeout
+(minutes + bypass).
+
+**What a profile deliberately does NOT store:**
+
+- **The operating mode / sideband.** Like the reference's TX profiles, a
+  profile is a pure signal chain — recalling one (manually *or* via
+  auto-recall) **never changes your mode or which sideband you're on**.
+  It applies the chain and leaves you exactly where you were tuned.
+- **Safety / input-method settings that are global by design:** PA enable,
+  hardware-PTT-input enable, and the space-bar-PTT toggle all live in
+  [Settings → Hardware](#settings--hardware) and are *never* swept by a
+  profile (you don't want a recalled preset silently arming your PA or
+  changing how you key).
+- VAC, EQ, Combinator and a separate monitor output are **reserved** —
+  those fields appear in profiles once those features land, and older
+  saved profiles migrate forward automatically.
+
+### The Profiles dock (front panel — quick recall)
+
+A small dockable bar (show/hide it from the window's dock menu, like the
+TX or Display panels). It has just three things:
+
+- **Profile dropdown** — pick a saved profile to recall it instantly.
+- **● modified dot** — lights **orange** when your live chain differs from
+  the active profile (i.e. you've changed something worth saving); grey
+  when they match. Hover it for which profile it's comparing against.
+- **Save** — opens the **Save Profile** dialog: either *overwrite the
+  active profile* with your current settings, or *give it a new name* —
+  and (optionally) tick which **mode family** should auto-recall it. That
+  last part means you can set up a chain for the mode you're on and save
+  it as a brand-new bound profile without ever opening Settings.
+
+### Settings → Profiles (the full editor)
+
+The complete manager lives in **Settings → Profiles**:
+
+- A **list** of your profiles (the active one is **bold** and tagged
+  `(active)`; the startup default is tagged `[default]`).
+- **Save** (overwrite active), **Save As…** (capture current settings to a
+  new name), **Load** (recall the selected profile), **Rename…**,
+  **Delete**, and **Set Default** (apply this profile automatically every
+  time Lyra starts).
+- A status line showing the active profile and a `● modified` flag.
+- **Auto-recall by mode family** — one dropdown per family:
+  **CW, SSB, Digital, AM, SAM, DSB, FM**. Bind a profile to a family and
+  it's recalled automatically whenever you switch into a mode in that
+  family. Sidebands collapse on purpose — **USB and LSB both map to SSB**,
+  **CWU/CWL → CW**, **DIGU/DIGL → Digital** (the chain is identical
+  regardless of sideband), while AM / SAM / DSB / FM each stand alone. Set
+  a family to **(none)** to disable auto-recall for it.
+
+### Good to know
+
+- **Recall is blocked while transmitting.** Loading a profile is a no-op
+  while you're keyed — Lyra never switches mic source or bandwidth mid-TX
+  (the same safety rule that governs every chain change). Drop PTT, then
+  recall.
+- **Switching is always manual** *except* for the per-family auto-recall
+  table you configure above — nothing changes your profile on its own
+  (e.g. Lyra never picks a profile based on who you're working).
+- A typical setup: a **"Voice"** profile bound to SSB (your mic, mic gain,
+  speech bandwidth) and a **"Digital"** profile bound to Digital (TCI mic
+  source, flat gain, wide filter) — then changing mode from USB to DIGU
+  flips the whole chain for you, but leaves you on the frequency and
+  sideband you chose.
+
+---
+
 ## Solar / Propagation panel
 
 A compact strip showing current **HF propagation** conditions from
@@ -1254,9 +1334,12 @@ You can also **drag the low edge of the passband rectangle** on the
 panadapter (left edge on USB / right edge on LSB) to set this value
 in real time. Dragging below 0 just pins at 0.
 
-> **Interim setting** until the TX Profile Manager ships — once
-> profiles arrive, each named profile will carry its own RX + TX
-> (low, high) pair that overrides this default on profile load.
+> **Profiles carry their own bandwidth.** A saved
+> [profile](#profiles-txrx-chain-presets) stores its own RX + TX
+> bandwidth + filter-low edge and applies them on recall (manual or
+> per-mode-family auto-recall). This control is the live value used
+> when no profile is active — save it into a profile to make it stick
+> per setup.
 
 ---
 
@@ -1474,10 +1557,11 @@ no host-side sound card needed.
   and any EQ active), and onto the HL2 wire. At keyup the client sends
   TRX-off; Lyra returns to RX.
 * The **Mic gain** slider on the TX panel still applies to TCI audio —
-  the same chain handles voice and digital. Once Task #49 (TX Profile
-  Manager) ships you'll save per-profile mic-gain trims, so switching
-  between an SSB-voice profile and an FT8/MSHV profile recalls the
-  right trim automatically.
+  the same chain handles voice and digital. [Profiles](#profiles-txrx-chain-presets)
+  now save mic gain (and the TCI gains), so you can keep an SSB-voice
+  profile and an FT8/MSHV digital profile each with their own trim and
+  bind them per mode family — switching mode then recalls the right trim
+  automatically.
 
 **Dedicated TCI-only gain sliders** (Settings → Network → TCI server
 group). Two independent ±dB knobs sized for the common digital-mode
@@ -1499,9 +1583,11 @@ mic gain:
   quiet client. 0 dB = byte-identical to the client's stream level.
   Takes effect at the next received audio packet.
 
-Both sliders are stopgaps until per-mode TX/RX gain profiles ship
-(Tasks #49 + #55); for now they let you keep ESSB voice and digital
-modes balanced without retouching mic gain every time you switch.
+Both sliders are the live, always-available adjustment. The TCI RX and
+TX gains are also saved in [profiles](#profiles-txrx-chain-presets), so
+you can store balanced ESSB-voice and digital setups and recall them —
+manually or via per-mode-family auto-recall — instead of retouching the
+gains every time you switch.
 
 **Troubleshooting:**
 

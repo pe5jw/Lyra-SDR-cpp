@@ -193,6 +193,138 @@ QWidget *SettingsDialog::buildAudioTab() {
         form->addRow(tr("Filter Low edge (RX + TX):"), flSpin);
     }
 
+    // ── #158 — Virtual Audio Cable (VAC1) ───────────────────────────
+    // Feed RX audio to a PC output device (a virtual cable) so a digital-
+    // mode app (WSJT-X / MSHV / etc.) can decode it WHILE the normal
+    // monitor keeps playing — an independent path, not the main output
+    // re-routed.  Enable + output device + RX gain (dB), mirroring the
+    // Thetis VAC dialog.  All applied live + persisted by the engine.
+    {
+        auto *grp = new QGroupBox(tr("Virtual Audio Cable (VAC1)"), page);
+        auto *vf  = new QFormLayout(grp);
+
+        auto *vacEnable = new QCheckBox(tr("Enable VAC1 (RX audio → PC)"), grp);
+        vacEnable->setChecked(engine_->vac1Enabled());
+        vacEnable->setToolTip(tr(
+            "Send receiver audio to a PC output device (e.g. a virtual "
+            "audio cable) so a digital-mode app can decode it while your "
+            "normal monitor keeps playing.  Point the app's input at the "
+            "cable's recording side."));
+        vf->addRow(vacEnable);
+
+        auto *vacAuto = new QCheckBox(
+            tr("Auto-enable for digital modes (disable for others)"), grp);
+        vacAuto->setChecked(engine_->vac1AutoDigital());
+        vacAuto->setToolTip(tr(
+            "When ON, VAC1 turns on automatically whenever you switch to a "
+            "digital mode (DIGU / DIGL) and off for all other modes — the "
+            "Enable checkbox above is then the moot baseline.  Leave OFF if "
+            "you drive digital modes a different way (e.g. TCI)."));
+        vf->addRow(vacAuto);
+
+        auto *vacDev = new QComboBox(grp);
+        vacDev->addItems(engine_->vac1OutputDevices());
+        {
+            const int i = vacDev->findText(engine_->vac1OutputDeviceName());
+            if (i >= 0) vacDev->setCurrentIndex(i);
+        }
+        vacDev->setToolTip(tr("PC output device the RX audio is sent to — "
+                              "the virtual cable's playback endpoint."));
+        vf->addRow(tr("Output device"), vacDev);
+
+        auto *vacGain = new QSpinBox(grp);
+        vacGain->setRange(-60, 20);
+        vacGain->setSingleStep(1);
+        vacGain->setSuffix(tr(" dB"));
+        vacGain->setValue(qRound(engine_->vac1RxGainDb()));
+        vacGain->setToolTip(tr(
+            "RX gain into the cable (reference default 0 dB).  Lower if the "
+            "digital app's input is overdriven, raise if too quiet.  "
+            "Independent of your monitor Volume."));
+        vf->addRow(tr("RX gain"), vacGain);
+
+        // VAC-in (PC → TX): input device + TX gain.  The captured audio
+        // reaches TX only when the mic source is "PC Soundcard (VAC1)".
+        auto *vacInDev = new QComboBox(grp);
+        vacInDev->addItem(tr("(none)"));
+        vacInDev->addItems(engine_->vac1InputDevices());
+        {
+            const int i = vacInDev->findText(engine_->vac1InputDeviceName());
+            vacInDev->setCurrentIndex(i >= 0 ? i : 0);
+        }
+        vacInDev->setToolTip(tr("PC input device used as the TX mic when the "
+            "mic source is “PC Soundcard (VAC1)” — the virtual "
+            "cable's recording endpoint for a digital app, or a USB mic for "
+            "voice."));
+        vf->addRow(tr("Input device"), vacInDev);
+
+        auto *vacTxGain = new QSpinBox(grp);
+        vacTxGain->setRange(-60, 20);
+        vacTxGain->setSingleStep(1);
+        vacTxGain->setSuffix(tr(" dB"));
+        vacTxGain->setValue(qRound(engine_->vac1TxGainDb()));
+        vacTxGain->setToolTip(tr("TX gain (preamp) on the PC mic audio before "
+            "the transmitter (reference default +3 dB)."));
+        vf->addRow(tr("TX gain"), vacTxGain);
+
+        // → engine (each applies live + persists)
+        connect(vacEnable, &QCheckBox::toggled, engine_,
+                [this](bool on) { engine_->setVac1Enabled(on); });
+        connect(vacAuto, &QCheckBox::toggled, engine_,
+                [this](bool on) { engine_->setVac1AutoDigital(on); });
+        connect(vacDev, &QComboBox::activated, engine_,
+                [this, vacDev](int) {
+                    engine_->setVac1OutputDeviceName(vacDev->currentText());
+                });
+        connect(vacGain, qOverload<int>(&QSpinBox::valueChanged), engine_,
+                [this](int db) { engine_->setVac1RxGainDb(db); });
+        connect(vacInDev, &QComboBox::activated, engine_,
+                [this, vacInDev](int idx) {
+                    // index 0 = "(none)" → clear the input device
+                    engine_->setVac1InputDeviceName(
+                        idx <= 0 ? QString() : vacInDev->currentText());
+                });
+        connect(vacTxGain, qOverload<int>(&QSpinBox::valueChanged), engine_,
+                [this](int db) { engine_->setVac1TxGainDb(db); });
+
+        // ← engine (reflect programmatic/external changes)
+        connect(engine_, &lyra::dsp::WdspEngine::vac1Changed, grp,
+                [this, vacEnable, vacAuto, vacGain, vacTxGain]() {
+                    if (vacEnable->isChecked() != engine_->vac1Enabled()) {
+                        vacEnable->blockSignals(true);
+                        vacEnable->setChecked(engine_->vac1Enabled());
+                        vacEnable->blockSignals(false);
+                    }
+                    if (vacAuto->isChecked() != engine_->vac1AutoDigital()) {
+                        vacAuto->blockSignals(true);
+                        vacAuto->setChecked(engine_->vac1AutoDigital());
+                        vacAuto->blockSignals(false);
+                    }
+                    const int gi = qRound(engine_->vac1RxGainDb());
+                    if (vacGain->value() != gi) {
+                        vacGain->blockSignals(true);
+                        vacGain->setValue(gi);
+                        vacGain->blockSignals(false);
+                    }
+                    const int ti = qRound(engine_->vac1TxGainDb());
+                    if (vacTxGain->value() != ti) {
+                        vacTxGain->blockSignals(true);
+                        vacTxGain->setValue(ti);
+                        vacTxGain->blockSignals(false);
+                    }
+                });
+
+        auto *vnote = new QLabel(tr(
+            "Sets up the digital-mode feed.  The level is the RX gain here "
+            "plus the app's own input — independent of your monitor Volume; "
+            "keep AF Gain at a normal setting."), grp);
+        vnote->setWordWrap(true);
+        vnote->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+        vf->addRow(vnote);
+
+        form->addRow(grp);
+    }
+
     return page;
 }
 
@@ -1700,6 +1832,35 @@ QWidget *SettingsDialog::buildHardwareTab() {
                 }
             });
             g->addWidget(sbBox, 7, 0, 1, 2);
+        }
+
+        // --- Auto-start on launch (opt-out) ---
+        // When ON (the historical behaviour) Lyra auto-connects to the
+        // last radio at startup so the operator doesn't have to Discover
+        // every launch.  Operators who'd rather open Lyra and click Start
+        // themselves untick it; Lyra then loads but stays disconnected
+        // until an explicit Start.
+        if (prefs_) {
+            auto *asBox = new QCheckBox(
+                tr("Auto-start radio on launch"), grp);
+            asBox->setChecked(prefs_->autoStartOnLaunch());
+            asBox->setToolTip(tr(
+                "When ON, Lyra automatically connects to the last radio "
+                "as soon as it starts.\n\n"
+                "Untick to have Lyra load without connecting — you then "
+                "click Start when you're ready to go on the air."));
+            connect(asBox, &QCheckBox::toggled, grp, [this](bool on) {
+                if (prefs_) prefs_->setAutoStartOnLaunch(on);
+            });
+            connect(prefs_, &lyra::ui::Prefs::autoStartOnLaunchChanged,
+                    asBox, [this, asBox]() {
+                const bool on = prefs_->autoStartOnLaunch();
+                if (asBox->isChecked() != on) {
+                    QSignalBlocker b(asBox);
+                    asBox->setChecked(on);
+                }
+            });
+            g->addWidget(asBox, 8, 0, 1, 2);
         }
 
         // Mic source picker + Mic Boost checkbox MOVED to the TX
