@@ -187,6 +187,15 @@ qt_add_executable(lyra
     src/tci/TciTxBridge.h
     src/tci/TciTxBridge.cpp
     src/tci/TciTxStereoMode.h
+    # TX/RX operator Profiles (Stage 0 — model/store/manager; UI wires
+    # in next).  See docs/architecture/PROFILE_MODEL_STAGE0_DESIGN.md.
+    src/profile/Profile.h
+    src/profile/Profile.cpp
+    src/profile/ProfileBindings.h
+    src/profile/ProfileStore.h
+    src/profile/ProfileStore.cpp
+    src/profile/ProfileManager.h
+    src/profile/ProfileManager.cpp
     # TX-rip Phase 1 step 1c-f — ps/ empty skeletons (Rule 10:
     # present from v0.2 but empty/inert; v0.3 PureSignal fills).
     # Populated in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §9.
