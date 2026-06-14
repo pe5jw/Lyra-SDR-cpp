@@ -254,6 +254,38 @@ methodology.)
 
 ---
 
-*Next: on operator sign-off of Option A + storage + scope, produce the
-detailed per-stage design (IVAC port surface + Profile schema + apply
-path) and begin Stage 0 (Profile model).*
+---
+
+## 7. DECISIONS LOCKED (operator-confirmed 2026-06-14)
+
+1. **Option A — PORT `ivac.c`** ("do as Thetis does").  PortAudio
+   dependency accepted + bundled.  Both VAC1 + VAC2 (IVAC id 0/1).
+2. **Storage = QSettings-JSON** (no SQLite dep).
+3. **Profiles-FIRST sequencing** — Stage 0 = the profile model/container
+   before any host audio.
+4. **DSP per-mode buffer/filter/latency surface** (the "DSP Buffers we
+   are missing this" shot: SSB/AM·FM·CW·Digital RX/TX buffer-size
+   (IQcomp) + filter taps + filter type/window + WDSP impulse cache) —
+   **TRACKED as its own item, do NOT lose it**; wire in once the
+   per-mode DSP-settings surface is added.  Separate from the VAC port.
+   → task created.
+5. **Deferred Thetis audio sub-tabs** (Audio → Options / Advanced /
+   Recording) + `general radio model` + `DDC and ADC` — TRACKED for
+   later surface-parity mining; pull from Thetis source when we decide
+   to add the equivalent options.  → noted in the IVAC-port task.
+
+### Front-facing Profile UI (operator-confirmed)
+Mirror Thetis's two-surface model:
+- **Front-panel profile dock** (Lyra `GlassPanel`, one-click recall +
+  quick change) — this IS task **#55** (operator-named profile chips /
+  dropdown).  Thetis places it lower-center/right on the main screen;
+  Lyra = a dockable panel.
+- **Settings → Profiles tab** = the full editor (Save / Load / Delete /
+  Export / Set-default / per-field capture + the per-mode binding) —
+  this IS task **#49** (the container, Stage 0).
+Both read/write the same QSettings-JSON profile store; the front dock is
+a thin recall/!modified view over the Settings-tab model.
+
+*Next: produce the detailed per-stage design (Profile schema + apply
+path + front-dock/Settings-tab UI; then the IVAC port surface) and begin
+Stage 0 (Profile model).*
