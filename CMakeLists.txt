@@ -126,6 +126,15 @@ qt_add_executable(lyra
     src/wire/resample.h
     src/wire/AAMix.h
     src/wire/AAMix.cpp
+    # #158 Stage 1 — ivac.{h,c} DIRECT PORT (verbatim: `ivac, *IVAC`
+    # twin typedef, file-static pvac[] bank in the .cpp, the two
+    # rmatchV rings via the wire/wdspcalls.h seam + the ported AAMix
+    # instance, full SetIVAC* surface).  Wire-INERT: the engine +
+    # setters compile but nothing calls them yet (no Qt audio, no
+    # radio wiring — Stage 2+).  PortAudio device I/O + GetIVACControlFlag
+    # deferred; see src/wire/Ivac.h preamble + IVAC_PORT_PLAN.md.
+    src/wire/Ivac.h
+    src/wire/Ivac.cpp
     src/wire/RbpFilter.h
     src/wire/RbpFilter.cpp
     src/wire/FrameComposer.h
@@ -480,4 +489,31 @@ target_include_directories(test_profile PRIVATE src)
 target_link_libraries(test_profile PRIVATE Qt6::Core)
 if(MSVC)
     target_compile_options(test_profile PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #158 Stage 1 — IVAC direct-port engine unit test (verbatim
+# ChannelMaster/ivac.c engine + setters; wire-INERT).  EXCLUDE_FROM_ALL
+# so the normal `lyra` build is untouched; built+run on demand via
+# _build_test_ivac.bat (`cmake --build build --target test_ivac`).  The
+# test defines its own cm/pcm globals (so CMaster.cpp is NOT linked) and
+# LoadLibrary's wdsp.dll + resolve_wdsp_calls() before create_ivac, so
+# it links the same wire/ TUs the engine needs (Ivac + AAMix + cmcomm +
+# cmsetup + wdspcalls).  Qt Core only — wire/wdspcalls.cpp uses qWarning.
+add_executable(test_ivac EXCLUDE_FROM_ALL
+    scratch/test_ivac.cpp
+    src/wire/Ivac.h
+    src/wire/Ivac.cpp
+    src/wire/AAMix.h
+    src/wire/AAMix.cpp
+    src/wire/cmcomm.h
+    src/wire/cmcomm.cpp
+    src/wire/cmsetup.h
+    src/wire/cmsetup.cpp
+    src/wire/wdspcalls.h
+    src/wire/wdspcalls.cpp
+)
+target_include_directories(test_ivac PRIVATE src)
+target_link_libraries(test_ivac PRIVATE Qt6::Core)
+if(MSVC)
+    target_compile_options(test_ivac PRIVATE /utf-8 /Zc:preprocessor)
 endif()
