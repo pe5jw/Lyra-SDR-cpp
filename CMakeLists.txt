@@ -454,3 +454,27 @@ install(TARGETS lyra
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION .
 )
+
+# --- Unit tests -----------------------------------------------------
+# Behavioural test for the Stage-0 profile engine (Profile / ProfileStore
+# / ProfileManager).  EXCLUDE_FROM_ALL so the normal `lyra` build is
+# untouched; built+run on demand via _build_test_profile.bat (which does
+# `cmake --build build --target test_profile`).  Qt Core only — the
+# profile units need QObject/QSettings/QJson + moc, so the Qt-free
+# scratch-bat pattern won't fit; CMAKE_AUTOMOC (set above) handles the
+# ProfileManager Q_OBJECT.
+add_executable(test_profile EXCLUDE_FROM_ALL
+    scratch/test_profile.cpp
+    src/profile/Profile.h
+    src/profile/Profile.cpp
+    src/profile/ProfileBindings.h
+    src/profile/ProfileStore.h
+    src/profile/ProfileStore.cpp
+    src/profile/ProfileManager.h
+    src/profile/ProfileManager.cpp
+)
+target_include_directories(test_profile PRIVATE src)
+target_link_libraries(test_profile PRIVATE Qt6::Core)
+if(MSVC)
+    target_compile_options(test_profile PRIVATE /utf-8 /Zc:preprocessor)
+endif()
