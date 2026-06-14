@@ -63,6 +63,20 @@ QVariantMap HL2Discovery::savedRadio() const {
     return m;
 }
 
+void HL2Discovery::forgetRadio(const QString &ip) {
+    if (ip.isEmpty()) return;
+    QSettings s;
+    // Clear the remembered record only if it's this IP.
+    s.beginGroup(QStringLiteral("lastRadio"));
+    const bool savedMatch = (s.value(QStringLiteral("ip")).toString() == ip);
+    s.endGroup();
+    if (savedMatch) s.remove(QStringLiteral("lastRadio"));
+    // Clear the auto-connect IP if it points here, so next launch
+    // doesn't reconnect to the radio the operator just removed.
+    if (s.value(QStringLiteral("radio/lastIp")).toString() == ip)
+        s.remove(QStringLiteral("radio/lastIp"));
+}
+
 HL2Discovery::HL2Discovery(QObject *parent) : QObject(parent) {
     deadline_.setSingleShot(true);
     connect(&deadline_, &QTimer::timeout,

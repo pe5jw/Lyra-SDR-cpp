@@ -84,6 +84,14 @@ public:
                                    bool busy, int numRxs);
     Q_INVOKABLE QVariantMap savedRadio() const;
 
+    // Remove a radio from persistence: clears the remembered record
+    // (lastRadio group) AND the auto-connect IP (radio/lastIp) when
+    // either matches <ip>, so a radio the operator removes from the
+    // Hardware list doesn't reappear or silently auto-connect next
+    // launch.  No-op for an IP that was never persisted (a transient
+    // discovered or manually-added entry).
+    Q_INVOKABLE void forgetRadio(const QString &ip);
+
 public slots:
     // Fire one discovery sweep.  Safe to call repeatedly; each
     // sweep opens its own sockets, broadcasts, listens, closes.

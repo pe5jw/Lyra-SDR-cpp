@@ -34,6 +34,8 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QHostAddress>
+#include <QAbstractSocket>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
@@ -1072,25 +1074,42 @@ QWidget *SettingsDialog::buildHardwareTab() {
             }
         }
 
-        auto *scanBtn  = new QPushButton(tr("Discover"), radioBox);
-        auto *openBtn  = new QPushButton(tr("Open"), radioBox);
-        auto *closeBtn = new QPushButton(tr("Close"), radioBox);
+        auto *scanBtn   = new QPushButton(tr("Discover"), radioBox);
+        auto *openBtn   = new QPushButton(tr("Open"), radioBox);
+        auto *closeBtn  = new QPushButton(tr("Close"), radioBox);
+        auto *removeBtn = new QPushButton(tr("Remove"), radioBox);
+        removeBtn->setToolTip(tr("Remove the selected radio from the list and "
+                                 "forget it (it won't auto-connect next "
+                                 "launch). Doesn't drop an active connection."));
         auto *btnRow = new QHBoxLayout();
         btnRow->addWidget(scanBtn);
         btnRow->addWidget(openBtn);
         btnRow->addWidget(closeBtn);
+        btnRow->addWidget(removeBtn);
         btnRow->addStretch(1);
+
+        // Manual add — type an IP for a radio Discover can't reach (a
+        // fixed-IP HL2, a different subnet, broadcast blocked, etc.).
+        auto *manualIp = new QLineEdit(radioBox);
+        manualIp->setPlaceholderText(tr("Add by IP, e.g. 192.168.1.50"));
+        auto *addBtn   = new QPushButton(tr("Add"), radioBox);
+        auto *manualRow = new QHBoxLayout();
+        manualRow->addWidget(manualIp, 1);
+        manualRow->addWidget(addBtn);
 
         rv->addWidget(status);
         rv->addWidget(list);
+        rv->addLayout(manualRow);
         rv->addLayout(btnRow);
 
-        auto refresh = [this, scanBtn, openBtn, closeBtn, list, status]() {
+        auto refresh = [this, scanBtn, openBtn, closeBtn, removeBtn,
+                        list, status]() {
             const bool running = stream_ && stream_->isRunning();
             scanBtn->setEnabled(discovery_ && !running);
             openBtn->setEnabled(stream_ && !running &&
                                 list->currentItem() != nullptr);
             closeBtn->setEnabled(running);
+            removeBtn->setEnabled(list->currentItem() != nullptr);
             if (running && stream_)
                 status->setText(tr("Connected to %1").arg(stream_->targetIp()));
         };
@@ -1142,6 +1161,45 @@ QWidget *SettingsDialog::buildHardwareTab() {
             openBtn->setEnabled(false);
             closeBtn->setEnabled(false);
         }
+
+        // Manual add — validate an IPv4 address, append it (board shown
+        // as "manual"), and select it so Open is one click away.
+        auto doAdd = [addRadio, manualIp, list, status, refresh]() {
+            const QString ip = manualIp->text().trimmed();
+            QHostAddress addr;
+            if (ip.isEmpty() || !addr.setAddress(ip) ||
+                addr.protocol() != QAbstractSocket::IPv4Protocol) {
+                status->setText(
+                    tr("Enter a valid IPv4 address (e.g. 192.168.1.50)."));
+                return;
+            }
+            addRadio(ip, QString(), tr("manual"), 0, 0, false, 0);
+            for (int i = 0; i < list->count(); ++i)
+                if (list->item(i)->data(Qt::UserRole).toString() == ip) {
+                    list->setCurrentRow(i);
+                    break;
+                }
+            manualIp->clear();
+            status->setText(
+                tr("Added %1 — select it and click Open to connect.").arg(ip));
+            refresh();
+        };
+        connect(addBtn, &QPushButton::clicked, radioBox, doAdd);
+        connect(manualIp, &QLineEdit::returnPressed, radioBox, doAdd);
+
+        // Remove — drop the selected entry from the list and forget it
+        // from persistence (so it won't reappear / auto-connect next
+        // launch).  Does NOT close an active connection.
+        connect(removeBtn, &QPushButton::clicked, radioBox,
+                [this, list, status, refresh]() {
+            auto *it = list->currentItem();
+            if (!it) return;
+            const QString ip = it->data(Qt::UserRole).toString();
+            if (discovery_) discovery_->forgetRadio(ip);
+            delete list->takeItem(list->row(it));
+            status->setText(tr("Removed %1.").arg(ip));
+            refresh();
+        });
 
         form->addRow(radioBox);
     }
