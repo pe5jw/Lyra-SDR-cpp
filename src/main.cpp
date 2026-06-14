@@ -705,6 +705,40 @@ int main(int argc, char *argv[])
     // it (DIGU/DIGL -> TCI-source profile), mid-TX-guarded inside load().
     QObject::connect(prefs, &lyra::ui::Prefs::modeChanged, profiles,
                      [prefs, profiles]() { profiles->onModeChanged(prefs->mode()); });
+
+    // Dirty-refresh fan-out (Stage 0c): every live-state source that
+    // capture() reads re-runs ProfileManager::refreshModified() so the
+    // "● modified" indicator (Settings → Profiles + the front dock)
+    // stays live.  refreshModified() early-returns while load() is
+    // applying, so the apply-time setter storm never churns the flag.
+    // Qt drops the trailing signal args for the arg-less slot.
+    for (auto sig : {&lyra::ui::Prefs::modeChanged,
+                     &lyra::ui::Prefs::rxBandwidthChanged,
+                     &lyra::ui::Prefs::txBandwidthChanged,
+                     &lyra::ui::Prefs::bwLockedChanged,
+                     &lyra::ui::Prefs::filterLowChanged,
+                     &lyra::ui::Prefs::micSourceChanged,
+                     &lyra::ui::Prefs::useTuneDriveChanged,
+                     &lyra::ui::Prefs::tuneDrivePctChanged,
+                     &lyra::ui::Prefs::tciRxGainDbChanged,
+                     &lyra::ui::Prefs::tciTxGainDbChanged})
+        QObject::connect(prefs, sig, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::micGainDbChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::micBoostChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::txDriveLevelChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::txTimeoutSecChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::txTimeoutBypassChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::agcModeChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::autoMuteOnTxChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+
     profiles->applyDefaultAtStartup();   // no-op until a default profile exists
 
     // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
