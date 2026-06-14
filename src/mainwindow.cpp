@@ -1226,7 +1226,20 @@ namespace {
 // graphics backend: a Vulkan pin must not infect a machine where Vulkan
 // fails — the whole reason the default is "auto").
 bool isMachineSpecificKey(const QString &k) {
-    return k == QStringLiteral("ui/graphicsBackend");
+    // Graphics backend: a Vulkan pin must not infect a machine where
+    // Vulkan fails (the whole reason the default is "auto").
+    if (k == QStringLiteral("ui/graphicsBackend")) return true;
+    // Radio CONNECTION IDENTITY is station-specific and must NEVER follow
+    // a shared profile to another PC.  A "defaults" export that carried
+    // the author's radio address would auto-connect the importer to an IP
+    // that doesn't exist on their LAN on next launch -> RX stall / hang.
+    //   radio/lastIp  — the startup auto-connect target (main.cpp)
+    //   lastRadio/*   — the remembered radio record (ip/mac/board/...)
+    // Filtered on BOTH export and import, so this also neutralises an
+    // already-distributed pre-fix export when it's imported.
+    if (k == QStringLiteral("radio/lastIp")) return true;
+    if (k.startsWith(QStringLiteral("lastRadio/"))) return true;
+    return false;
 }
 } // namespace
 
