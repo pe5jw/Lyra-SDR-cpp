@@ -1105,6 +1105,26 @@ int main(int argc, char *argv[])
                     stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
                 });
                 stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+
+                // TX-1 component 8c + Task #53 — operator TX bandpass.
+                // The TX BW combo (high edge = Prefs.txBandwidth) + the
+                // shared low edge (Prefs.filterLow) drive the WDSP TXA
+                // bandpass via setTxBandpass -> TxControl.setBandpass.
+                // Without this the TX filter is stuck at the channel's
+                // create-time default (~200..3100 Hz ≈ "3K") no matter
+                // what the operator picks — wire BOTH edges live AND push
+                // once now (AFTER the setTxMode push above, so the
+                // operator's high edge wins over the 3100 default the
+                // mode push re-signed).
+                auto pushTxBandpass = [stream, prefs]() {
+                    stream->setTxBandpass(prefs->filterLow(),
+                                          prefs->txBandwidth());
+                };
+                QObject::connect(prefs, &lyra::ui::Prefs::txBandwidthChanged,
+                                 stream, pushTxBandpass);
+                QObject::connect(prefs, &lyra::ui::Prefs::filterLowChanged,
+                                 stream, pushTxBandpass);
+                pushTxBandpass();
             }
 
             // Task #53 — shared filterLow also drives the RX bandpass.
