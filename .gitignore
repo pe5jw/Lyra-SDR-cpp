@@ -46,5 +46,14 @@ _backups/
 # Local operator-machine build helpers + logs (not part of the repo)
 _b.bat
 _b*.bat
-build_out.log
-build_out*.log
+# All build/test output-capture logs (operator-machine, transient).
+*.log
+*.log.err
+
+# Python tooling bytecode cache
+__pycache__/
+*.pyc
+
+# Release artifacts — the installer is attached to the GitHub Release,
+# never committed (see CMakeLists OutputDir / installer/lyra.iss).
+dist/
