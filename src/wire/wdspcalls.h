@@ -89,6 +89,41 @@ extern void (*destroy_resample)(RESAMPLE a);
 extern void (*flush_resample)(RESAMPLE a);
 extern int  (*xresample)(RESAMPLE a);
 
+// ---- VAC adaptive resampler — rmatchV (#158 ivac.c dependency) ----------
+// wdsp/rmatch.h dllexport set.  rmatchV is the two-clock (radio crystal
+// vs PC soundcard) drift-correcting resampler ivac.c uses for both VAC
+// directions: an internal ring + varsamp + a feed-forward/proportional
+// control loop.  The RMATCH handle is OPAQUE — ivac.c only ever passes
+// it as void* (unlike RESAMPLE, whose struct ChannelMaster pokes), so no
+// struct typedef is ported; the handle is void*.  Confirmed exported by
+// the bundled wdsp.dll (dumpbin /exports, 2026-06-14 Stage 0 link check).
+//   void* create_rmatchV (in_size, out_size, nom_inrate, nom_outrate,
+//                          ringsize, var);
+//   void  xrmatchIN  (void* b, double* in);   // push producer side
+//   void  xrmatchOUT (void* b, double* out);  // pull consumer side
+extern void* (*create_rmatchV)(int in_size, int out_size, int nom_inrate,
+                               int nom_outrate, int ringsize, double var);
+extern void (*destroy_rmatchV)(void* ptr);
+extern void (*xrmatchIN)(void* b, double* in);
+extern void (*xrmatchOUT)(void* b, double* out);
+extern void (*forceRMatchVar)(void* b, int force, double fvar);
+extern void (*getRMatchDiags)(void* b, int* underflows, int* overflows,
+                              double* var, int* ringsize, int* nring);
+extern void (*resetRMatchDiags)(void* b);
+extern void (*setRMatchInsize)(void* ptr, int insize);
+extern void (*setRMatchOutsize)(void* ptr, int outsize);
+extern void (*setRMatchNomInrate)(void* ptr, int nom_inrate);
+extern void (*setRMatchNomOutrate)(void* ptr, int nom_outrate);
+extern void (*setRMatchRingsize)(void* ptr, int ringsize);
+extern void (*setRMatchFeedbackGain)(void* b, double feedback_gain);
+extern void (*setRMatchSlewTime)(void* b, double slew_time);
+extern void (*setRMatchSlewTime1)(void* b, double slew_time);
+extern void (*setRMatchPropRingMin)(void* ptr, int prop_min);
+extern void (*setRMatchPropRingMax)(void* ptr, int prop_max);
+extern void (*setRMatchFFRingMin)(void* ptr, int ff_ringmin);
+extern void (*setRMatchFFRingMax)(void* ptr, int ff_ringmax);
+extern void (*setRMatchFFAlpha)(void* ptr, double ff_alpha);
+
 // ---- display analyzer (create_xmtr / xcmaster dependency) ---------------
 // wdsp/analyzer.h:175-184, :205-206:
 //   void XCreateAnalyzer (int disp, int *success, int m_size, int m_LO,
