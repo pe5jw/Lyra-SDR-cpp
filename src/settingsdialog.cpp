@@ -4105,17 +4105,16 @@ QWidget *SettingsDialog::buildProfilesTab() {
     auto *statusLbl = new QLabel(page);
     outer->addWidget(statusLbl);
 
-    // --- per-mode auto-recall bindings ---
-    static const QStringList kModes = {
-        QStringLiteral("USB"), QStringLiteral("LSB"),
-        QStringLiteral("CWU"), QStringLiteral("CWL"),
-        QStringLiteral("DIGU"), QStringLiteral("DIGL"),
-        QStringLiteral("AM"), QStringLiteral("SAM"),
-        QStringLiteral("DSB"), QStringLiteral("FM")};
-    auto *bindGrp = new QGroupBox(tr("Auto-recall by mode"), page);
+    // --- per-family auto-recall bindings ---
+    // Sidebands collapse (USB/LSB -> SSB, CWU/CWL -> CW, DIGU/DIGL ->
+    // Digital); AM/SAM/DSB/FM stand alone.  The recalled profile carries
+    // no mode field, so an auto-recall changes the chain but leaves the
+    // operator on the sideband they switched to (Thetis-faithful).
+    const QStringList kFamilies = lyra::profile::ProfileManager::modeFamilies();
+    auto *bindGrp = new QGroupBox(tr("Auto-recall by mode family"), page);
     auto *bindForm = new QFormLayout(bindGrp);
     auto *modeCombos = new QHash<QString, QComboBox *>();
-    for (const QString &m : kModes) {
+    for (const QString &m : kFamilies) {
         auto *cb = new QComboBox(bindGrp);
         modeCombos->insert(m, cb);
         bindForm->addRow(m, cb);

@@ -111,8 +111,29 @@ void ProfileManager::unbindMode(const QString &mode) {
     store_.clearModeBinding(mode);
 }
 
+QString ProfileManager::modeFamily(const QString &mode) {
+    const QString m = mode.toUpper();
+    if (m == QLatin1String("USB") || m == QLatin1String("LSB"))
+        return QStringLiteral("SSB");
+    if (m == QLatin1String("CWU") || m == QLatin1String("CWL"))
+        return QStringLiteral("CW");
+    if (m == QLatin1String("DIGU") || m == QLatin1String("DIGL"))
+        return QStringLiteral("Digital");
+    return mode;   // AM / SAM / DSB / FM (and any unknown) stand alone
+}
+
+QStringList ProfileManager::modeFamilies() {
+    return {QStringLiteral("CW"),  QStringLiteral("SSB"),
+            QStringLiteral("Digital"), QStringLiteral("AM"),
+            QStringLiteral("SAM"), QStringLiteral("DSB"),
+            QStringLiteral("FM")};
+}
+
 void ProfileManager::onModeChanged(const QString &mode) {
-    const QString bound = store_.modeBinding(mode);
+    // Recall by FAMILY: USB and LSB both pull the "SSB" binding, etc.
+    // The recalled profile carries no mode field, so the operator stays
+    // on the exact sideband they switched to — the chain is what changes.
+    const QString bound = store_.modeBinding(modeFamily(mode));
     if (bound.isEmpty() || bound == store_.active() || !store_.contains(bound))
         return;
     // load() applies the mid-TX guard itself.

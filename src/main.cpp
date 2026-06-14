@@ -659,7 +659,10 @@ int main(int argc, char *argv[])
     pb.isTxActive = [stream]() { return stream->moxActive(); };
     pb.capture = [prefs, stream, wdspEngine]() {
         lyra::profile::Profile p;
-        p.mode            = prefs->mode();
+        // NOTE: mode is deliberately NOT captured — a profile is a pure
+        // signal chain; recall never changes the operating mode (§A,
+        // Thetis-faithful).  Per-family auto-recall keys on the mode but
+        // applies only the chain.
         p.rxBandwidth     = prefs->rxBandwidth();
         p.txBandwidth     = prefs->txBandwidth();
         p.bwLocked        = prefs->bwLocked();
@@ -679,9 +682,9 @@ int main(int argc, char *argv[])
         return p;
     };
     pb.apply = [prefs, stream, wdspEngine](const lyra::profile::Profile &p) {
-        // Apply order: mode -> BW/lock/filterLow -> source -> gains/dsp.
-        // (load() already guards this whole pass on !moxActive — §15.25.)
-        if (!p.mode.isEmpty()) prefs->setMode(p.mode);
+        // Apply order: BW/lock/filterLow -> source -> gains/dsp.  Mode is
+        // intentionally NOT applied (profiles never change the operating
+        // mode — §A).  (load() guards this whole pass on !moxActive — §15.25.)
         prefs->setRxBandwidth(p.rxBandwidth);
         prefs->setTxBandwidth(p.txBandwidth);
         prefs->setBwLocked(p.bwLocked);
@@ -712,8 +715,10 @@ int main(int argc, char *argv[])
     // stays live.  refreshModified() early-returns while load() is
     // applying, so the apply-time setter storm never churns the flag.
     // Qt drops the trailing signal args for the arg-less slot.
-    for (auto sig : {&lyra::ui::Prefs::modeChanged,
-                     &lyra::ui::Prefs::rxBandwidthChanged,
+    // modeChanged is NOT here — mode isn't a profile field, so changing
+    // mode must not mark the active profile "modified" (it stays wired
+    // to onModeChanged below for the per-family auto-recall).
+    for (auto sig : {&lyra::ui::Prefs::rxBandwidthChanged,
                      &lyra::ui::Prefs::txBandwidthChanged,
                      &lyra::ui::Prefs::bwLockedChanged,
                      &lyra::ui::Prefs::filterLowChanged,

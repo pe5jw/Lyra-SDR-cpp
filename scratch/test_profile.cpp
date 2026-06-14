@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
     // --- 1. Profile JSON round-trip ---
     {
         Profile p;
-        p.name = "X"; p.mode = "USB"; p.rxBandwidth = 2700; p.txBandwidth = 3100;
+        p.name = "X"; p.rxBandwidth = 2700; p.txBandwidth = 3100;
         p.bwLocked = true; p.filterLow = 50; p.micSource = "tci";
         p.micGainDb = 4.5; p.micBoost = true; p.useTuneDrive = true;
         p.tuneDrivePct = 25; p.txDriveLevel = 200; p.tciRxGainDb = -3.0;
@@ -51,17 +51,16 @@ int main(int argc, char **argv) {
 
     // --- 2. ProfileStore CRUD ---
     {
-        Profile a; a.name = "A"; a.micGainDb = 5.0; a.mode = "USB";
-        Profile b; b.name = "B"; b.micGainDb = 6.0; b.mode = "LSB";
+        Profile a; a.name = "A"; a.micGainDb = 5.0;
+        Profile b; b.name = "B"; b.micGainDb = 6.0;
         store.put(a); store.put(b);
         CHECK(store.names() == QStringList({"A", "B"}));   // insertion order
         CHECK(store.contains("A"));
         CHECK(store.get("A").micGainDb == 5.0);
-        CHECK(store.get("A").mode == "USB");
         store.setActive("A"); CHECK(store.active() == "A");
         store.setDefault("B"); CHECK(store.defaultName() == "B");
-        store.setModeBinding("DIGU", "B");
-        CHECK(store.modeBinding("DIGU") == "B");
+        store.setModeBinding("Digital", "B");              // bind by family
+        CHECK(store.modeBinding("Digital") == "B");
         store.rename("A", "A2");
         CHECK(store.names() == QStringList({"A2", "B"}));   // order preserved
         CHECK(store.contains("A2") && !store.contains("A"));
@@ -69,7 +68,7 @@ int main(int argc, char **argv) {
         store.remove("B");                                  // also clears default + modeBind->B
         CHECK(store.names() == QStringList({"A2"}));
         CHECK(store.defaultName().isEmpty());
-        CHECK(store.modeBinding("DIGU").isEmpty());
+        CHECK(store.modeBinding("Digital").isEmpty());
     }
 
     // --- 3. ProfileManager (fake bindings over a local "live" state) ---
@@ -83,7 +82,7 @@ int main(int argc, char **argv) {
         QSettings s2(iniPath2, QSettings::IniFormat);
         ProfileStore st(&s2);
 
-        Profile live; live.mode = "USB"; live.micGainDb = 5.0;
+        Profile live; live.micGainDb = 5.0;
         bool txActive = false;
         ProfileBindings b;
         b.capture    = [&] { return live; };
@@ -116,18 +115,35 @@ int main(int argc, char **argv) {
         CHECK(live.micGainDb == 12.0);
         txActive = false;
 
-        // second profile + per-mode auto-recall
+        // mode -> family mapping (sidebands collapse; others stand alone)
+        CHECK(ProfileManager::modeFamily("USB")  == "SSB");
+        CHECK(ProfileManager::modeFamily("LSB")  == "SSB");
+        CHECK(ProfileManager::modeFamily("CWU")  == "CW");
+        CHECK(ProfileManager::modeFamily("DIGL") == "Digital");
+        CHECK(ProfileManager::modeFamily("AM")   == "AM");
+        CHECK(ProfileManager::modeFamily("FM")   == "FM");
+
+        // second profile + per-FAMILY auto-recall.  Bind the Digital
+        // family to A; BOTH DIGU and DIGL must trigger the same recall.
         live.micGainDb = 20.0; mgr.saveAs("B");
         CHECK(mgr.names() == QStringList({"A", "B"}));
-        mgr.bindMode("DIGU", "A");
+        mgr.bindMode("Digital", "A");
         live.micGainDb = 99.0;
-        mgr.onModeChanged("DIGU");             // bound -> recall A
+        mgr.onModeChanged("DIGU");             // DIGU -> Digital -> recall A
         CHECK(live.micGainDb == 5.0);
         CHECK(mgr.activeName() == "A");
-        mgr.onModeChanged("USB");              // unbound -> no change
+        // DIGL is the same family -> would recall A too, but A is already
+        // active (bound==active early-out), so prove the family map via a
+        // round-trip: load B, then DIGL must pull A again.
+        CHECK(mgr.load("B"));
+        live.micGainDb = 88.0;
+        mgr.onModeChanged("DIGL");             // DIGL -> Digital -> recall A
+        CHECK(live.micGainDb == 5.0);
+        CHECK(mgr.activeName() == "A");
+        mgr.onModeChanged("USB");              // SSB family unbound -> no change
         CHECK(mgr.activeName() == "A");
 
-        // per-mode recall is mid-TX guarded too.  Make active != bound
+        // per-family recall is mid-TX guarded too.  Make active != bound
         // (load B) so onModeChanged actually attempts the A recall and
         // the TX guard — not the bound==active early-out — is what stops it.
         CHECK(mgr.load("B"));                  // active -> B

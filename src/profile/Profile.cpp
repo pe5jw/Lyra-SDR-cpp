@@ -7,7 +7,6 @@ namespace lyra::profile {
 QJsonObject Profile::toJson() const {
     QJsonObject o;
     o["schemaVersion"] = schemaVersion;
-    o["mode"]          = mode;
     o["rxBandwidth"]   = rxBandwidth;
     o["txBandwidth"]   = txBandwidth;
     o["bwLocked"]      = bwLocked;
@@ -33,7 +32,6 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     // Tolerant: a missing key keeps the struct default (forward/backward
     // compatible across schemaVersion bumps).
     if (o.contains("schemaVersion")) p.schemaVersion = o["schemaVersion"].toInt(p.schemaVersion);
-    if (o.contains("mode"))          p.mode          = o["mode"].toString(p.mode);
     if (o.contains("rxBandwidth"))   p.rxBandwidth   = o["rxBandwidth"].toInt(p.rxBandwidth);
     if (o.contains("txBandwidth"))   p.txBandwidth   = o["txBandwidth"].toInt(p.txBandwidth);
     if (o.contains("bwLocked"))      p.bwLocked      = o["bwLocked"].toBool(p.bwLocked);
@@ -58,8 +56,7 @@ bool Profile::sameValues(const Profile &b) const {
         // operator-facing dB/levels; 1e-6 is far below any audible step.
         return (x - y) < 1e-6 && (y - x) < 1e-6;
     };
-    return mode == b.mode
-        && rxBandwidth == b.rxBandwidth
+    return rxBandwidth == b.rxBandwidth
         && txBandwidth == b.txBandwidth
         && bwLocked == b.bwLocked
         && filterLow == b.filterLow

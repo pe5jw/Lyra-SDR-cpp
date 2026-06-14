@@ -50,10 +50,20 @@ public:
     // Apply the default profile (if set) — call once at startup.
     Q_INVOKABLE void applyDefaultAtStartup();
 
-    Q_INVOKABLE QString modeBinding(const QString &mode) const
-        { return store_.modeBinding(mode); }
-    Q_INVOKABLE void bindMode(const QString &mode, const QString &name);
-    Q_INVOKABLE void unbindMode(const QString &mode);
+    // Per-FAMILY auto-recall bindings.  <family> is one of modeFamilies()
+    // (CW/SSB/Digital/AM/SAM/DSB/FM) — sidebands collapse, since the TX/RX
+    // chain is identical regardless of USB-vs-LSB etc.
+    Q_INVOKABLE QString modeBinding(const QString &family) const
+        { return store_.modeBinding(family); }
+    Q_INVOKABLE void bindMode(const QString &family, const QString &name);
+    Q_INVOKABLE void unbindMode(const QString &family);
+
+    // Map a specific demod mode to its binding family.  USB/LSB->SSB,
+    // CWU/CWL->CW, DIGU/DIGL->Digital; AM/SAM/DSB/FM stand alone; any
+    // other mode maps to itself.  onModeChanged() + the Settings bind
+    // table both key on these names.
+    static QString     modeFamily(const QString &mode);
+    static QStringList modeFamilies();   // canonical families, display order
 
 public slots:
     // Connect to Prefs::modeChanged — auto-recalls the bound profile.

@@ -23,8 +23,14 @@ struct Profile {
     QString name;
     int     schemaVersion = 1;
 
-    // --- TX/RX bandwidth + mode ---
-    QString mode;              // e.g. "USB" / "LSB" / "DIGU" ...
+    // --- TX/RX bandwidth ---
+    // NOTE: the operating mode is deliberately NOT a profile field.
+    // Like Thetis TX profiles (database.cs:4304-4540 — ~150 fields, no
+    // Mode/DSPMode), a profile is a pure signal chain; recalling one
+    // (auto-recall OR explicit Load) never changes your operating mode.
+    // Per-family auto-recall (CW/SSB/Digital/AM/SAM/DSB/FM) keys on the
+    // mode you switch to but applies only the chain, leaving the mode
+    // (and thus your chosen sideband) untouched.
     int     rxBandwidth = 0;   // Hz
     int     txBandwidth = 0;   // Hz
     bool    bwLocked    = false;
