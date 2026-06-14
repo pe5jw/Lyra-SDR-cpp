@@ -4,6 +4,68 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-13 (Saturday — ⭐ TX BRING-UP COMPLETE + v0.2.3 RELEASED)
+
+**`main` == `tx-rebuild` == HEAD `e8aafbc` (pushed).**  Tags: milestone
+`tx-working-2026-06-13` (at `bd61d07`) + release `v0.2.3` (at `a5dc763`).
+GitHub Release **v0.2.3 — "Transmit: SSB + digital (TCI) on the air"**
+PUBLISHED with `Lyra-Setup-0.2.3.exe` (67.7 MB) attached, marked Latest.
+
+### P4.b Wire-LIVE switchover — SHIPPED + operator HL2 bench PASSED
+- `fb9ec41` P4.b-1 — Wire-LIVE RX-out gate (operator bench PASSED).
+- `0b551b4` P4.b-2 — TX wire-LIVE: first modulated RF through the
+  direct-port chain (operator HL2 bench).
+- `9db2c50` P4.b-2.1 — TX SSB sideband fix: USB transmits USB (9100-verified).
+- `84dbb12` fix(tx): TUN panadapter spike on-marker — TX-analyzer crop
+  shifted by NCO−dial offset.  Verified Lyra TUN is **Thetis-exact
+  zero-beat** (two-offset scheme; the bug was display-only — authoritative
+  refs: console.cs:32553-32587 UpdateTXDDSFreq path, postgen 30788-30800,
+  readout 22035-22051).
+- §7 dead-code retirements (3 build-gated commits): `fe6a438`
+  OutboundRing + Ep2SendThread, `99fd24a` txWorkerLoop + composeCC +
+  buildEp2KeepaliveTemplate, `e711256` old HL2-audio-jack EP2 ring
+  (pushAudio + setHl2AudioSink).
+- P4.b bench gates PASSED: SSB voice both sidebands + Phase-3-EXIT
+  RF-safety kill-test (RFG drops on hard-kill).
+
+### TCI digital TX re-home — SHIPPED + ON-AIR VALIDATED
+- `bd61d07` — filled the §10.3 `src/tci/TciTxBridge.{h,cpp}` skeleton
+  (singleton, mono deque, I=Q=mono drain w/ zero-fill underrun,
+  `queuedSamples()` for CHRONO).  Registered via
+  `SendpInboundTCITxAudio(&TciTxBridge::inboundCb)` after create_cmaster;
+  fed by `tci_server.cpp` handleBinaryFrame tap; gated by
+  `SetTXTCIAudio(0, micSource=="tci")`.  The verbatim DSP seam (xcmaster
+  case 1 use_tci_audio gate) was already present — only the host-side sink
+  was missing.
+- **Bench: MSHV → TCI → FT8 real on-air QSOs** — N3YDN (FM29),
+  F4FLF (JN18, ~4160 mi DX), KO4OIG (EL89), W3EWL/QRP.
+
+### Space-bar PTT toggle (#157) — SHIPPED
+- `2824ebf` — `Prefs.spaceBarPttEnabled` (tx/space_bar_ptt_enabled,
+  default ON), MainWindow keydown/keyup gate, Settings → Hardware →
+  Transmit checkbox under the HW-PTT tickbox.  Operator-verified working.
+
+### Release
+- `e8aafbc` — version bump 0.2.2 → 0.2.3 (CMakeLists project(VERSION) +
+  installer/lyra.iss AppVersion).  Clean build, ISCC installer, tag,
+  GitHub release (notes + installer).
+
+### NEXT (morning)
+- **Mic-input paths discussion** (PC/VAC host audio + plain-HL2 vs HL2+).
+  Key reframe: a **plain HL2 (no AK4951) has no radio-side mic at all** →
+  host audio-in (#102 VAC1) is REQUIRED for those ops to TX phone, not
+  optional.  All sources are interchangeable 48 k mono feeders of the same
+  `InboundTCITxAudio` seam (TciTxBridge = the template).  §5.4 "single
+  mic-source class, no abstraction" rule has expired now that there are
+  4 concretes — introduce `ITxAudioSource`.  Capability-aware default
+  (plain HL2 → PC/VAC; HL2+ → AK4951 mic).  Decide: TX-in-only vs full
+  bidirectional VAC; Qt Multimedia vs WDSP rmatchV.
+- Parked: #156 restart-after-hard-kill-mid-TX hang; intermittent
+  menu-drag display stutter (monitoring; ruled out as a §7 regression);
+  #104 HL2 Line In (codec mux); #103 VAC2.
+
+---
+
 ## 2026-06-12 (Friday PM-4 — P4.a prep SHIPPED, both commits wire-inert)
 
 **Branch:** `tx-rebuild`, HEAD `baef866` (pushed).
