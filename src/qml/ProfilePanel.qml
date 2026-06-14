@@ -73,16 +73,70 @@ Rectangle {
             MouseArea { id: dotMa; anchors.fill: parent; hoverEnabled: true }
         }
 
+        // Save — always available.  Pops a small "overwrite the active
+        // profile, or save these settings as a NEW one" chooser, so the
+        // operator can build a profile for a just-set mode right here
+        // without opening Settings (the only place "Save As" used to
+        // live).  Uses a top-level-window popup because a plain QML Popup
+        // is clipped to this short dock (same idiom as AudioPanel).
         Button {
+            id: saveBtn
             text: qsTr("Save")
             implicitHeight: 26; implicitWidth: 56
             font.pixelSize: 12
-            enabled: Profiles.activeName.length > 0
-            opacity: enabled ? 1.0 : 0.45
-            onClicked: Profiles.saveActive()
-            ToolTip.text: qsTr("Overwrite the active profile with the current live "
-                + "settings. “Save As…” (a new profile) is in Settings → Profiles.")
-            ToolTip.visible: hovered; ToolTip.delay: 400
+            onClicked: { newName.text = ""; savePop.open() }
+            ToolTip.text: qsTr("Save the current live settings — overwrite the "
+                + "active profile, or create a new one.")
+            ToolTip.visible: hovered && !savePop.opened; ToolTip.delay: 400
+
+            Popup {
+                id: savePop
+                popupType: Popup.Window
+                y: -implicitHeight - 6           // pop ABOVE (dock sits low)
+                x: saveBtn.width - width         // right-align to the button
+                width: 260; padding: 12
+                closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                onOpened: newName.forceActiveFocus()
+                background: Rectangle { color: "#0c141c"; radius: 6
+                                        border.color: root.cAccent }
+                contentItem: ColumnLayout {
+                    spacing: 8
+                    Label { text: qsTr("Save profile"); color: root.cAccent
+                            font.bold: true; font.pixelSize: 12 }
+
+                    // Overwrite the active profile (only when one exists).
+                    Button {
+                        Layout.fillWidth: true
+                        visible: Profiles.activeName.length > 0
+                        text: qsTr("Overwrite: %1").arg(Profiles.activeName)
+                        onClicked: { Profiles.saveActive(); savePop.close() }
+                    }
+                    Rectangle { Layout.fillWidth: true; implicitHeight: 1
+                                color: "#2a3a4a"
+                                visible: Profiles.activeName.length > 0 }
+
+                    Label { text: qsTr("Save as a new profile:"); color: root.cText
+                            font.pixelSize: 11 }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        TextField {
+                            id: newName
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("New profile name")
+                            onAccepted: if (text.trim().length > 0) {
+                                Profiles.saveAs(text.trim()); savePop.close() }
+                        }
+                        Button {
+                            text: qsTr("Save")
+                            enabled: newName.text.trim().length > 0
+                            onClicked: { Profiles.saveAs(newName.text.trim())
+                                         savePop.close() }
+                        }
+                    }
+                    Button { Layout.fillWidth: true; text: qsTr("Cancel")
+                             onClicked: savePop.close() }
+                }
+            }
         }
     }
 }
