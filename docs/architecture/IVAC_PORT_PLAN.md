@@ -3,7 +3,25 @@
 Status: **IN PROGRESS.** Decisions signed off 2026-06-14 (incl. PureSignal
 verified unaffected — `calcc.c`/`iqc.c` reference no audio device; PS
 feedback is a rate-configured IQ channel `SetPSFeedbackRate` calcc.c:1065).
-**Stage 0 DONE** (gate cleared — see §3 / R0). Stages 1-7 pending.
+**Stage 0 DONE** (gate cleared — see §3 / R0). **Stage 1 DONE** (`52adff3`
+— `wire/Ivac.{h,cpp}` engine wire-inert + `test_ivac` ALL PASS; full app
+builds clean).  **NEXT = Stage 2** (Qt device I/O) — design captured in §3.
+
+▶ **RESUME (Stage 2):** new `src/ivac_audio.{h,cpp}` (`lyra::ipc::IvacAudio`),
+kept OUT of `wire/` (no Qt in the C-style wire layer; same separation as
+`wdsp_engine.cpp`).  Replaces the deferred PortAudio CallbackIVAC/Start/Stop.
+  • VAC-out (radio→PC): a render `QIODevice` mirroring the RX `AudioRing`
+    (`wdsp_engine.cpp:184-267`) — `readData()` drains the OUT ring via
+    `xrmatchOUT(rmatchOUT,…)` in `vac_size` chunks → double→int16 (×32767,
+    clamp) → int16 staging → `QAudioSink`; underrun pads silence so the
+    sink never stalls.
+  • VAC-in (PC→radio): `QAudioSource` capture → int16→double → accumulate
+    to `vac_size` → `xrmatchIN(rmatchIN,…)`; mono→stereo dup; Int16↔double.
+  • Add accessor `IVAC ivacGet(int id)` to `wire/Ivac.h` (struct is public)
+    so the Qt layer reads `a->rmatchOUT/rmatchIN/vac_size/vac_rate`.
+  • Device enum via `QMediaDevices::audioOutputs()/audioInputs()`.
+  • Standalone loopback test (tone → IN ring → OUT ring) BEFORE any radio
+    wiring.  Bench gate is Stage 3 (RX→PC live).
 Reference studied: Thetis 2.10.3.13 `ChannelMaster/ivac.c` (907) + `ivac.h`
 (133) + `Console/ivac.cs` (195) + `wdsp/rmatch.c` + `ChannelMaster/pipe.c`
 + `cmaster.c`, cross-referenced against the lyra-cpp ported `wire/` layer
@@ -62,10 +80,15 @@ devices (source + sink) is clean — we don't need one full-duplex stream.
   X-macro resolves to `wire/wdspcalls.{h,cpp}`; handle is opaque `void*`
   (no struct port). Build clean. **GATE CLEARED — no `rmatch.c`/
   `varsamp.c` re-port needed.**
-- **Stage 1 — `wire/Ivac.{h,cpp}` engine, wire-INERT.** Port the `ivac`
-  struct + `create_ivac`/`destroy_ivac` + the two rmatchV rings + the
-  AAMix instance + all `SetIVAC*` setters. No Qt audio, no taps yet.
-  scratch unit test (synthetic buffer → rmatch → out) like ILV/xcmaster.
+- **Stage 1 — `wire/Ivac.{h,cpp}` engine, wire-INERT. ✅ DONE (`52adff3`).**
+  Ported the `ivac` struct + `create_ivac`/`destroy_ivac` + the two rmatchV
+  rings + the AAMix instance + the full `SetIVAC*` surface; `pvac[]` bank
+  file-static; PortAudio device fields + `GetIVACControlFlag` deferred.
+  `scratch/test_ivac.cpp` (CMake `test_ivac` target): construct → xvacIN →
+  xvacOUT(audio) → drain rmatchOUT → getIVACdiags → destroy = ALL PASS.
+  Fixed a heap-corruption bug from initial authoring (struct `malloc0`'d
+  but `free`'d — `malloc0` is `_aligned_malloc`; restored reference
+  `calloc`/`free`).  Full `lyra.exe` builds clean (engine wire-inert).
 - **Stage 2 — Qt device I/O.** `QAudioSource` (VAC-in) + `QAudioSink`+
   QIODevice (VAC-out) mirroring `AudioRing`; device enumeration; int16↔
   double + mono→stereo conversion. Standalone loopback (tone in → resample
