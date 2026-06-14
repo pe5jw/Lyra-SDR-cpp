@@ -22,6 +22,7 @@
 #include "wdsp_native.h"
 #include "wire/ILV.h"       // P0.b direct port — reference ilv.h verbatim (pcm->xmtr[].pilv)
 #include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() / pcm
+#include "tci/TciTxBridge.h"  // TCI TX-audio re-home bridge (sink + InboundTCITxAudio cb)
 #include "wire/cmsetup.h"   // P0.d direct port — reference cmsetup.h verbatim
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
@@ -301,6 +302,14 @@ int main(int argc, char *argv[])
     // consumers (the HL2Stream itself) have been torn down — matches
     // the reference's destroy_cmaster reverse-order discipline.
     lyra::wire::create_cmaster();
+
+    // TCI TX-audio re-home: register the TciTxBridge as the
+    // InboundTCITxAudio source so the verbatim cm_main TX pump can pull
+    // inbound TCI client audio (CMaster.cpp xcmaster case 1, gated on
+    // use_tci_audio).  Process-lifetime; safe immediately after
+    // create_cmaster (pcm now exists).  The use_tci_audio gate itself is
+    // wired to the operator mic-source selector below (after prefs).
+    lyra::wire::SendpInboundTCITxAudio(&lyra::tci::TciTxBridge::inboundCb);
 
     // Step 2a: the stream object opens the EP6 RX path to a
     // selected radio on its OWN dedicated OS thread (std::jthread
@@ -613,6 +622,23 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      prefs,  &lyra::ui::Prefs::setMoxActive);
     prefs->setMoxActive(stream->moxActive());   // seed initial state
+
+    // TCI TX-audio source gate (re-home): when the operator selects "tci"
+    // as the mic source, set use_tci_audio so the verbatim xcmaster TX
+    // pump pulls from the TciTxBridge instead of the AK4951 EP6 mic;
+    // "mic1" (or anything else) → hardware mic.  Single transmitter → txid 0.
+    // Drop any stale TCI backlog when switching away from TCI.  Seed now +
+    // track operator changes.
+    {
+        auto applyTciTxSource = [prefs]() {
+            const bool tci = (prefs->micSource() == QStringLiteral("tci"));
+            lyra::wire::SetTXTCIAudio(0, tci ? 1 : 0);
+            if (!tci) lyra::tci::TciTxBridge::instance().clear();
+        };
+        QObject::connect(prefs, &lyra::ui::Prefs::micSourceChanged,
+                         prefs, applyTciTxSource);
+        applyTciTxSource();   // seed initial state
+    }
 
     // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
     // the operator arms TUN and Prefs.useTuneDrive is on, stash the

@@ -10,6 +10,7 @@
 // TX DSP worker + TCI mic source are being rebuilt from empty files
 // per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  Inbound TX_AUDIO_STREAM
 // is dropped; R-H2 mic-source force/restore returns with the rebuild.
+#include "tci/TciTxBridge.h"   // TCI TX-audio re-home sink (TX_ARCH §4.6/§10.3)
 #include "wdsp_engine.h"
 
 #include <QDateTime>
@@ -725,19 +726,13 @@ void TciServer::onBinaryMessage(const QByteArray &frame) {
         }
     }
 
-    // TX-rip Phase 1 (Q2): the TciMicSource sink (and the rest of the
-    // TX DSP subsystem) is being rebuilt from empty files per
-    // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.  Inbound TX_AUDIO_STREAM
-    // is silently dropped (after a one-shot diagnostic) until the new
-    // sink lands.
-    (void)mono;
-    static bool warned = false;
-    if (!warned) {
-        warned = true;
-        qWarning("[tci] TX_AUDIO_STREAM dropped — TX DSP subsystem "
-                 "ripped for rebuild (see TX_ARCHITECTURAL_MAPPING.md)");
-    }
-    return;
+    // TCI TX-audio re-home (TX_ARCHITECTURAL_MAPPING.md §4.6 data model):
+    // the decoded + gained (#108) + resampled-to-TXA-rate (#68) mono goes
+    // into the TciTxBridge.  The verbatim cm_main TX pump drains it through
+    // the InboundTCITxAudio seam (CMaster.cpp xcmaster case 1) when the
+    // operator has selected TCI as the mic source (use_tci_audio); on the
+    // wire only while MOX (sendProtocol1Samples zeroes outIQbufp at !XmitBit).
+    lyra::tci::TciTxBridge::instance().pushMono(mono);
 }
 
 void TciServer::onChronoTick() {
@@ -806,10 +801,10 @@ void TciServer::onChronoTick() {
         int((qint64(bufferingMs + kTciTxExtraBufferMs) * targetRate
              + 999) / 1000));
 
-    // queuedSamples = current TX-mic-source inbound depth.  TX-rip
-    // Phase 1 (Q2): TciMicSource is being rebuilt; report 0 until
-    // the new sink lands (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
-    const int queuedSamples = 0;
+    // queuedSamples = current TX-mic-source inbound depth = the
+    // TciTxBridge backlog the cm_main pump hasn't drained yet.  Feeds the
+    // reference CHRONO dynamic-pull so the client is backpressured.
+    const int queuedSamples = lyra::tci::TciTxBridge::instance().queuedSamples();
 
     // futureSamples = what we'll have after all outstanding requests
     // get answered with predictedPacketSamples each.
