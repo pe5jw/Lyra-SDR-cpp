@@ -20,6 +20,12 @@ namespace lyra::profile {
 
 class ProfileManager : public QObject {
     Q_OBJECT
+    // Reactive surface for the front ProfilePanel QML dock (#55).
+    // Getters + NOTIFY signals already exist; these just expose them
+    // as bindable QML properties.
+    Q_PROPERTY(QStringList names READ names NOTIFY namesChanged)
+    Q_PROPERTY(QString activeName READ activeName NOTIFY activeChanged)
+    Q_PROPERTY(bool modified READ isModified NOTIFY modifiedChanged)
 public:
     ProfileManager(ProfileBindings bindings, ProfileStore store,
                    QObject *parent = nullptr);

@@ -17,6 +17,7 @@
 // rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 #include "tci_server.h"
 #include "metermodel.h"
+#include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
 #include "wdsp_engine.h"
 #include "help.h"
 #include "helpdialog.h"
@@ -360,6 +361,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Spots"), spots_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Meter"), meter_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Profiles"), profiles_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -518,6 +521,12 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("tx"), tr("TX"),
                  QStringLiteral("TxPanel.qml"),
                  QStringLiteral("tx"), Qt::BottomDockWidgetArea);
+    // Profiles — front-facing quick recall of a saved TX/RX profile
+    // (dropdown + Save + ● modified).  Full editor (create / rename /
+    // delete / set-default / per-mode bind) is Settings → Profiles.
+    addQuickDock(QStringLiteral("profiles"), tr("Profiles"),
+                 QStringLiteral("ProfilePanel.qml"),
+                 QStringLiteral("profiles"), Qt::BottomDockWidgetArea);
     // Display — front-facing spectrum/waterfall controls (palette,
     // waterfall speed, smoothing, glow, grid) binding the shared Prefs.
     addQuickDock(QStringLiteral("display"), tr("Display"),
