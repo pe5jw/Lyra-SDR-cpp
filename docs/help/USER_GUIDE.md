@@ -52,6 +52,8 @@ not programmers — if you can click a menu, you can use this.
 - [Settings → Audio](#settings--audio)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
+  - [Digital modes over TCI](#digital-modes-over-tci-ft8--ft4--msk144--q65--etc)
+  - [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)
   - [DX-cluster spots](#dx-cluster-spots)
 - [Settings → Visuals](#settings--visuals)
   - [Trace color](#trace-color)
@@ -829,8 +831,12 @@ is the openHPSDR "TX profile" idea, done Lyra-native.
 **What a profile stores:** RX bandwidth, TX bandwidth + the BW-lock,
 filter low edge; mic source, mic gain, 20 dB mic boost; the Tune-drive
 toggle + tune-drive %, and the TX drive level (your power knob); the TCI
-RX and TX gains; AGC mode; auto-mute-on-TX; and the TX safety-timeout
-(minutes + bypass).
+RX and TX gains; the **VAC source** (VAC1 enable, auto-enable-for-digital,
+and the VAC RX/TX gains); AGC mode; auto-mute-on-TX; and the TX
+safety-timeout (minutes + bypass). Because mic source *and* VAC enable are
+both stored, one profile can flip you from a TCI/voice setup to a
+VAC/digital setup as a unit — see
+[Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable).
 
 **What a profile deliberately does NOT store:**
 
@@ -843,9 +849,11 @@ RX and TX gains; AGC mode; auto-mute-on-TX; and the TX safety-timeout
   [Settings → Hardware](#settings--hardware) and are *never* swept by a
   profile (you don't want a recalled preset silently arming your PA or
   changing how you key).
-- VAC, EQ, Combinator and a separate monitor output are **reserved** —
-  those fields appear in profiles once those features land, and older
-  saved profiles migrate forward automatically.
+- EQ, Combinator and a separate monitor output are **reserved** — those
+  fields appear in profiles once those features land, and older saved
+  profiles migrate forward automatically. (VAC is no longer reserved — it's
+  stored as of v0.2.4. Audio *device* names stay global station setup, not
+  per-profile, since they're machine-specific.)
 
 ### The Profiles dock (front panel — quick recall)
 
@@ -1199,6 +1207,11 @@ connects to the selected radio, **Close** disconnects, and the status line
 shows what you're connected to. Lyra remembers the last radio and shows it
 here on launch. (The toolbar **▶ Start / ■ Stop** does the same thing.)
 
+- **Auto-start radio on launch** (checkbox, default **ON**) — when on,
+  Lyra connects to the last radio automatically at startup (the historical
+  behaviour). Untick it to have Lyra open without connecting; you then
+  click **▶ Start** when you're ready.
+
 ### Transmit (PA enable + safety timeout + hardware PTT)
 
 The deliberate-arm safety gates for getting on the air. Both are
@@ -1371,7 +1384,7 @@ Mic source → Mic Boost (+20 dB HW) → Mic Gain (SW) → Leveler (optional) �
 
 | Knob | Default | What it controls |
 |---|---|---|
-| **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **Line In / VAC1 / VAC2** anchor entries are visible for layout but disabled until v0.2.x. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
+| **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **PC Soundcard (VAC1)** routes TX audio captured from a PC audio cable (a Virtual Audio Cable) into the TX chain — pick this to transmit digital modes whose audio comes over a soundcard/VAC instead of TCI (see [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)); it needs VAC1 enabled with an input device on Settings → Audio. **Line In / VAC2** anchor entries are visible for layout but reserved for a later release. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
 | **Mic Boost** | OFF | HL2 hardware +20 dB analog mic preamp (codec PGA, single bit on the wire — C0 0x12 C2 bit 0). Pure hardware boost ahead of the digital chain. Enable when your hand mic / headset mic is genuinely too quiet to hit the modulator at a reasonable level even with the Mic Gain slider near max. Hardware is 2-state (off / +20 dB); intermediate trim comes from Mic Gain stacked on top. **Only affects the codec mic input** — PC mic / TCI sources bypass the codec PGA entirely, so this checkbox has no effect on those routes. Persisted across launches. |
 | **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. **Stacks on top of Mic Boost** — if Mic Boost is ON, the modulator sees Mic Boost +20 dB + Mic Gain combined. |
 | **ALC Max Gain** ⚠ | 3 (LINEAR) | The ALC (Automatic Level Control) max-gain ceiling — the always-on output limiter that catches peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **LINEAR amplitude factor (NOT dB) — units corrected in §15.27**: 1 = unity (limiter cannot amplify, only attenuate); 3 = the verified reference's default = 3× amplitude headroom = +9.54 dB of allowed amplification before the ALC pulls down. Earlier Lyra builds shipped this property as dB and called `dbToLin(3.0) = 1.413` — capping the ceiling at 47% of the reference's value and producing a ~6 dB power deficit on continuous mic-input tones (the §15.27 / #79 root cause; fixed 2026-06-03). Range 0..120 LINEAR matches the reference spinner exactly. Operator tuning: lower (1–2) for tighter splatter protection at the cost of headroom; higher (5–20) for ESSB-style program-level headroom. |
@@ -1406,6 +1419,16 @@ leveler interaction with predistortion / PureSignal calibration
 can be unpredictable.  Tick the Enable checkbox if you want
 reference-parity gain behaviour; leave it off if you prefer to
 ride mic gain manually.
+
+> **Not recommended for digital modes (FT8 / FT4 / MSK144 / Q65 / RTTY,
+> etc.).** Digital-mode software already outputs a controlled, constant
+> level, and the modes need a clean, *linear* TX chain. The Leveler rides
+> gain on the envelope — on a digital signal that pumps the level and adds
+> distortion, which widens your signal, raises IMD, and makes your reported
+> levels inconsistent. **Leave the Leveler OFF for digital.** It's a
+> voice/ESSB tool. The easy way to keep this straight is a per-mode-family
+> profile: a digital/VAC profile with Leveler off, a voice profile with it
+> set how you like — switching mode recalls the right one.
 
 | Knob | Default | What it controls |
 |---|---|---|
@@ -1612,6 +1635,55 @@ gains every time you switch.
   external watt-meter, confirm the band is open, and try a known-good
   digital-mode sked partner. The TCI audio path itself is verified
   reference-faithful end-to-end.
+
+### Digital modes over VAC (Virtual Audio Cable)
+
+If you'd rather wire audio the classic way — through a **Virtual Audio
+Cable** instead of over TCI — Lyra has a built-in VAC path. This suits
+clients you prefer to run by soundcard, or any setup where TCI handles
+**control** (PTT, CAT, frequency, band) while the **audio** rides a cable.
+That's the recommended split for MSHV: let TCI key the radio and follow
+the band, and route the audio over VAC.
+
+> **VAC carries audio only — it does not key the radio.** Keying still
+> comes from TCI (or CAT). TCI *control* and TCI *audio* are independent;
+> using TCI to PTT does **not** mean you're using TCI audio.
+
+**You need two cables** (e.g. VB-Audio "CABLE" + "CABLE-B", or VAC's
+"Line 1" + "Line 2") — one for each direction:
+
+| Direction | Lyra side (Settings → Audio → VAC1) | Client side |
+|---|---|---|
+| **RX** (decode) | **Output device** = cable A (e.g. Line 1) | **Input** = cable A |
+| **TX** (transmit) | **Input device** = cable B (e.g. Line 2) | **Output** = cable B |
+
+**Setup:**
+
+1. **Settings → Audio → VAC1** — tick **Enable** (or **Auto-enable for
+   digital** so it follows DIGU/DIGL), set the **Output device** to the
+   cable your client reads (RX), and the **Input device** to the cable your
+   client writes (TX). Leave RX/TX gain at the defaults to start (0 dB /
+   +3 dB). The status log shows `[vac1] LIVE: out='…' | in='…'` when it's
+   up — if `in='(none)'`, no input device is selected and TX audio can't
+   reach the radio.
+2. **Settings → TX → Mic + ALC → Mic source = "PC Soundcard (VAC1)".**
+   **This is the step that catches people.** Without it the TX chain reads
+   a different source (the codec mic, or TCI) and you get **no power out**
+   even though everything else looks right.
+3. **TCI for control:** keep your TCI client connected for PTT/frequency
+   (Settings → Network). In MSHV's audio panel, point **Output** at the TX
+   cable and **Input** at the RX cable (the reverse of Lyra), and pick the
+   channel (Left) your cable carries.
+4. Leave the **[Leveler](#leveler-txa-pre-alc-amplifier-stage) OFF** for
+   digital (see that section).
+
+**The fastest fix when a VAC transmit produces no power:** check the
+**Mic source** — if it's on **TCI** (e.g. your TCI/voice profile left it
+there), the TCI side claims the TX-audio path and pulls from an empty TCI
+stream → silent → no RF. Set it to **PC Soundcard (VAC1)**. Saving a
+**digital/VAC [profile](#profiles-txrx-chain-presets)** (which stores the
+mic source *and* the VAC enable) lets you flip the whole setup with one
+recall instead of toggling these by hand.
 
 ### DX-cluster spots
 
