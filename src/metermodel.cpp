@@ -1516,13 +1516,17 @@ void MeterModel::computeGainMeterFromDb(double rawDb,
 // "—") until the new TxDspWorker lands per
 // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 void MeterModel::computeMic() {
-    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+    // #158 (post-DL) re-home — TXA_MIC_PK (0): mic/VAC input peak, dBFS.
+    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(0)
+                                  : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
 
 void MeterModel::computeLvlPk() {
-    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+    // #158 (post-DL) re-home — TXA_LVLR_PK (4): leveler output peak, dBFS.
+    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(4)
+                                  : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
@@ -1533,7 +1537,9 @@ void MeterModel::computeLvlPk() {
 // will land on Lyra-native Source entries, not WDSP TXA indices.
 
 void MeterModel::computeAlcPk() {
-    computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+    // #158 (post-DL) re-home — TXA_ALC_PK (12): post-ALC output peak, dBFS.
+    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(12)
+                                  : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
                             QStringLiteral("dBFS"));
 }
@@ -1545,7 +1551,9 @@ void MeterModel::computeAlcGroup() {
 }
 
 void MeterModel::computeLvlG() {
-    computeGainMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
+    // #158 (post-DL) re-home — TXA_LVLR_GAIN (6): leveler gain applied, dB.
+    computeGainMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(6)
+                                 : std::numeric_limits<double>::quiet_NaN(),
                            kGainDbMax, /*danger=*/12.0);
 }
 
@@ -1574,11 +1582,19 @@ void MeterModel::computeAlcG() {
     // formula treated the stored value as already-dB, which is
     // wrong now that the storage is LINEAR (per the §15.27 fix to
     // the underlying setter / unit semantics).
-    // TX-rip Phase 1 (Q2): TxDspWorker ripped — display formula stays
-    // documented in the comment above for the rebuild; meter shows
-    // "—" via NaN until the new worker lands.
-    computeGainMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
-                           kGainDbMax, /*danger=*/6.0);
+    // #158 (post-DL) re-home: raw = TXA_ALC_GAIN (14), dB; displayed =
+    // max(0, raw + maxGainDb), maxGainDb = 20·log10(alcMaxGainLinear) —
+    // the §71-documented headroom number (0 = ALC clamping, larger = headroom).
+    double disp = std::numeric_limits<double>::quiet_NaN();
+    if (wdsp_) {
+        const double raw = wdsp_->txMeterRaw(14);
+        if (!std::isnan(raw)) {
+            const double maxLin = stream_ ? stream_->alcMaxGainLinear() : 1.0;
+            const double maxGainDb = 20.0 * std::log10(std::max(maxLin, 1e-9));
+            disp = std::max(0.0, raw + maxGainDb);
+        }
+    }
+    computeGainMeterFromDb(disp, kGainDbMax, /*danger=*/6.0);
 }
 
 } // namespace lyra::ui

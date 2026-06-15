@@ -2006,6 +2006,23 @@ double WdspEngine::agcGainDb() const
     return api.GetRXAMeter(channel_, 4);   // 4 = RXA_AGC_GAIN (gain action, dB)
 }
 
+// #158 (post-DL) TX dynamics-meter read — re-homes the MIC/ALC/LVL meters
+// (NaN-stubbed since the TX wire rebuild) onto the wire-live TXA channel.
+// txaMeterType is a WDSP txaMeterType ordinal (TXA.h): MIC_PK=0, LVLR_PK=4,
+// LVLR_GAIN=6, ALC_PK=12, ALC_GAIN=14.  The TX channel is chid(1,0)=1
+// (create_xmtr); GetTXAMeter reads the latest value the TXA chain stored, so
+// it's safe to poll from the UI thread.  Only meaningful while transmitting —
+// the metermodel gates the TX computes on moxActive (TX channel runs only on
+// the air).  NaN → the meter renders "—".
+double WdspEngine::txMeterRaw(int txaMeterType) const
+{
+    if (!wdsp_) return std::numeric_limits<double>::quiet_NaN();
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetTXAMeter) return std::numeric_limits<double>::quiet_NaN();
+    constexpr int kTxaChannel = 1;   // chid(1,0) — the wire-live TXA channel
+    return api.GetTXAMeter(kTxaChannel, txaMeterType);
+}
+
 double WdspEngine::agcThreshDb() const
 {
     return kAgcThreshDbFs;                 // fixed first-light threshold

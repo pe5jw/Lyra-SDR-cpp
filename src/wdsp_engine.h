@@ -251,6 +251,10 @@ public:
     double sMeterDbm() const;
     // Live AGC gain action in dB (WDSP RXA_AGC_GAIN); 0 when not running.
     double agcGainDb() const;
+    // #158 (post-DL) TX dynamics meters re-homed onto the wire-live TXA
+    // channel.  txaMeterType = WDSP txaMeterType ordinal (TXA.h): MIC_PK=0,
+    // LVLR_PK=4, LVLR_GAIN=6, ALC_PK=12, ALC_GAIN=14.  NaN when not available.
+    double txMeterRaw(int txaMeterType) const;
     // The configured AGC threshold the readout shows (dBFS, currently the
     // fixed first-light value; becomes operator-tunable with the AGC
     // threshold control later).
