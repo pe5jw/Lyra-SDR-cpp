@@ -394,6 +394,22 @@ bool TciServer::start() {
 void TciServer::stop() {
     smeterTimer_->stop();
     maintTimer_->stop();
+    // CODEX-P0 (2026-06-15) — release TX-audio ownership cleanly BEFORE the
+    // owner sockets are deleteLater()'d below.  Without this, stop() (TCI
+    // disable / profile-toggle that flips TCI-enable / shutdown) left
+    // chronoTimer_ running against a soon-to-be-destroyed owner socket, so
+    // onChronoTick dereferenced a dangling pointer (the ntdll 0xC0000005),
+    // and could also leave the radio keyed + replay the previous
+    // transmission's audio tail.  (txAudioOwner_ is now a QPointer too, so
+    // the deref is crash-safe by construction; this is the matching clean
+    // teardown.)
+    chronoTimer_->stop();
+    chronoOutstanding_ = 0;
+    if (txAudioOwner_) {
+        txAudioOwner_ = nullptr;
+        if (stream_) stream_->requestMoxFromTci(false);
+    }
+    lyra::tci::TciTxBridge::instance().clear();   // drop stale TX backlog (no replay next session)
     sensorsEnabled_ = false;
     streams_.clear();
     recomputeStreaming();    // turn the engine taps back off

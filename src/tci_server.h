@@ -23,6 +23,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 
 #include <cstdint>
@@ -205,7 +206,10 @@ private:
     // TCI client owns the TX audio path at a time; a second client
     // asking for ownership gets denied.  Owned by the Qt main thread
     // (all WebSocket signals queue here) — no mutex needed.
-    QWebSocket            *txAudioOwner_      = nullptr;
+    // QPointer auto-nulls when the owning QWebSocket is destroyed (deleteLater),
+    // so every deref below is crash-safe against a dropped owner (CODEX-P0
+    // dangling-deref / onChronoTick 0xC0000005 fix, 2026-06-15).
+    QPointer<QWebSocket>   txAudioOwner_;
     // TX_CHRONO outbound pump (TCI v2 §3.4) — fires when txAudioOwner_
     // is set AND wire MOX is active.  Implements the reference's
     // dynamic-pull formula (cmaster.cs:1289-1359) — at each tick,
