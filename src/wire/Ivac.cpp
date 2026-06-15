@@ -142,10 +142,31 @@ void destroy_resamps(IVAC a)
 PORT void destroy_ivac(int id)
 {
 	IVAC a = pvac[id];
+	// #158 crash fix (2026-06-15) — quiesce the engine's consumer threads
+	// BEFORE freeing the rmatchV rings, else they use-after-free the rings on
+	// VAC teardown / profile switch (the ntdll 0xC0000005 heap fault, seen on
+	// BOTH the Qt and PortAudio device layers because the racers are the
+	// mixer thread + TX pump, NOT the device driver):
+	//   (1) null pvac[id] FIRST so the cm_main TX pump's vacInboundCb
+	//       (xvacIN reads a->rmatchIN) sees null and skips before the ring is
+	//       freed.  The null-set was previously the LAST line (after the
+	//       free), so the guard never covered the teardown window.
+	//   (2) destroy_aamix stops the AAMix mixer thread (mix_main) so its
+	//       xvac_out can no longer write a->rmatchOUT once destroy_resamps
+	//       frees it.  The reference establishes this destroy_aamix-before-
+	//       destroy_resamps ordering in its ring-reconfigure setters
+	//       (SetIVACaudioRate / SetIVACaudioSize); create_ivac's create_aamix
+	//       must be paired with a destroy here.  The reference's destroy_ivac
+	//       omits it and avoids the UAF only via external C#-layer ordering
+	//       that Lyra's live profile-switch teardown does not have.
+	// The PA full-duplex callback is already joined by StopAudioIVAC before
+	// teardownVac1 reaches here; the RX tee is gated off via vac1Active_ under
+	// vacMtx_ in teardownVac1.
+	pvac[id] = nullptr;
+	if (a->mixer) destroy_aamix(a->mixer, 0);
 	destroy_resamps(a);
 	DeleteCriticalSection(&a->cs_ivac);
 	free (a);
-	pvac[id] = nullptr;
 }
 
 // Lyra-cpp Stage 2 accessor (see Ivac.h) — hand the Qt device layer the
