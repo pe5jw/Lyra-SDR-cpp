@@ -1341,6 +1341,11 @@ void WdspEngine::rebuildVac1()
         std::lock_guard<std::mutex> lk(vacMtx_);
         vac1Active_.store(true, std::memory_order_release);
     }
+    // #158 DL-4 — re-apply the current MOX state (a fresh ivac starts mox=0);
+    // keeps RX muted out of VAC if we rebuilt mid-TX.
+    if (vacMox_) {
+        SetIVACmox(kVac1Id, 1);
+    }
     emitLog(QStringLiteral("[vac1] LIVE (PortAudio duplex): out='%1' (RX gain "
                            "%2 dB) | in='%3' (TX gain %4 dB) | %5 Hz, vac %6")
                 .arg(vac1OutName_).arg(vac1RxGainDb_)
@@ -1430,6 +1435,20 @@ bool WdspEngine::vac1ShouldBeOn() const
         return mode_.startsWith(QLatin1String("DIG"), Qt::CaseInsensitive);
     }
     return vac1Enabled_;
+}
+
+void WdspEngine::setVacMox(bool on)
+{
+    vacMox_ = on;
+    // #158 DL-4 — RX→VAC muted out of the mixer during TX (reference
+    // SetIVACmox what-flag gating: with MON off, both mixer "what" bits go 0
+    // on the air → VAC output is silent during TX = the no-feedback behavior).
+    // No-op when VAC1 isn't live.  Runs on the Qt main thread (MOX edge), so
+    // it's serialized with rebuild/teardown by the event loop; the mix thread
+    // reads the what-mask atomically.
+    if (lyra::wire::ivacGet(kVac1Id)) {
+        lyra::wire::SetIVACmox(kVac1Id, on ? 1 : 0);
+    }
 }
 
 void WdspEngine::setVac1Enabled(bool on)

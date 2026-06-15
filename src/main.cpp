@@ -532,6 +532,13 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxMuted);
 
+    // #158 DL-4 — mute RX out of the VAC mixer during TX (reference
+    // SetIVACmox what-flag gating; RX→VAC silent on the air, the no-feedback
+    // behavior).  Same TR-settled MOX edge as setTxMuted above; main-thread,
+    // no-op when VAC1 isn't live.
+    QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
+                     wdspEngine, &lyra::dsp::WdspEngine::setVacMox);
+
     // Task #44 Phase 2 — analyzer source swap on the MOX edge.
     // Same moxActiveChanged signal as setTxMuted (above); connection
     // ORDER matters: setTxMuted MUST run before setTxOwnsAnalyzer on

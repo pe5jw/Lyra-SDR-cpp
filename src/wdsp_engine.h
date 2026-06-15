@@ -567,6 +567,10 @@ public:
     Q_INVOKABLE void setVac1TxGainDb(double db);
     bool    vac1CombineInput() const      { return vac1CombineInput_; }
     Q_INVOKABLE void setVac1CombineInput(bool on);
+    // #158 DL-4 — RX→VAC muted during TX (reference SetIVACmox what-flag
+    // gating).  Driven off the HL2Stream MOX edge (connected in main.cpp);
+    // no-op when VAC1 isn't live.
+    void setVacMox(bool on);
 
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
@@ -984,6 +988,7 @@ private:
     QString               vac1OutName_;            // PC output device description ("" = none)
     QString               vac1InName_;             // PC input device description ("" = none)
     QString               vac1HostApiName_;        // #158 DL-3 chosen PA host API ("" = first WASAPI)
+    bool                  vacMox_ = false;         // #158 DL-4 last MOX state (re-applied on rebuild)
     double                vac1TxGainDb_  = 3.0;    // VAC TX gain (reference default +3 dB) → vac_preamp
     bool                  vac1CombineInput_ = true; // mono-combine VAC-in I=Q=(L+R) (reference vac_combine_input)
     int                   vac1VacSize_   = 2048;   // VAC buffer (reference default 2048)
