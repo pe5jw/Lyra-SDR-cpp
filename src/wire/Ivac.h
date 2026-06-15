@@ -27,10 +27,12 @@
 // changes — packaging + the deferred device-I/O surface):
 //   * The PortAudio fields the reference struct carries
 //     (`PaStreamParameters inParam, outParam;  PaStream *Stream;`)
-//     are OMITTED here.  The PortAudio device I/O (CallbackIVAC /
-//     StartAudioIVAC / StopAudioIVAC) is deferred to Stage 2 and
-//     re-homed onto Qt (QAudioSource / QAudioSink) — see
-//     docs/architecture/IVAC_PORT_PLAN.md.  Every other struct
+//     are now PRESENT (DL-1, 2026-06-15): the device layer is the
+//     reference's ONE full-duplex PortAudio stream — NOT the Qt
+//     two-stream substitution the early port used.  The device I/O
+//     (CallbackIVAC / StartAudioIVAC / StopAudioIVAC) is ported
+//     verbatim in Ivac.cpp; see docs/architecture/IVAC_PORT_PLAN.md
+//     §8 for the device-layer rebuild rationale.  Every other struct
 //     field (incl. CRITICAL_SECTION cs_ivac, void* mixer,
 //     void* rmatchIN/rmatchOUT, the mono_in_to_stereo_* buffer
 //     pair, and all scalars) is carried verbatim.
@@ -54,9 +56,9 @@
 //     expands empty).
 //   * The reference's create_resampleV / xresampleV /
 //     destroy_resampleV declarations (the legacy PortAudio device-
-//     resampler helpers) are NOT carried — they are the deferred
-//     device-I/O layer (Stage 2 / not needed), exactly as the
-//     skipped CallbackIVAC / StartAudioIVAC / StopAudioIVAC.
+//     resampler helpers) are NOT carried — they are unused: the rate
+//     match lives in the rmatchV rings that create_resamps builds, so
+//     CallbackIVAC drains/fills those directly with no extra resampler.
 //
 // See NOTICE.md and CREDITS.md (repo root) for full upstream
 // attribution.
@@ -64,6 +66,7 @@
 #pragma once
 
 #include "wire/cmcomm.h"
+#include <portaudio.h>   // #158 DL-1 — PaStream / PaStreamParameters (device-I/O port)
 
 namespace lyra::wire {
 
@@ -97,8 +100,8 @@ typedef struct _ivac
 	int INringsize;
 	int OUTringsize;
 
-	// device I/O fields added in Stage 2 (Qt QAudioSource/QAudioSink) — see IVAC_PORT_PLAN.md
-	// (reference ivac.h:60-61 here: `PaStreamParameters inParam, outParam;  PaStream *Stream;`)
+	PaStreamParameters inParam, outParam;	// #158 DL-1 (reference ivac.h:60-61)
+	PaStream *Stream;
 
 	size_t mono_in_to_stereo_capacity;		// capacity of mono to stereo buffer
 	double* mono_in_to_stereo_buffer;		// buffer for mono to stereo conversion
@@ -171,6 +174,21 @@ PORT void create_ivac (
 // device-I/O replacement lives outside this TU (Qt must not enter the
 // wire/ layer).  Returns nullptr before create_ivac(id).
 IVAC ivacGet(int id);
+
+// Reference ivac.c device-I/O entry points (DL-1, un-deferred 2026-06-15).
+// The VAC runs as ONE full-duplex PortAudio stream whose callback does both
+// directions on one clock; wdsp_engine calls these at DL-2 (StartAudioIVAC
+// from rebuildVac1, StopAudioIVAC from teardownVac1).  CallbackIVAC is the
+// PA stream callback and stays file-local to Ivac.cpp.
+PORT int  StartAudioIVAC(int id);
+PORT void StopAudioIVAC(int id);
+
+// [Lyra-native] PortAudio process lifecycle — call once at app init (adjacent
+// to create_rnet) and once at shutdown.  The reference initializes PortAudio
+// in netInterface; Lyra homes the pair in the sole PortAudio-consumer TU.
+// ivacInitPortAudio returns paNoError (0) on success; both are idempotent.
+int  ivacInitPortAudio();
+void ivacTerminatePortAudio();
 
 // Reference ivac.c SetIVAC* / diag surface (the reference defines
 // most of these as PORT in ivac.c WITHOUT an ivac.h declaration —

@@ -43,6 +43,8 @@ void set_cmdefault_rates (int* xcm_inrates, int aud_outrate,
 void create_xmtr();
 void destroy_xmtr();
 void create_rnet();   // P3 — once-per-process, AFTER create_xmtr (see QTimer block)
+int  ivacInitPortAudio();    // #158 DL-1 — PortAudio process init (wire/Ivac.cpp)
+void ivacTerminatePortAudio();// #158 DL-1 — PortAudio process shutdown (wire/Ivac.cpp)
 }  // namespace lyra::wire
 
 #include <algorithm>
@@ -597,6 +599,16 @@ int main(int argc, char *argv[])
         qWarning("[shutdown] handler-4 EXIT");
     });
 
+    // #158 DL-1 — handler-PA: Pa_Terminate.  Connected LAST (Qt fires
+    // aboutToQuit in connection order), so PortAudio is torn down after
+    // every radio/audio handler above.  Idempotent no-op if Pa_Initialize
+    // never ran (wdsp.dll absent → the create_rnet block never executed).
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        qWarning("[shutdown] handler-PA ENTRY (Pa_Terminate)");
+        lyra::wire::ivacTerminatePortAudio();
+        qWarning("[shutdown] handler-PA EXIT");
+    });
+
     // Step 5: register the panadapter widget as a QML type under its
     // own URI (keeps it separate from the qt_add_qml_module "Lyra"
     // module's auto-registration).  Main.qml: `import LyraUI`.
@@ -968,6 +980,23 @@ int main(int argc, char *argv[])
             qInfo("[wire] P3: create_rnet() — prn allocated, "
                   "SendpOutboundTx(OutBound) registered "
                   "(pcm->OutboundTx -> xmtr[0].pilv)");
+
+            // #158 DL-1 — PortAudio process init, once per process,
+            // adjacent to create_rnet (the reference brings PortAudio up
+            // in netInterface alongside the radio).  The VAC device layer
+            // (StartAudioIVAC) is not wired to wdsp_engine until DL-2;
+            // this only spins up PortAudio so DL-2 has a live PA context.
+            // The matching Pa_Terminate is the aboutToQuit handler-PA
+            // connected in main scope (after handler-4 / destroy_cmaster).
+            {
+                int paErr = lyra::wire::ivacInitPortAudio();
+                if (paErr == 0)
+                    qInfo("[wire] DL-1: PortAudio initialized — VAC host "
+                          "audio context ready (not yet wired to wdsp_engine)");
+                else
+                    qWarning("[wire] DL-1: Pa_Initialize failed (err=%d) — "
+                             "VAC host audio unavailable", paErr);
+            }
 
             // TX-1 Path A: construct micSource NOW that the WDSP DLL
             // is loaded.  Mic-source construction order RELATIVE to

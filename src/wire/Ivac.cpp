@@ -45,6 +45,9 @@
 #include "wire/AAMix.h"        // create_aamix / destroy_aamix / xMixAudio / SetAAudioMix*
 #include "wire/CMaster.h"      // pcm — getbuffsize / cmMAXInRate (see include note above)
 #include "wire/wdspcalls.h"    // create_rmatchV / xrmatchIN / xrmatchOUT / forceRMatchVar / getRMatchDiags / ...
+#include <pa_win_wasapi.h>     // #158 DL-1 — PaWasapiStreamInfo / paWinWasapiExclusive / eThreadPriorityProAudio
+#include <cstdint>             // intptr_t (width-safe userData round-trip)
+#include <cstring>             // memset
 
 namespace lyra::wire {
 
@@ -151,6 +154,223 @@ IVAC ivacGet(int id)
 {
 	if (id < 0 || id >= MAX_EXT_VACS) return nullptr;
 	return pvac[id];
+}
+
+// ============================================================
+// #158 DL-1 — PortAudio device I/O (un-deferred 2026-06-15).
+// ============================================================
+// The reference runs the VAC as ONE full-duplex PortAudio stream whose
+// single callback does BOTH directions on one clock (xrmatchIN mic->TX
+// + xrmatchOUT RX->VAC).  Ported verbatim from ivac.c:196-371
+// (CallbackIVAC / StartAudioIVAC / StopAudioIVAC) incl. the mono->stereo
+// input dupe, the WASAPI-exclusive setup, and the swapIQout sign flip.
+// These are NOT yet called by wdsp_engine — DL-2 switches rebuildVac1/
+// teardownVac1 onto StartAudioIVAC/StopAudioIVAC and drops the IvacAudio
+// two-stream layer.  DL-1 only builds the surface + the process-level
+// Pa_Initialize/Pa_Terminate lifecycle.  See IVAC_PORT_PLAN.md §8.
+//
+// CallbackIVAC is file-local to this TU (the reference leaves it a free
+// function used only by Pa_OpenStream).  The reference's `id` userData
+// round-trip (`(void*)id` / `(int)userData`) is carried width-safe via
+// intptr_t — the only deviation from a byte-for-byte body, a documented
+// C->C++ idiom translation; id is 0/1 so the round-tripped value is
+// unchanged.  `(void)frameCount` silences /W4 C4100 (the reference uses
+// a->vac_size, not frameCount — matching its own (void)timeInfo pattern).
+
+static int CallbackIVAC(const void* input,
+	void* output,
+	unsigned long frameCount,
+	const PaStreamCallbackTimeInfo* timeInfo,
+	PaStreamCallbackFlags statusFlags,
+	void* userData)
+{
+	int id = (int)(intptr_t)userData;
+	IVAC a = pvac[id];
+	double* out_ptr = (double*)output;
+	double* in_ptr = (double*)input;
+	(void)timeInfo;
+	(void)statusFlags;
+	(void)frameCount;
+
+	if (!a->run) return 0;
+									  // [2.10.3.12]MW0LGE handle mono input devices
+	if (a->inParam.channelCount == 1) // mono, dupe to stereo, some mics are mono only, and we require 2 channels
+	{
+		unsigned long count = (unsigned long)a->vac_size; // assumes vac_size is always the same as frameCount
+		size_t samples = (size_t)(count * 2u);
+		if (a->mono_in_to_stereo_capacity < samples)
+		{
+			if (a->mono_in_to_stereo_buffer != NULL)
+			{
+				_aligned_free(a->mono_in_to_stereo_buffer);
+				a->mono_in_to_stereo_buffer = NULL;
+				a->mono_in_to_stereo_capacity = 0;
+			}
+
+			double* p = (double*)malloc0(samples * sizeof(double));
+			if (!p) return paAbort;
+			a->mono_in_to_stereo_buffer = p;
+			a->mono_in_to_stereo_capacity = samples;
+		}
+
+		double* tmp_in = a->mono_in_to_stereo_buffer;
+		if (in_ptr)
+		{
+			size_t j = 0;
+			for (unsigned long i = 0; i < count; ++i)
+			{
+				double s = in_ptr[i];
+				tmp_in[j++] = s;
+				tmp_in[j++] = s;
+			}
+		}
+		else
+		{
+			memset(tmp_in, 0, samples * sizeof(double));
+		}
+
+		xrmatchIN(a->rmatchIN, tmp_in);
+	}
+	else
+	{
+		xrmatchIN(a->rmatchIN, in_ptr);
+	}
+
+	xrmatchOUT(a->rmatchOUT, out_ptr);
+	// if (id == 0)  WriteAudio (120.0, 48000, a->vac_size, out_ptr, 3); //
+	if (a->iq_type && a->swapIQout)
+	{
+		unsigned long count = (unsigned long)a->vac_size; // assumes vac_size is always the same as frameCount
+		for (unsigned long i = 0, j = 1; i < count; i++, j += 2)
+			out_ptr[j] = -out_ptr[j];
+	}
+	return 0;
+}
+
+PORT int StartAudioIVAC(int id)
+{
+	IVAC a = pvac[id];
+	int error = 0;
+	int in_dev = Pa_HostApiDeviceIndexToDeviceIndex(a->host_api_index, a->input_dev_index);
+	int out_dev = Pa_HostApiDeviceIndexToDeviceIndex(a->host_api_index, a->output_dev_index);
+
+	int inChannelCount = 2;
+	int outChannelCount = 2;
+
+	const PaDeviceInfo* inDevInfo = NULL;
+	if (in_dev > 0)
+	{
+		inDevInfo = Pa_GetDeviceInfo(in_dev);
+		if (inDevInfo != NULL)
+		{
+			inChannelCount = inDevInfo->maxInputChannels;
+			if (inChannelCount > 2) inChannelCount = 2;
+		}
+	}
+	const PaDeviceInfo* outDevInfo = NULL;
+	if (out_dev > 0)
+	{
+		outDevInfo = Pa_GetDeviceInfo(out_dev);
+
+		//[2.10.3.12]MW0LGE ignore handling of output channels for now, always use 2
+		//if (outDevInfo != NULL)
+		//{
+		//	outChannelCount = outDevInfo->maxOutputChannels;
+		//	if (outChannelCount > 2) outChannelCount = 2;
+		//}
+	}
+
+	a->inParam.device = in_dev;
+	a->inParam.channelCount = inChannelCount;
+	a->inParam.suggestedLatency = a->pa_in_latency;
+	a->inParam.sampleFormat = paFloat64;
+	a->inParam.hostApiSpecificStreamInfo = NULL;
+
+	a->outParam.device = out_dev;
+	a->outParam.channelCount = outChannelCount;
+	a->outParam.suggestedLatency = a->pa_out_latency;
+	a->outParam.sampleFormat = paFloat64;
+	a->outParam.hostApiSpecificStreamInfo = NULL;
+
+	//attempt to get exlusive if wasapi devices
+	PaWasapiStreamInfo wasapiInputInfo;
+	PaWasapiStreamInfo wasapiOutputInfo;
+	if (inDevInfo != NULL && a->exclusive_in)
+	{
+		const PaHostApiInfo* hostApiInfo = Pa_GetHostApiInfo(inDevInfo->hostApi);
+		if (hostApiInfo != NULL && hostApiInfo->type == paWASAPI)
+		{
+			wasapiInputInfo.size = sizeof(PaWasapiStreamInfo);
+			wasapiInputInfo.hostApiType = paWASAPI;
+			wasapiInputInfo.version = 1;
+			wasapiInputInfo.flags = (paWinWasapiExclusive | paWinWasapiThreadPriority);
+			wasapiInputInfo.threadPriority = eThreadPriorityProAudio;
+
+			a->inParam.hostApiSpecificStreamInfo = &wasapiInputInfo;
+		}
+	}
+	if (outDevInfo != NULL && a->exclusive_out)
+	{
+		const PaHostApiInfo* hostApiInfo = Pa_GetHostApiInfo(outDevInfo->hostApi);
+		if (hostApiInfo != NULL && hostApiInfo->type == paWASAPI)
+		{
+			wasapiOutputInfo.size = sizeof(PaWasapiStreamInfo);
+			wasapiOutputInfo.hostApiType = paWASAPI;
+			wasapiOutputInfo.version = 1;
+			wasapiOutputInfo.flags = (paWinWasapiExclusive | paWinWasapiThreadPriority);
+			wasapiOutputInfo.threadPriority = eThreadPriorityProAudio;
+
+			a->outParam.hostApiSpecificStreamInfo = &wasapiOutputInfo;
+		}
+	}
+	//
+
+	error = Pa_OpenStream(&a->Stream,
+		&a->inParam,
+		&a->outParam,
+		a->vac_rate,
+		a->vac_size,	//paFramesPerBufferUnspecified,
+		0,
+		CallbackIVAC,
+		(void*)(intptr_t)id);	// pass 'id' as userData
+
+	if (error != 0) return -1;
+
+	error = Pa_StartStream(a->Stream);
+
+	if (error != 0) return -1;
+
+	return 1;
+}
+
+PORT void StopAudioIVAC(int id)
+{
+	IVAC a = pvac[id];
+	Pa_CloseStream(a->Stream);
+}
+
+// [Lyra-native] PortAudio process lifecycle (call-once), driven from
+// main() adjacent to create_rnet (the reference initializes PortAudio in
+// netInterface).  Homed here in the sole PortAudio-consumer TU.  Balanced
+// via a TU-local guard so a stray terminate without init is a no-op and a
+// double-init is harmless.
+namespace {
+	bool g_pa_initialized = false;
+}
+
+int ivacInitPortAudio()
+{
+	if (g_pa_initialized) return paNoError;
+	PaError err = Pa_Initialize();
+	if (err == paNoError) g_pa_initialized = true;
+	return err;
+}
+
+void ivacTerminatePortAudio()
+{
+	if (!g_pa_initialized) return;
+	Pa_Terminate();
+	g_pa_initialized = false;
 }
 
 PORT void xvacIN(int id, double* in_tx, int bypass)
