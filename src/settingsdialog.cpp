@@ -226,9 +226,29 @@ QWidget *SettingsDialog::buildAudioTab() {
             "you drive digital modes a different way (e.g. TCI)."));
         vf->addRow(vacAuto);
 
+        // #158 DL-3 — "Driver" (PortAudio host API) picker, Thetis-faithful.
+        // Selecting a driver repopulates the Output/Input device combos with
+        // that host API's devices (PA index stored as item userData).
+        auto *vacDriver = new QComboBox(grp);
+        {
+            const QStringList apis = engine_->vac1HostApiNames();
+            const QList<int>  idxs = engine_->vac1HostApiPaIndices();
+            for (int i = 0; i < apis.size(); ++i)
+                vacDriver->addItem(apis[i], i < idxs.size() ? idxs[i] : -1);
+            const int sel = vacDriver->findText(engine_->vac1HostApiName());
+            vacDriver->setCurrentIndex(sel >= 0 ? sel : 0);
+        }
+        vacDriver->setToolTip(tr(
+            "Audio backend (PortAudio host API) the VAC devices live under — "
+            "WASAPI for virtual cables (VB-Audio / VAC).  Changing it "
+            "repopulates the Output and Input device lists below."));
+        vf->addRow(tr("Driver"), vacDriver);
+
+        const int curApi0 = vacDriver->currentData().toInt();
+
         auto *vacDev = new QComboBox(grp);
         vacDev->addItem(tr("(none)"));
-        vacDev->addItems(engine_->vac1OutputDevices());
+        vacDev->addItems(engine_->vac1OutputDevicesFor(curApi0));
         {
             const int i = vacDev->findText(engine_->vac1OutputDeviceName());
             vacDev->setCurrentIndex(i >= 0 ? i : 0);
@@ -258,7 +278,7 @@ QWidget *SettingsDialog::buildAudioTab() {
         // reaches TX only when the mic source is "PC Soundcard (VAC1)".
         auto *vacInDev = new QComboBox(grp);
         vacInDev->addItem(tr("(none)"));
-        vacInDev->addItems(engine_->vac1InputDevices());
+        vacInDev->addItems(engine_->vac1InputDevicesFor(curApi0));
         {
             const int i = vacInDev->findText(engine_->vac1InputDeviceName());
             vacInDev->setCurrentIndex(i >= 0 ? i : 0);
@@ -292,6 +312,30 @@ QWidget *SettingsDialog::buildAudioTab() {
                 [this](bool on) { engine_->setVac1Enabled(on); });
         connect(vacAuto, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1AutoDigital(on); });
+        // #158 DL-3 — Driver (host-API) change → persist + repopulate the
+        // device combos for the new host API (preserve selection by name).
+        connect(vacDriver, &QComboBox::activated, engine_,
+                [this, vacDriver, vacDev, vacInDev](int) {
+                    const int api = vacDriver->currentData().toInt();
+                    engine_->setVac1HostApi(vacDriver->currentText());
+                    auto repop = [this](QComboBox *c, const QStringList &devs) {
+                        const QString keep = c->currentText();
+                        c->blockSignals(true);
+                        c->clear();
+                        c->addItem(tr("(none)"));
+                        c->addItems(devs);
+                        const int i = c->findText(keep);
+                        c->setCurrentIndex(i >= 0 ? i : 0);
+                        c->blockSignals(false);
+                    };
+                    repop(vacDev,   engine_->vac1OutputDevicesFor(api));
+                    repop(vacInDev, engine_->vac1InputDevicesFor(api));
+                    // Selection may have changed/reset — push resolved names.
+                    engine_->setVac1OutputDeviceName(
+                        vacDev->currentIndex() <= 0 ? QString() : vacDev->currentText());
+                    engine_->setVac1InputDeviceName(
+                        vacInDev->currentIndex() <= 0 ? QString() : vacInDev->currentText());
+                });
         connect(vacDev, &QComboBox::activated, engine_,
                 [this, vacDev](int idx) {
                     // index 0 = "(none)" → clear → no RX-out direction opened

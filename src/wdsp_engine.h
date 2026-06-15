@@ -542,6 +542,17 @@ public:
     // Enable is the moot baseline; when off, the manual Enable applies.
     bool    vac1AutoDigital() const       { return vac1AutoDigital_; }
     Q_INVOKABLE QStringList vac1OutputDevices() const;
+    // #158 DL-3 — Thetis-faithful "Driver" (host-API) + PortAudio device
+    // pickers.  vac1HostApiNames() lists host APIs that have devices (parallel
+    // PA indices via vac1HostApiPaIndices()); the *For(hostApi) lists drive the
+    // Settings Driver→device repopulation; the no-arg vac1{Out,In}putDevices()
+    // above enumerate the currently-selected host API.
+    Q_INVOKABLE QStringList vac1HostApiNames() const;
+    QList<int>              vac1HostApiPaIndices() const;
+    Q_INVOKABLE QStringList vac1OutputDevicesFor(int paHostApi) const;
+    Q_INVOKABLE QStringList vac1InputDevicesFor(int paHostApi) const;
+    QString                 vac1HostApiName() const { return vac1HostApiName_; }
+    Q_INVOKABLE void        setVac1HostApi(const QString &name);
     Q_INVOKABLE void setVac1Enabled(bool on);
     Q_INVOKABLE void setVac1OutputDeviceName(const QString &name);
     Q_INVOKABLE void setVac1RxGainDb(double db);
@@ -972,6 +983,7 @@ private:
     bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
     QString               vac1OutName_;            // PC output device description ("" = none)
     QString               vac1InName_;             // PC input device description ("" = none)
+    QString               vac1HostApiName_;        // #158 DL-3 chosen PA host API ("" = first WASAPI)
     double                vac1TxGainDb_  = 3.0;    // VAC TX gain (reference default +3 dB) → vac_preamp
     bool                  vac1CombineInput_ = true; // mono-combine VAC-in I=Q=(L+R) (reference vac_combine_input)
     int                   vac1VacSize_   = 2048;   // VAC buffer (reference default 2048)

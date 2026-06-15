@@ -400,6 +400,8 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     vac1AutoDigital_ = s.value(QStringLiteral("vac1/autoDigital"), false).toBool();
     vac1OutName_  = s.value(QStringLiteral("vac1/outputDevice")).toString();
     vac1InName_   = s.value(QStringLiteral("vac1/inputDevice")).toString();
+    // #158 DL-3 — chosen PortAudio host API ("Driver"); empty → first WASAPI.
+    vac1HostApiName_ = s.value(QStringLiteral("vac1/hostApi")).toString();
     vac1RxGainDb_ = std::clamp(
         s.value(QStringLiteral("vac1/rxGainDb"), 0.0).toDouble(), -60.0, 20.0);
     vac1TxGainDb_ = std::clamp(
@@ -1129,29 +1131,91 @@ static int matchPaDeviceInHostApi(int hostApi, const QString &name, bool wantOut
     return partial;
 }
 
-// Resolve both VAC device names under the WASAPI host API.  Both must
-// resolve (full-duplex reference model) → true.
-static bool resolveVacPaSel(const QString &outName, const QString &inName,
-                            VacPaSel &sel)
+// #158 DL-3 — PA host-API index for a stored host-API NAME (the operator's
+// "Driver" pick).  Empty/unmatched name → first WASAPI (the DL-2 default +
+// migration path for configs saved before DL-3).  -1 if even WASAPI absent.
+// Ensures PortAudio is initialized first (idempotent), so the Settings
+// pickers populate even before the radio is connected.
+static int paHostApiIndexForName(const QString &name)
 {
-    int wasapi = -1;
+    lyra::wire::ivacInitPortAudio();
+    const int nApi = Pa_GetHostApiCount();
+    if (!name.isEmpty()) {
+        for (int i = 0; i < nApi; ++i) {
+            const PaHostApiInfo *ha = Pa_GetHostApiInfo(i);
+            if (ha && QString::fromUtf8(ha->name) == name) {
+                return i;
+            }
+        }
+    }
+    for (int i = 0; i < nApi; ++i) {   // fallback: first WASAPI
+        const PaHostApiInfo *ha = Pa_GetHostApiInfo(i);
+        if (ha && ha->type == paWASAPI) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// #158 DL-3 — host APIs exposing >=1 device: display names + parallel PA
+// indices (for the Settings "Driver" picker, Thetis-faithful).
+static void paHostApisWithDevices(QStringList &names, QList<int> &paIndices)
+{
+    lyra::wire::ivacInitPortAudio();
     const int nApi = Pa_GetHostApiCount();
     for (int i = 0; i < nApi; ++i) {
         const PaHostApiInfo *ha = Pa_GetHostApiInfo(i);
-        if (ha && ha->type == paWASAPI) {
-            wasapi = i;
-            break;
+        if (ha && ha->deviceCount > 0) {
+            names << QString::fromUtf8(ha->name);
+            paIndices << i;
         }
     }
-    if (wasapi < 0) {
+}
+
+// #158 DL-3 — device display names under one PA host API, filtered by
+// direction, in host-API-relative order (the order StartAudioIVAC's
+// Pa_HostApiDeviceIndexToDeviceIndex expects).
+static QStringList paDevicesForHostApi(int paHostApi, bool wantOutput)
+{
+    lyra::wire::ivacInitPortAudio();
+    QStringList out;
+    const PaHostApiInfo *ha = Pa_GetHostApiInfo(paHostApi);
+    if (!ha) {
+        return out;
+    }
+    for (int j = 0; j < ha->deviceCount; ++j) {
+        const int dev = Pa_HostApiDeviceIndexToDeviceIndex(paHostApi, j);
+        if (dev < 0) {
+            continue;
+        }
+        const PaDeviceInfo *di = Pa_GetDeviceInfo(dev);
+        if (!di) {
+            continue;
+        }
+        if (wantOutput ? di->maxOutputChannels <= 0 : di->maxInputChannels <= 0) {
+            continue;
+        }
+        out << QString::fromUtf8(di->name);
+    }
+    return out;
+}
+
+// Resolve both VAC device names under the operator's chosen host API (by
+// name; DL-3).  Empty/unmatched host API → first WASAPI (DL-2 behavior).
+// Both must resolve (full-duplex reference model) → true.
+static bool resolveVacPaSel(const QString &hostApiName, const QString &outName,
+                            const QString &inName, VacPaSel &sel)
+{
+    const int api = paHostApiIndexForName(hostApiName);
+    if (api < 0) {
         return false;
     }
-    const int o  = matchPaDeviceInHostApi(wasapi, outName, /*wantOutput*/ true);
-    const int in = matchPaDeviceInHostApi(wasapi, inName,  /*wantOutput*/ false);
+    const int o  = matchPaDeviceInHostApi(api, outName, /*wantOutput*/ true);
+    const int in = matchPaDeviceInHostApi(api, inName,  /*wantOutput*/ false);
     if (o < 0 || in < 0) {
         return false;
     }
-    sel.hostApi = wasapi;
+    sel.hostApi = api;
     sel.outDev  = o;
     sel.inDev   = in;
     return true;
@@ -1176,7 +1240,7 @@ void WdspEngine::rebuildVac1()
     // is restored properly at DL-4 (MOX/MON gating mutes RX→VAC during TX),
     // not by half-opening the stream.
     VacPaSel sel;
-    if (!resolveVacPaSel(vac1OutName_, vac1InName_, sel)) {
+    if (!resolveVacPaSel(vac1HostApiName_, vac1OutName_, vac1InName_, sel)) {
         emitLog(QStringLiteral("[vac1] not started — need a WASAPI-resolvable "
                                "input AND output device (out='%1' in='%2'); "
                                "DL-2 is full-duplex (both required)")
@@ -1307,9 +1371,55 @@ void WdspEngine::teardownVac1()
 
 // ── #158 — VAC1 operator controls (Settings → Audio) ─────────────────
 
+// #158 DL-3 — device lists are now PortAudio-backed (Thetis-faithful),
+// scoped to the operator's chosen "Driver" (host API).  The no-arg forms
+// (kept for the Q_INVOKABLE/QML contract) enumerate the SELECTED host API;
+// the *For(hostApi) forms drive the Settings "Driver"→device repopulation.
 QStringList WdspEngine::vac1OutputDevices() const
 {
-    return lyra::ipc::IvacAudio::outputDevices();
+    return paDevicesForHostApi(paHostApiIndexForName(vac1HostApiName_),
+                               /*wantOutput*/ true);
+}
+
+QStringList WdspEngine::vac1HostApiNames() const
+{
+    QStringList names;
+    QList<int>  idx;
+    paHostApisWithDevices(names, idx);
+    return names;
+}
+
+QList<int> WdspEngine::vac1HostApiPaIndices() const
+{
+    QStringList names;
+    QList<int>  idx;
+    paHostApisWithDevices(names, idx);
+    return idx;
+}
+
+QStringList WdspEngine::vac1OutputDevicesFor(int paHostApi) const
+{
+    return paDevicesForHostApi(paHostApi, /*wantOutput*/ true);
+}
+
+QStringList WdspEngine::vac1InputDevicesFor(int paHostApi) const
+{
+    return paDevicesForHostApi(paHostApi, /*wantOutput*/ false);
+}
+
+void WdspEngine::setVac1HostApi(const QString &name)
+{
+    if (vac1HostApiName_ == name) {
+        return;
+    }
+    vac1HostApiName_ = name;
+    QSettings().setValue(QStringLiteral("vac1/hostApi"), name);
+    // Device names are resolved under this host API at rebuild; reopen if the
+    // VAC should currently be running.
+    if (vac1ShouldBeOn()) {
+        rebuildVac1();
+    }
+    emit vac1Changed();
 }
 
 // Desired live state: in auto-digital mode VAC1 follows the operating mode
@@ -1346,7 +1456,8 @@ void WdspEngine::setVac1AutoDigital(bool on)
 
 QStringList WdspEngine::vac1InputDevices() const
 {
-    return lyra::ipc::IvacAudio::inputDevices();
+    return paDevicesForHostApi(paHostApiIndexForName(vac1HostApiName_),
+                               /*wantOutput*/ false);
 }
 
 void WdspEngine::setVac1InputDeviceName(const QString &name)
@@ -1356,7 +1467,7 @@ void WdspEngine::setVac1InputDeviceName(const QString &name)
     }
     vac1InName_ = name;
     QSettings().setValue(QStringLiteral("vac1/inputDevice"), name);
-    if (vac1Enabled_) {
+    if (vac1ShouldBeOn()) {   // DL-3 (CODEX-P2): also reopen in auto-digital mode
         rebuildVac1();   // reopen capture on the new device
     }
     emit vac1Changed();
@@ -1389,8 +1500,8 @@ void WdspEngine::setVac1OutputDeviceName(const QString &name)
     }
     vac1OutName_ = name;
     QSettings().setValue(QStringLiteral("vac1/outputDevice"), name);
-    // Device change = reopen the sink on the new device (if enabled + up).
-    if (vac1Enabled_) {
+    // Device change = reopen on the new device (if VAC should be live).
+    if (vac1ShouldBeOn()) {   // DL-3 (CODEX-P2): also reopen in auto-digital mode
         rebuildVac1();
     }
     emit vac1Changed();
