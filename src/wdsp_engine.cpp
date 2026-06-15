@@ -384,6 +384,11 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
         s.value(QStringLiteral("vac1/rxGainDb"), 0.0).toDouble(), -60.0, 20.0);
     vac1TxGainDb_ = std::clamp(
         s.value(QStringLiteral("vac1/txGainDb"), 3.0).toDouble(), -60.0, 20.0);
+    // Mono-combine the captured VAC input (I=Q=L+R) before the TX modulator,
+    // matching the reference VAC "combine input" + the TCI mic convention
+    // (#67).  Default ON so a mic routed to either VAC channel reaches the
+    // SSB modulator; OFF feeds raw stereo L->I / R->Q.
+    vac1CombineInput_ = s.value(QStringLiteral("vac1/combineInput"), true).toBool();
     cwPitchHz_ = std::clamp(
         s.value(QStringLiteral("dsp/cwPitchHz"), 600).toInt(), 200, 1500);
     // RX DSP operator state (NR + AGC mode).  Defaults match old Lyra's
@@ -1161,6 +1166,11 @@ void WdspEngine::rebuildVac1()
     // VAC TX gain (reference "Gain TX (dB)" → vac_preamp, applied by xvacIN
     // on the captured mic before the TX seam).  Default +3 dB.
     SetIVACpreamp(kVac1Id, std::pow(10.0, vac1TxGainDb_ / 20.0));
+    // VAC mono-combine (reference vac_combine_input).  ON sums the captured
+    // L+R into I=Q=(L+R) before the TX modulator — the I=Q=mono mic form the
+    // SSB chain wants (same convention as the TCI mic path, #67), robust to
+    // which channel a routed mic lands on.  OFF feeds raw stereo L->I/R->Q.
+    SetIVACcombine(kVac1Id, vac1CombineInput_ ? 1 : 0);
     // Register the VAC-in → TX bridge so the cm_main TX pump can pull mic
     // audio from rmatchIN when the mic source is "PC Soundcard (VAC1)"
     // (use_vac_audio).  Idempotent (just stores the fn ptr).
@@ -1321,6 +1331,25 @@ void WdspEngine::setVac1RxGainDb(double db)
         if (vac1Active_.load(std::memory_order_relaxed) &&
             lyra::wire::ivacGet(kVac1Id)) {
             lyra::wire::SetIVACrxscale(kVac1Id, std::pow(10.0, db / 20.0));
+        }
+    }
+    emit vac1Changed();
+}
+
+void WdspEngine::setVac1CombineInput(bool on)
+{
+    if (vac1CombineInput_ == on) {
+        return;
+    }
+    vac1CombineInput_ = on;
+    QSettings().setValue(QStringLiteral("vac1/combineInput"), on);
+    // LIVE — no rebuild: push straight to the running engine (xvacIN reads
+    // vac_combine_input each block).  Guarded against a concurrent teardown.
+    {
+        std::lock_guard<std::mutex> lk(vacMtx_);
+        if (vac1Active_.load(std::memory_order_relaxed) &&
+            lyra::wire::ivacGet(kVac1Id)) {
+            lyra::wire::SetIVACcombine(kVac1Id, on ? 1 : 0);
         }
     }
     emit vac1Changed();

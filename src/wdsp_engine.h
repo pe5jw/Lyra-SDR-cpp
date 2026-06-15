@@ -554,6 +554,8 @@ public:
     Q_INVOKABLE QStringList vac1InputDevices() const;
     Q_INVOKABLE void setVac1InputDeviceName(const QString &name);
     Q_INVOKABLE void setVac1TxGainDb(double db);
+    bool    vac1CombineInput() const      { return vac1CombineInput_; }
+    Q_INVOKABLE void setVac1CombineInput(bool on);
 
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
@@ -968,6 +970,7 @@ private:
     QString               vac1OutName_;            // PC output device description ("" = none)
     QString               vac1InName_;             // PC input device description ("" = none)
     double                vac1TxGainDb_  = 3.0;    // VAC TX gain (reference default +3 dB) → vac_preamp
+    bool                  vac1CombineInput_ = true; // mono-combine VAC-in I=Q=(L+R) (reference vac_combine_input)
     int                   vac1VacSize_   = 2048;   // VAC buffer (reference default 2048)
     int                   vac1LatencyMs_ = 120;    // rmatchV ring depth (reference VAC default)
     // VAC RX gain (reference "Gain RX (dB)" → vac_rx_scale → SetIVACrxscale

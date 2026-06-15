@@ -267,6 +267,15 @@ QWidget *SettingsDialog::buildAudioTab() {
             "the transmitter (reference default +3 dB)."));
         vf->addRow(tr("TX gain"), vacTxGain);
 
+        auto *vacCombine = new QCheckBox(tr("Combine input (mono)"), grp);
+        vacCombine->setChecked(engine_->vac1CombineInput());
+        vacCombine->setToolTip(tr("Sum the captured left + right channels to "
+            "mono before the transmitter, so a mic or app feeding either "
+            "channel reaches the modulator. Leave ON for a voice mic or any "
+            "mono source (recommended). Turn OFF only if you intentionally "
+            "feed true stereo I/Q over the cable."));
+        vf->addRow(QString(), vacCombine);
+
         // → engine (each applies live + persists)
         connect(vacEnable, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1Enabled(on); });
@@ -286,10 +295,12 @@ QWidget *SettingsDialog::buildAudioTab() {
                 });
         connect(vacTxGain, qOverload<int>(&QSpinBox::valueChanged), engine_,
                 [this](int db) { engine_->setVac1TxGainDb(db); });
+        connect(vacCombine, &QCheckBox::toggled, engine_,
+                [this](bool on) { engine_->setVac1CombineInput(on); });
 
         // ← engine (reflect programmatic/external changes)
         connect(engine_, &lyra::dsp::WdspEngine::vac1Changed, grp,
-                [this, vacEnable, vacAuto, vacGain, vacTxGain]() {
+                [this, vacEnable, vacAuto, vacGain, vacTxGain, vacCombine]() {
                     if (vacEnable->isChecked() != engine_->vac1Enabled()) {
                         vacEnable->blockSignals(true);
                         vacEnable->setChecked(engine_->vac1Enabled());
@@ -311,6 +322,11 @@ QWidget *SettingsDialog::buildAudioTab() {
                         vacTxGain->blockSignals(true);
                         vacTxGain->setValue(ti);
                         vacTxGain->blockSignals(false);
+                    }
+                    if (vacCombine->isChecked() != engine_->vac1CombineInput()) {
+                        vacCombine->blockSignals(true);
+                        vacCombine->setChecked(engine_->vac1CombineInput());
+                        vacCombine->blockSignals(false);
                     }
                 });
 
