@@ -221,12 +221,9 @@ qt_add_executable(lyra
     src/profile/ProfileManager.cpp
     src/profileui.h
     src/profileui.cpp
-    # #158 Stage 2 — Qt device I/O for the IVAC engine (lyra::ipc::IvacAudio).
-    # VAC-out QAudioSink (drain rmatchOUT) + VAC-in QAudioSource (feed
-    # rmatchIN); kept OUT of wire/ so Qt never enters the C-style
-    # ChannelMaster layer.  Wire-INERT through Stage 2 (no RX/TX tap yet).
-    src/ivac_audio.h
-    src/ivac_audio.cpp
+    # #158 DL-5 — src/ivac_audio.{h,cpp} (the Qt two-stream device layer)
+    # RETIRED: the device layer is the reference's single full-duplex
+    # PortAudio stream in wire/Ivac (DL-2); enumeration is PortAudio (DL-3).
     # TX-rip Phase 1 step 1c-f — ps/ empty skeletons (Rule 10:
     # present from v0.2 but empty/inert; v0.3 PureSignal fills).
     # Populated in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §9.
@@ -543,33 +540,10 @@ if(MSVC)
     target_compile_options(test_ivac PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
-# #158 Stage 2 — unit test for the IVAC Qt device layer (IvacAudio
-# converters: double<->int16 + mono-accumulate + vac_size blocking),
-# exercised against a live wire/Ivac engine with NO real devices via
-# start(-1,-1).  Links src/ivac_audio.{h,cpp} on top of the same wire/
-# TUs test_ivac needs; Qt Multimedia for QAudioFormat/Sink/Source/
-# QMediaDevices that ivac_audio.cpp references (never called here).
-add_executable(test_ivac_audio EXCLUDE_FROM_ALL
-    scratch/test_ivac_audio.cpp
-    src/ivac_audio.h
-    src/ivac_audio.cpp
-    src/wire/Ivac.h
-    src/wire/Ivac.cpp
-    src/wire/AAMix.h
-    src/wire/AAMix.cpp
-    src/wire/cmcomm.h
-    src/wire/cmcomm.cpp
-    src/wire/cmsetup.h
-    src/wire/cmsetup.cpp
-    src/wire/wdspcalls.h
-    src/wire/wdspcalls.cpp
-)
-target_include_directories(test_ivac_audio PRIVATE src)
-target_link_libraries(test_ivac_audio PRIVATE Qt6::Core Qt6::Multimedia)
-set_target_properties(test_ivac_audio PROPERTIES AUTOMOC ON)
-if(MSVC)
-    target_compile_options(test_ivac_audio PRIVATE /utf-8 /Zc:preprocessor)
-endif()
+# #158 DL-5 — the test_ivac_audio target retired with src/ivac_audio.{h,cpp}
+# (the Qt two-stream device layer it exercised).  The device layer is now the
+# reference's single full-duplex PortAudio stream (wire/Ivac, DL-1/DL-2); the
+# DL-0 scratch/test_portaudio + the operator HL2 bench cover it.
 
 # #158 DL-0 — PortAudio link/init smoke for the device-layer rebuild.
 # EXCLUDE_FROM_ALL; built on demand via

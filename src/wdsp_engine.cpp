@@ -15,7 +15,6 @@
 #include "wire/ObBuffs.h" // P4.b — OutBound(0,…): RX audio → r1 ring → ob_main → sendOutbound (the asioOUT-pattern tee, cmasio.c:137-145)
 #include "wire/Ivac.h"   // #158 — create_ivac / destroy_ivac / xvacOUT / xvacIN / ivacGet
 #include "wire/CMaster.h" // #158 Stage 4 — SendpInboundVacTxAudio (VAC-in seam)
-#include "ivac_audio.h"  // #158 Stage 3 — lyra::ipc::IvacAudio (VAC1 Qt device layer)
 #include <QDataStream>
 #include <QDateTime>
 #include <QDebug>

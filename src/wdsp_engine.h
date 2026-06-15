@@ -46,10 +46,6 @@ class QAudioSink;
 // the incomplete struct here keeps windows.h out of this header).
 namespace lyra::wire { struct _aamix; typedef struct _aamix aamix, *AAMIX; }
 
-// #158 Stage 3 — the Qt device layer for VAC1 (full type in
-// src/ivac_audio.h; .cpp-only, so a forward decl keeps this header light).
-namespace lyra::ipc { class IvacAudio; }
-
 namespace lyra::dsp {
 
 // Defined in wdsp_engine.cpp — a QIODevice the QAudioSink pulls audio
