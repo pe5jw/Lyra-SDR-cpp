@@ -227,13 +227,20 @@ QWidget *SettingsDialog::buildAudioTab() {
         vf->addRow(vacAuto);
 
         auto *vacDev = new QComboBox(grp);
+        vacDev->addItem(tr("(none)"));
         vacDev->addItems(engine_->vac1OutputDevices());
         {
             const int i = vacDev->findText(engine_->vac1OutputDeviceName());
-            if (i >= 0) vacDev->setCurrentIndex(i);
+            vacDev->setCurrentIndex(i >= 0 ? i : 0);
         }
-        vacDev->setToolTip(tr("PC output device the RX audio is sent to — "
-                              "the virtual cable's playback endpoint."));
+        vacDev->setToolTip(tr(
+            "PC output device the RX audio is sent to (the cable's playback "
+            "endpoint, for a digital-mode app to decode).\n\n"
+            "Set to “(none)” if you only TRANSMIT through VAC (mic / DAW → "
+            "TX) and don't need RX audio on the PC.  This path plays "
+            "independent of the monitor Mute, so pointing it at your real "
+            "speakers makes RX audio play there uncontrollably — choose a "
+            "virtual cable or “(none)”, not your speakers."));
         vf->addRow(tr("Output device"), vacDev);
 
         auto *vacGain = new QSpinBox(grp);
@@ -286,8 +293,10 @@ QWidget *SettingsDialog::buildAudioTab() {
         connect(vacAuto, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1AutoDigital(on); });
         connect(vacDev, &QComboBox::activated, engine_,
-                [this, vacDev](int) {
-                    engine_->setVac1OutputDeviceName(vacDev->currentText());
+                [this, vacDev](int idx) {
+                    // index 0 = "(none)" → clear → no RX-out direction opened
+                    engine_->setVac1OutputDeviceName(
+                        idx <= 0 ? QString() : vacDev->currentText());
                 });
         connect(vacGain, qOverload<int>(&QSpinBox::valueChanged), engine_,
                 [this](int db) { engine_->setVac1RxGainDb(db); });
