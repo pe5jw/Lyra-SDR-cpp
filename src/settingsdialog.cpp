@@ -203,13 +203,17 @@ QWidget *SettingsDialog::buildAudioTab() {
         auto *grp = new QGroupBox(tr("Virtual Audio Cable (VAC1)"), page);
         auto *vf  = new QFormLayout(grp);
 
-        auto *vacEnable = new QCheckBox(tr("Enable VAC1 (RX audio → PC)"), grp);
+        auto *vacEnable = new QCheckBox(tr("Enable VAC1 (RX→PC and PC→TX)"), grp);
         vacEnable->setChecked(engine_->vac1Enabled());
         vacEnable->setToolTip(tr(
-            "Send receiver audio to a PC output device (e.g. a virtual "
-            "audio cable) so a digital-mode app can decode it while your "
-            "normal monitor keeps playing.  Point the app's input at the "
-            "cable's recording side."));
+            "Master switch for VAC1 — powers BOTH directions:\n"
+            "  • RX→PC: receiver audio to the Output device (for a "
+            "digital-mode app to decode), and\n"
+            "  • PC→TX: capture from the Input device (to transmit from a "
+            "soundcard / virtual cable / mic).\n\n"
+            "Required to transmit through VAC — tick this even if you only "
+            "use the TX (mic-in) direction.  Without it the VAC engine never "
+            "starts and there is no TX audio."));
         vf->addRow(vacEnable);
 
         auto *vacAuto = new QCheckBox(
