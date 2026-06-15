@@ -228,6 +228,28 @@ void IvacAudio::pushCaptureInt16(const qint16 *in, int nframes) {
     if (!a || vacSize_ <= 0)
         return;
 
+    // #158 diag — prove the QAudioSource capture is actually delivering
+    // samples to the IN ring (readyRead firing) and at what level.  peak=0
+    // with a moving Windows recording meter => Qt isn't getting the audio;
+    // no line at all => readyRead never fires.  Rate-limited ~1/s, INFO so
+    // it lands in lyra-log.txt without debug logging.
+    {
+        static long long capFrames = 0;
+        static int       capPeak   = 0;
+        for (int f = 0; f < nframes; ++f) {
+            int l = in[f * 2 + 0]; if (l < 0) l = -l;
+            int r = in[f * 2 + 1]; if (r < 0) r = -r;
+            if (l > capPeak) capPeak = l;
+            if (r > capPeak) capPeak = r;
+        }
+        capFrames += nframes;
+        if (capFrames >= vacRate_) {
+            qInfo("[vac1] capture: %lld frames/s, peak %d/32767 (%.1f%%)",
+                  capFrames, capPeak, capPeak * 100.0 / 32767.0);
+            capFrames = 0; capPeak = 0;
+        }
+    }
+
     for (int f = 0; f < nframes; ++f) {
         capAccum_.push_back(in[f * 2 + 0] / 32768.0);
         capAccum_.push_back(in[f * 2 + 1] / 32768.0);

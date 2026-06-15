@@ -61,7 +61,7 @@ lyra::dsp::WdspEngine* g_aamixOutboundSelf = nullptr;
 // expects; runs on the TX pump thread (the rmatchV ring decouples it from
 // the Qt capture thread).  VAC1 = id 0; xvacIN fills a->mic_size complex,
 // which equals the xcm_insize the pump passes (both = getbuffsize(48000)).
-void vacInboundCb(int /*nsamples*/, double *buff)
+void vacInboundCb(int nsamples, double *buff)
 {
     // SAFETY: if VAC1 isn't instantiated (operator picked the PC mic source
     // but didn't enable VAC1 in Settings), do NOT touch buff — the cm_main
@@ -69,6 +69,26 @@ void vacInboundCb(int /*nsamples*/, double *buff)
     // pvac[0].  When VAC1 is live, xvacIN drains rmatchIN into buff.
     if (lyra::wire::ivacGet(0 /*VAC1 id*/) != nullptr) {
         lyra::wire::xvacIN(0, buff, /*bypass*/0);
+        // #158 diag — this callback only fires when the xmtr's use_vac_audio
+        // is set (xcmaster case 1), so its presence proves the VAC mic source
+        // is the live TX source; the peak proves whether real audio arrived.
+        // Rate-limited to ~1/s (mic rate 48 kHz).  INFO so it lands in
+        // lyra-log.txt without debug logging.
+        static long long drnSamps = 0;
+        static long long drnCalls = 0;
+        static double    drnPeak  = 0.0;
+        const int n2 = 2 * nsamples;
+        for (int i = 0; i < n2; ++i) {
+            const double v = buff[i] < 0.0 ? -buff[i] : buff[i];
+            if (v > drnPeak) drnPeak = v;
+        }
+        ++drnCalls;
+        drnSamps += nsamples;
+        if (drnSamps >= 48000) {
+            qInfo("[vac1] xvacIN drain (TX mic): %lld calls/s, peak %.4f",
+                  drnCalls, drnPeak);
+            drnCalls = 0; drnSamps = 0; drnPeak = 0.0;
+        }
     }
 }
 
