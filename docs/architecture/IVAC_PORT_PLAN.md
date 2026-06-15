@@ -1,25 +1,56 @@
 # IVAC / VAC Audio-Sources Port Plan (#158 → #102/#103)
 
-Status: **IN PROGRESS.** Decisions signed off 2026-06-14 (incl. PureSignal
-verified unaffected — `calcc.c`/`iqc.c` reference no audio device; PS
-feedback is a rate-configured IQ channel `SetPSFeedbackRate` calcc.c:1065).
-**Stage 0 DONE** (gate cleared — see §3 / R0). **Stage 1 DONE** (`52adff3`
-— `wire/Ivac.{h,cpp}` engine wire-inert + `test_ivac` ALL PASS; full app
-builds clean).  **Stage 2 DONE** (`src/ivac_audio.{h,cpp}` +
-`scratch/test_ivac_audio.cpp` ALL PASS + full `lyra.exe` links clean).
-**Stage 3 DONE — BENCH-PASSED 2026-06-14** (operator HL2, 40 m FT8 →
-`Line 1 (Virtual Audio Cable)` → MSHV decoded cleanly at RX gain 0 dB
-with the monitor Volume at −60 dB — proving the VAC feed is independent
-of the monitor, the reference way).  Two bugs found + fixed during the
-bench: (a) zero-length rmatchV rings (latency never set → SetIVAC*Latency
-120 ms after create_ivac); (b) 2-input mixer starvation (TX-monitor input
-unfed → feed stream 2 silence each block).  Plus `vac_rx_scale` wired as
-the reference "Gain RX (dB)" (default 0 dB).
-**Stage 6 core landed early (operator request):** a full **Settings →
-Audio → "Virtual Audio Cable (VAC1)"** panel — Enable + output-device
-combo + RX-gain (dB) — all live + persisted (QSettings `vac1/*`); the
-env hooks (`LYRA_VAC1_*`) are now just dev overrides.  **NEXT = Stage 4
-(VAC-in LIVE).**
+Status: **VAC1 SHIPPED (v0.2.4, 2026-06-14).** RX decode + TX on-air both
+bench-passed on operator HL2+; released to GitHub. Decisions signed off
+2026-06-14 (incl. PureSignal verified unaffected — `calcc.c`/`iqc.c`
+reference no audio device; PS feedback is a rate-configured IQ channel
+`SetPSFeedbackRate` calcc.c:1065).
+
+▶ **EOD 2026-06-14 — VAC1 RX+TX complete + released. READ THIS FIRST.**
+
+Stages 0–4 + the Stage-6 core (VAC1 Settings panel) are DONE and
+operator-bench-confirmed. `main` == `tx-rebuild` == HEAD `e957f00`
+(pushed). Tag **`v0.2.4`** + GitHub release (installer + notes) published.
+
+- **Stage 0/1/2/3 DONE** (rmatchV ABI; `wire/Ivac.{h,cpp}` engine;
+  `src/ivac_audio.{h,cpp}` Qt I/O; VAC-out RX→PC bench-passed — FT8
+  decode via `Line 1`). Stage-3 bench fixed two bugs: zero-length rmatchV
+  rings (set SetIVAC*Latency 120 ms after create_ivac) + 2-input mixer
+  starvation (feed stream-2 silence each block).
+- **Stage 4 DONE — BENCH-PASSED 2026-06-14** (VAC-in PC→TX). MSHV out →
+  `Line 2` → VAC1 input → `xvacIN` → TXA → HL2 → RF. On air: worked
+  **KF2OG**, N8SDR spotted coast-to-coast on PSKReporter. TCI does PTT/
+  freq while audio rides VAC. `use_vac_audio` override in xcmaster case 1
+  (before the TCI override); mic_size = getbuffsize(48000) = 64.
+  **THE GOTCHA (now documented):** VAC TX = silent/no-power unless
+  **Settings → TX → Mic source = "PC Soundcard (VAC1)"** — the mic-source
+  selector is the single global switch; `micSource=tci` makes the TCI
+  server claim TX-audio ownership and pull from an empty TCI ring →
+  memset 0. `applyTxAudioSource` (main.cpp:644) keeps exactly one of
+  {codec mic, tci, vac} armed.
+- **Profile carries the VAC source (DONE).** `vac1Enabled /
+  vac1AutoDigital / vac1RxGainDb / vac1TxGainDb` added to `Profile`
+  (struct + JSON + sameValues + capture/apply); applied BEFORE
+  `setMicSource` so the engine is live when `use_vac_audio` arms. Devices
+  stay GLOBAL station setup. A digital/VAC profile now flips source+enable
+  as a unit; a TCI profile keeps tci.
+- **Auto-start-on-launch** Hardware opt-out (default ON) — gates the
+  launch auto-connect. Confirmed working.
+- **Docs/help updated** (USER_GUIDE.md): new "Digital modes over VAC"
+  section, mic-source VAC1, Profiles-stores-VAC, Leveler **not
+  recommended for digital modes** callout, auto-start. Shipped in the
+  v0.2.4 installer (rebuilt + release asset clobbered).
+
+**NEXT (remaining IVAC work, no longer release-blocking):**
+- **Stage 5 — TX-monitor real audio + raw IQ.** Today the VAC-out mixer
+  stream-2 (TX monitor) is fed SILENCE; Stage 5 feeds the real TX-monitor
+  audio + the raw-IQ (`iq_type`) path. `SetIVACmox`/`SetIVACmon`.
+- **Stage 7 — VAC2 (#103).** Second `Ivac` instance (id 1) + second
+  device pair + selector token `micpc2` (already in `Prefs::micSourceTokens`).
+- Stage-6 polish: per-mode buffer/latency surface (#159), SwapIQ/Use-RX2,
+  combine-input toggle if MSHV mono-routing ever needs it.
+
+— historical Stage-3/4 as-built detail follows —
 
 ▶ **RESUME (Stage 3 — VAC-out LIVE, BENCH GATE):**
 
@@ -189,7 +220,10 @@ devices (source + sink) is clean — we don't need one full-duplex stream.
   `vac1Active_` race-safety.  Operator-facing via the **VAC1 Settings
   panel** (Stage 6 core, landed early).  (TX-monitor real audio is
   Stage 5; VAC-in is Stage 4.)
-- **Stage 4 — VAC-in LIVE (PC → TX). ✅ IMPLEMENTED — AWAITING TX BENCH.**
+- **Stage 4 — VAC-in LIVE (PC → TX). ✅ DONE — BENCH-PASSED 2026-06-14**
+  (MSHV FT8 TX on air, worked KF2OG, spotted coast-to-coast; shipped
+  v0.2.4).  THE gotcha confirmed on the bench: TX is silent until mic
+  source = "PC Soundcard (VAC1)" (TCI wins as the global source otherwise).
   CMaster VAC quartet (`InboundVacTxAudio`/`use_vac_audio`/
   `SendpInboundVacTxAudio`/`SetTXVacAudio`) + the `xcmaster` `asioIN`-seam
   override (before the TCI override); VAC-in bridge `vacInboundCb → xvacIN`
