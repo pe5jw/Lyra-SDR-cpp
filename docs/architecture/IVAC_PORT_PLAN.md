@@ -464,3 +464,80 @@ active alone.  A digital-mode op typically wants BOTH (hear + transmit).
   MOX is a Stage 5 (MOX/monitor routing) refinement, not Stage 4.
 - **vac_combine_input / vac_preamp** — default unity / no-combine for the
   bench; expose with the Stage 6 UI.
+
+---
+
+## 8. DEVICE-LAYER REBUILD — PortAudio duplex (replaces the Qt two-stream substitution)
+
+**Why (deep dive 2026-06-15, operator-flagged):** the engine port (`wire/Ivac.cpp`
+rings/mixer/`xvacIN`/`xvacOUT`) is faithful, but the DEVICE layer is NOT.  The
+reference runs the VAC as **ONE full-duplex PortAudio stream** —
+`Pa_OpenStream(&Stream,&inParam,&outParam,vac_rate,vac_size,0,CallbackIVAC,id)` —
+and `CallbackIVAC` does BOTH directions every interrupt on ONE clock
+(`xrmatchIN(rmatchIN,in)` mic→TX + `xrmatchOUT(rmatchOUT,out)` RX→VAC).  Lyra
+substituted **two independent Qt streams** (`QAudioSink`+`QAudioSource`, two PC
+clocks) and never wired MOX/MON.  That mismatch is the root of: feedback/dead-Mute
+(no MOX gating + RX→device continuous, mute-independent), the **crash** (rmatchV
+rings driven by two unsynchronized clocks/threads vs one duplex callback), and the
+all-or-nothing enable.  Fix = do the device layer the reference way.
+
+**Contained scope (confirmed by recon):** `wire/Ivac.h` already carries every PA
+field except `PaStream*`/`inParam`/`outParam`; the `Set*DEVindex`/`hostAPI`/
+`PALatency`/`Exclusive`/`mox`/`mon` setters are already ported; **no resampler
+work** (`create_resamps` only builds the rmatchV rings, which exist).  Data flow
+that STAYS unchanged: RX tee (`dispatchAudioFrame`→`xvacOUT(1)`→AAMix→`xvac_out`→
+`rmatchOUT`) and the TX bridge (`vacInboundCb`→`xvacIN` drains `rmatchIN`→TX pump).
+Only the device PULL/PUSH moves from the two Qt streams to the one PA callback.
+
+**Sourcing decision (DL-0) — LOCKED 2026-06-15 ("do it like the reference"):**
+**vendor PortAudio 19.7.0 SOURCE** (the SAME version the reference bundles in its
+`lib/portaudio-19.7.0/`) into `lyra-cpp/third_party/portaudio` + `add_subdirectory`
+with `PA_BUILD_SHARED_LIBS=OFF` (→ static `portaudio` target, no DLL to ship) +
+`PA_BUILD_TESTS=OFF`/`PA_BUILD_EXAMPLES=OFF`; `target_link_libraries(lyra PRIVATE
+PortAudio)`.  PortAudio is MIT — add the notice to NOTICE.md/CREDITS.md (NOT the
+no-attribution WDSP-style rule; MIT requires the copyright notice retained).
+Windows host APIs confirmed present (wasapi/wdmks/dsound/wmme).  This is exactly
+the reference's posture (it vendors the PA source + links it; `ivac.h` →
+`#include "portaudio.h"`).  The historical option list is retained below for the
+record.
+
+Historical option list:
+  (a) vendor PortAudio SOURCE in `third_party/portaudio` + `add_subdirectory`,
+      static link (offline, reproducible, no DLL to ship) — RECOMMENDED;
+  (b) prebuilt `portaudio_x64.dll` bundled in `_native/` like the WDSP DLLs;
+  (c) FetchContent from GitHub at configure (needs network).
+Host APIs needed: WASAPI (+ WDM-KS / DirectSound / MME) on Windows.
+
+**Stages (each builds clean + revertible; DL-2 & DL-4 are the bench-gated ones):**
+- **DL-0 — PortAudio in the build.** Per the sourcing decision; expose headers +
+  link; scratch smoke (`Pa_Initialize`/`Pa_GetVersionText`/`Pa_Terminate`).  No
+  behavior change.
+- **DL-1 — Un-defer the device-I/O port (verbatim).** Add `PaStream* Stream;
+  PaStreamParameters inParam, outParam;` to the `ivac` struct; port `CallbackIVAC`
+  + `StartAudioIVAC` + `StopAudioIVAC` verbatim (ivac.c:196-371) incl. the mono→
+  stereo dupe + WASAPI-exclusive setup + `swapIQout`.  `Pa_Initialize` once at app
+  init (create_rnet-adjacent), `Pa_Terminate` at shutdown.  NOT called by
+  wdsp_engine yet (IvacAudio still live) → no behavior change.  Scratch test:
+  open+close a duplex stream on a chosen device.
+- **DL-2 — Switch wdsp_engine to PortAudio.** `rebuildVac1`: set host_api/in/out
+  dev indices + pa latency + exclusive from the operator's choice, then
+  `StartAudioIVAC`; `teardownVac1`: `StopAudioIVAC`.  Drop the `IvacAudio` member.
+  RX tee + `xvacIN` bridge unchanged.  **BENCH-GATED.**
+- **DL-3 — Device enumeration + Settings pickers via PortAudio.** Replace the
+  QMediaDevices `vac1{Output,Input}Devices()` with PA host-API+device enumeration;
+  Settings combos list PA devices grouped by host API (Thetis-style) + a host-API
+  picker; persist host_api + dev (by name, resolve at start).  Keep "(none)".
+- **DL-4 — Wire MOX/MON.** `SetIVACmox` off the PTT FSM MOX edge (RX muted out of
+  VAC during TX, reference behavior); `SetIVACmon` from a monitor toggle (default
+  off).  Remove the `vacMonSilence_` starvation hack (mixer "what" flags handle it).
+  **BENCH-GATED.**
+- **DL-5 — Retire `src/ivac_audio.{h,cpp}`** (two-stream layer) from the build.
+  Mono/channel adaptation now comes from `CallbackIVAC`.
+- **DL-6 — Operator HL2 bench + release.** VAC TX (DAW/mic→TX) clean, no feedback,
+  Mute correct (RX muted on TX), no crash; RX→VAC decode intact; stop/start +
+  toggle stable; Brent + Timmy confirm.  Then cut the release (v0.3.0 or v0.2.6).
+
+**Keep the shipped v0.2.5 as-is** while this is built on the branch; interim fixes
+(relabel `88bdab1` / combine `b57bd09` / output-"(none)" `a01d308`) remain until
+DL supersedes them.  No-attribution rule applies (RF/first-principles terms in
+shipped code/comments/commits; provenance only here).

@@ -47,6 +47,20 @@ find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widg
 # falls back to D3D12 -> OpenGL transparently per FEATURES.md §0).
 find_package(Vulkan QUIET)
 
+# --- PortAudio (#158 device-layer rebuild, DL-0) ----------------------
+# Vendored PortAudio 19.7.0 SOURCE (third_party/portaudio) — the SAME
+# version the reference bundles — static-linked into lyra.exe.  This is
+# the full-duplex host-audio engine for the IVAC device layer: ONE
+# duplex stream + one callback doing both directions on one clock
+# (replacing the two independent Qt streams).  Static (PA_BUILD_SHARED_LIBS
+# OFF) so there is no extra DLL to ship; tests/examples off.  MIT-licensed
+# (third_party/portaudio/LICENSE.txt; notice retained in NOTICE.md/
+# CREDITS.md — distinct from the WDSP no-attribution posture).
+set(PA_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(PA_BUILD_TESTS       OFF CACHE BOOL "" FORCE)
+set(PA_BUILD_EXAMPLES    OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/portaudio EXCLUDE_FROM_ALL)
+
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(lyra
@@ -361,6 +375,11 @@ target_link_libraries(lyra PRIVATE
     Qt6::Widgets
     Qt6::QuickWidgets
     Qt6::WebSockets
+    # #158 DL-0 — vendored static PortAudio (full-duplex IVAC device
+    # layer).  Carries its own PUBLIC include dir (portaudio.h) + the
+    # Windows host-API system libs (winmm/ole32/uuid/setupapi) as
+    # transitive static-link deps.
+    portaudio
 )
 
 # TX-rip Phase 1 step 1c — put `src/` on the include path so the
@@ -550,4 +569,16 @@ target_link_libraries(test_ivac_audio PRIVATE Qt6::Core Qt6::Multimedia)
 set_target_properties(test_ivac_audio PROPERTIES AUTOMOC ON)
 if(MSVC)
     target_compile_options(test_ivac_audio PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #158 DL-0 — PortAudio link/init smoke for the device-layer rebuild.
+# EXCLUDE_FROM_ALL; built on demand via
+# `cmake --build build --target test_portaudio`.  Proves the vendored
+# static PortAudio (third_party/portaudio) compiles + links + its header
+# resolves + it initialises on this host, BEFORE any IVAC device-I/O port
+# (DL-1).  No Qt, no Lyra TUs — just the PortAudio surface.
+add_executable(test_portaudio EXCLUDE_FROM_ALL scratch/test_portaudio.cpp)
+target_link_libraries(test_portaudio PRIVATE portaudio)
+if(MSVC)
+    target_compile_options(test_portaudio PRIVATE /utf-8 /Zc:preprocessor)
 endif()

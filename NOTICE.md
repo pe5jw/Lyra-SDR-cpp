@@ -170,6 +170,22 @@ header, please open an issue at the Lyra-cpp GitHub repository.
 
 ---
 
+## PortAudio (vendored, MIT license)
+
+Lyra-cpp vendors the **PortAudio 19.7.0** source under
+`third_party/portaudio/` and links it statically to drive the
+host-audio device layer for the Virtual Audio Cable engine
+(the full-duplex callback that bridges the PC sound devices to
+the IVAC rings).  PortAudio is © 1999-2006 Ross Bencina and
+Phil Burk and is distributed under the MIT license; its full
+license text is preserved verbatim at
+`third_party/portaudio/LICENSE.txt`.  PortAudio's MIT terms are
+compatible with Lyra-cpp's GPL v3+.  Unlike the WDSP/reference
+ports, PortAudio is unmodified upstream source — its copyright
+notice is retained as the MIT license requires.
+
+---
+
 ## Project author
 
 **Lyra-cpp** is N8SDR (Rick Langford)'s project, building on
