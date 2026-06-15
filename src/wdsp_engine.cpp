@@ -1081,43 +1081,80 @@ void WdspEngine::applyVacEnvOnce()
 // Resolve the persisted device description to a current QMediaDevices
 // output index: exact match first, then case-insensitive substring (so an
 // env/legacy short name still resolves).  -1 if not present.
-static int resolveVacOutIndex(const QString &name)
+// #158 DL-2 — resolve the operator's chosen VAC device NAMES (still the
+// Qt QMediaDevices descriptions the Settings combos list; DL-3 swaps those
+// for native PA enumeration) to PortAudio (host-API, host-API-RELATIVE
+// device) indices for StartAudioIVAC.  The reference runs the VAC as ONE
+// full-duplex stream on ONE host API, so input AND output must resolve
+// under the SAME host API — we use WASAPI (the operator's VAC cables + the
+// reference's posture; PA WASAPI device names are the Windows endpoint
+// friendly names Qt also shows, so the strings match for VB/VAC cables).
+// Name match: exact first, then case-insensitive either-contains.
+struct VacPaSel { int hostApi = -1; int outDev = -1; int inDev = -1; };
+
+// Host-API-relative device index whose PA name matches `name` and that has
+// the wanted direction's channels; -1 if none.
+static int matchPaDeviceInHostApi(int hostApi, const QString &name, bool wantOutput)
 {
     if (name.isEmpty()) {
         return -1;
     }
-    const QStringList outs = lyra::ipc::IvacAudio::outputDevices();
-    for (int i = 0; i < outs.size(); ++i) {
-        if (outs[i] == name) {
-            return i;
+    const PaHostApiInfo *ha = Pa_GetHostApiInfo(hostApi);
+    if (!ha) {
+        return -1;
+    }
+    int partial = -1;
+    for (int j = 0; j < ha->deviceCount; ++j) {
+        const int dev = Pa_HostApiDeviceIndexToDeviceIndex(hostApi, j);
+        if (dev < 0) {
+            continue;
+        }
+        const PaDeviceInfo *di = Pa_GetDeviceInfo(dev);
+        if (!di) {
+            continue;
+        }
+        if (wantOutput ? di->maxOutputChannels <= 0 : di->maxInputChannels <= 0) {
+            continue;
+        }
+        const QString dn = QString::fromUtf8(di->name);
+        if (dn == name) {
+            return j;  // exact wins
+        }
+        if (partial < 0 &&
+            (dn.contains(name, Qt::CaseInsensitive) ||
+             name.contains(dn, Qt::CaseInsensitive))) {
+            partial = j;
         }
     }
-    for (int i = 0; i < outs.size(); ++i) {
-        if (outs[i].contains(name, Qt::CaseInsensitive)) {
-            return i;
-        }
-    }
-    return -1;
+    return partial;
 }
 
-// Same, for the VAC-in capture device (PC recording endpoints).
-static int resolveVacInIndex(const QString &name)
+// Resolve both VAC device names under the WASAPI host API.  Both must
+// resolve (full-duplex reference model) → true.
+static bool resolveVacPaSel(const QString &outName, const QString &inName,
+                            VacPaSel &sel)
 {
-    if (name.isEmpty()) {
-        return -1;
-    }
-    const QStringList ins = lyra::ipc::IvacAudio::inputDevices();
-    for (int i = 0; i < ins.size(); ++i) {
-        if (ins[i] == name) {
-            return i;
+    int wasapi = -1;
+    const int nApi = Pa_GetHostApiCount();
+    for (int i = 0; i < nApi; ++i) {
+        const PaHostApiInfo *ha = Pa_GetHostApiInfo(i);
+        if (ha && ha->type == paWASAPI) {
+            wasapi = i;
+            break;
         }
     }
-    for (int i = 0; i < ins.size(); ++i) {
-        if (ins[i].contains(name, Qt::CaseInsensitive)) {
-            return i;
-        }
+    if (wasapi < 0) {
+        return false;
     }
-    return -1;
+    const int o  = matchPaDeviceInHostApi(wasapi, outName, /*wantOutput*/ true);
+    const int in = matchPaDeviceInHostApi(wasapi, inName,  /*wantOutput*/ false);
+    if (o < 0 || in < 0) {
+        return false;
+    }
+    sel.hostApi = wasapi;
+    sel.outDev  = o;
+    sel.inDev   = in;
+    return true;
 }
 
 // (Re)build the VAC1 engine + Qt device layer for the CURRENT RX audio
@@ -1132,12 +1169,19 @@ void WdspEngine::rebuildVac1()
     if (!vac1ShouldBeOn() || outSize_ <= 0) {
         return;
     }
-    // Resolve the chosen PC devices — either may be unset.  VAC-out (RX
-    // decode) needs an output device; VAC-in (mic/digital → TX) needs an
-    // input device.  Need at least one, else nothing to open (quiet no-op).
-    const int outIdx = resolveVacOutIndex(vac1OutName_);
-    const int inIdx  = resolveVacInIndex(vac1InName_);
-    if (outIdx < 0 && inIdx < 0) {
+    // #158 DL-2 — resolve the chosen VAC devices to PortAudio indices.  The
+    // reference VAC is ONE full-duplex stream, so BOTH an input AND an output
+    // device are required, under one WASAPI host API.  The shipped
+    // transmit-only "(none)" output is NOT available here — TX-without-feedback
+    // is restored properly at DL-4 (MOX/MON gating mutes RX→VAC during TX),
+    // not by half-opening the stream.
+    VacPaSel sel;
+    if (!resolveVacPaSel(vac1OutName_, vac1InName_, sel)) {
+        emitLog(QStringLiteral("[vac1] not started — need a WASAPI-resolvable "
+                               "input AND output device (out='%1' in='%2'); "
+                               "DL-2 is full-duplex (both required)")
+                    .arg(vac1OutName_.isEmpty() ? QStringLiteral("(unset)") : vac1OutName_,
+                         vac1InName_.isEmpty()  ? QStringLiteral("(unset)") : vac1InName_));
         return;
     }
 
@@ -1201,13 +1245,31 @@ void WdspEngine::rebuildVac1()
     // BEFORE vac1Active_ goes true, so the mix-thread read is always valid.
     vacMonSilence_.assign(static_cast<size_t>(2 * outSize_), 0.0);
 
-    vac1_ = new lyra::ipc::IvacAudio(kVac1Id);
-    const bool ok = vac1_->start(outIdx, inIdx);  // out and/or in (either -1)
-    if (!ok) {
-        emitLog(QStringLiteral("[vac1] device open FAILED (out='%1' in='%2'); "
-                               "VAC off this session").arg(vac1OutName_, vac1InName_));
-        delete vac1_;
-        vac1_ = nullptr;
+    // #158 DL-2 — device layer = the reference's ONE full-duplex PortAudio
+    // stream (CallbackIVAC does mic→rmatchIN + rmatchOUT→RX every interrupt on
+    // ONE clock), replacing the two independent Qt streams.  Push the PA
+    // device selection onto the engine, then StartAudioIVAC opens + starts the
+    // duplex stream.  pa_*_latency = the PA suggestedLatency hint (separate
+    // from the rmatchV ring depth set above); exclusive off (VAC cables run
+    // shared-mode).
+    SetIVAChostAPIindex(kVac1Id, sel.hostApi);
+    SetIVACoutputDEVindex(kVac1Id, sel.outDev);
+    SetIVACinputDEVindex(kVac1Id, sel.inDev);
+    {
+        const double paLatSec = vac1LatencyMs_ / 1000.0;
+        SetIVACPAOutLatency(kVac1Id, paLatSec, /*reset*/1);
+        SetIVACPAInLatency(kVac1Id,  paLatSec, /*reset*/1);
+    }
+    SetIVACExclusiveOut(kVac1Id, 0);
+    SetIVACExclusiveIn(kVac1Id, 0);
+
+    const int rc = StartAudioIVAC(kVac1Id);   // 1 = open + start OK
+    if (rc != 1) {
+        emitLog(QStringLiteral("[vac1] PortAudio open FAILED (rc=%1; out='%2' "
+                               "in='%3' hostApi=%4 out#%5 in#%6); VAC off this "
+                               "session").arg(rc).arg(vac1OutName_, vac1InName_)
+                    .arg(sel.hostApi).arg(sel.outDev).arg(sel.inDev));
+        StopAudioIVAC(kVac1Id);   // null-safe close if OpenStream succeeded then StartStream failed
         destroy_ivac(kVac1Id);
         return;
     }
@@ -1215,31 +1277,30 @@ void WdspEngine::rebuildVac1()
         std::lock_guard<std::mutex> lk(vacMtx_);
         vac1Active_.store(true, std::memory_order_release);
     }
-    emitLog(QStringLiteral("[vac1] LIVE: out='%1' (RX gain %2 dB) | in='%3' "
-                           "(TX gain %4 dB) | %5 Hz, vac %6")
-                .arg(outIdx >= 0 ? vac1OutName_ : QStringLiteral("(none)"))
-                .arg(vac1RxGainDb_)
-                .arg(inIdx >= 0 ? vac1InName_ : QStringLiteral("(none)"))
-                .arg(vac1TxGainDb_).arg(cfg_.outRate).arg(vac1VacSize_));
+    emitLog(QStringLiteral("[vac1] LIVE (PortAudio duplex): out='%1' (RX gain "
+                           "%2 dB) | in='%3' (TX gain %4 dB) | %5 Hz, vac %6")
+                .arg(vac1OutName_).arg(vac1RxGainDb_)
+                .arg(vac1InName_).arg(vac1TxGainDb_)
+                .arg(cfg_.outRate).arg(vac1VacSize_));
 }
 
 // Stop the VAC-out tee + device + engine instance.  Idempotent.  Main
 // thread only.  Order is the load-bearing part: clear vac1Active_ under
 // vacMtx_ FIRST (so the mix thread's dispatchAudioFrame stops calling
-// xvacOUT), THEN stop IvacAudio (joins the QAudioSink so its render
-// thread stops draining rmatchOUT), THEN destroy_ivac frees the rings.
+// xvacOUT), THEN StopAudioIVAC (Pa_CloseStream joins the duplex callback so
+// it stops draining rmatchOUT / filling rmatchIN), THEN destroy_ivac frees
+// the rings.
 void WdspEngine::teardownVac1()
 {
     {
         std::lock_guard<std::mutex> lk(vacMtx_);
         vac1Active_.store(false, std::memory_order_release);
     }
-    if (vac1_) {
-        vac1_->stop();
-        delete vac1_;
-        vac1_ = nullptr;
-    }
+    // #158 DL-2 — close the PortAudio duplex stream before freeing the rings.
+    // StopAudioIVAC is null-safe if the stream was never opened (calloc-zeroed
+    // Stream + PA's pointer validation).
     if (lyra::wire::ivacGet(kVac1Id)) {
+        lyra::wire::StopAudioIVAC(kVac1Id);
         lyra::wire::destroy_ivac(kVac1Id);
     }
 }

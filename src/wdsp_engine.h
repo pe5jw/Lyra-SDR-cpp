@@ -957,12 +957,15 @@ private:
     // VAC-in (mic → TX) is Stage 4.
     static constexpr int kVac1Id = 0;
     void rebuildVac1();      // reconcile: teardown then (re)start iff should-be-on
-    void teardownVac1();     // stop IvacAudio + destroy_ivac; idempotent
+    void teardownVac1();     // StopAudioIVAC + destroy_ivac; idempotent
     void applyVacEnvOnce();  // read LYRA_VAC1_OUT / _VAC_SIZE once (bench hook)
     // Desired live state: auto-digital mode → on iff the current mode is
     // DIGU/DIGL; otherwise the operator's manual Enable.
     bool vac1ShouldBeOn() const;
-    lyra::ipc::IvacAudio *vac1_ = nullptr;
+    // #158 DL-2 — the device layer is the reference's single full-duplex
+    // PortAudio stream owned by the wire/Ivac engine instance (StartAudioIVAC /
+    // StopAudioIVAC on kVac1Id), NOT a Qt IvacAudio member.  IvacAudio's static
+    // outputDevices()/inputDevices() still feed the Settings combos until DL-3.
     std::atomic<bool>     vac1Active_{false};
     std::mutex            vacMtx_;
     bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
