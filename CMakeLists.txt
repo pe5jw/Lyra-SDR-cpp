@@ -181,6 +181,10 @@ qt_add_executable(lyra
     src/dsp/StreamRing.h
     src/dsp/StreamRegistry.h
     src/dsp/StreamRegistry.cpp
+    # #50 / #59 — native parametric EQ (RBJ biquad cascade; Lyra-native,
+    # not a WDSP port).  Pre-WDSP-TXA mic rack stage (TX) + post-RXA (RX).
+    src/dsp/ParamEq.h
+    src/dsp/ParamEq.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -555,4 +559,18 @@ add_executable(test_portaudio EXCLUDE_FROM_ALL scratch/test_portaudio.cpp)
 target_link_libraries(test_portaudio PRIVATE portaudio)
 if(MSVC)
     target_compile_options(test_portaudio PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #50 / #59 — native parametric EQ engine unit test (Lyra-native RBJ
+# biquad cascade; wire-INERT, no Qt — pure C++).  EXCLUDE_FROM_ALL; built
+# on demand via `cmake --build build --target test_parameq`.  Verifies the
+# cookbook math + that magnitudeDb() matches what process() applies.
+add_executable(test_parameq EXCLUDE_FROM_ALL
+    scratch/test_parameq.cpp
+    src/dsp/ParamEq.h
+    src/dsp/ParamEq.cpp
+)
+target_include_directories(test_parameq PRIVATE src)
+if(MSVC)
+    target_compile_options(test_parameq PRIVATE /utf-8 /Zc:preprocessor)
 endif()
