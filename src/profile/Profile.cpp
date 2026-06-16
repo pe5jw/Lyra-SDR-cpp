@@ -80,8 +80,8 @@ bool Profile::sameValues(const Profile &b) const {
         && dEq(micGainDb, b.micGainDb)
         && micBoost == b.micBoost
         && useTuneDrive == b.useTuneDrive
-        && tuneDrivePct == b.tuneDrivePct
-        && txDriveLevel == b.txDriveLevel
+        // tuneDrivePct / txDriveLevel deliberately excluded — per-band
+        // (BandMemory), not profile fields (see Profile.h).
         && dEq(tciRxGainDb, b.tciRxGainDb)
         && dEq(tciTxGainDb, b.tciTxGainDb)
         && vac1Enabled == b.vac1Enabled

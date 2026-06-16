@@ -490,6 +490,13 @@ public:
     static QString     micSourceTooltip(const QString &token);
     // Built-in default RX bandwidth for a mode (first run / unset).
     static int defaultBandwidthFor(const QString &mode);
+    // Bandwidth-memory key: collapses to the mode FAMILY so USB/LSB share
+    // one "SSB" bandwidth, CWU/CWL share "CW", DIGU/DIGL share "Digital"
+    // (AM/SAM/DSB/FM stand alone).  A sideband flip then changes no
+    // remembered bandwidth — it neither re-filters nor dirties an active
+    // TX profile (a profile owns its bandwidth; sideband is not a profile
+    // field).  MUST stay in sync with ProfileManager::modeFamily.
+    static QString bwFamilyKey(const QString &mode);
 
 signals:
     void gridLevelChanged();
@@ -622,10 +629,14 @@ private:
     bool    cursorReadout_;
     double  zoom_;
     QString mode_;
-    QHash<QString, int> bwByMode_;   // per-mode RX bandwidth memory
-    // TX Component 8c — per-mode TX bandwidth memory + the RX↔TX
+    // Bandwidth memory keyed by mode FAMILY (bwFamilyKey): USB/LSB share
+    // one "SSB" slot, CWU/CWL "CW", DIGU/DIGL "Digital" (AM/SAM/DSB/FM
+    // stand alone).  A sideband flip changes no remembered bandwidth.
+    // (Hash name kept for churn; the KEY is now the family, not the mode.)
+    QHash<QString, int> bwByMode_;   // per-family RX bandwidth memory
+    // TX Component 8c — per-family TX bandwidth memory + the RX↔TX
     // lock flag.  Defaults come from defaultBandwidthFor() if the
-    // operator hasn't picked a per-mode TX BW yet (fresh install).
+    // operator hasn't picked a TX BW for that family yet (fresh install).
     QHash<QString, int> txBwByMode_;
     bool                bwLocked_ = false;
     // Task #53 — shared RX+TX filter low edge.  Default 100 Hz

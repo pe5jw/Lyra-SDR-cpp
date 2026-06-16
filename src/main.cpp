@@ -700,8 +700,9 @@ int main(int argc, char *argv[])
         p.micGainDb       = stream->micGainDb();
         p.micBoost        = stream->micBoost();
         p.useTuneDrive    = prefs->useTuneDrive();
-        p.tuneDrivePct    = prefs->tuneDrivePct();
-        p.txDriveLevel    = stream->txDriveLevel();
+        // tuneDrivePct / txDriveLevel intentionally NOT captured — they are
+        // per-band (BandMemory), so capturing them made a band change dirty
+        // the profile (operator report 2026-06-16; see Profile.h).
         p.tciRxGainDb     = prefs->tciRxGainDb();
         p.tciTxGainDb     = prefs->tciTxGainDb();
         p.vac1Enabled     = wdspEngine->vac1Enabled();
@@ -742,8 +743,8 @@ int main(int argc, char *argv[])
         stream->setMicGainDb(p.micGainDb);
         stream->setMicBoost(p.micBoost);
         prefs->setUseTuneDrive(p.useTuneDrive);
-        prefs->setTuneDrivePct(p.tuneDrivePct);
-        stream->setTxDriveLevel(p.txDriveLevel);
+        // tuneDrivePct / txDriveLevel NOT applied — BandMemory owns per-band
+        // TX power + tune drive; a profile load leaves them untouched.
         prefs->setTciRxGainDb(p.tciRxGainDb);
         prefs->setTciTxGainDb(p.tciTxGainDb);
         wdspEngine->setAgcMode(p.agcMode);
@@ -779,7 +780,6 @@ int main(int argc, char *argv[])
                      &lyra::ui::Prefs::filterLowChanged,
                      &lyra::ui::Prefs::micSourceChanged,
                      &lyra::ui::Prefs::useTuneDriveChanged,
-                     &lyra::ui::Prefs::tuneDrivePctChanged,
                      &lyra::ui::Prefs::tciRxGainDbChanged,
                      &lyra::ui::Prefs::tciTxGainDbChanged})
         QObject::connect(prefs, sig, profiles,
@@ -788,8 +788,8 @@ int main(int argc, char *argv[])
                      &lyra::profile::ProfileManager::refreshModified);
     QObject::connect(stream, &lyra::ipc::HL2Stream::micBoostChanged, profiles,
                      &lyra::profile::ProfileManager::refreshModified);
-    QObject::connect(stream, &lyra::ipc::HL2Stream::txDriveLevelChanged, profiles,
-                     &lyra::profile::ProfileManager::refreshModified);
+    // txDriveLevelChanged intentionally NOT wired — TX drive is per-band
+    // (BandMemory), not a profile field, so it must not affect "modified".
     QObject::connect(stream, &lyra::ipc::HL2Stream::txTimeoutSecChanged, profiles,
                      &lyra::profile::ProfileManager::refreshModified);
     QObject::connect(stream, &lyra::ipc::HL2Stream::txTimeoutBypassChanged, profiles,

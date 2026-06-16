@@ -49,6 +49,13 @@ struct Profile {
     double  micGainDb = 0.0;
     bool    micBoost  = false;
     bool    useTuneDrive = false;
+    // RESERVED — present for JSON round-trip but NOT captured / applied /
+    // dirty-tracked.  TX drive level (TX power) + tune-drive % are PER-BAND
+    // station settings owned by BandMemory (different power per band /
+    // antenna).  Tracking them in a band-agnostic profile made every band
+    // change re-apply the band's drive and falsely flag the profile
+    // "● modified" (operator report 2026-06-16).  Kept as fields for a
+    // possible future "profile carries a default drive" opt-in.
     int     tuneDrivePct = 0;
     int     txDriveLevel = 0;  // 0..255 (the TX-power knob)
 

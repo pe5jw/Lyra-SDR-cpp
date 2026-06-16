@@ -177,21 +177,25 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     cursorReadout_    = s.value(kCursorRdt, true).toBool();
     zoom_             = std::clamp(s.value(kZoom, 1.0).toDouble(), 1.0, 32.0);
     mode_             = s.value(kRxMode, QStringLiteral("USB")).toString();
-    // Per-mode RX bandwidth: load any persisted value; modes without a
-    // stored value fall back to defaultBandwidthFor() on read.
+    // Per-FAMILY RX bandwidth (bwFamilyKey): USB/LSB share "SSB", etc.
+    // Load the family key; if absent, migrate a legacy per-exact-mode
+    // value (older installs stored "<prefix>USB" / "LSB" / …).  Families
+    // with no stored value fall back to defaultBandwidthFor() on read.
     for (const QString &m : kModes) {
-        const QVariant v = s.value(QString(kBwPrefix) + m);
-        if (v.isValid()) {
-            bwByMode_.insert(m, v.toInt());
-        }
+        const QString fam = bwFamilyKey(m);
+        if (bwByMode_.contains(fam)) continue;            // family already set
+        QVariant v = s.value(QString(kBwPrefix) + fam);   // new family key
+        if (!v.isValid()) v = s.value(QString(kBwPrefix) + m);  // legacy exact-mode
+        if (v.isValid()) bwByMode_.insert(fam, v.toInt());
     }
-    // TX Component 8c — per-mode TX bandwidth + the RX↔TX lock flag.
-    // Same fallback policy as RX BW (defaultBandwidthFor on miss).
+    // TX Component 8c — per-family TX bandwidth, same family-collapse +
+    // legacy migration as RX BW.
     for (const QString &m : kModes) {
-        const QVariant v = s.value(QString(kTxBwPrefix) + m);
-        if (v.isValid()) {
-            txBwByMode_.insert(m, v.toInt());
-        }
+        const QString fam = bwFamilyKey(m);
+        if (txBwByMode_.contains(fam)) continue;
+        QVariant v = s.value(QString(kTxBwPrefix) + fam);
+        if (!v.isValid()) v = s.value(QString(kTxBwPrefix) + m);
+        if (v.isValid()) txBwByMode_.insert(fam, v.toInt());
     }
     bwLocked_ = s.value(kBwLocked, false).toBool();
     // Task #53 — shared RX+TX filter low edge.  Clamp on load
@@ -253,6 +257,22 @@ int Prefs::defaultBandwidthFor(const QString &mode) {
     if (mode == QStringLiteral("DIGL") || mode == QStringLiteral("DIGU"))
         return 3000;
     return 2400;   // SSB (USB/LSB) + anything else
+}
+
+QString Prefs::bwFamilyKey(const QString &mode) {
+    // Bandwidth is one value per mode FAMILY, not per exact sideband:
+    // USB/LSB -> "SSB", CWU/CWL -> "CW", DIGU/DIGL -> "Digital".  So an
+    // operator's "4 kHz SSB" is 4 kHz on BOTH sidebands and a USB<->LSB
+    // flip changes nothing remembered.  Kept in sync with
+    // ProfileManager::modeFamily.
+    const QString m = mode.toUpper();
+    if (m == QStringLiteral("USB") || m == QStringLiteral("LSB"))
+        return QStringLiteral("SSB");
+    if (m == QStringLiteral("CWU") || m == QStringLiteral("CWL"))
+        return QStringLiteral("CW");
+    if (m == QStringLiteral("DIGU") || m == QStringLiteral("DIGL"))
+        return QStringLiteral("Digital");
+    return mode;   // AM / SAM / DSB / FM (+ unknown) stand alone
 }
 
 QStringList Prefs::paletteNames() const {
@@ -716,7 +736,7 @@ void Prefs::setZoom(double v) {
 }
 
 int Prefs::rxBandwidth() const {
-    return bwByMode_.value(mode_, defaultBandwidthFor(mode_));
+    return bwByMode_.value(bwFamilyKey(mode_), defaultBandwidthFor(mode_));
 }
 
 void Prefs::setMode(const QString &m) {
@@ -737,38 +757,40 @@ void Prefs::setRxBandwidth(int hz) {
     if (hz <= 0 || hz == rxBandwidth()) {
         return;
     }
-    bwByMode_.insert(mode_, hz);
-    QSettings().setValue(QString(kBwPrefix) + mode_, hz);
+    const QString key = bwFamilyKey(mode_);   // per-family, not per-sideband
+    bwByMode_.insert(key, hz);
+    QSettings().setValue(QString(kBwPrefix) + key, hz);
     emit rxBandwidthChanged();
     // TX Component 8c — when the RX↔TX lock is on, mirror this change
     // to TX without recursing into setTxBandwidth (we update the dict
     // + persist + emit directly, then exit).  Same pattern in
     // setTxBandwidth() for the reverse direction.
     if (bwLocked_ &&
-        txBwByMode_.value(mode_, defaultBandwidthFor(mode_)) != hz) {
-        txBwByMode_.insert(mode_, hz);
-        QSettings().setValue(QString(kTxBwPrefix) + mode_, hz);
+        txBwByMode_.value(key, defaultBandwidthFor(mode_)) != hz) {
+        txBwByMode_.insert(key, hz);
+        QSettings().setValue(QString(kTxBwPrefix) + key, hz);
         emit txBandwidthChanged();
     }
 }
 
 // TX Component 8c — per-mode TX bandwidth.  Reader mirrors rxBandwidth().
 int Prefs::txBandwidth() const {
-    return txBwByMode_.value(mode_, defaultBandwidthFor(mode_));
+    return txBwByMode_.value(bwFamilyKey(mode_), defaultBandwidthFor(mode_));
 }
 
 void Prefs::setTxBandwidth(int hz) {
     if (hz <= 0 || hz == txBandwidth()) {
         return;
     }
-    txBwByMode_.insert(mode_, hz);
-    QSettings().setValue(QString(kTxBwPrefix) + mode_, hz);
+    const QString key = bwFamilyKey(mode_);   // per-family, not per-sideband
+    txBwByMode_.insert(key, hz);
+    QSettings().setValue(QString(kTxBwPrefix) + key, hz);
     emit txBandwidthChanged();
     // Mirror to RX when locked.  Direct dict update — no recursion.
     if (bwLocked_ &&
-        bwByMode_.value(mode_, defaultBandwidthFor(mode_)) != hz) {
-        bwByMode_.insert(mode_, hz);
-        QSettings().setValue(QString(kBwPrefix) + mode_, hz);
+        bwByMode_.value(key, defaultBandwidthFor(mode_)) != hz) {
+        bwByMode_.insert(key, hz);
+        QSettings().setValue(QString(kBwPrefix) + key, hz);
         emit rxBandwidthChanged();
     }
 }
@@ -805,8 +827,9 @@ void Prefs::setBwLocked(bool v) {
     if (v) {
         const int rx = rxBandwidth();
         if (rx != txBandwidth()) {
-            txBwByMode_.insert(mode_, rx);
-            QSettings().setValue(QString(kTxBwPrefix) + mode_, rx);
+            const QString key = bwFamilyKey(mode_);
+            txBwByMode_.insert(key, rx);
+            QSettings().setValue(QString(kTxBwPrefix) + key, rx);
             emit txBandwidthChanged();
         }
     }
