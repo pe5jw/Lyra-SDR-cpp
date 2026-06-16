@@ -29,7 +29,7 @@ namespace lyra::profile {
 
 struct Profile {
     QString name;
-    int     schemaVersion = 1;
+    int     schemaVersion = 2;   // v2 (#160): + ALC max gain + Leveler trio
 
     // --- TX/RX bandwidth ---
     // NOTE: the operating mode is deliberately NOT a profile field.
@@ -72,6 +72,17 @@ struct Profile {
     // --- DSP / dynamics ---
     QString agcMode = QStringLiteral("med");     // off/fast/med/slow
     bool    autoMuteOnTx = true;
+
+    // --- ALC / Leveler (§15.27 setters; #160 profile round-trip) ---
+    // Operator runs the Leveler ON for SSB, OFF for digital (FT8 etc.) —
+    // so its enable+values MUST ride in the profile (operator report
+    // 2026-06-15).  Stored as the wire-native LINEAR factors §15.27 uses;
+    // defaults mirror HL2Stream (ALC ceiling 3.0, leveler off / max 15.0 /
+    // decay 100 ms) so a pre-v2 profile tolerate-loads to sane state.
+    double  alcMaxGainLinear     = 3.0;
+    bool    levelerOn            = false;
+    double  levelerMaxGainLinear = 15.0;
+    int     levelerDecayMs       = 100;
 
     // --- TX safety ---
     int     txTimeoutSec    = 600;

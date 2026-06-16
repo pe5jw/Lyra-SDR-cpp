@@ -50,6 +50,7 @@ not programmers — if you can click a menu, you can use this.
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
+  - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [Digital modes over TCI](#digital-modes-over-tci-ft8--ft4--msk144--q65--etc)
@@ -1353,6 +1354,51 @@ in real time. Dragging below 0 just pins at 0.
 > per-mode-family auto-recall). This control is the live value used
 > when no profile is active — save it into a profile to make it stick
 > per setup.
+
+### Virtual Audio Cable (VAC1)
+
+VAC1 bridges audio between Lyra and a PC sound device — typically a
+**virtual audio cable** (VB-Audio CABLE, VAC, etc.) — so a digital-mode
+or soundcard program can hear Lyra's receive audio and feed Lyra its
+transmit audio. As of **v0.3.0** both directions run on one full-duplex
+audio stream, and receive audio is automatically muted out of the cable
+while you transmit (no open-mic monitor feedback into the cable). For the
+end-to-end digital-mode wiring see
+[Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable); the
+controls here are:
+
+- **Enable VAC1 (RX→PC and PC→TX)** — master switch; powers both
+  directions at once.
+- **Auto-enable for digital modes (disable for others)** — when ticked,
+  VAC1 turns on automatically when you switch to a digital mode
+  (DIGU / DIGL) and off for every other mode, so moving into a digital
+  setup opens the cable for you.
+- **Driver** — the audio backend (PortAudio host API: **WASAPI**,
+  DirectSound, MME, or WDM-KS) the VAC devices live under. **WASAPI is the
+  right choice for virtual cables.** Changing the driver repopulates the
+  Output and Input device lists below with that backend's devices;
+  existing selections carry over by name where the device still exists.
+- **Output device** — the PC output Lyra sends RX audio to (the cable's
+  playback endpoint your digital app records from). Pick the **virtual
+  cable, not your speakers**. `(none)` leaves the RX→PC direction off.
+- **VAC RX gain** — trims the level of the RX audio Lyra feeds into the
+  cable.
+- **Input device** — the PC input Lyra reads transmit audio from (the
+  cable's recording endpoint your digital app plays into). Used **only
+  when Settings → TX → Mic source = "PC Soundcard (VAC1)"**. `(none)`
+  leaves the PC→TX direction off.
+- **VAC TX gain** — preamp on the captured PC mic audio before it enters
+  the transmit chain.
+- **Combine input (mono)** — sum the captured left + right channels to
+  mono (use when the app puts its modulator audio on a single channel).
+
+> **For a full receive-and-transmit bridge, select BOTH an Output and an
+> Input device** — leaving either on `(none)` disables that direction.
+> Transmit also requires **Settings → TX → Mic source = "PC Soundcard
+> (VAC1)"**; with the mic source on anything else (the codec mic, or TCI)
+> a VAC transmit produces **no power**. The
+> [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)
+> section walks the whole setup, including the no-power fix.
 
 ---
 

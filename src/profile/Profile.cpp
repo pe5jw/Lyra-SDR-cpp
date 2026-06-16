@@ -25,6 +25,10 @@ QJsonObject Profile::toJson() const {
     o["vac1TxGainDb"]    = vac1TxGainDb;
     o["agcMode"]       = agcMode;
     o["autoMuteOnTx"]  = autoMuteOnTx;
+    o["alcMaxGainLinear"]     = alcMaxGainLinear;
+    o["levelerOn"]            = levelerOn;
+    o["levelerMaxGainLinear"] = levelerMaxGainLinear;
+    o["levelerDecayMs"]       = levelerDecayMs;
     o["txTimeoutSec"]  = txTimeoutSec;
     o["txTimeoutBypass"] = txTimeoutBypass;
     return o;
@@ -54,6 +58,10 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("vac1TxGainDb"))    p.vac1TxGainDb    = o["vac1TxGainDb"].toDouble(p.vac1TxGainDb);
     if (o.contains("agcMode"))       p.agcMode       = o["agcMode"].toString(p.agcMode);
     if (o.contains("autoMuteOnTx"))  p.autoMuteOnTx  = o["autoMuteOnTx"].toBool(p.autoMuteOnTx);
+    if (o.contains("alcMaxGainLinear"))     p.alcMaxGainLinear     = o["alcMaxGainLinear"].toDouble(p.alcMaxGainLinear);
+    if (o.contains("levelerOn"))            p.levelerOn            = o["levelerOn"].toBool(p.levelerOn);
+    if (o.contains("levelerMaxGainLinear")) p.levelerMaxGainLinear = o["levelerMaxGainLinear"].toDouble(p.levelerMaxGainLinear);
+    if (o.contains("levelerDecayMs"))       p.levelerDecayMs       = o["levelerDecayMs"].toInt(p.levelerDecayMs);
     if (o.contains("txTimeoutSec"))  p.txTimeoutSec  = o["txTimeoutSec"].toInt(p.txTimeoutSec);
     if (o.contains("txTimeoutBypass")) p.txTimeoutBypass = o["txTimeoutBypass"].toBool(p.txTimeoutBypass);
     return p;
@@ -82,6 +90,10 @@ bool Profile::sameValues(const Profile &b) const {
         && dEq(vac1TxGainDb, b.vac1TxGainDb)
         && agcMode == b.agcMode
         && autoMuteOnTx == b.autoMuteOnTx
+        && dEq(alcMaxGainLinear, b.alcMaxGainLinear)
+        && levelerOn == b.levelerOn
+        && dEq(levelerMaxGainLinear, b.levelerMaxGainLinear)
+        && levelerDecayMs == b.levelerDecayMs
         && txTimeoutSec == b.txTimeoutSec
         && txTimeoutBypass == b.txTimeoutBypass;
 }

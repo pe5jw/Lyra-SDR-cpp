@@ -129,6 +129,44 @@ These rules were earned through the Stage B aamix.c port arc
 > (#102/#103/#104), then v0.3 PureSignal (the P0.d `_cmaster` struct
 > already carries the full PS surface — no retrofit).
 
+> ⭐ **2026-06-15 — VAC (#102/#158) SHIPPED as v0.3.0; post-P4 ordering LOCKED.**
+> The next-milestone PC/VAC mic-input path shipped: the `ivac.c` →
+> `wire/IVAC` device-layer rework (single full-duplex PortAudio stream,
+> VAC/TCI crash fixes, RX-muted-on-TX) released as **v0.3.0** (`main` ==
+> `tx-rebuild`).  **Open loose-end from that arc:** the TX MIC/ALC meters
+> were re-homed onto `GetTXAMeter(chid(1,0)=1)` *inside* the VAC work
+> ("#158 (post-DL) re-home" in `metermodel.cpp` / `wdsp_engine.cpp`) but
+> never got their own bench gate — operator reports MIC/ALC read nothing.
+> Treat as **UNVERIFIED, not done** (the WDSP-TX-chain leveler/ALC rows are
+> `[WIP] "confirm reference-parity"`).  Closing it = a deep Thetis read of
+> the TX-meter read/display path (which `txaMeterType`, which channel,
+> where in the chain) + port + bench gate.  Code-level contributors found
+> so far (candidates, NOT yet root-caused — do not patch blind): the
+> secondary-readout line is still hard-stubbed `"—"` (`formatSecondaryText`,
+> metermodel.cpp:577-582); and the AK4951 codec mic delivers zero into the
+> TXA until a rate change because the at-open seed (hl2_stream.cpp:837)
+> sets the rate bits but not `mic_decimation_factor` (defaults 0 = the
+> `++count == factor` harvest gate never fires).
+>
+> **LOCKED post-P4 feature ordering (operator decision 2026-06-15):**
+> 1. **TX MIC/ALC metering** — Thetis-reference read + port + bench
+>    (closes out the VAC arc; verify-first, counters-first per the locked
+>    methodology — do NOT patch the candidates above blind).
+> 2. **Stage F — TX DSP chain** (EQ / compressor-Combinator / leveler /
+>    ALC + their meters; broad TX value; feeds the in-flight #49 Profile
+>    Manager).
+> 3. **RX2 + Split** (#96–#101) — daily-use value, AND it builds the
+>    `(mox, ps_armed, rx2_enabled)` DDC-dispatch state machine that PS
+>    reuses (RX2 lives on DDC1; PS commandeers DDC0/DDC1 during MOX+PS).
+> 4. **PureSignal (Stage G/H, v0.3)** — LAST.  Narrowest audience (needs
+>    the HL2 hardware mod + PS gateware), deepest / most cross-cutting
+>    surface; lands on top of the dispatch foundation RX2 builds, no wire
+>    retrofit (the P0.d `_cmaster` struct already carries the PS surface).
+>    Rationale: PS gets cheaper + safer AFTER RX2, not merely
+>    lower-priority.  The plan's F-before-G was version cadence (v0.2.x
+>    dynamics → v0.3 PS), NOT a hard compile dependency — so RX2 slots
+>    between F and PS.
+
 Format: per-file or per-component row.  Status tags (ASCII so they render identically in the PDF/DOCX siblings):
 - [DONE] DONE + operator-bench-validated
 - [WIP] IN-PROGRESS (committed but not yet bench-validated, or
@@ -394,4 +432,4 @@ Stage B arc.
 
 ---
 
-*Last updated: 2026-06-08 EOD — Stage B aamix.c port shipped + bench-validated.  Next port target = operator's call.*
+*Last updated: 2026-06-15 — VAC #158 shipped as v0.3.0; post-P4 feature ordering LOCKED (TX metering → Stage F DSP chain → RX2/Split → PureSignal).  Active task: TX MIC/ALC metering close-out (deep Thetis-reference read + port + bench) — treat the meters as UNVERIFIED, not done.  See the STATUS REGISTRY banner for detail.*

@@ -570,20 +570,66 @@ QString MeterModel::formatSecondaryText(int src) const {
                    ? QStringLiteral("T —")
                    : QStringLiteral("T %1 °C").arg(c, 0, 'f', 1);
     }
-    // ── TX dynamics meter set ──
-    // TX-rip Phase 1 (Q2): TxDspWorker is being rebuilt from empty
-    // files (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).  Until the new
-    // worker lands these meters report their idle placeholder.
-    case MIC:       return QStringLiteral("MIC —");
-    case LVL_PK:    return QStringLiteral("LEV —");
-    case LVL_G:     return QStringLiteral("LVL —");
-    case ALC_PK:    return QStringLiteral("ALC —");
-    case ALC_G:     return QStringLiteral("ALC G —");
+    // ── TX dynamics meter set (#160) — live WDSP TXA reads, reference-
+    // faithful (Thetis dsp.cs CalculateTXMeter + console multimeter,
+    // verified 2026-06-15).  Thetis displays these as plain "dB" (NOT
+    // "dBFS"), clamps each to a per-meter floor (and still shows the
+    // clamped number, not "—", while keyed), and uses the AVERAGE meter
+    // for ALC.  "—" only at RX rest / NaN.  Per-meter floors:
+    //   MIC  TXA_MIC_PK (0)   floor -195   (Thetis multimeter MIC = peak)
+    //   LEV  TXA_LVLR_AV (5)  floor -195   (Thetis "Leveler" = average)
+    //   LVL  TXA_LVLR_GAIN(6) floor  0     (gain)
+    //   ALC  TXA_ALC_AV (13)  floor -30    (Thetis "ALC" = average)
+    case MIC:    return formatTxLevelSecondary(QStringLiteral("MIC"), 0,  -195.0);
+    case LVL_PK: return formatTxLevelSecondary(QStringLiteral("LEV"), 5,  -195.0);
+    case LVL_G:  return formatTxLevelSecondary(QStringLiteral("LVL"), 6,     0.0);
+    case ALC_PK: return formatTxLevelSecondary(QStringLiteral("ALC"), 13,  -30.0);
+    case ALC_G:  return formatTxAlcGSecondary();
+    // ALC_GROUP (Σ): not a defined WDSP TXA meter index in this build
+    // (computeAlcGroup feeds NaN) — honest placeholder until implemented.
     case ALC_GROUP: return QStringLiteral("ALC Σ —");
     case RX_SMETER:
     default:
         return QString();
     }
+}
+
+QString MeterModel::formatTxLevelSecondary(const QString &label,
+                                           int meterIdx,
+                                           double floorDb) const {
+    // Reference-faithful (Thetis console multimeter): the TX level/gain
+    // meters display the raw WDSP dB value clamped to a per-meter floor,
+    // labelled plain "dB".  "—" ONLY at RX rest / NaN — while keyed a
+    // quiet stage shows its floor (e.g. ALC → "-30.0 dB"), exactly as
+    // Thetis renders Math.Max(floor, value).
+    const bool keyed = stream_ && stream_->moxActive();
+    if (!keyed || !wdsp_) return QStringLiteral("%1 —").arg(label);
+    const double v = wdsp_->txMeterRaw(meterIdx);
+    if (std::isnan(v)) return QStringLiteral("%1 —").arg(label);
+    return QStringLiteral("%1 %2 dB").arg(label)
+               .arg(std::max(v, floorDb), 0, 'f', 1);
+}
+
+QString MeterModel::formatTxAlcGSecondary() const {
+    // ALC-G readout — Thetis-exact (operator decision 2026-06-15,
+    // dsp.cs:1020 + console clamp): displayed = max(0, TXA_ALC_GAIN +
+    // alcgain), where alcgain is the ALC-max-gain value handed to
+    // SetTXAALCMaxGain, added DIRECTLY (Thetis adds its Setup-spinner
+    // number as-is; it does NOT 20·log10-convert).  Lyra stores that
+    // value as alcMaxGainLinear() (§15.27) and feeds the identical
+    // number to SetTXAALCMaxGain, so adding it directly reproduces
+    // Thetis bit-for-bit.  "—" only at RX rest / NaN.
+    const bool keyed = stream_ && stream_->moxActive();
+    if (keyed && wdsp_) {
+        const double raw = wdsp_->txMeterRaw(14);
+        if (!std::isnan(raw)) {
+            const double alcMaxGain =
+                stream_ ? stream_->alcMaxGainLinear() : 3.0;
+            const double disp = std::max(0.0, raw + alcMaxGain);
+            return QStringLiteral("ALC G %1 dB").arg(disp, 0, 'f', 1);
+        }
+    }
+    return QStringLiteral("ALC G —");
 }
 
 void MeterModel::setPwrCalScale(double s) {
@@ -784,6 +830,39 @@ void MeterModel::ladderRowFor(int src, double *level, double *danger) const {
         *danger = kTempDanger / kTempFullScale;
         return;
     }
+    case MIC:
+    case ALC_PK:
+    case LVL_PK: {
+        // #160 TX level meters (only listed in srcs while keyed): dB
+        // over the -60..0 bar, danger at -6 — matches kMicDbMin/kMicDbMax
+        // + computeLevelMeterFromDb.  MIC = TXA_MIC_PK (0); ALC =
+        // TXA_ALC_AV (13); LEV = TXA_LVLR_AV (5) — the Thetis averages,
+        // not peaks.  Floor / not-keyed → empty bar.
+        const int idx = (src == MIC) ? 0 : (src == ALC_PK) ? 13 : 5;
+        const double v = wdsp_ ? wdsp_->txMeterRaw(idx)
+                               : std::numeric_limits<double>::quiet_NaN();
+        if (std::isnan(v) || v <= -300.0) return;
+        constexpr double kFloor = -60.0, kTop = 0.0, kDangerDb = -6.0;
+        const double db = std::max(v, kFloor);
+        *level  = std::clamp((db - kFloor) / (kTop - kFloor), 0.0, 1.0);
+        *danger = std::clamp((kDangerDb - kFloor) / (kTop - kFloor), 0.0, 1.0);
+        return;
+    }
+    case ALC_G: {
+        // #160 ALC-G headroom: max(0, TXA_ALC_GAIN + 20·log10(maxLin))
+        // over the 0..20 dB bar (|kGainDbMax|), danger at 6 dB —
+        // matches computeAlcG + computeGainMeterFromDb.
+        if (!wdsp_) return;
+        const double raw = wdsp_->txMeterRaw(14);
+        if (std::isnan(raw)) return;
+        const double maxLin = stream_->alcMaxGainLinear();
+        const double maxGainDb = 20.0 * std::log10(std::max(maxLin, 1e-9));
+        const double disp = std::max(0.0, raw + maxGainDb);
+        constexpr double kScale = 20.0, kDangerDb = 6.0;
+        *level  = std::clamp(disp / kScale, 0.0, 1.0);
+        *danger = kDangerDb / kScale;
+        return;
+    }
     case RX_SMETER: {
         // RX-mode hero row: reuse the active S-meter level/danger so
         // the Ladder's primary line matches what the Arc/Bar would show.
@@ -805,10 +884,17 @@ void MeterModel::buildLadderRows() {
     QList<int> srcs;
     QStringList labels;
     if (tx) {
-        // TX: full telemetry stack.  ALC / MIC / COMP get appended as
-        // the TX audio chain lands at v0.2.x.
-        srcs   = {PWR, SWR, PA_CURRENT, PA_VOLTS, TEMP};
+        // TX: full telemetry stack.  #160 — the TX audio chain has
+        // landed, so the live MIC / ALC / ALC-G rows now sit between
+        // SWR and the hardware telemetry (PA / VDD / T), matching the
+        // reference TX multimeter.  Leveler rows stay off the stack
+        // until the leveler runs (it's bypassed → would read floor);
+        // they remain selectable as secondary readouts.
+        srcs   = {PWR, SWR, MIC, ALC_PK, ALC_G, LVL_PK,
+                  PA_CURRENT, PA_VOLTS, TEMP};
         labels = {QStringLiteral("PWR"), QStringLiteral("SWR"),
+                  QStringLiteral("MIC"), QStringLiteral("ALC"),
+                  QStringLiteral("ALC G"), QStringLiteral("LEV"),
                   QStringLiteral("PA"),  QStringLiteral("VDD"),
                   QStringLiteral("T")};
     } else {
@@ -863,6 +949,33 @@ void MeterModel::tick() {
     // at zero state until that source's compute lands in a later
     // commit) — this keeps the foundation commit visually unchanged
     // for the default RX_SMETER case while leaving the dispatch ready.
+
+    // ── Counters-first TX-meter probe (#160) ──────────────────────────
+    // LYRA_TXMETER_DEBUG=1 logs the raw GetTXAMeter values ~1 Hz while
+    // transmitting, regardless of the selected meter source, so the next
+    // key-up tells us whether WDSP is handing back live values or floor/
+    // NaN — before we touch the display path.  Meter type indices (TXA.h):
+    // MIC_PK=0 MIC_AV=1 LVLR_AV=5 LVLR_GAIN=6 ALC_PK=12 ALC_AV=13
+    // ALC_GAIN=14 OUT_PK=15.  Zero cost when the env var is unset.
+    static const bool kTxMeterDbg =
+        qEnvironmentVariableIsSet("LYRA_TXMETER_DEBUG");
+    if (kTxMeterDbg && wdsp_ && stream_ && stream_->moxActive()) {
+        static int dbgCtr = 0;
+        if (++dbgCtr >= 20) {           // ~1 Hz at the 50 ms tick
+            dbgCtr = 0;
+            // qWarning (not qInfo) so the line is captured in the in-app
+            // log even when the Settings→Hardware DEBUG toggle is OFF —
+            // this is a one-shot bench probe, gated by the env var above.
+            qWarning("[TXMETER] MIC_PK=%.1f MIC_AV=%.1f ALC_PK=%.1f "
+                  "ALC_AV=%.1f ALC_GAIN=%.1f LVLR_AV=%.1f LVLR_GAIN=%.1f "
+                  "OUT_PK=%.1f",
+                  wdsp_->txMeterRaw(0),  wdsp_->txMeterRaw(1),
+                  wdsp_->txMeterRaw(12), wdsp_->txMeterRaw(13),
+                  wdsp_->txMeterRaw(14), wdsp_->txMeterRaw(5),
+                  wdsp_->txMeterRaw(6),  wdsp_->txMeterRaw(15));
+        }
+    }
+
     switch (source_) {
     case RX_SMETER:   computeSMeter();    return;
     case PWR:         computePwr();       return;
@@ -1516,19 +1629,23 @@ void MeterModel::computeGainMeterFromDb(double rawDb,
 // "—") until the new TxDspWorker lands per
 // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 void MeterModel::computeMic() {
-    // #158 (post-DL) re-home — TXA_MIC_PK (0): mic/VAC input peak, dBFS.
+    // #158 (post-DL) re-home — TXA_MIC_PK (0): mic/VAC input peak.
+    // #160: unit is plain "dB" to match Thetis (console.cs:23888); the
+    // Thetis multimeter MIC reads the peak meter, same as here.
     computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(0)
                                   : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
+                            QStringLiteral("dB"));
 }
 
 void MeterModel::computeLvlPk() {
-    // #158 (post-DL) re-home — TXA_LVLR_PK (4): leveler output peak, dBFS.
-    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(4)
+    // #160: Thetis "Leveler" meter reads the AVERAGE — TXA_LVLR_AV (5) —
+    // labelled "dB" (dsp.cs:1011, console.cs:23888).  Reads its floor
+    // while the leveler is bypassed; live once the leveler runs.
+    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(5)
                                   : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
+                            QStringLiteral("dB"));
 }
 
 // computeCfcPk / computeCfcG / computeComp intentionally absent —
@@ -1537,17 +1654,20 @@ void MeterModel::computeLvlPk() {
 // will land on Lyra-native Source entries, not WDSP TXA indices.
 
 void MeterModel::computeAlcPk() {
-    // #158 (post-DL) re-home — TXA_ALC_PK (12): post-ALC output peak, dBFS.
-    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(12)
+    // #160: Thetis "ALC" meter reads the AVERAGE — TXA_ALC_AV (13), NOT
+    // the peak (12) — and labels it "dB" (dsp.cs:1005, console.cs:23888).
+    // (Thetis only uses ALC_PK when the operator's peak-meter toggle is
+    // on; Lyra has no such toggle, so we follow the average default.)
+    computeLevelMeterFromDb(wdsp_ ? wdsp_->txMeterRaw(13)
                                   : std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
+                            QStringLiteral("dB"));
 }
 
 void MeterModel::computeAlcGroup() {
     computeLevelMeterFromDb(std::numeric_limits<double>::quiet_NaN(),
                             kMicDbMin, /*danger=*/-6.0,
-                            QStringLiteral("dBFS"));
+                            QStringLiteral("dB"));
 }
 
 void MeterModel::computeLvlG() {
@@ -1558,40 +1678,29 @@ void MeterModel::computeLvlG() {
 }
 
 void MeterModel::computeAlcG() {
-    // Reference-faithful ALC G display formula (Task #71 §3.2,
-    // operator bench 2026-06-02 PM showed "stuck/hangs" — root
-    // cause was display-formula divergence from reference).
+    // ALC-G headroom number — Thetis-EXACT (operator decision 2026-06-15,
+    // supersedes the §15.27 20·log10 conversion below).
     //
-    // Reference (dsp.cs:1019-1056 + console.cs ALC_G case):
-    //   raw       = GetTXAMeter(TXA_ALC_GAIN)  // = 20·log10(current_linear_gain)
-    //   displayed = max(0, raw + maxGainDb)
+    // Reference (dsp.cs:1019-1020 + console.cs:24779 clamp):
+    //   raw       = GetTXAMeter(TXA_ALC_GAIN)
+    //   displayed = max(0, raw + alcgain)
+    // where `alcgain` is the operator's ALC-max-gain value — the SAME
+    // number Thetis hands to SetTXAALCMaxGain — added DIRECTLY (Thetis
+    // adds its Setup-spinner number as-is; it does NOT 20·log10-convert,
+    // even though raw is in dB — a deliberate reference quirk).
     //
-    // WDSP's TXA_ALC_GAIN returns the CURRENT applied gain in dB
-    // (20·log10(linear_gain)).  For wcpagc mode 5 ALC, gain rests
-    // at `max_gain` when signal is weak (e.g. ceiling at 3.0 LINEAR
-    // → raw ~ +9.5 dB), drops below `max_gain` when ALC actively
-    // reduces.  Reference's formula `raw + maxGainDb` turns this
-    // into a headroom-oriented number that grows with ALC action —
-    // operator-intuitive: 0 = clamping/heavy-reduce, larger = more
-    // headroom.
-    //
-    // §15.27: HL2Stream::alcMaxGainLinear() returns a LINEAR
-    // amplitude factor (matching the WDSP API + verified reference's
-    // Setup spinner).  The display formula needs dB on both sides,
-    // so we convert: maxGainDb = 20·log10(linear).  The previous
-    // formula treated the stored value as already-dB, which is
-    // wrong now that the storage is LINEAR (per the §15.27 fix to
-    // the underlying setter / unit semantics).
-    // #158 (post-DL) re-home: raw = TXA_ALC_GAIN (14), dB; displayed =
-    // max(0, raw + maxGainDb), maxGainDb = 20·log10(alcMaxGainLinear) —
-    // the §71-documented headroom number (0 = ALC clamping, larger = headroom).
+    // Lyra stores that value as alcMaxGainLinear() (§15.27) and feeds the
+    // identical number to SetTXAALCMaxGain (main.cpp / Task #38), so
+    // adding alcMaxGainLinear() directly reproduces Thetis bit-for-bit.
+    // The earlier §15.27 `20·log10(linear)` step was dimensionally
+    // "tidier" but DIVERGED from Thetis — removed for reference parity.
     double disp = std::numeric_limits<double>::quiet_NaN();
     if (wdsp_) {
         const double raw = wdsp_->txMeterRaw(14);
         if (!std::isnan(raw)) {
-            const double maxLin = stream_ ? stream_->alcMaxGainLinear() : 1.0;
-            const double maxGainDb = 20.0 * std::log10(std::max(maxLin, 1e-9));
-            disp = std::max(0.0, raw + maxGainDb);
+            const double alcMaxGain =
+                stream_ ? stream_->alcMaxGainLinear() : 3.0;
+            disp = std::max(0.0, raw + alcMaxGain);
         }
     }
     computeGainMeterFromDb(disp, kGainDbMax, /*danger=*/6.0);

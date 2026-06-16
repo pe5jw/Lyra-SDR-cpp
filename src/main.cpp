@@ -710,6 +710,12 @@ int main(int argc, char *argv[])
         p.vac1TxGainDb    = wdspEngine->vac1TxGainDb();
         p.agcMode         = wdspEngine->agcMode();
         p.autoMuteOnTx    = wdspEngine->autoMuteOnTx();
+        // #160: ALC ceiling + Leveler trio — operator runs leveler ON for
+        // SSB / OFF for digital, so it must ride in the profile.
+        p.alcMaxGainLinear     = stream->alcMaxGainLinear();
+        p.levelerOn            = stream->levelerOn();
+        p.levelerMaxGainLinear = stream->levelerMaxGainLinear();
+        p.levelerDecayMs       = stream->levelerDecayMs();
         p.txTimeoutSec    = stream->txTimeoutSec();
         p.txTimeoutBypass = stream->txTimeoutBypass();
         return p;
@@ -742,6 +748,12 @@ int main(int argc, char *argv[])
         prefs->setTciTxGainDb(p.tciTxGainDb);
         wdspEngine->setAgcMode(p.agcMode);
         wdspEngine->setAutoMuteOnTx(p.autoMuteOnTx);
+        // #160: ALC ceiling + Leveler trio (these forward to the live TXA
+        // chain via the txControl_ seam; safe to push any time).
+        stream->setAlcMaxGainLinear(p.alcMaxGainLinear);
+        stream->setLevelerOn(p.levelerOn);
+        stream->setLevelerMaxGainLinear(p.levelerMaxGainLinear);
+        stream->setLevelerDecayMs(p.levelerDecayMs);
         stream->setTxTimeoutSec(p.txTimeoutSec);
         stream->setTxTimeoutBypass(p.txTimeoutBypass);
     };

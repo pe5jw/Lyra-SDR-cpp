@@ -384,6 +384,13 @@ private:
     // stream_ without mutating any model state — safe to call from
     // any compute fn after the primary has finished its tick.
     QString formatSecondaryText(int src) const;
+    // #160: live TX-dynamics secondary readouts (replaced the stale
+    // TX-rip "—" placeholders).  Read WDSP TXA GetTXAMeter directly,
+    // gated on transmitting → "—" at RX rest / floor.  Mirror the
+    // primary compute fns (computeLevelMeterFromDb / computeAlcG).
+    QString formatTxLevelSecondary(const QString &label, int meterIdx,
+                                   double floorDb) const;
+    QString formatTxAlcGSecondary() const;
     // Build the per-row Ladder data based on the current MOX state.
     // Called from tick() when the active style is Ladder.  Reads raw
     // values via stream_ getters and the formatSecondaryText helper —
