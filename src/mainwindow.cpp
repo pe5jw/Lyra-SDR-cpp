@@ -18,6 +18,7 @@
 #include "tci_server.h"
 #include "metermodel.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
+#include "eqmodel.h"                  // complete type for new EqModel + context property
 #include "profileui.h"                // native Save-Profile dialog (front panel)
 #include "wdsp_engine.h"
 #include "help.h"
@@ -220,6 +221,10 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                             qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                             this);
 
+    // #50/#59 parametric EQ model (drives EqPanel.qml).  Wire-INERT until
+    // Stage 3 routes the TX mic rack through eqModel_->engine().
+    eqModel_ = new EqModel(this);
+
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
@@ -372,6 +377,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Profiles"), profiles_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("ProfileUi"), profileUi_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Eq"), eqModel_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -530,6 +537,11 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("tx"), tr("TX"),
                  QStringLiteral("TxPanel.qml"),
                  QStringLiteral("tx"), Qt::BottomDockWidgetArea);
+    // TX EQ (#50) — 8-band parametric EQ, EESDR3-style.  Dockable /
+    // collapsible / View-hideable like every panel; binds the Eq model.
+    addQuickDock(QStringLiteral("txeq"), tr("TX EQ"),
+                 QStringLiteral("EqPanel.qml"),
+                 QStringLiteral("txeq"), Qt::BottomDockWidgetArea);
     // Profiles — front-facing quick recall of a saved TX/RX profile
     // (dropdown + Save + ● modified).  Full editor (create / rename /
     // delete / set-default / per-mode bind) is Settings → Profiles.

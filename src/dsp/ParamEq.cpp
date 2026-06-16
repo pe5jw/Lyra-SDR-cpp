@@ -19,14 +19,16 @@ constexpr double kPi = 3.14159265358979323846;
 // approved mockup (HP, low-shelf, four peaks, high-shelf, LP).  Operator
 // retunes from here; these are not locked (see project-lyra-cpp-eq memory).
 constexpr ParamEq::Band kDefaults[ParamEq::kNumBands] = {
-    { true, ParamEq::Type::HighPass,    60.0,   0.0, 0.707 },
-    { true, ParamEq::Type::LowShelf,   150.0,   0.0, 0.707 },
-    { true, ParamEq::Type::Peak,       350.0,   0.0, 1.0   },
-    { true, ParamEq::Type::Peak,       800.0,   0.0, 1.0   },
-    { true, ParamEq::Type::Peak,      1800.0,   0.0, 1.0   },
-    { true, ParamEq::Type::Peak,      3000.0,   0.0, 1.0   },
-    { true, ParamEq::Type::HighShelf, 5000.0,   0.0, 0.707 },
-    { true, ParamEq::Type::LowPass,   9000.0,   0.0, 0.707 },
+    { true, ParamEq::Type::HighPass,     60.0,  0.0, 0.707 },
+    { true, ParamEq::Type::LowShelf,    150.0,  0.0, 0.707 },
+    { true, ParamEq::Type::Peak,        300.0,  0.0, 1.0   },
+    { true, ParamEq::Type::Peak,        500.0,  0.0, 1.0   },
+    { true, ParamEq::Type::Peak,        850.0,  0.0, 1.0   },
+    { true, ParamEq::Type::Peak,       1400.0,  0.0, 1.0   },
+    { true, ParamEq::Type::Peak,       2300.0,  0.0, 1.0   },
+    { true, ParamEq::Type::Peak,       3800.0,  0.0, 1.0   },
+    { true, ParamEq::Type::HighShelf,  6000.0,  0.0, 0.707 },
+    { true, ParamEq::Type::LowPass,   10000.0,  0.0, 0.707 },
 };
 }  // namespace
 
@@ -88,6 +90,10 @@ ParamEq::Coeffs ParamEq::design(Type t, double fs, double f0, double q,
         a0 = 1.0 + alpha;  a1 = -2.0 * cw;  a2 = 1.0 - alpha;
         break;
     case Type::Notch:
+        // True RBJ notch — a full null at f0; tunable is WIDTH (Q), not
+        // depth (depth is inherently total).  Handle drags freq, wheel
+        // sets Q; the UI clamps its node to the graph box so the null
+        // stays grabbable at the bottom edge.
         b0 = 1.0;          b1 = -2.0 * cw;  b2 = 1.0;
         a0 = 1.0 + alpha;  a1 = -2.0 * cw;  a2 = 1.0 - alpha;
         break;
@@ -184,7 +190,11 @@ double ParamEq::magnitudeDb(double freqHz) const {
         const std::complex<double> num = c.b0 + c.b1 * z1 + c.b2 * z2;
         const std::complex<double> den = 1.0  + c.a1 * z1 + c.a2 * z2;
         const double mag = std::abs(num) / std::abs(den);
-        if (mag > 0.0) sumDb += 20.0 * std::log10(mag);
+        // Floor (don't skip) a near-zero magnitude — a Notch's exact-centre
+        // null is |H|->0, and skipping it made the summed curve read ~0 dB
+        // at the null (the handle floated up out of its own notch).  Flooring
+        // to -180 dB keeps the curve + node deep in the null.
+        sumDb += 20.0 * std::log10(mag > 1e-9 ? mag : 1e-9);
     }
     return sumDb;
 }

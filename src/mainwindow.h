@@ -31,6 +31,7 @@ namespace lyra::profile { class ProfileManager; }
 namespace lyra::ui {
 
 class ProfileUi;
+class EqModel;
 
 class Prefs;
 class SettingsDialog;
@@ -208,6 +209,7 @@ private:
     SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
+    EqModel                    *eqModel_ = nullptr;   // #50/#59 parametric EQ (EqPanel.qml)
     lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
     ProfileUi                  *profileUi_ = nullptr;  // native Save-Profile dialog (front panel)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad

@@ -28,7 +28,7 @@ public:
     enum class Type {
         Peak, LowShelf, HighShelf, LowPass, HighPass, BandPass, Notch
     };
-    static constexpr int kNumBands = 8;
+    static constexpr int kNumBands = 10;
 
     struct Band {
         bool   enabled = true;

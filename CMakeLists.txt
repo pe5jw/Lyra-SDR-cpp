@@ -286,6 +286,9 @@ qt_add_executable(lyra
     src/dxcc.cpp
     src/metermodel.h
     src/metermodel.cpp
+    # #50 / #59 — parametric-EQ model (bridges dsp/ParamEq to EqPanel.qml).
+    src/eqmodel.h
+    src/eqmodel.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -322,6 +325,7 @@ qt_add_qml_module(lyra
         src/qml/TuningPanel.qml
         src/qml/AudioPanel.qml
         src/qml/TxPanel.qml
+        src/qml/EqPanel.qml
         src/qml/ProfilePanel.qml
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml
