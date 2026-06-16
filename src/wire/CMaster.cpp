@@ -432,6 +432,11 @@ void xcmaster (int stream)
 		//   xpipe (stream, 0, pcm->in);
 		// DEFERRED [dexp/VOX v0.2.3]:
 		//   xdexp (tx);																				// vox-dexp
+		// #50 native parametric-EQ rack stage (Lyra-native, pre-WDSP-TXA):
+		// shape the mic buffer in place before the modulator.  No-op when
+		// unset or the EQ is bypassed (the registered cb checks).
+		if (pcm->TxEqProcess)
+			(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
 		// DEFERRED [sidetone — CW v0.2.2]:
@@ -517,6 +522,14 @@ PORT
 void SetTXVacAudio (int txid, int active)
 {
 	_InterlockedExchange (&pcm->xmtr[txid].use_vac_audio, active);
+}
+
+// #50 native parametric-EQ rack stage (Lyra-native).  Register the in-place
+// mic-EQ processor called per TX block on pcm->in[stream] before fexchange0.
+PORT
+void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff))
+{
+	pcm->TxEqProcess = Process;
 }
 
 // Reference cmaster.c:445-449 (verbatim):

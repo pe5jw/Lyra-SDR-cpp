@@ -99,6 +99,10 @@ typedef struct _cmaster
 	// Lyra-native, modeled on the TCI quartet above + the deferred asioIN
 	// seam (the reference's PC-mic input lived in cmasio.c, unported).
 	void (*InboundVacTxAudio)(int nsamples, double* buff);			// callback to fill TX audio input from VAC-in (xvacIN)
+	// #50 native parametric-EQ rack stage — Lyra-native, NOT a reference
+	// element.  Called per TX block on pcm->in[stream] (mic {I,Q} doubles)
+	// just before fexchange0, so the EQ shapes the mic before WDSP TXA.
+	void (*TxEqProcess)(int nsamples, double* buff);				// in-place mic EQ filter (no-op when unset / EQ bypassed)
 	volatile long tci_run;											// run TCI RX IQ/audio callbacks
 	int	audioCodecId;
 	ANALYZERS panalalloc;											// pointer to additional analyzer data structure
@@ -151,6 +155,9 @@ extern PORT void SetTXTCIAudio (int txid, int active);
 // #158 Stage 4 — VAC-in TX-audio source (Lyra-native, mirrors the TCI pair).
 extern PORT void SendpInboundVacTxAudio (void (*Inbound)(int nsamples, double* buff));
 extern PORT void SetTXVacAudio (int txid, int active);
+// #50 native parametric-EQ rack stage — register the in-place mic-EQ
+// processor (called per TX block before fexchange0).  Pass nullptr to clear.
+extern PORT void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff));
 
 // Reference cmaster.h:120-126 (verbatim):
 

@@ -23,6 +23,7 @@
 #include "wire/ILV.h"       // P0.b direct port — reference ilv.h verbatim (pcm->xmtr[].pilv)
 #include "wire/CMaster.h"   // create_cmaster() / destroy_cmaster() / pcm
 #include "tci/TciTxBridge.h"  // TCI TX-audio re-home bridge (sink + InboundTCITxAudio cb)
+#include "eqmodel.h"          // #50 native TX parametric EQ — txProcessCb wire hook
 #include "wire/cmsetup.h"   // P0.d direct port — reference cmsetup.h verbatim
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
@@ -316,6 +317,12 @@ int main(int argc, char *argv[])
     // create_cmaster (pcm now exists).  The use_tci_audio gate itself is
     // wired to the operator mic-source selector below (after prefs).
     lyra::wire::SendpInboundTCITxAudio(&lyra::tci::TciTxBridge::inboundCb);
+
+    // #50 native parametric-EQ rack stage: register EqModel's static bridge
+    // as the pre-fexchange0 mic-EQ processor.  No-op until the EqModel is
+    // constructed (MainWindow) — its ctor publishes the live engine, its
+    // dtor clears it; the cb null-checks, so registration order is safe.
+    lyra::wire::SendpTxEqProcessor(&lyra::ui::EqModel::txProcessCb);
 
     // Step 2a: the stream object opens the EP6 RX path to a
     // selected radio on its OWN dedicated OS thread (std::jthread

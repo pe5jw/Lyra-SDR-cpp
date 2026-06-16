@@ -16,6 +16,8 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
+
 #include "dsp/ParamEq.h"
 
 namespace lyra::ui {
@@ -35,6 +37,15 @@ public:
     Q_ENUM(Type)
 
     explicit EqModel(QObject *parent = nullptr);
+    ~EqModel() override;
+
+    // C-callable bridge for the wire-layer TX pump: CMaster registers this
+    // via SendpTxEqProcessor and calls it per TX block on the mic buffer
+    // (interleaved {I,Q} doubles) just before fexchange0.  Runs on the
+    // cm_main TX thread; routes through this process's active EQ engine
+    // (published in the ctor, cleared in the dtor — atomic, lock-free read).
+    // No-op when no EqModel exists or the EQ is bypassed.
+    static void txProcessCb(int nSamples, double *iqPairs);
 
     bool   bypass() const { return bypass_; }
     double makeupDb() const { return makeupDb_; }
@@ -81,6 +92,10 @@ private:
     bool valid(int i) const {
         return i >= 0 && i < lyra::dsp::ParamEq::kNumBands;
     }
+
+    // Active engine for the wire-layer TX pump (txProcessCb).  Set to &eq_
+    // in the ctor, cleared in the dtor.  Lock-free read on the TX thread.
+    static std::atomic<lyra::dsp::ParamEq *> s_txEngine;
 
     lyra::dsp::ParamEq eq_;
     bool   bypass_   = false;

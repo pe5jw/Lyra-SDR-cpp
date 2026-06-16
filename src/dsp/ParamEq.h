@@ -48,6 +48,12 @@ public:
     int  numBands() const { return kNumBands; }
 
     void process(float *x, int n);          // in-place, mono, real-time safe
+    // TX-rack variant: filter the REAL (I) channel of interleaved {I,Q}
+    // doubles in place — the WDSP TX path carries the mic as I=mic, Q=0,
+    // so we EQ the I samples and leave Q.  nPairs = number of (I,Q) pairs
+    // (buffer length = 2*nPairs doubles).  Same RT-safe coeff publish +
+    // bypass/makeup behaviour as process().
+    void processInterleaved(double *iqPairs, int nPairs);
     void reset();                           // clear filter state (call stopped)
 
     // Summed magnitude response in dB at freqHz (drives the UI curve).

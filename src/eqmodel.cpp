@@ -15,8 +15,24 @@ constexpr double kQMin = 0.2;
 constexpr double kQMax = 10.0;
 }  // namespace
 
+// Active engine for the wire-layer TX pump (txProcessCb).  One EqModel
+// exists for the app lifetime (MainWindow member); the TX thread reads
+// this lock-free.
+std::atomic<lyra::dsp::ParamEq *> EqModel::s_txEngine{nullptr};
+
 EqModel::EqModel(QObject *parent) : QObject(parent) {
-    eq_.setSampleRate(48000.0);   // HL2 codec rate; Stage 3 confirms vs the TX rack
+    eq_.setSampleRate(48000.0);   // HL2 codec / TX rack rate (mic is 48 kHz)
+    s_txEngine.store(&eq_, std::memory_order_release);
+}
+
+EqModel::~EqModel() {
+    // Stop routing TX audio through this engine before it's destroyed.
+    s_txEngine.store(nullptr, std::memory_order_release);
+}
+
+void EqModel::txProcessCb(int nSamples, double *iqPairs) {
+    if (auto *e = s_txEngine.load(std::memory_order_acquire))
+        e->processInterleaved(iqPairs, nSamples);
 }
 
 void EqModel::setBypass(bool on) {
