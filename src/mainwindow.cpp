@@ -1076,7 +1076,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
             // Only take over the drag for a FLOATING dock — then we move
             // it as a free window (no re-dock/snap).  A DOCKED panel
             // falls through to QDockWidget's own drag (move / re-dock).
-            if (dock && dock->isFloating()) {
+            // Honour the panel lock: a locked dock carries
+            // NoDockWidgetFeatures (Movable cleared), so refuse the custom
+            // float-drag too — without this the lock only stopped DOCKED
+            // panels (native drag) + the double-click toggle, and a
+            // floating panel still dragged free.  Same feature gate the
+            // double-click handler above uses.
+            if (dock && dock->isFloating()
+                && (dock->features() & QDockWidget::DockWidgetMovable)) {
                 floatDragDock_   = dock;
                 floatDragOffset_ = me->globalPosition().toPoint()
                                    - dock->frameGeometry().topLeft();
@@ -1125,6 +1132,24 @@ void MainWindow::applyPanelLock(bool locked) {
             if (auto *cb = tb->findChild<QToolButton *>(
                     QStringLiteral("dockClose")))
                 cb->setVisible(!locked);
+        }
+        // NoDockWidgetFeatures stops move/float/close but NOT resize (the
+        // dock-area separators when docked, the window frame when floating).
+        // Freeze each dock's size while locked: stash its natural min/max
+        // once, clamp to the current size, and restore on unlock.  (The
+        // stashed properties are not persisted — restoreLayout re-locks
+        // after restoreState, re-capturing the natural constraints first.)
+        if (locked) {
+            if (!dock->property("lyraUnlockedMin").isValid()) {
+                dock->setProperty("lyraUnlockedMin", dock->minimumSize());
+                dock->setProperty("lyraUnlockedMax", dock->maximumSize());
+            }
+            dock->setFixedSize(dock->size());
+        } else if (dock->property("lyraUnlockedMin").isValid()) {
+            dock->setMinimumSize(dock->property("lyraUnlockedMin").toSize());
+            dock->setMaximumSize(dock->property("lyraUnlockedMax").toSize());
+            dock->setProperty("lyraUnlockedMin", QVariant());
+            dock->setProperty("lyraUnlockedMax", QVariant());
         }
     }
 }
