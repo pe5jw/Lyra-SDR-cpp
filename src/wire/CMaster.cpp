@@ -433,9 +433,11 @@ void xcmaster (int stream)
 		// DEFERRED [dexp/VOX v0.2.3]:
 		//   xdexp (tx);																				// vox-dexp
 		// #50 native parametric-EQ rack stage (Lyra-native, pre-WDSP-TXA):
-		// shape the mic buffer in place before the modulator.  No-op when
-		// unset or the EQ is bypassed (the registered cb checks).
-		if (pcm->TxEqProcess)
+		// shape the mic buffer in place before the modulator.  Skipped
+		// wholesale when tx_rack_bypass is set (digital modes DIGU/DIGL) so
+		// the mic DSP never touches digital audio; otherwise no-op when the
+		// EQ is unset / bypassed (the registered cb checks).
+		if (pcm->TxEqProcess && !_InterlockedAnd (&pcm->tx_rack_bypass, 1))
 			(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
@@ -530,6 +532,13 @@ PORT
 void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff))
 {
 	pcm->TxEqProcess = Process;
+}
+
+// #50 — gate the whole native TX rack on/off (digital-mode bypass).
+PORT
+void SetTxRackBypass (int bypass)
+{
+	_InterlockedExchange (&pcm->tx_rack_bypass, bypass);
 }
 
 // Reference cmaster.c:445-449 (verbatim):

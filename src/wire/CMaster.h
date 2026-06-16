@@ -103,6 +103,7 @@ typedef struct _cmaster
 	// element.  Called per TX block on pcm->in[stream] (mic {I,Q} doubles)
 	// just before fexchange0, so the EQ shapes the mic before WDSP TXA.
 	void (*TxEqProcess)(int nsamples, double* buff);				// in-place mic EQ filter (no-op when unset / EQ bypassed)
+	volatile long tx_rack_bypass;									// #50 — when set, skip the ENTIRE native rack (EQ + Speech + …); driven by mode (DIGU/DIGL → bypass so digital audio is never voice-shaped)
 	volatile long tci_run;											// run TCI RX IQ/audio callbacks
 	int	audioCodecId;
 	ANALYZERS panalalloc;											// pointer to additional analyzer data structure
@@ -158,6 +159,9 @@ extern PORT void SetTXVacAudio (int txid, int active);
 // #50 native parametric-EQ rack stage — register the in-place mic-EQ
 // processor (called per TX block before fexchange0).  Pass nullptr to clear.
 extern PORT void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff));
+// #50 — bypass the whole native TX rack (EQ + future Speech/Combinator/Plate).
+// Set 1 for digital modes (DIGU/DIGL) so the mic DSP never touches FT8/JS8/etc.
+extern PORT void SetTxRackBypass (int bypass);
 
 // Reference cmaster.h:120-126 (verbatim):
 

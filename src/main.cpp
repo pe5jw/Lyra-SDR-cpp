@@ -1178,12 +1178,26 @@ int main(int argc, char *argv[])
                         return 0;   // WDSP TXA LSB
                     return 1;       // WDSP TXA USB (USB/CWU/DIGU/AM/FM/DSB/SAM/...)
                 };
+                // #50 native-rack digital gate: bypass the WHOLE mic DSP rack
+                // (EQ + future Speech/Combinator/Plate) in the digital data
+                // modes so FT8/JS8/etc. are never voice-shaped.  Gated by MODE,
+                // not source — a VAC-as-mic voice op in USB still gets the EQ.
+                auto txModeIsDigital = [](const QString &uiMode) -> bool {
+                    const QString m = uiMode.toUpper();
+                    return m == QStringLiteral("DIGU") || m == QStringLiteral("DIGL");
+                };
                 QObject::connect(wdspEngine,
                                  &lyra::dsp::WdspEngine::modeChanged,
-                                 stream, [stream, wdspEngine, wdspTxModeFor]() {
-                    stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+                                 stream, [stream, wdspEngine, wdspTxModeFor, txModeIsDigital]() {
+                    const QString m = wdspEngine->mode();
+                    stream->setTxMode(wdspTxModeFor(m));
+                    lyra::wire::SetTxRackBypass(txModeIsDigital(m) ? 1 : 0);
                 });
-                stream->setTxMode(wdspTxModeFor(wdspEngine->mode()));
+                {
+                    const QString m0 = wdspEngine->mode();
+                    stream->setTxMode(wdspTxModeFor(m0));
+                    lyra::wire::SetTxRackBypass(txModeIsDigital(m0) ? 1 : 0);
+                }
 
                 // TX-1 component 8c + Task #53 — operator TX bandpass.
                 // The TX BW combo (high edge = Prefs.txBandwidth) + the
