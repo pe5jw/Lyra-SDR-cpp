@@ -185,6 +185,10 @@ qt_add_executable(lyra
     # not a WDSP port).  Pre-WDSP-TXA mic rack stage (TX) + post-RXA (RX).
     src/dsp/ParamEq.h
     src/dsp/ParamEq.cpp
+    # #88 — native TX speech pre-processor (Auto-AGC leveller + De-esser),
+    # a pre-EQ rack stage.
+    src/dsp/SpeechProcessor.h
+    src/dsp/SpeechProcessor.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -577,4 +581,16 @@ add_executable(test_parameq EXCLUDE_FROM_ALL
 target_include_directories(test_parameq PRIVATE src)
 if(MSVC)
     target_compile_options(test_parameq PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #88 — native speech pre-processor unit test (Auto-AGC + De-esser).
+# EXCLUDE_FROM_ALL; `cmake --build build --target test_speech`.  No Qt.
+add_executable(test_speech EXCLUDE_FROM_ALL
+    scratch/test_speech.cpp
+    src/dsp/SpeechProcessor.h
+    src/dsp/SpeechProcessor.cpp
+)
+target_include_directories(test_speech PRIVATE src)
+if(MSVC)
+    target_compile_options(test_speech PRIVATE /utf-8 /Zc:preprocessor)
 endif()
