@@ -307,6 +307,15 @@ QWidget *SettingsDialog::buildAudioTab() {
             "feed true stereo I/Q over the cable."));
         vf->addRow(QString(), vacCombine);
 
+        auto *vacMuteVac = new QCheckBox(tr("Mute will mute VAC"), grp);
+        vacMuteVac->setChecked(engine_->muteWillMuteVac());
+        vacMuteVac->setToolTip(tr("When ON, the main Mute button also silences "
+            "the VAC RX feed (matching the reference) — right when you monitor "
+            "or record RX through VAC. The monitor Volume always rides the VAC "
+            "feed regardless. Turn OFF for digital modes where the decoder "
+            "(WSJT-X, etc.) must keep receiving while you mute the room."));
+        vf->addRow(QString(), vacMuteVac);
+
         // → engine (each applies live + persists)
         connect(vacEnable, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1Enabled(on); });
@@ -354,6 +363,8 @@ QWidget *SettingsDialog::buildAudioTab() {
                 [this](int db) { engine_->setVac1TxGainDb(db); });
         connect(vacCombine, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1CombineInput(on); });
+        connect(vacMuteVac, &QCheckBox::toggled, engine_,
+                [this](bool on) { engine_->setMuteWillMuteVac(on); });
 
         // ← engine (reflect programmatic/external changes)
         connect(engine_, &lyra::dsp::WdspEngine::vac1Changed, grp,

@@ -52,44 +52,12 @@ namespace {
 // its own paamix id exactly as the reference banks per-id mixers.
 lyra::dsp::WdspEngine* g_aamixOutboundSelf = nullptr;
 
-// #158 Stage 4 — VAC-in TX-audio bridge.  Registered with the wire layer
-// via SendpInboundVacTxAudio; the cm_main TX pump (xcmaster case 1) calls
-// it when the xmtr's use_vac_audio is set, to fill pcm->in[stream] (the TX
-// mic buffer) from the VAC IN ring — xvacIN drains rmatchIN, then combines
-// (if vac_combine_input) + applies vac_preamp.  C-shaped fn ptr the wire
-// expects; runs on the TX pump thread (the rmatchV ring decouples it from
-// the Qt capture thread).  VAC1 = id 0; xvacIN fills a->mic_size complex,
-// which equals the xcm_insize the pump passes (both = getbuffsize(48000)).
-void vacInboundCb(int nsamples, double *buff)
-{
-    // SAFETY: if VAC1 isn't instantiated (operator picked the PC mic source
-    // but didn't enable VAC1 in Settings), do NOT touch buff — the cm_main
-    // pump's pcm->in already holds the codec mic — and never deref a null
-    // pvac[0].  When VAC1 is live, xvacIN drains rmatchIN into buff.
-    if (lyra::wire::ivacGet(0 /*VAC1 id*/) != nullptr) {
-        lyra::wire::xvacIN(0, buff, /*bypass*/0);
-        // #158 diag — this callback only fires when the xmtr's use_vac_audio
-        // is set (xcmaster case 1), so its presence proves the VAC mic source
-        // is the live TX source; the peak proves whether real audio arrived.
-        // Rate-limited to ~1/s (mic rate 48 kHz).  INFO so it lands in
-        // lyra-log.txt without debug logging.
-        static long long drnSamps = 0;
-        static long long drnCalls = 0;
-        static double    drnPeak  = 0.0;
-        const int n2 = 2 * nsamples;
-        for (int i = 0; i < n2; ++i) {
-            const double v = buff[i] < 0.0 ? -buff[i] : buff[i];
-            if (v > drnPeak) drnPeak = v;
-        }
-        ++drnCalls;
-        drnSamps += nsamples;
-        if (drnSamps >= 48000) {
-            qInfo("[vac1] xvacIN drain (TX mic): %lld calls/s, peak %.4f",
-                  drnCalls, drnPeak);
-            drnCalls = 0; drnSamps = 0; drnPeak = 0.0;
-        }
-    }
-}
+// #158 (#161 UAF fix) — vacInboundCb (the VAC-in → TX bridge registered via
+// SendpInboundVacTxAudio) is now a WdspEngine static member, defined beside
+// aamixOutbound below so it can gate xvacIN under vacMtx_ + vac1Active_ (the
+// VAC device-change / enable-disable use-after-free fix).  A free function
+// here couldn't reach those private members, and a member can't be defined
+// inside this anonymous namespace.
 
 // Mode / AGC integer constants, verified against the Python tree's
 // wdsp_native.py (RxaMode / AgcMode) which in turn matches the
@@ -410,6 +378,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // (#67).  Default ON so a mic routed to either VAC channel reaches the
     // SSB modulator; OFF feeds raw stereo L->I / R->Q.
     vac1CombineInput_ = s.value(QStringLiteral("vac1/combineInput"), true).toBool();
+    // #161 — mute also silences the VAC RX feed (reference MuteWillMuteVAC1).
+    // Default ON so the operator mute behaves like the reference out of the box
+    // (digital ops who want the cable to keep flowing while muting the room
+    // turn it OFF in Settings → Audio).
+    muteWillMuteVac_.store(
+        s.value(QStringLiteral("vac1/muteWillMuteVac"), true).toBool(),
+        std::memory_order_relaxed);
     cwPitchHz_ = std::clamp(
         s.value(QStringLiteral("dsp/cwPitchHz"), 600).toInt(), 200, 1500);
     // RX DSP operator state (NR + AGC mode).  Defaults match old Lyra's
@@ -1301,7 +1276,7 @@ void WdspEngine::rebuildVac1()
     // Register the VAC-in → TX bridge so the cm_main TX pump can pull mic
     // audio from rmatchIN when the mic source is "PC Soundcard (VAC1)"
     // (use_vac_audio).  Idempotent (just stores the fn ptr).
-    SendpInboundVacTxAudio(vacInboundCb);
+    SendpInboundVacTxAudio(&WdspEngine::vacInboundCb);
 
     // Silence block for the mixer's TX-monitor input (stream 2) — sized to
     // the same audio block the RX tee feeds (2*outSize_ doubles).  Assigned
@@ -1562,6 +1537,18 @@ void WdspEngine::setVac1CombineInput(bool on)
             lyra::wire::SetIVACcombine(kVac1Id, on ? 1 : 0);
         }
     }
+    emit vac1Changed();
+}
+
+void WdspEngine::setMuteWillMuteVac(bool on)
+{
+    if (muteWillMuteVac_.load(std::memory_order_relaxed) == on) {
+        return;
+    }
+    muteWillMuteVac_.store(on, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("vac1/muteWillMuteVac"), on);
+    // LIVE — dispatchAudioFrame reads muteWillMuteVac_ every block; nothing to
+    // push to the engine.  Refresh the Settings mirror.
     emit vac1Changed();
 }
 
@@ -3058,20 +3045,79 @@ void WdspEngine::aamixOutbound(int /*id*/, int nsamples, double *buff)
     }
 }
 
+// #158 (#161 UAF fix) — VAC-in → TX bridge, registered via
+// SendpInboundVacTxAudio.  Runs on the cm_main TX pump thread (xcmaster
+// case 1) at the mic block rate when the xmtr's use_vac_audio is set.
+// Gate EXACTLY like the mix-side tee (dispatchAudioFrame): hold vacMtx_
+// and re-check vac1Active_ before xvacIN.  teardownVac1/rebuildVac1 flip
+// vac1Active_ under vacMtx_ around the create/resize/destroy of the single
+// full-duplex ivac + its rmatchIN ring, so this can never xvacIN a freed
+// or mid-rebuilt ring — the VAC device-change / enable-disable heap fault.
+// (The old free-function form guarded only on a racy ivacGet()!=null
+// check, which the device-change teardown+recreate TOCTOU'd straight
+// through: pvac[id] was nulled before the free, but nothing ordered the
+// pump's check-then-xvacIN against destroy_ivac's null-then-free.)
+void WdspEngine::vacInboundCb(int nsamples, double *buff)
+{
+    WdspEngine *self = g_aamixOutboundSelf;
+    if (self == nullptr) {
+        return;  // engine closed (self cleared after destroy_aamix in closeRx1)
+    }
+    {
+        std::lock_guard<std::mutex> lk(self->vacMtx_);
+        // vac1Active_ is true ONLY between rebuildVac1's StartAudioIVAC and
+        // teardownVac1's clear — i.e. exactly when the rmatchIN ring is fully
+        // built and valid.  ivacGet is belt-and-suspenders.  When off, leave
+        // buff untouched: the cm_main pump's pcm->in already holds the codec
+        // mic (SAFETY — never deref a null/half-built ivac).
+        if (!self->vac1Active_.load(std::memory_order_relaxed) ||
+            lyra::wire::ivacGet(kVac1Id) == nullptr) {
+            return;
+        }
+        lyra::wire::xvacIN(kVac1Id, buff, /*bypass*/0);
+    }
+    // #158 diag — fires only when VAC1 is the live TX source; the peak
+    // proves real audio arrived.  buff is the caller's TX-mic block, safe to
+    // scan outside the lock.  Rate-limited ~1/s (mic rate 48 kHz); INFO so it
+    // lands in lyra-log.txt without debug logging.
+    static long long drnSamps = 0;
+    static long long drnCalls = 0;
+    static double    drnPeak  = 0.0;
+    const int n2 = 2 * nsamples;
+    for (int i = 0; i < n2; ++i) {
+        const double v = buff[i] < 0.0 ? -buff[i] : buff[i];
+        if (v > drnPeak) drnPeak = v;
+    }
+    ++drnCalls;
+    drnSamps += nsamples;
+    if (drnSamps >= 48000) {
+        qInfo("[vac1] xvacIN drain (TX mic): %lld calls/s, peak %.4f",
+              drnCalls, drnPeak);
+        drnCalls = 0; drnSamps = 0; drnPeak = 0.0;
+    }
+}
+
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
-    // #158 Stage 3 — VAC1 VAC-out tee.  Feed the POST-RXA receiver
-    // audio (this `audio` param: post AGC/NR/demod/AF-panel-gain, but
-    // BEFORE the operator monitor volume/mute/balance applied below)
-    // into the IVAC engine's RX-audio mixer input (xvacOUT stream 1).
-    // The digital app on the PC then gets steady-level audio no matter
-    // how the operator rides their speaker volume — the reference keeps
-    // VAC and the AF-gain path independent for exactly this reason.
+    // #158 (#161) — VAC1 RX-out tee.  Feed the POST-RXA receiver audio
+    // (post AGC/NR/demod/AF-panel-gain) into the IVAC RX-audio mixer input
+    // (xvacOUT stream 1), scaled by the operator monitor VOLUME — and muted
+    // when the operator chose "Mute will mute VAC".  This matches the
+    // reference, whose RX output gain is applied PRE-tap (RXOutputGain) so the
+    // Vol slider rides the VAC feed, and whose MuteWillMuteVAC1 option zeroes
+    // that same pre-tap gain.  (An earlier comment here claimed the reference
+    // keeps VAC level-independent of the monitor volume — WRONG; tester A/B vs
+    // the reference disproved it, #161.)  The VAC RX gain (SetIVACrxscale)
+    // stays the independent cable trim on top.
     // Gated by vac1Active_ (cheap relaxed read on the hot path); the
     // xvacOUT itself runs under vacMtx_ so a main-thread teardown can't
     // destroy_ivac the rmatchOUT ring mid-call.  The size guard matches
     // the AAMix insize (audio_size == outSize_); a mismatched block is
     // skipped rather than fed wrong-sized into xMixAudio.
+    const double vacVolGain = posToGain(volume_.load(std::memory_order_relaxed));
+    const bool   vacMuted   = muted_.load(std::memory_order_relaxed) &&
+                              muteWillMuteVac_.load(std::memory_order_relaxed);
+    const double vacGain    = vacMuted ? 0.0 : vacVolGain;
     if (vac1Active_.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lk(vacMtx_);
         if (vac1Active_.load(std::memory_order_relaxed) &&
@@ -3081,8 +3127,16 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             // BOTH inputs are Ready.  Feed input 0 = RX audio (stream 1)
             // AND input 1 = TX monitor (stream 2) with silence — otherwise
             // the mixer starves and the VAC output is intermittent/dead.
-            lyra::wire::xvacOUT(kVac1Id, /*stream*/1,
-                                const_cast<double *>(audio));
+            // RX audio is scaled by the monitor volume/mute into a reusable
+            // buffer so the sink loop below still gets the raw `audio`.
+            const int vacN2 = 2 * nframes;
+            if (static_cast<int>(vacRxScaled_.size()) != vacN2) {
+                vacRxScaled_.assign(static_cast<size_t>(vacN2), 0.0);
+            }
+            for (int i = 0; i < vacN2; ++i) {
+                vacRxScaled_[static_cast<size_t>(i)] = audio[i] * vacGain;
+            }
+            lyra::wire::xvacOUT(kVac1Id, /*stream*/1, vacRxScaled_.data());
             if (static_cast<int>(vacMonSilence_.size()) == 2 * nframes) {
                 lyra::wire::xvacOUT(kVac1Id, /*stream*/2,
                                     vacMonSilence_.data());

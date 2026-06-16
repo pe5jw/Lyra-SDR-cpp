@@ -567,6 +567,11 @@ public:
     Q_INVOKABLE void setVac1TxGainDb(double db);
     bool    vac1CombineInput() const      { return vac1CombineInput_; }
     Q_INVOKABLE void setVac1CombineInput(bool on);
+    // #161 — "Mute will mute VAC".  Reference MuteWillMuteVAC1: when set, the
+    // operator mute also zeroes the RX→VAC feed (the monitor volume rides it
+    // unconditionally — see dispatchAudioFrame).  Default ON.
+    bool    muteWillMuteVac() const       { return muteWillMuteVac_.load(std::memory_order_relaxed); }
+    Q_INVOKABLE void setMuteWillMuteVac(bool on);
     // #158 DL-4 — RX→VAC muted during TX (reference SetIVACmox what-flag
     // gating).  Driven off the HL2Stream MOX edge (connected in main.cpp);
     // no-op when VAC1 isn't live.
@@ -666,6 +671,14 @@ private:
     // Set before create_aamix in openRx1; cleared after
     // destroy_aamix in closeRx1.
     static void aamixOutbound(int id, int nsamples, double *buff);
+    // #158 (#161 UAF fix) — VAC-in → TX bridge.  Like aamixOutbound, a
+    // static member so the wire's plain void(*)(int,double*) fn ptr can
+    // still reach the private vac1Active_/vacMtx_ via g_aamixOutboundSelf.
+    // The cm_main TX pump calls it at the mic block rate when the mic
+    // source is VAC1; the vacMtx_+vac1Active_ gate (mirroring
+    // dispatchAudioFrame) keeps xvacIN off a freed / mid-rebuilt rmatchIN
+    // during a VAC device change or enable/disable.
+    static void vacInboundCb(int nsamples, double *buff);
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
@@ -983,6 +996,9 @@ private:
     // outputDevices()/inputDevices() still feed the Settings combos until DL-3.
     std::atomic<bool>     vac1Active_{false};
     std::mutex            vacMtx_;
+    // #161 — operator "Mute will mute VAC" (reference MuteWillMuteVAC1).
+    // Read on the audio thread in dispatchAudioFrame; default ON.
+    std::atomic<bool>     muteWillMuteVac_{true};
     bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
     bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
     QString               vac1OutName_;            // PC output device description ("" = none)
@@ -1009,6 +1025,10 @@ private:
     // RX frame to keep the mixer synced — exactly as the reference feeds a
     // silent TX monitor during RX.  Sized 2*outSize_ in rebuildVac1.
     std::vector<double>   vacMonSilence_;
+    // #161 — RX audio scaled by the monitor volume(+mute) for the VAC tee
+    // (reference RXOutputGain is pre-tap).  Kept separate so the sink loop
+    // still receives the raw post-RXA `audio`.  Sized 2*outSize_ on first use.
+    std::vector<double>   vacRxScaled_;
 };
 
 } // namespace lyra::dsp
