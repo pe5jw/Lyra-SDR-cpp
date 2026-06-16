@@ -32,6 +32,7 @@ namespace lyra::ui {
 
 class ProfileUi;
 class EqModel;
+class SpeechModel;
 
 class Prefs;
 class SettingsDialog;
@@ -147,6 +148,15 @@ private:
     // Per-panel "?" badge targets (driven by the Help bridge).
     void showHelp(const QString &topic);        // open the User Guide at topic
     void openSettingsTopic(const QString &topic);// Settings, on topic's tab
+
+    // Collapsible-panel docks (EqPanel/SpeechPanel etc.): when the QML root's
+    // `collapsed` property toggles, shrink the host dock to the title strip
+    // (and release it on expand) so a collapsed panel isn't a strip floating
+    // in a full-size dock.  SizeRootObjectToView ignores the QML
+    // implicitHeight, so the dock size has to be driven from C++.
+private slots:
+    void syncCollapsibleDock();
+private:
     // TX-0c-pa-debug — refresh the HL2 telemetry strip on the right
     // side of the status bar (T / V / PA current).  Driven by
     // HL2Stream::statsChanged (~5 Hz).  PA current goes red+bold when
@@ -210,6 +220,7 @@ private:
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     EqModel                    *eqModel_ = nullptr;   // #50/#59 parametric EQ (EqPanel.qml)
+    SpeechModel                *speechModel_ = nullptr; // #88 speech rack (SpeechPanel.qml)
     lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
     ProfileUi                  *profileUi_ = nullptr;  // native Save-Profile dialog (front panel)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad

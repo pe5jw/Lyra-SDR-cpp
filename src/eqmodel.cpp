@@ -4,6 +4,9 @@
 
 #include <algorithm>
 
+#include <QTimer>
+#include <QVariant>
+
 namespace lyra::ui {
 
 namespace {
@@ -13,26 +16,89 @@ constexpr double kFreqMax = 20000.0;
 constexpr double kGainMax = 15.0;     // ±15 dB drag range (matches the curve axis)
 constexpr double kQMin = 0.2;
 constexpr double kQMax = 10.0;
+// Largest mic block the analyzer pre-tap copies in one go (HL2 rack blocks
+// are far smaller; oversize blocks just skip the analyzer, never the EQ).
+constexpr int kMaxAnalyzerBlock = 4096;
 }  // namespace
 
-// Active engine for the wire-layer TX pump (txProcessCb).  One EqModel
-// exists for the app lifetime (MainWindow member); the TX thread reads
-// this lock-free.
-std::atomic<lyra::dsp::ParamEq *> EqModel::s_txEngine{nullptr};
+// Active engine + analyzer for the wire-layer TX pump (txProcessCb).  One
+// EqModel exists for the app lifetime (MainWindow member); the TX thread
+// reads these lock-free.
+std::atomic<lyra::dsp::ParamEq *>    EqModel::s_txEngine{nullptr};
+std::atomic<lyra::dsp::EqAnalyzer *> EqModel::s_txAnalyzer{nullptr};
 
 EqModel::EqModel(QObject *parent) : QObject(parent) {
-    eq_.setSampleRate(48000.0);   // HL2 codec / TX rack rate (mic is 48 kHz)
+    eq_.setSampleRate(48000.0);        // HL2 codec / TX rack rate (mic = 48 kHz)
+    analyzer_.setSampleRate(48000.0);
     s_txEngine.store(&eq_, std::memory_order_release);
+    s_txAnalyzer.store(&analyzer_, std::memory_order_release);
+
+    // Pre-size the cached bin lists so QML always sees a stable length.
+    const int nb = analyzer_.bins();
+    for (int i = 0; i < nb; ++i) { preList_.append(-140.0); postList_.append(-140.0); }
+
+    // GUI-thread poll: drain the analyzer's latest frame ~25 Hz and emit
+    // spectrumChanged so EqPanel repaints (no-op when no new frame, i.e. RX).
+    pollTimer_ = new QTimer(this);
+    pollTimer_->setInterval(40);
+    connect(pollTimer_, &QTimer::timeout, this, &EqModel::pollSpectrum);
+    pollTimer_->start();
 }
 
 EqModel::~EqModel() {
-    // Stop routing TX audio through this engine before it's destroyed.
+    // Stop routing TX audio through this engine/analyzer before destruction.
     s_txEngine.store(nullptr, std::memory_order_release);
+    s_txAnalyzer.store(nullptr, std::memory_order_release);
 }
 
 void EqModel::txProcessCb(int nSamples, double *iqPairs) {
-    if (auto *e = s_txEngine.load(std::memory_order_acquire))
+    auto *e = s_txEngine.load(std::memory_order_acquire);
+    auto *a = s_txAnalyzer.load(std::memory_order_acquire);
+    if (a && nSamples > 0 && nSamples <= kMaxAnalyzerBlock) {
+        // Snapshot the pre-EQ I channel, run the EQ in place, then feed both
+        // pre + post to the analyzer in lockstep (sample-aligned frames).
+        thread_local double preBuf[kMaxAnalyzerBlock];
+        for (int k = 0; k < nSamples; ++k) preBuf[k] = iqPairs[2 * k];
+        if (e) e->processInterleaved(iqPairs, nSamples);
+        a->feed(preBuf, iqPairs, nSamples);
+    } else if (e) {
         e->processInterleaved(iqPairs, nSamples);
+    }
+}
+
+void EqModel::setAnalyzerMode(int mode) {
+    mode = std::clamp(mode, 0, 2);
+    if (mode == analyzerMode_) return;
+    analyzerMode_ = mode;
+    emit spectrumOptsChanged();
+}
+void EqModel::setAccumulate(bool on) {
+    if (on == accumulate_) return;
+    accumulate_ = on;
+    emit spectrumOptsChanged();
+}
+void EqModel::setBeforeAfterMod(bool on) {
+    if (on == beforeAfter_) return;
+    beforeAfter_ = on;
+    emit spectrumOptsChanged();
+}
+void EqModel::setPeakDecayMode(int mode) {
+    mode = std::clamp(mode, 0, 4);
+    if (mode == peakDecay_) return;
+    peakDecay_ = mode;
+    emit spectrumOptsChanged();
+}
+
+void EqModel::pollSpectrum() {
+    if (!analyzer_.snapshot(preBins_, postBins_)) return;   // no new frame
+    const int nb = static_cast<int>(postBins_.size());
+    preList_.clear();  postList_.clear();
+    preList_.reserve(nb);  postList_.reserve(nb);
+    for (int i = 0; i < nb; ++i) {
+        preList_.append(static_cast<double>(preBins_[i]));
+        postList_.append(static_cast<double>(postBins_[i]));
+    }
+    emit spectrumChanged();
 }
 
 void EqModel::setBypass(bool on) {
@@ -115,6 +181,13 @@ void EqModel::resetBand(int i) {
     lyra::dsp::ParamEq fresh;     // its constructor seeds the default layout
     eq_.setBand(i, fresh.band(i));
     emit bandsChanged();
+}
+
+void EqModel::resetAll() {
+    lyra::dsp::ParamEq fresh;     // its constructor seeds the default layout
+    for (int i = 0; i < lyra::dsp::ParamEq::kNumBands; ++i)
+        eq_.setBand(i, fresh.band(i));
+    emit bandsChanged();          // one redraw for the whole flatten
 }
 
 double EqModel::magnitudeDb(double freqHz) const { return eq_.magnitudeDb(freqHz); }

@@ -432,13 +432,18 @@ void xcmaster (int stream)
 		//   xpipe (stream, 0, pcm->in);
 		// DEFERRED [dexp/VOX v0.2.3]:
 		//   xdexp (tx);																				// vox-dexp
-		// #50 native parametric-EQ rack stage (Lyra-native, pre-WDSP-TXA):
-		// shape the mic buffer in place before the modulator.  Skipped
-		// wholesale when tx_rack_bypass is set (digital modes DIGU/DIGL) so
-		// the mic DSP never touches digital audio; otherwise no-op when the
-		// EQ is unset / bypassed (the registered cb checks).
-		if (pcm->TxEqProcess && !_InterlockedAnd (&pcm->tx_rack_bypass, 1))
-			(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
+		// Native mic-DSP rack (Lyra-native, pre-WDSP-TXA): speech pre-stages
+		// (#88 Auto-AGC + De-esser) THEN the EQ (#50), in chain order, in
+		// place on the mic buffer before the modulator.  The whole rack is
+		// skipped when tx_rack_bypass is set (digital modes DIGU/DIGL) so the
+		// mic DSP never touches digital audio; each hook is also a no-op when
+		// its stage is unset / bypassed (the registered cb checks).
+		if (!_InterlockedAnd (&pcm->tx_rack_bypass, 1)) {
+			if (pcm->TxSpeechProcess)
+				(*pcm->TxSpeechProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
+			if (pcm->TxEqProcess)
+				(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
+		}
 		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
 		// DEFERRED [sidetone — CW v0.2.2]:
@@ -532,6 +537,13 @@ PORT
 void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff))
 {
 	pcm->TxEqProcess = Process;
+}
+
+// #88 — register the native TX speech pre-processor (runs before the EQ).
+PORT
+void SendpTxSpeechProcessor (void (*Process)(int nsamples, double* buff))
+{
+	pcm->TxSpeechProcess = Process;
 }
 
 // #50 — gate the whole native TX rack on/off (digital-mode bypass).

@@ -56,6 +56,16 @@ Rectangle {
         function onSelectedBandChanged() { root.rev++ }
         function onBypassChanged()      { root.rev++ }
         function onMakeupDbChanged()    { root.rev++ }
+        // Stage-2b analyzer: a new mic-spectrum frame → repaint the graph;
+        // a toggle change → repaint (and drop peak-hold when Accumulate off).
+        function onSpectrumChanged()    { curveCanvas.requestPaint() }
+        function onSpectrumOptsChanged() {
+            if (!Eq.accumulate) { curveCanvas.peakHold = []; curveCanvas.peakHang = [] }
+            if (!Eq.accumulate || !Eq.beforeAfterMod) {
+                curveCanvas.peakHoldPre = []; curveCanvas.peakHangPre = []
+            }
+            curveCanvas.requestPaint()
+        }
     }
 
     function fmtFreq(f) {
@@ -79,6 +89,21 @@ Rectangle {
         MenuItem { text: qsTr("Hi-Pass");  checkable: true; checked: typeMenu.isCur(4); onTriggered: typeMenu.pick(4) }
         MenuItem { text: qsTr("Bandpass"); checkable: true; checked: typeMenu.isCur(5); onTriggered: typeMenu.pick(5) }
         MenuItem { text: qsTr("Notch");    checkable: true; checked: typeMenu.isCur(6); onTriggered: typeMenu.pick(6) }
+    }
+
+    // Peak-hold hang/decay preset — right-click the Acc chip.  Live tracks the
+    // instantaneous spectrum (no hold); Fast/Med/Slow set how long a peak
+    // lingers then how fast it falls; Hold never decays (toggle Acc off→on to
+    // clear).
+    Menu {
+        id: peakMenu
+        function pick(m) { Eq.peakDecayMode = m }
+        function isCur(m) { return Eq.peakDecayMode === m }
+        MenuItem { text: qsTr("Peak decay: Live");   checkable: true; checked: peakMenu.isCur(4); onTriggered: peakMenu.pick(4) }
+        MenuItem { text: qsTr("Peak decay: Fast");   checkable: true; checked: peakMenu.isCur(0); onTriggered: peakMenu.pick(0) }
+        MenuItem { text: qsTr("Peak decay: Medium"); checkable: true; checked: peakMenu.isCur(1); onTriggered: peakMenu.pick(1) }
+        MenuItem { text: qsTr("Peak decay: Slow");   checkable: true; checked: peakMenu.isCur(2); onTriggered: peakMenu.pick(2) }
+        MenuItem { text: qsTr("Hold (no decay)");    checkable: true; checked: peakMenu.isCur(3); onTriggered: peakMenu.pick(3) }
     }
 
     ColumnLayout {
@@ -144,6 +169,95 @@ Rectangle {
                 onClicked: Eq.makeupDb = Eq.makeupDb + 1
             }
 
+            Item { width: 10 }
+
+            // Reset — flatten every band back to its default freq/gain/Q.
+            Button {
+                id: resetBtn
+                text: qsTr("Reset"); implicitWidth: 52; implicitHeight: 22
+                onClicked: Eq.resetAll()
+                ToolTip.text: qsTr("Reset all bands to their default "
+                                   + "freq / gain / Q")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+                background: Rectangle { radius: 4
+                    color: resetBtn.down ? "#0b3a44" : "#1f2a35"
+                    border.color: "#3a5060" }
+                contentItem: Text { text: resetBtn.text; font.pixelSize: 11
+                    font.bold: true
+                    color: root.cMuted
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter }
+            }
+
+            Item { width: 10 }
+
+            // ── Analyzer toggles (Stage 2b) ────────────────────────────
+            Button {
+                id: specBtn
+                readonly property bool active: Eq.analyzerMode > 0
+                text: ["Off", "Spec", "RTA"][Eq.analyzerMode]
+                implicitWidth: 50; implicitHeight: 22
+                onClicked: Eq.analyzerMode = (Eq.analyzerMode + 1) % 3
+                ToolTip.text: qsTr("Analyzer behind the curve — click to cycle "
+                                   + "Off → Spectrum → RTA (live on the mic)")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+                background: Rectangle { radius: 4
+                    color: specBtn.active ? "#0b3a44" : "#1f2a35"
+                    border.color: specBtn.active ? root.cAccent : "#3a5060" }
+                contentItem: Text { text: specBtn.text; font.pixelSize: 11
+                    font.bold: true
+                    color: specBtn.active ? root.cAccent : root.cMuted
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter }
+            }
+            Button {
+                id: accBtn
+                text: qsTr("Acc"); checkable: true
+                implicitWidth: 44; implicitHeight: 22
+                enabled: Eq.analyzerMode > 0
+                checked: Eq.accumulate
+                onClicked: Eq.accumulate = checked
+                ToolTip.text: qsTr("Accumulate — peak-hold line over the "
+                                   + "spectrum.  Right-click for hang/decay.")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+                background: Rectangle { radius: 4
+                    color: accBtn.checked ? "#0b3a44" : "#1f2a35"
+                    border.color: accBtn.checked ? root.cAccent : "#3a5060"
+                    opacity: accBtn.enabled ? 1.0 : 0.4 }
+                contentItem: Text { text: accBtn.text; font.pixelSize: 11
+                    font.bold: true
+                    color: accBtn.checked ? root.cAccent : root.cMuted
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter }
+                // Right-click → hang/decay preset menu (left-click still
+                // toggles, since this MouseArea ignores the left button).
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    onClicked: peakMenu.popup()
+                }
+            }
+            Button {
+                id: baBtn
+                text: qsTr("B/A"); checkable: true
+                implicitWidth: 44; implicitHeight: 22
+                enabled: Eq.analyzerMode > 0
+                checked: Eq.beforeAfterMod
+                onClicked: Eq.beforeAfterMod = checked
+                ToolTip.text: qsTr("Before/After-Mod — overlay the pre-EQ "
+                                   + "(before) trace so you see what the EQ did")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+                background: Rectangle { radius: 4
+                    color: baBtn.checked ? "#0b3a44" : "#1f2a35"
+                    border.color: baBtn.checked ? root.cAccent : "#3a5060"
+                    opacity: baBtn.enabled ? 1.0 : 0.4 }
+                contentItem: Text { text: baBtn.text; font.pixelSize: 11
+                    font.bold: true
+                    color: baBtn.checked ? root.cAccent : root.cMuted
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter }
+            }
+
             Item { Layout.fillWidth: true }
 
             // Selected-band quick readout.
@@ -199,6 +313,14 @@ Rectangle {
             // outside the graph box — so a deep cut stays grabbable at the
             // bottom edge instead of disappearing into the tile field below.
             function clampY(y) { return Math.max(11, Math.min(height - 11, y)) }
+            // Analyzer backdrop has its OWN vertical scale (dBFS), independent
+            // of the ±15 dB gain grid the EQ curve rides — they share the box.
+            readonly property real specFloorDb: -100
+            readonly property real specTopDb: 0
+            function yForDb(db) {
+                var t = (specTopDb - db) / (specTopDb - specFloorDb)
+                return Math.max(0, Math.min(height, height * t))
+            }
 
             Rectangle {
                 anchors.fill: parent; color: "#0e1924"
@@ -208,6 +330,10 @@ Rectangle {
             Canvas {
                 id: curveCanvas
                 anchors.fill: parent
+                property var peakHold: []     // Accumulate peak-hold dB per bin (after/post)
+                property var peakHang: []     // remaining hang frames per bin (after/post)
+                property var peakHoldPre: []  // peak-hold dB per bin (before/pre, B/A on)
+                property var peakHangPre: []  // remaining hang frames (before/pre)
                 onWidthChanged: requestPaint()
                 onHeightChanged: requestPaint()
                 Component.onCompleted: requestPaint()
@@ -216,6 +342,167 @@ Rectangle {
                     ctx.reset()
                     var w = width, h = height
                     ctx.clearRect(0, 0, w, h)
+
+                    // ── Live mic analyzer backdrop (Stage 2b) ───────────
+                    // Drawn FIRST so the grid + EQ curve sit on top.  Mode:
+                    // 1=Spectrum (line/fill), 2=RTA (band bars).  Live on the
+                    // mic (continuous on the HL2+ codec → animates on RX too).
+                    var amode = Eq.analyzerMode
+                    if (amode > 0) {
+                        var post = Eq.spectrumPost()
+                        var nb = post.length
+                        if (nb > 2) {
+                            var nyq = Eq.specNyquist
+                            var fMin = graph.fMin, fMax = graph.fMax
+
+                            // Trace a per-bin dB array as a line (skip DC).
+                            function trace(arr) {
+                                ctx.beginPath()
+                                var go = false
+                                for (var i = 1; i < nb; ++i) {
+                                    var f = (i / (nb - 1)) * nyq
+                                    if (f < fMin) continue
+                                    if (f > fMax) break
+                                    var x = graph.xForFreq(f), y = graph.yForDb(arr[i])
+                                    if (!go) { ctx.moveTo(x, y); go = true } else ctx.lineTo(x, y)
+                                }
+                                return go
+                            }
+                            // Max dB of a per-bin array over a freq band (RTA).
+                            function bandMax(arr, fLo, fHi) {
+                                var m = -200
+                                var i0 = Math.max(1, Math.floor(fLo / nyq * (nb - 1)))
+                                var i1 = Math.min(nb - 1, Math.ceil(fHi / nyq * (nb - 1)))
+                                for (var i = i0; i <= i1; ++i) if (arr[i] > m) m = arr[i]
+                                return m
+                            }
+
+                            // before (pre-EQ) source when B/A engaged.
+                            var preArr = null
+                            if (Eq.beforeAfterMod) {
+                                preArr = Eq.spectrumPre()
+                                if (preArr.length !== nb) preArr = null
+                            }
+
+                            // ── shared peak-hold state (per bin) — runs for
+                            // BOTH modes; right-click Acc sets the hang/decay
+                            // (poll ~25 fps → hang frames ≈ seconds×25).
+                            if (Eq.accumulate) {
+                                var hangF, decF
+                                switch (Eq.peakDecayMode) {
+                                case 4: hangF = 0;     decF = 1e9;  break  // Live (track instantly)
+                                case 0: hangF = 8;     decF = 1.5;  break  // Fast
+                                case 2: hangF = 50;    decF = 0.25; break  // Slow
+                                case 3: hangF = 1e9;   decF = 0.0;  break  // Hold
+                                default: hangF = 20;   decF = 0.6;  break  // Medium
+                                }
+                                var ph = peakHold, pg = peakHang
+                                if (!ph || ph.length !== nb) {
+                                    ph = new Array(nb); pg = new Array(nb)
+                                    for (var z = 0; z < nb; ++z) { ph[z] = -200; pg[z] = 0 }
+                                }
+                                for (var p = 0; p < nb; ++p) {
+                                    var d = post[p]
+                                    if (d >= ph[p]) { ph[p] = d; pg[p] = hangF }
+                                    else if (pg[p] > 0) { pg[p]-- }
+                                    else { ph[p] = Math.max(d, ph[p] - decF) }
+                                }
+                                peakHold = ph; peakHang = pg
+                                if (preArr) {
+                                    var ph2 = peakHoldPre, pg2 = peakHangPre
+                                    if (!ph2 || ph2.length !== nb) {
+                                        ph2 = new Array(nb); pg2 = new Array(nb)
+                                        for (var z2 = 0; z2 < nb; ++z2) { ph2[z2] = -200; pg2[z2] = 0 }
+                                    }
+                                    for (var q = 0; q < nb; ++q) {
+                                        var d2 = preArr[q]
+                                        if (d2 >= ph2[q]) { ph2[q] = d2; pg2[q] = hangF }
+                                        else if (pg2[q] > 0) { pg2[q]-- }
+                                        else { ph2[q] = Math.max(d2, ph2[q] - decF) }
+                                    }
+                                    peakHoldPre = ph2; peakHangPre = pg2
+                                }
+                            }
+
+                            if (amode === 1) {
+                                // ── SPECTRUM (line / fill) ──────────────────
+                                // Pink-noise reference (-3 dB/oct) — tilt guide.
+                                ctx.strokeStyle = "rgba(255,120,200,0.22)"; ctx.lineWidth = 1
+                                ctx.beginPath()
+                                var pf0 = true
+                                for (var pf = fMin; pf <= fMax; pf *= 1.15) {
+                                    var ppx = graph.xForFreq(pf)
+                                    var ppy = graph.yForDb(-45 - 3 * (Math.log(pf / 1000) / Math.LN2))
+                                    if (pf0) { ctx.moveTo(ppx, ppy); pf0 = false } else ctx.lineTo(ppx, ppy)
+                                }
+                                ctx.stroke()
+                                // Filled "after" (post-EQ) spectrum.
+                                ctx.beginPath()
+                                var fs = false, lastX = 0
+                                for (var i2 = 1; i2 < nb; ++i2) {
+                                    var f2 = (i2 / (nb - 1)) * nyq
+                                    if (f2 < fMin) continue
+                                    if (f2 > fMax) break
+                                    var x2 = graph.xForFreq(f2), y2 = graph.yForDb(post[i2])
+                                    if (!fs) { ctx.moveTo(x2, h); ctx.lineTo(x2, y2); fs = true } else ctx.lineTo(x2, y2)
+                                    lastX = x2
+                                }
+                                if (fs) {
+                                    ctx.lineTo(lastX, h); ctx.closePath()
+                                    ctx.fillStyle = "rgba(60,200,255,0.16)"; ctx.fill()
+                                    ctx.strokeStyle = "rgba(90,210,255,0.85)"; ctx.lineWidth = 1.5
+                                    trace(post); ctx.stroke()
+                                }
+                                // Before (pre-EQ) overlay — amber line.
+                                if (preArr) {
+                                    ctx.strokeStyle = "rgba(255,190,70,0.9)"; ctx.lineWidth = 1.5
+                                    trace(preArr); ctx.stroke()
+                                }
+                                // Peak-hold lines: cyan (after) + amber (before).
+                                if (Eq.accumulate) {
+                                    ctx.strokeStyle = "rgba(180,240,255,0.95)"; ctx.lineWidth = 1.5
+                                    trace(peakHold); ctx.stroke()
+                                    if (preArr) {
+                                        ctx.strokeStyle = "rgba(255,210,120,0.95)"; ctx.lineWidth = 1.5
+                                        trace(peakHoldPre); ctx.stroke()
+                                    }
+                                }
+                            } else {
+                                // ── RTA (1/N-octave band bars) ──────────────
+                                var N = 28
+                                var rr = Math.pow(fMax / fMin, 1 / N)
+                                for (var b = 0; b < N; ++b) {
+                                    var fLo = fMin * Math.pow(rr, b)
+                                    var fHi = fMin * Math.pow(rr, b + 1)
+                                    var x0 = graph.xForFreq(fLo), x1 = graph.xForFreq(fHi)
+                                    var bwf = x1 - x0
+                                    var gap = Math.min(2, bwf * 0.18)
+                                    var bx = x0 + gap * 0.5, bwid = Math.max(1, bwf - gap)
+                                    // after bar (cyan fill)
+                                    var ay = graph.yForDb(bandMax(post, fLo, fHi))
+                                    ctx.fillStyle = "rgba(60,200,255,0.5)"
+                                    ctx.fillRect(bx, ay, bwid, h - ay)
+                                    // after peak cap (cyan)
+                                    if (Eq.accumulate) {
+                                        var apy = graph.yForDb(bandMax(peakHold, fLo, fHi))
+                                        ctx.fillStyle = "rgba(180,240,255,0.95)"
+                                        ctx.fillRect(bx, apy - 1.5, bwid, 1.5)
+                                    }
+                                    // before (pre-EQ): amber outline + peak cap
+                                    if (preArr) {
+                                        var py = graph.yForDb(bandMax(preArr, fLo, fHi))
+                                        ctx.strokeStyle = "rgba(255,190,70,0.9)"; ctx.lineWidth = 1
+                                        ctx.strokeRect(bx + 0.5, py + 0.5, Math.max(1, bwid - 1), Math.max(0, h - py - 1))
+                                        if (Eq.accumulate) {
+                                            var ppy2 = graph.yForDb(bandMax(peakHoldPre, fLo, fHi))
+                                            ctx.fillStyle = "rgba(255,210,120,0.95)"
+                                            ctx.fillRect(bx, ppy2 - 1.5, bwid, 1.5)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     // Vertical grid at decade-ish freqs.
                     ctx.lineWidth = 1

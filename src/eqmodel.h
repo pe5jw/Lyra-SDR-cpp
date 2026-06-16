@@ -15,10 +15,15 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 
 #include <atomic>
+#include <vector>
 
 #include "dsp/ParamEq.h"
+#include "dsp/EqAnalyzer.h"
+
+class QTimer;
 
 namespace lyra::ui {
 
@@ -29,6 +34,16 @@ class EqModel : public QObject {
     Q_PROPERTY(int selectedBand READ selectedBand WRITE setSelectedBand
                    NOTIFY selectedBandChanged)
     Q_PROPERTY(int numBands READ numBands CONSTANT)
+    // Stage-2b analyzer (live mic spectrum behind the curve).
+    // analyzerMode: 0=Off 1=Spectrum (line/fill) 2=RTA (band bars).
+    Q_PROPERTY(int analyzerMode READ analyzerMode WRITE setAnalyzerMode NOTIFY spectrumOptsChanged)
+    Q_PROPERTY(bool accumulate READ accumulate WRITE setAccumulate NOTIFY spectrumOptsChanged)
+    Q_PROPERTY(bool beforeAfterMod READ beforeAfterMod WRITE setBeforeAfterMod NOTIFY spectrumOptsChanged)
+    // Peak-hold hang/decay preset: 0=Fast 1=Medium 2=Slow 3=Hold(no decay)
+    // 4=Live (no hold — the trace tracks the instantaneous spectrum).
+    Q_PROPERTY(int peakDecayMode READ peakDecayMode WRITE setPeakDecayMode NOTIFY spectrumOptsChanged)
+    Q_PROPERTY(int specBins READ specBins CONSTANT)
+    Q_PROPERTY(double specNyquist READ specNyquist CONSTANT)
 
 public:
     // Mirror of lyra::dsp::ParamEq::Type, in the SAME order, so QML sees
@@ -70,6 +85,7 @@ public:
     Q_INVOKABLE void setBandGain(int i, double db);
     Q_INVOKABLE void setBandQ(int i, double q);
     Q_INVOKABLE void resetBand(int i);   // restore that band's default
+    Q_INVOKABLE void resetAll();         // restore every band's default (flatten)
 
     // Summed response in dB at freqHz — drives the drawn curve (what you
     // see is what you hear: same coeffs the engine's process() applies).
@@ -82,25 +98,56 @@ public:
     // The live engine — Stage 3 hands this to the TX mic rack.
     lyra::dsp::ParamEq *engine() { return &eq_; }
 
+    // ── Stage-2b analyzer (live mic spectrum behind the curve) ──────────
+    int    analyzerMode()   const { return analyzerMode_; }
+    bool   accumulate()     const { return accumulate_; }
+    bool   beforeAfterMod() const { return beforeAfter_; }
+    int    peakDecayMode()  const { return peakDecay_; }
+    int    specBins()       const { return analyzer_.bins(); }
+    double specNyquist()    const { return analyzer_.nyquist(); }
+    void setAnalyzerMode(int mode);
+    void setAccumulate(bool on);
+    void setBeforeAfterMod(bool on);
+    void setPeakDecayMode(int mode);
+    // Latest dBFS magnitude bins (length specBins): post-EQ ("after") and
+    // pre-EQ ("before").  Refreshed off the GUI poll; QML reads them in
+    // onPaint after a spectrumChanged().
+    Q_INVOKABLE QVariantList spectrumPost() const { return postList_; }
+    Q_INVOKABLE QVariantList spectrumPre() const { return preList_; }
+
 signals:
     void bandsChanged();        // any band edit → redraw the curve + nodes
     void bypassChanged();
     void makeupDbChanged();
     void selectedBandChanged();
+    void spectrumChanged();     // new analyzer frame published (→ repaint)
+    void spectrumOptsChanged(); // a Spectrum/Accumulate/Before-After toggle
+
+private slots:
+    void pollSpectrum();        // GUI-thread: drain the analyzer ~25 Hz
 
 private:
     bool valid(int i) const {
         return i >= 0 && i < lyra::dsp::ParamEq::kNumBands;
     }
 
-    // Active engine for the wire-layer TX pump (txProcessCb).  Set to &eq_
-    // in the ctor, cleared in the dtor.  Lock-free read on the TX thread.
-    static std::atomic<lyra::dsp::ParamEq *> s_txEngine;
+    // Active engine + analyzer for the wire-layer TX pump (txProcessCb).
+    // Set in the ctor, cleared in the dtor.  Lock-free reads on the TX thread.
+    static std::atomic<lyra::dsp::ParamEq *>     s_txEngine;
+    static std::atomic<lyra::dsp::EqAnalyzer *>  s_txAnalyzer;
 
-    lyra::dsp::ParamEq eq_;
-    bool   bypass_   = false;
-    double makeupDb_ = 0.0;
-    int    selected_ = 0;
+    lyra::dsp::ParamEq      eq_;
+    lyra::dsp::EqAnalyzer   analyzer_;
+    QTimer                 *pollTimer_ = nullptr;
+    QVariantList            preList_, postList_;   // cached dBFS bins for QML
+    std::vector<float>      preBins_, postBins_;   // scratch snapshot buffers
+    bool   bypass_      = false;
+    double makeupDb_    = 0.0;
+    int    selected_    = 0;
+    int    analyzerMode_ = 1;      // 0 Off / 1 Spectrum / 2 RTA
+    bool   accumulate_  = false;
+    bool   beforeAfter_ = false;
+    int    peakDecay_   = 1;        // Medium
 };
 
 }  // namespace lyra::ui

@@ -185,6 +185,9 @@ qt_add_executable(lyra
     # not a WDSP port).  Pre-WDSP-TXA mic rack stage (TX) + post-RXA (RX).
     src/dsp/ParamEq.h
     src/dsp/ParamEq.cpp
+    # #50 Stage-2b — live mic-spectrum analyzer behind the EQ curve.
+    src/dsp/EqAnalyzer.h
+    src/dsp/EqAnalyzer.cpp
     # #88 — native TX speech pre-processor (Auto-AGC leveller + De-esser),
     # a pre-EQ rack stage.
     src/dsp/SpeechProcessor.h
@@ -293,6 +296,9 @@ qt_add_executable(lyra
     # #50 / #59 — parametric-EQ model (bridges dsp/ParamEq to EqPanel.qml).
     src/eqmodel.h
     src/eqmodel.cpp
+    # #88 — speech-rack model (bridges dsp/SpeechProcessor to SpeechPanel.qml).
+    src/speechmodel.h
+    src/speechmodel.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -330,6 +336,7 @@ qt_add_qml_module(lyra
         src/qml/AudioPanel.qml
         src/qml/TxPanel.qml
         src/qml/EqPanel.qml
+        src/qml/SpeechPanel.qml
         src/qml/ProfilePanel.qml
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml

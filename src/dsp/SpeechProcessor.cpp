@@ -45,6 +45,21 @@ void SpeechProcessor::restageDeess() {
     bpDirty_.store(true, std::memory_order_release);
 }
 
+void SpeechProcessor::setGateEnabled(bool on) {
+    gateOn_.store(on, std::memory_order_relaxed);
+}
+void SpeechProcessor::setGateThreshDb(double db) {
+    gateOpenLin_.store(dbToLin(std::clamp(db, -80.0, 0.0)),
+                       std::memory_order_relaxed);
+}
+void SpeechProcessor::setGateRangeDb(double db) {
+    gateFloorLin_.store(dbToLin(-std::clamp(db, 0.0, 80.0)),
+                        std::memory_order_relaxed);
+}
+void SpeechProcessor::setGateHoldMs(double ms) {
+    gateHoldMs_.store(std::clamp(ms, 0.0, 1000.0), std::memory_order_relaxed);
+}
+
 void SpeechProcessor::setAgcEnabled(bool on) {
     agcOn_.store(on, std::memory_order_relaxed);
 }
@@ -76,6 +91,7 @@ void SpeechProcessor::setDeessRangeDb(double db) {
 }
 
 void SpeechProcessor::reset() {
+    gateKeyEnv_ = 0.0; gateGain_ = 0.0; gateState_ = false; gateHoldCtr_ = 0;
     agcEnv_ = 0.0; agcGain_ = 1.0;
     bpZ1_ = bpZ2_ = 0.0; deessEnv_ = 0.0;
 }
@@ -88,15 +104,24 @@ void SpeechProcessor::processInterleaved(double *x, int n) {
             bpMtx_.unlock();
         }
     }
-    const bool agc = agcOn_.load(std::memory_order_relaxed);
-    const bool de  = deessOn_.load(std::memory_order_relaxed);
-    if (!agc && !de) return;
+    const bool gate = gateOn_.load(std::memory_order_relaxed);
+    const bool agc  = agcOn_.load(std::memory_order_relaxed);
+    const bool de   = deessOn_.load(std::memory_order_relaxed);
+    if (!gate && !agc && !de) return;
+
+    const double gOpen  = gateOpenLin_.load(std::memory_order_relaxed);
+    const double gClose = gOpen * 0.5;   // -6 dB hysteresis to stop chatter
+    const double gFloor = gateFloorLin_.load(std::memory_order_relaxed);
+    const int    gHold  = static_cast<int>(
+        gateHoldMs_.load(std::memory_order_relaxed) * fs_ / 1000.0);
 
     const double tgt      = agcTargetLin_.load(std::memory_order_relaxed);
     const double maxG     = agcMaxGainLin_.load(std::memory_order_relaxed);
     const double thr      = deessThreshLin_.load(std::memory_order_relaxed);
     const double floorMul = deessRangeLin_.load(std::memory_order_relaxed);
 
+    const double gKeyAtk = onePole(0.001, fs_), gKeyRel = onePole(0.010, fs_);
+    const double gAtk = onePole(0.002, fs_),  gRel = onePole(0.10, fs_);
     const double agcAtk = onePole(0.002, fs_), agcRel = onePole(0.15, fs_);
     const double gSmooth = onePole(0.01, fs_);
     const double dAtk = onePole(0.0005, fs_), dRel = onePole(0.02, fs_);
@@ -104,14 +129,36 @@ void SpeechProcessor::processInterleaved(double *x, int n) {
 
     for (int s = 0; s < n; ++s) {
         double v = x[2 * s];
+        bool gateOpenNow = true;
 
-        if (agc) {
+        // ── Gate (first) — mute when the input sits below the threshold.
+        if (gate) {
             const double a = std::fabs(v);
-            const double c = (a > agcEnv_) ? agcAtk : agcRel;
-            agcEnv_ = c * agcEnv_ + (1.0 - c) * a;
-            double desired = (agcEnv_ > 1e-6) ? tgt / agcEnv_ : maxG;
-            desired = std::clamp(desired, 0.1, maxG);
-            agcGain_ = gSmooth * agcGain_ + (1.0 - gSmooth) * desired;
+            const double c = (a > gateKeyEnv_) ? gKeyAtk : gKeyRel;
+            gateKeyEnv_ = c * gateKeyEnv_ + (1.0 - c) * a;
+            const bool want = gateState_ ? (gateKeyEnv_ > gClose)
+                                         : (gateKeyEnv_ > gOpen);
+            if (want) { gateState_ = true; gateHoldCtr_ = gHold; }
+            else if (gateHoldCtr_ > 0) { --gateHoldCtr_; }
+            else gateState_ = false;
+            const double tgtG = (gateState_ || gateHoldCtr_ > 0) ? 1.0 : gFloor;
+            const double gc = (tgtG > gateGain_) ? gAtk : gRel;
+            gateGain_ = gc * gateGain_ + (1.0 - gc) * tgtG;
+            v *= gateGain_;
+            gateOpenNow = gateGain_ > 0.5;
+        }
+
+        // ── Auto-AGC — freeze the gain while the gate is closed so pauses
+        //    don't breathe.
+        if (agc) {
+            if (gateOpenNow) {
+                const double a = std::fabs(v);
+                const double c = (a > agcEnv_) ? agcAtk : agcRel;
+                agcEnv_ = c * agcEnv_ + (1.0 - c) * a;
+                double desired = (agcEnv_ > 1e-6) ? tgt / agcEnv_ : maxG;
+                desired = std::clamp(desired, 0.1, maxG);
+                agcGain_ = gSmooth * agcGain_ + (1.0 - gSmooth) * desired;
+            }
             v *= agcGain_;
         }
 

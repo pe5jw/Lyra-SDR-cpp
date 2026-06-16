@@ -33,6 +33,12 @@ public:
 
     void setSampleRate(double fs);
 
+    // ── Noise gate (mutes shack background noise between words) ───────
+    void setGateEnabled(bool on);
+    void setGateThreshDb(double db);    // opens above this input level (dBFS)
+    void setGateRangeDb(double db);     // attenuation when closed (depth, dB)
+    void setGateHoldMs(double ms);      // stay-open time after the level drops
+
     // ── Auto-AGC (input leveller) ────────────────────────────────────
     void setAgcEnabled(bool on);
     void setAgcTargetDb(double db);     // desired output level, dBFS (e.g. -16)
@@ -54,6 +60,18 @@ private:
     void restageDeess();                // recompute the detector bandpass
 
     double fs_ = 48000.0;
+
+    // Noise-gate params (atomic) + audio-thread state.  Runs FIRST (before
+    // AGC) so the AGC never amplifies the gated-out noise floor; the AGC
+    // freezes its gain while the gate is closed to avoid pause "breathing".
+    std::atomic<bool>   gateOn_{false};
+    std::atomic<double> gateOpenLin_{0.00562};   // -45 dBFS open threshold
+    std::atomic<double> gateFloorLin_{0.001};     // -60 dB closed depth
+    std::atomic<double> gateHoldMs_{120.0};
+    double gateKeyEnv_  = 0.0;
+    double gateGain_    = 0.0;
+    bool   gateState_   = false;
+    int    gateHoldCtr_ = 0;
 
     // Auto-AGC params (atomic scalars) + audio-thread state.
     std::atomic<bool>   agcOn_{false};

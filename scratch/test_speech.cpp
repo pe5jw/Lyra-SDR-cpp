@@ -110,6 +110,30 @@ int main() {
         CHECK(out > 0.9 * in);     // passband tone barely affected
     }
 
+    // 6) Gate MUTES a below-threshold (noise-floor) signal.
+    {
+        SpeechProcessor sp; sp.setSampleRate(kFs);
+        sp.setGateEnabled(true);
+        sp.setGateThreshDb(-45.0); sp.setGateRangeDb(60.0); sp.setGateHoldMs(50.0);
+        auto b = sineIQ(800.0, 0.002, N);     // -54 dBFS, below the -45 gate
+        const double in = rmsTail(sineIQ(800.0, 0.002, N), N);
+        sp.processInterleaved(b.data(), N);
+        const double out = rmsTail(b, N);
+        CHECK(out < 0.2 * in);                // heavily gated
+    }
+
+    // 7) Gate PASSES an above-threshold signal essentially untouched.
+    {
+        SpeechProcessor sp; sp.setSampleRate(kFs);
+        sp.setGateEnabled(true);
+        sp.setGateThreshDb(-45.0); sp.setGateRangeDb(60.0); sp.setGateHoldMs(50.0);
+        auto b = sineIQ(800.0, 0.1, N);       // -20 dBFS, above the gate
+        const double in = rmsTail(sineIQ(800.0, 0.1, N), N);
+        sp.processInterleaved(b.data(), N);
+        const double out = rmsTail(b, N);
+        CHECK(out > 0.85 * in);               // passes
+    }
+
     if (g_fail == 0) std::printf("test_speech: ALL PASS\n");
     else             std::printf("test_speech: %d FAILED\n", g_fail);
     return g_fail ? 1 : 0;

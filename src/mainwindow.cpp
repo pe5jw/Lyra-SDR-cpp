@@ -19,6 +19,7 @@
 #include "metermodel.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
 #include "eqmodel.h"                  // complete type for new EqModel + context property
+#include "speechmodel.h"              // complete type for new SpeechModel + context property
 #include "profileui.h"                // native Save-Profile dialog (front panel)
 #include "wdsp_engine.h"
 #include "help.h"
@@ -53,6 +54,7 @@
 #include <QMessageBox>
 #include <QQmlContext>
 #include <QQuickWidget>
+#include <QQuickItem>
 #include <QSettings>
 #include <QStyle>
 #include <QToolBar>
@@ -225,6 +227,10 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // Stage 3 routes the TX mic rack through eqModel_->engine().
     eqModel_ = new EqModel(this);
 
+    // #88 speech-rack model (drives SpeechPanel.qml) — Auto-AGC + De-esser,
+    // pre-EQ in the mic rack (wired via SendpTxSpeechProcessor in main.cpp).
+    speechModel_ = new SpeechModel(this);
+
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
@@ -379,6 +385,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("ProfileUi"), profileUi_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Eq"), eqModel_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Speech"), speechModel_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -393,7 +401,49 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
             }
         }
     }
+    // Collapsible panels (EqPanel/SpeechPanel) expose a `collapsed` bool.
+    // Drive the host dock's height off it so collapse shrinks the WHOLE dock
+    // to the title strip (SizeRootObjectToView ignores QML implicitHeight, so
+    // C++ has to clamp the widget).  Stash the host widget on the root so the
+    // slot can find it via sender(); panels start expanded (no-op until used).
+    if (QObject *root = qw->rootObject();
+        root && root->property("collapsed").isValid()) {
+        root->setProperty("_lyraHostQw", QVariant::fromValue<QObject *>(qw));
+        connect(root, SIGNAL(collapsedChanged()),
+                this, SLOT(syncCollapsibleDock()));
+    }
     return qw;
+}
+
+void MainWindow::syncCollapsibleDock() {
+    QObject *root = sender();
+    if (!root) return;
+    auto *qw = qobject_cast<QQuickWidget *>(
+        root->property("_lyraHostQw").value<QObject *>());
+    if (!qw) return;
+    const bool collapsed = root->property("collapsed").toBool();
+    if (collapsed) {
+        // Remember the expanded height so we can spring back, then pin the
+        // widget to the collapsed strip height → the dock shrinks to fit.
+        root->setProperty("_lyraExpandH", qw->height());
+        const int strip =
+            qMax(28, int(root->property("implicitHeight").toReal()));
+        qw->setMinimumHeight(strip);
+        qw->setMaximumHeight(strip);
+    } else {
+        // Expand: a bare resize() on the QQuickWidget does NOT grow the host
+        // dock (the dock/splitter owns the size), so the panel would stay at
+        // the strip until dragged.  Force it: release the max, pin the MINIMUM
+        // to the target height (the dock layout grows the dock to satisfy it),
+        // then drop the floor next tick so the operator can resize freely.
+        qw->setMaximumHeight(QWIDGETSIZE_MAX);
+        int eh = root->property("_lyraExpandH").toInt();
+        const int impl = int(root->property("implicitHeight").toReal());
+        if (eh < impl) eh = impl;       // collapsed-flag now false → expanded implicit
+        if (eh < 60)   eh = 200;        // sanity floor
+        qw->setMinimumHeight(eh);
+        QTimer::singleShot(0, qw, [qw]() { qw->setMinimumHeight(0); });
+    }
 }
 
 QDockWidget *MainWindow::addQuickDock(const QString &objectName,
@@ -537,11 +587,29 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("tx"), tr("TX"),
                  QStringLiteral("TxPanel.qml"),
                  QStringLiteral("tx"), Qt::BottomDockWidgetArea);
-    // TX EQ (#50) — 8-band parametric EQ, EESDR3-style.  Dockable /
-    // collapsible / View-hideable like every panel; binds the Eq model.
+    // TX Speech (#88) — Noise Gate + Auto-AGC + De-esser, the pre-EQ mic
+    // rack stage.  Its OWN dock so it moves / resizes / floats / collapses
+    // like every Lyra panel; drag it onto the TX EQ dock to tab the two into
+    // a "TX DSP" group, or place them side-by-side / float either.
+    addQuickDock(QStringLiteral("txspeech"), tr("TX Speech"),
+                 QStringLiteral("SpeechPanel.qml"),
+                 QStringLiteral("txspeech"), Qt::BottomDockWidgetArea);
+    // TX EQ (#50) — 10-band parametric EQ.  Own dock (see TX Speech) — comes
+    // after Speech in the chain (mic → Speech → EQ → WDSP TXA).
     addQuickDock(QStringLiteral("txeq"), tr("TX EQ"),
                  QStringLiteral("EqPanel.qml"),
                  QStringLiteral("txeq"), Qt::BottomDockWidgetArea);
+    // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
+    // window so the front panel stays clean — the header "TX DSP" chip-strip
+    // summons one (it pops as a movable/resizable float), and Save-my-layout
+    // remembers what's open + where.  restoreLayout() below overrides this
+    // with the operator's saved arrangement when one exists.
+    for (const char *nm : {"txspeech", "txeq"}) {
+        if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
+            d->setFloating(true);
+            d->hide();
+        }
+    }
     // Profiles — front-facing quick recall of a saved TX/RX profile
     // (dropdown + Save + ● modified).  Full editor (create / rename /
     // delete / set-default / per-mode bind) is Settings → Profiles.
@@ -757,6 +825,27 @@ void MainWindow::buildToolbar() {
                 this, [this](int) { updateTciStatus(); });
     }
     updateTciStatus();
+
+    // ---- TX DSP launcher chip-strip ----
+    // One checkable chip per native mic-rack stage; each chip IS that dock's
+    // toggleViewAction, so a click summons the panel (floating, movable /
+    // resizable) and a click (or closing it) tucks it away — the chip stays
+    // in sync.  What's open + where rides Save-my-layout (saveState keys on
+    // each dock's objectName).  #51 Combinator / #52 Plate add their names
+    // here when their docks land.
+    {
+        tb->addSeparator();
+        auto *txDspLabel = new QLabel(tr("TX DSP:"), tb);
+        txDspLabel->setContentsMargins(8, 0, 4, 0);
+        txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
+                                  "movable window; layout is remembered."));
+        tb->addWidget(txDspLabel);
+        for (const char *nm : {"txspeech", "txeq"}) {
+            if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
+                tb->addAction(d->toggleViewAction());
+            }
+        }
+    }
 
     // ---- Local + UTC clocks (old-Lyra header layout) ----
     // A flexible spacer pushes the clocks toward the right of the strip,

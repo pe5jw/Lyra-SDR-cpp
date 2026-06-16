@@ -35,6 +35,7 @@ not programmers — if you can click a menu, you can use this.
 - [Display panel](#display-panel)
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
+- [TX DSP rack (EQ + Speech)](#tx-dsp-rack-eq--speech)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -822,6 +823,89 @@ external watt-meter / bias-tune an external amp.
 
 ---
 
+## TX DSP rack (EQ + Speech)
+
+Lyra ships two native, operator-tunable DSP stages that sit on the mic
+audio **before** the WDSP TXA modulator — your own EQ and speech-
+conditioning rack, done Lyra-native. Each lives in its own dockable /
+collapsible panel (show/hide from the window's dock menu; drag, float and
+resize like any Lyra panel), and your layout is saved with the rest of
+your window state.
+
+### How bypass works (read this first)
+
+Every item in the rack is **independently bypassable**, and bypass means
+exactly what you'd hope:
+
+> **When an item is OFF it leaves the mic audio untouched — that stage's
+> processing is skipped entirely (a true pass-through), bit-for-bit.**
+
+This matches the reference's behaviour — its TX EQ and compressor are
+manual on/off, and off means "not applied." Three things to keep in mind
+so you're never surprised:
+
+- **The EQ ships ON.** Its default layout includes a gentle high-pass and
+  a high-shelf that shape the audio *even at 0 dB gain*. For a genuinely
+  flat, unprocessed mic path, turn the EQ's **ON** button off — don't just
+  zero the gains.
+- **The rack is pre-modulator.** Turning rack items off does **not**
+  bypass the radio's transmit DSP: the always-on **ALC** limiter (splatter
+  protection) and your selected **TX bandwidth** filter always run
+  downstream — plus the Leveler / PHROT if you've enabled them in
+  [Settings → TX](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade).
+  "Item off" means clean *through that item*, not clean *to the antenna*.
+- **Digital modes auto-bypass the whole rack.** In **DIGU / DIGL** Lyra
+  automatically skips the entire native rack (EQ + Speech) so FT8 / JS8 /
+  etc. transmit unshaped — you don't have to remember to switch anything
+  off. (This auto-gate is a Lyra convenience; the reference leaves it to
+  you to untick manually or load a digital profile.)
+
+### TX EQ — 10-band parametric
+
+A draggable response curve over a live spectrum analyzer.
+
+- **Bands** — drag a node to set its **frequency + gain**; **mouse-wheel**
+  over the selected node sets **Q** (width). Each band has a **Type** chip
+  that cycles Peak / Low-shelf / High-shelf / Low-pass / High-pass /
+  Bandpass / Notch. The default layout opens with a 60 Hz high-pass and a
+  high-shelf; that high-pass — like any band — can be dragged down to the
+  **20 Hz** frequency floor or up.
+- **Tile row** under the curve shows each band's #, type, freq and gain/Q.
+  **Right-click a tile** to reset just that one band.
+- **Top bar** — **ON** (bypass; see above) · **Makeup** output trim
+  (± dB) · **Reset** (flatten *all* bands back to their defaults) ·
+  collapse ▼.
+- **Analyzer behind the curve** — the **Spec** button cycles
+  **Off → Spectrum → RTA** (a line/fill spectrum, or log-spaced 1/N-octave
+  band bars). **Acc** adds a peak-hold overlay; **right-click Acc** for the
+  hang preset: **Live** (tracks the instantaneous signal, no hold) /
+  **Fast** / **Medium** / **Slow** / **Hold** (never decays). **B/A**
+  overlays the pre-EQ ("before") trace in amber against the post-EQ cyan
+  so you can see exactly what the EQ did. On an HL2+ the mic codec free-
+  runs, so the analyzer animates on receive too — you can shape your EQ
+  while just listening, no need to key up (it's analysed, not
+  transmitted, until you actually key).
+
+### TX Speech — Noise Gate → Auto-AGC → De-esser
+
+Three independent stages, processed in that order, each with its own
+**ON** toggle. **All three default OFF**, so the panel changes nothing
+until you enable a stage.
+
+- **Noise Gate** (first) — gates shack background noise between words.
+  **Threshold** (default −45 dBFS), **Range/Depth** (how far it attenuates
+  when closed, default 60 dB) and **Hold** (default 120 ms). It freezes the
+  Auto-AGC gain while closed so pauses don't "breathe."
+- **Auto-AGC** — an input leveller that rides quiet and loud passages
+  toward a target level (**Target**, **Max-gain** cap). This is distinct
+  from the WDSP output **Leveler** in
+  [Settings → TX](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade).
+- **De-esser** — a frequency-selective compressor that tames harsh
+  sibilance ("s" / "sh"). **Frequency** (where it listens), **Threshold**
+  and **Range** (maximum ducking).
+
+---
+
 ## Profiles (TX/RX chain presets)
 
 A **profile** is a named snapshot of your operator TX/RX *signal chain* —
@@ -850,11 +934,14 @@ VAC/digital setup as a unit — see
   [Settings → Hardware](#settings--hardware) and are *never* swept by a
   profile (you don't want a recalled preset silently arming your PA or
   changing how you key).
-- EQ, Combinator and a separate monitor output are **reserved** — those
-  fields appear in profiles once those features land, and older saved
-  profiles migrate forward automatically. (VAC is no longer reserved — it's
-  stored as of v0.2.4. Audio *device* names stay global station setup, not
-  per-profile, since they're machine-specific.)
+- **EQ and Speech** now ship as live TX DSP panels (see
+  [TX DSP rack](#tx-dsp-rack-eq--speech)), but their settings are **not yet
+  swept into profiles** — that field lands with a future profile update,
+  and older saved profiles migrate forward automatically. **Combinator**
+  and a separate monitor output remain **reserved** for the same reason.
+  (VAC is no longer reserved — it's stored as of v0.2.4. Audio *device*
+  names stay global station setup, not per-profile, since they're
+  machine-specific.)
 
 ### The Profiles dock (front panel — quick recall)
 
