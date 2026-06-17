@@ -1248,6 +1248,30 @@ void MainWindow::applyPanelLock(bool locked) {
     const QDockWidget::DockWidgetFeatures f =
         locked ? QDockWidget::NoDockWidgetFeatures : kUnlockedFeatures;
     for (auto *dock : std::as_const(docks_)) {
+        // The TX DSP rack panels (Speech / EQ / Combinator / Plating) are
+        // floating tool windows summoned by the header chip-strip — they are
+        // NOT part of the lockable main layout.  Locking them removed their
+        // features AND froze their size, so the chips could no longer open
+        // them.  Always keep them fully featured + unfrozen, regardless of
+        // the lock, so the launchers keep working.
+        const QString on = dock->objectName();
+        if (on == QLatin1String("txspeech") || on == QLatin1String("txeq") ||
+            on == QLatin1String("txcombinator") || on == QLatin1String("txplate")) {
+            dock->setFeatures(kUnlockedFeatures);
+            if (QWidget *tb = dock->titleBarWidget()) {
+                if (auto *fb = tb->findChild<QToolButton *>(QStringLiteral("dockFloat")))
+                    fb->setVisible(true);
+                if (auto *cb = tb->findChild<QToolButton *>(QStringLiteral("dockClose")))
+                    cb->setVisible(true);
+            }
+            if (dock->property("lyraUnlockedMin").isValid()) {
+                dock->setMinimumSize(dock->property("lyraUnlockedMin").toSize());
+                dock->setMaximumSize(dock->property("lyraUnlockedMax").toSize());
+                dock->setProperty("lyraUnlockedMin", QVariant());
+                dock->setProperty("lyraUnlockedMax", QVariant());
+            }
+            continue;
+        }
         dock->setFeatures(f);
         // Our custom title bar's float/close buttons aren't governed by
         // the dock feature flags, so toggle them by hand to match the
