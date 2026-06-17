@@ -26,6 +26,7 @@
 #include "eqmodel.h"          // #50 native TX parametric EQ — txProcessCb wire hook
 #include "speechmodel.h"      // #88 native TX speech rack — txProcessCb wire hook
 #include "combinatormodel.h"  // #51 native TX combinator — txProcessCb wire hook
+#include "platemodel.h"       // #52 native TX plate reverb — txProcessCb wire hook
 #include "wire/cmsetup.h"   // P0.d direct port — reference cmsetup.h verbatim
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
@@ -335,6 +336,11 @@ int main(int argc, char *argv[])
     // the model defaults the stage OFF so it's inert until the operator
     // enables it.
     lyra::wire::SendpTxCombinatorProcessor(&lyra::ui::CombinatorModel::txProcessCb);
+
+    // #52 native Plate reverb: register AFTER the combinator in the mic chain
+    // (Speech -> EQ -> Combinator -> Plate).  Same no-op-until-constructed
+    // safety; the model defaults the stage OFF so it's inert until enabled.
+    lyra::wire::SendpTxPlateProcessor(&lyra::ui::PlateModel::txProcessCb);
 
     // Step 2a: the stream object opens the EP6 RX path to a
     // selected radio on its OWN dedicated OS thread (std::jthread

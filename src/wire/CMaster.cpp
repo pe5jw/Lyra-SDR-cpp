@@ -445,6 +445,8 @@ void xcmaster (int stream)
 				(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 			if (pcm->TxCombinatorProcess)
 				(*pcm->TxCombinatorProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
+			if (pcm->TxPlateProcess)
+				(*pcm->TxPlateProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 		}
 		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
@@ -553,6 +555,13 @@ PORT
 void SendpTxCombinatorProcessor (void (*Process)(int nsamples, double* buff))
 {
 	pcm->TxCombinatorProcess = Process;
+}
+
+// #52 — register the native Plate reverb (runs after the combinator).
+PORT
+void SendpTxPlateProcessor (void (*Process)(int nsamples, double* buff))
+{
+	pcm->TxPlateProcess = Process;
 }
 
 // #50 — gate the whole native TX rack on/off (digital-mode bypass).

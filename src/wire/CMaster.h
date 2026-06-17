@@ -105,6 +105,7 @@ typedef struct _cmaster
 	void (*TxSpeechProcess)(int nsamples, double* buff);			// #88 in-place speech rack (Auto-AGC + De-esser), runs BEFORE the EQ
 	void (*TxEqProcess)(int nsamples, double* buff);				// in-place mic EQ filter (no-op when unset / EQ bypassed)
 	void (*TxCombinatorProcess)(int nsamples, double* buff);		// #51 in-place 5-band combinator, runs AFTER the EQ (no-op when unset / bypassed)
+	void (*TxPlateProcess)(int nsamples, double* buff);				// #52 in-place plate reverb, runs AFTER the combinator (no-op when unset / bypassed)
 	volatile long tx_rack_bypass;									// #50 — when set, skip the ENTIRE native rack (EQ + Speech + …); driven by mode (DIGU/DIGL → bypass so digital audio is never voice-shaped)
 	volatile long tci_run;											// run TCI RX IQ/audio callbacks
 	int	audioCodecId;
@@ -167,6 +168,9 @@ extern PORT void SendpTxSpeechProcessor (void (*Process)(int nsamples, double* b
 // #51 — register the native 5-band Combinator, run AFTER the EQ on the mic
 // buffer (chain: Speech -> EQ -> Combinator).
 extern PORT void SendpTxCombinatorProcessor (void (*Process)(int nsamples, double* buff));
+// #52 — register the native Plate reverb, run AFTER the combinator on the
+// mic buffer (chain: Speech -> EQ -> Combinator -> Plate).
+extern PORT void SendpTxPlateProcessor (void (*Process)(int nsamples, double* buff));
 // #50 — bypass the whole native TX rack (EQ + future Speech/Combinator/Plate).
 // Set 1 for digital modes (DIGU/DIGL) so the mic DSP never touches FT8/JS8/etc.
 extern PORT void SetTxRackBypass (int bypass);

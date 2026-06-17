@@ -35,7 +35,7 @@ not programmers — if you can click a menu, you can use this.
 - [Display panel](#display-panel)
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
-- [TX DSP rack (EQ + Speech + Combinator)](#tx-dsp-rack-eq--speech--combinator)
+- [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -823,12 +823,13 @@ external watt-meter / bias-tune an external amp.
 
 ---
 
-## TX DSP rack (EQ + Speech + Combinator)
+## TX DSP rack (EQ + Speech + Combinator + Plating)
 
-Lyra ships three native, operator-tunable DSP stages that sit on the mic
-audio **before** the WDSP TXA modulator — your own EQ, speech-conditioning
-and multiband-compressor rack, done Lyra-native. They run in chain order
-**Speech → EQ → Combinator**. Each lives in its own dockable / collapsible
+Lyra ships four native, operator-tunable DSP stages that sit on the mic
+audio **before** the WDSP TXA modulator — your own EQ, speech-conditioning,
+multiband-compressor and plate-reverb rack, done Lyra-native. They run in
+chain order **Speech → EQ → Combinator → Plating**. Each lives in its own
+dockable / collapsible
 panel (show/hide from the window's dock menu; drag, float and resize like
 any Lyra panel), and your layout is saved with the rest of your window
 state.
@@ -855,12 +856,12 @@ so you're never surprised:
   downstream — plus the Leveler / PHROT if you've enabled them in
   [Settings → TX](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade).
   "Item off" means clean *through that item*, not clean *to the antenna*.
-- **Default states differ.** The **EQ ships ON**; **TX Speech and the
-  Combinator ship OFF** (they materially process the audio, so they wait
-  for you to enable them).
+- **Default states differ.** The **EQ ships ON**; **TX Speech, the
+  Combinator and Plating ship OFF** (they materially process the audio, so
+  they wait for you to enable them).
 - **Digital modes auto-bypass the whole rack.** In **DIGU / DIGL** Lyra
-  automatically skips the entire native rack (EQ + Speech + Combinator) so
-  FT8 / JS8 / etc. transmit unshaped — you don't have to remember to switch
+  automatically skips the entire native rack (EQ + Speech + Combinator +
+  Plating) so FT8 / JS8 / etc. transmit unshaped — you don't have to switch
   anything off. (This auto-gate is a Lyra convenience; the reference leaves
   it to you to untick manually or load a digital profile.)
 
@@ -931,6 +932,26 @@ The panel mirrors a hardware multiband processor's layout; the shipped
 default is N8SDR's own preset. It auto-bypasses in DIGU/DIGL with the rest
 of the rack.
 
+### TX Plating — plate reverb (ESSB air)
+
+The last native stage (after the Combinator). A plate-class reverb for the
+ESSB "broadcast air" sound — a subtle wet tail that adds space without
+washing out the voice. **Default OFF.** Bandplan-constrained operators
+(contest, crowded DX) just leave it off.
+
+- **ON** — engages the stage. Off = true pass-through.
+- **Preset picker** — **W5UDX** and **N8SDR** load the two ship presets
+  (the eight reverb params); your **Mix** is left untouched (it's a
+  personal wet-level).
+- **Controls:** **Pre-Delay** (gap before the tail), **Decay** (tail
+  length / RT60), **Damp** (how fast the tail's highs roll off), **Size**
+  (plate size), **Density** + **Diffusion** (echo smoothness), **Bass** /
+  **Treble** (wet-tail tone), and **Mix** — the reverb amount, **capped at
+  15 %** (the useful ESSB range) and shipped at **7 %**.
+
+It sits before the always-on ALC limiter, so the reverb tail is caught by
+the limiter; it auto-bypasses in DIGU/DIGL with the rest of the rack.
+
 ---
 
 ## Profiles (TX/RX chain presets)
@@ -961,14 +982,14 @@ VAC/digital setup as a unit — see
   [Settings → Hardware](#settings--hardware) and are *never* swept by a
   profile (you don't want a recalled preset silently arming your PA or
   changing how you key).
-- **EQ, Speech and the Combinator** now ship as live TX DSP panels (see
-  [TX DSP rack](#tx-dsp-rack-eq--speech--combinator)), but their settings
-  are **not yet swept into profiles** — that field lands with a future
-  profile update, and older saved profiles migrate forward automatically.
-  The **Plate reverb** and a separate monitor output remain **reserved**
-  for the same reason. (VAC is no longer reserved — it's stored as of
-  v0.2.4. Audio *device* names stay global station setup, not per-profile,
-  since they're machine-specific.)
+- **EQ, Speech, the Combinator and Plating** now ship as live TX DSP panels
+  (see [TX DSP rack](#tx-dsp-rack-eq--speech--combinator--plating)), but
+  their settings are **not yet swept into profiles** — that field lands
+  with a future profile update, and older saved profiles migrate forward
+  automatically. A separate monitor output remains **reserved** for the
+  same reason. (VAC is no longer reserved — it's stored as of v0.2.4. Audio
+  *device* names stay global station setup, not per-profile, since they're
+  machine-specific.)
 
 ### The Profiles dock (front panel — quick recall)
 
