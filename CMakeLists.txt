@@ -192,6 +192,10 @@ qt_add_executable(lyra
     # a pre-EQ rack stage.
     src/dsp/SpeechProcessor.h
     src/dsp/SpeechProcessor.cpp
+    # #51 — native 5-band Combinator (multiband comp + SBC).  Wire-inert
+    # until the model/panel/wire stages land.
+    src/dsp/Combinator.h
+    src/dsp/Combinator.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -600,4 +604,16 @@ add_executable(test_speech EXCLUDE_FROM_ALL
 target_include_directories(test_speech PRIVATE src)
 if(MSVC)
     target_compile_options(test_speech PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #51 — native Combinator unit test (crossover reconstruction + comp + SBC).
+# EXCLUDE_FROM_ALL; `cmake --build build --target test_combinator`.  No Qt.
+add_executable(test_combinator EXCLUDE_FROM_ALL
+    scratch/test_combinator.cpp
+    src/dsp/Combinator.h
+    src/dsp/Combinator.cpp
+)
+target_include_directories(test_combinator PRIVATE src)
+if(MSVC)
+    target_compile_options(test_combinator PRIVATE /utf-8 /Zc:preprocessor)
 endif()
