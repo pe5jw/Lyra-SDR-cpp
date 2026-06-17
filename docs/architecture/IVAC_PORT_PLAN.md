@@ -45,6 +45,19 @@ operator-bench-confirmed. `main` == `tx-rebuild` == HEAD `e957f00`
 - **Stage 5 — TX-monitor real audio + raw IQ.** Today the VAC-out mixer
   stream-2 (TX monitor) is fed SILENCE; Stage 5 feeds the real TX-monitor
   audio + the raw-IQ (`iq_type`) path. `SetIVACmox`/`SetIVACmon`.
+  - **#90 monitor (design locked 2026-06-16; build parked for next session
+    — see SESSION_LOG + memory `project-lyra-cpp-monitor`):** the #90 Audio-
+    panel MON button + Monitor-volume slider shares ONE tap with this stage.
+    The tap = `pcm->in[stream]` AFTER the rack / BEFORE `fexchange0` in
+    `xcmaster` case 1 (processed "what you sound like" mic audio) → SPSC
+    ring. **Route 1 (HL2 jack, builds first):** drain the ring in
+    `WdspEngine::dispatchAudioFrame` and, when MOX up + MON on, emit the
+    monitor audio (scaled by the new Monitor-vol) in place of the muted RX
+    audio via the existing `OutBound(0)` path (dispatchAudioFrame stays LIVE
+    during TX — RX is only gain-zeroed by `txMuted_ && autoMuteOnTx_`).
+    **Route 2 (separate PC device, = THIS stage):** feed the same tap into
+    `xvacOUT(kVac1Id, stream 2)` (replacing the `vacMonSilence_` block at
+    wdsp_engine.cpp:3140) + `SetIVACmon`. Build the tap once, feed both.
 - **Stage 7 — VAC2 (#103).** Second `Ivac` instance (id 1) + second
   device pair + selector token `micpc2` (already in `Prefs::micSourceTokens`).
 - Stage-6 polish: per-mode buffer/latency surface (#159), SwapIQ/Use-RX2,

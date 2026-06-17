@@ -4,6 +4,194 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-17 (cont. — doc reconciliation + ATT-on-TX UI §15.31)
+
+### Doc reconciliation (operator-delegated while out)
+- `THETIS_DIRECT_PORT_PLAN.md` reconciled (agent pass + my accuracy
+  corrections): obbuffs/P1 → [DONE]; compress/cfcomp/eqp → [N/A]
+  (native-superseded); wcpagc leveler/ALC → [DONE] but **softened** —
+  metering "shipped in code; #160 bench close-out + Brent/Timmy
+  field-confirm still IN PROGRESS" (not over-claimed). PDF + DOCX
+  regenerated via the generalized `tools/sync_execution_plan.py`
+  (now `--md/--docx/--pdf-path/--title/--no-docx`). SESSION_LOG.pdf
+  regenerated.
+
+### §15.31 — ATT-on-TX operator surface + visible lamp (operator-flagged)
+Operator: "ATT on TX doesn't appear to be live — I don't see the LNA
+drop to −31 on TX." TRACED the path (did NOT re-assert from the doc —
+the [DONE] I'd let stand was operator-disproven):
+- **WIRE path IS live + correct**: `fsmAdvance` raises
+  `setTxStepAttnDb(31)` on keydown (`hl2_stream.cpp:1651`) →
+  `tx_step_attn=0` → XmitBit-gated `compose_case_11` C4 = `0x40` →
+  ak4951v4 cmd_addr 0x0a rx_gain = 0 = min LNA during TX. The front end
+  WAS being attenuated.
+- **Root of the report = VISIBILITY gap** (operator confirmed "1 and 3"):
+  the LNA readout shows the RX setpoint (unchanged on TX); no on-screen
+  confirmation, where Thetis visibly jumps the ATT to 31. Also the
+  `src/tx/AttOnTxPolicy.{h,cpp}` class is **unused / wire-inert** — the
+  live mechanism is inline in hl2_stream.cpp; the doc citation was wrong.
+- **FIX** (operator-locked design confirmed before code; matches Thetis
+  Setup → General → Ant/Filters → "ATT on Tx" ✓ / "ATT: 31"):
+  * HL2Stream: `attOnTxEnabled_` (default ON) + `attOnTxDb_` (default
+    31), Q_PROPERTY + setters + QSettings (`tx/attOnTx*`); `fsmAdvance`
+    gates on the toggle + uses the value (replaces hardcoded
+    `kAttOnTxDb`); mid-TX toggle re-applies live. Disabled → axis 0
+    (= reference `SetTxAttenData(0)`).
+  * TxPanel.qml: "ATT" lamp in the gap between the Mic and Tune sliders,
+    AUTO/TUN/MOX lit idiom — gray `ATT off` / orange `ATT 31` armed (RX)
+    / solid-red + white-text `ATT -31` engaged (keyed). Engaged colour
+    fixed from a salmon-on-maroon blend that read PINK → MOX-style solid
+    red; label shows the negative (applied attenuation) on TX per
+    operator request.
+  * settingsdialog.cpp: Settings → TX → "ATT on TX (RX-ADC protection)"
+    group (left/safety column) — Enable + ATT dB (0..31) spin,
+    bidirectional with the lamp.
+- Builds clean; operator-approved the UI in review. THETIS row kept
+  **[WIP]** (flips [DONE] only on the on-air bench confirm). AttOnTxPolicy
+  class still unused (flagged for later delete-or-wire-up). Task #114
+  (broader: panadapter offset + PA-enable safety) stays pending.
+
+---
+
+## 2026-06-17 (build day — #162/#163 ship, #90 TX monitor 3-route, #164 Out picker; all HL2-confirmed)
+
+Branch `tx-rebuild` (NOT pushed; `main`/origin stays v0.3.1). Every commit
+below was operator-bench-confirmed on the HL2+ before it landed.
+
+### #162 TX Speech profile NOT saving — FIXED (root cause CORRECTED vs the 06-16 theory)
+The 06-16 "binding-break / UI-refresh" theory was **WRONG**. Operator
+pushback ("are we even capturing the Speech panel?") + a registry dump
+(`HKCU\Software\N8SDR\Lyra-cpp\profiles\item\<name>`) proved it: the
+`speech` blob saved all-default. **Real root cause = QML signal
+shadowing** — the Stage card's custom `signal toggled(bool)` was shadowed
+by `AbstractButton.toggled`, so the ON button's `onClicked: toggled(checked)`
+emitted the Button's signal, never the model write → Speech always saved
+defaults.
+- `c17960c`: qualify the emit `stage.toggled(checked)` → the model write
+  fires; registry-verified (`deessOn:true` … now persist).
+- `46a428f`: `Binding{target:en; property:"checked"; value:on}` re-asserts
+  the toggle lamp from the model on recall (a checkable Button flips its own
+  `checked` on click, severing the inline binding).
+- Operator-confirmed: toggles save, recall re-lights lamps + restores
+  sliders, 2 fresh profiles round-tripped. Lesson: clean build + qmllint ≠
+  proof — verify by registry dump / launch.
+
+### #163 Rack-lamp dim in digital/CW + EQ analyzer recolor (cosmetic, operator-requested)
+- `9be1fc1`: Speech/Combinator/Plate panels gray the ON lamp + dim controls
+  + show an amber "bypassed (MODE)" header hint in DIGU/DIGL **and CW**
+  (digital → `SetTxRackBypass`; CW → no mic). Purely visual off a
+  `WdspEngine.mode` binding; model untouched, re-lights on USB/LSB.
+- `558d5d9`: EqPanel — same dim + the operator's analyzer recolor:
+  Accumulate peak-hold → RED, pre-EQ "Before" overlay → WHITE (were
+  near-white/amber), live "After" stays cyan. Line + RTA. Doc `66adc5e`.
+
+### #90 TX audio monitor — ALL THREE reference-faithful routes SHIPPED (#90 closed)
+ONE shared post-rack tap (`xcmaster` case 1, READ-ONLY on `pcm->in`, after
+the rack / before `fexchange0`) → lock-free SPSC `MonitorRing`
+(`src/dsp/MonitorRing.h`); drained ONCE at the top of `dispatchAudioFrame`
+into `monScratch_`, shared by all routes. WdspEngine `monEnabled_`/
+`monVolume_` (atomics, persisted); Audio-panel MON TX toggle + Monitor slider.
+- Route 1 (HL2 jack, `6e6a282`): monitor mono on L/R in place of the
+  auto-muted RX when MOX up + MON on, via the existing `OutBound(0)` path.
+- Routes 2+3 (`e1fd186`): Route 2 = VAC stream-2 + `SetIVACmon`/
+  `SetIVACmonVol` (ivacGet-gated, re-applied in `rebuildVac1`); Route 3 =
+  TCI RX-audio (tap moved into `dispatchAudioFrame`; MON→monitor / TX→mute /
+  RX→live).
+- **Reference-VERIFIED (operator asked "is this Thetis or have we drifted?"):**
+  Thetis `audio.cs:386-404` drives `SetIVACmon(0,1)`+`SetIVACmonVol(0,
+  monitor_volume)` on the PRIMARY VAC (id 0 = our `kVac1Id`) and
+  `SetTCIRxAudioMox/Mon` (368-404) — the single MON drives jack + VAC + TCI,
+  exactly as built. NOT drift.
+- ⚠ Faithful behavior change: TCI RX-audio is now MUTED on the air (was
+  live RX during TX). Operator-bench-confirmed harmless — MSHV FT8-over-TCI
+  decoded + completed a QSO (N8SDR↔KB6DAD to 73) with MON TX on, TX 5.1 W,
+  DIGU rack auto-bypassed. Docs `266d8cd`.
+
+### #164 "Out" output-device picker wired + MON→MON TX relabel (`740f769`, doc `dc45485`)
+The disabled placeholder "Out" button is now a live one-click output picker:
+a styled top-level popup (`popupType: Popup.Window` so it ESCAPES the short
+Audio-panel QQuickWidget clip — a plain Item-type popup was getting chopped
+at the panel bottom with no scroll). Lists HL2 jack + PC devices, current
+▶/cyan/bold, hover highlight, as-needed scrollbar. Reads the same
+`audioOutputDevices()`/`setAudioOutputDevice`/`audioDeviceIndex` the
+Settings → Audio combo uses; full config stays in Settings. MON button
+relabeled **MON TX** so its purpose is clear. ComboBox considered + rejected
+(long device names blow out the row width).
+
+### New items logged (not started)
+- **#165 (⚠ bug):** AM/DSB modes only produce the UPPER sideband (lower
+  missing). AM/DSB are double-sideband → the WDSP passband for those modes is
+  likely set one-sided (USB-only) instead of symmetric −W..+W. RX-DSP
+  investigation, queued next.
+- **GitHub / `main` branch:** operator has questions to raise on return.
+
+### Docs
+- USER_GUIDE updated for the rack dim/recolor, the monitor (MON TX + the
+  VAC/TCI routes), and the Out picker.
+- This session-log entry + a `THETIS_DIRECT_PORT_PLAN.md` reconciliation
+  pass (mark done-but-unmarked items, add a post-P4 shipped-work entry).
+  `.pdf`/`.docx` of both NOT regenerated (no pandoc/doc-gen tool on this
+  box) — MD sources updated; PDF/docx regen pending the operator's tool.
+
+## 2026-06-16 (design + investigation day — NO commits; two items parked for tomorrow)
+
+Context: native TX DSP rack (EQ/Speech/Combinator/Plate) + #49 Profile
+Manager bundle in flight; operator field-testing profiles on HL2+.
+
+### #90 TX audio monitor — DESIGN LOCKED, parked for tomorrow's build
+Operator ask: MON button + Monitor volume slider on the Audio panel upper
+row. Studied Thetis MON / MonitorVolume (gates processed TX audio into the
+RX audio mixer + `SetIVACmon`; the verbatim `xMixAudio(0,0,…,out[2])`
+"mix monitor audio" line is already carried at `CMaster.cpp:458`, fed empty
+out[2]). Operator chose **both: HL2 jack now, separate PC device later**.
+- **Key finding:** `WdspEngine::dispatchAudioFrame()` (wdsp_engine.cpp:3100)
+  STAYS LIVE during TX — RX audio is just gain-zeroed by the
+  `txMuted_ && autoMuteOnTx_` gate, then `OutBound(0)` → EP2 LR → AK4951
+  jack. So the jack is live-but-silent during TX = the inject seam (no
+  fight with RX stand-down).
+- **Locked design — ONE shared tap:** in `xcmaster` case 1 capture
+  `pcm->in[stream]` AFTER the rack, BEFORE `fexchange0` (the processed
+  "what you sound like" mic audio) → small SPSC ring.
+  - Route 1 (HL2 jack, NOW): drain ring in `dispatchAudioFrame`; when MOX
+    up + MON on, output monitor audio (scaled by new Monitor-vol) in place
+    of muted RX audio → existing `OutBound(0)` path. No new stream.
+  - Route 2 (separate PC device, LATER): feed same tap into
+    `xvacOUT(kVac1Id, stream 2)` (replace `vacMonSilence_`) + `SetIVACmon`
+    = **IVAC Stage 5 / DL-4** done reference-faithfully.
+  - Tradeoff (note in tooltip): post-rack tap is pre-WDSP-ALC/bandpass —
+    hear your rack DSP faithfully, not WDSP's corrective ALC.
+- Operator: **"hold for tomorrow's build."**
+
+### #162 Speech-panel profile not saving — ROOT-CAUSED, parked first-thing tomorrow
+Operator: TX Speech panel options aren't saved/recalled by Profiles while
+EQ/Combinator/Plate are. Decisive repro: turned De-esser ON, recalled an
+all-off profile → **De-esser button stayed ON.**
+- Traced the full path: capture (main.cpp:752) / apply (main.cpp:798) /
+  `Profile` toJson+fromJson+sameValues / `SpeechModel` saveState+loadState /
+  single instance / context property — **all symmetric & correct.** The
+  data DOES save and DOES apply to the model + DSP.
+- **Root cause = QML binding-break (UI-refresh, not persistence):**
+  SpeechPanel (and PlatePanel/CombinatorPanel) use `Button{checkable:true;
+  checked:<model>}` + `Slider{value:<model>}`. The first click/drag makes
+  Qt Quick write `checked`/`value` imperatively, **severing the binding to
+  the model.** Recall then updates model+DSP+numeric labels but NOT the
+  toggle/slider visuals — the button is a dead light. EqPanel dodges this
+  (non-checkable toggles + pure `checked:` binding off a `rev` counter +
+  `Q_INVOKABLE` getters). De-esser is the clearest demonstrator because a
+  stuck binary toggle is unambiguous; Plate/Combinator share the latent
+  pattern but only surface after mid-session interact-then-recall.
+- **Fix (#162, high pri):** adopt EqPanel's binding-safe pattern in the
+  three rack panels. QML-only, no DSP/wire risk.
+
+### Tomorrow's order (operator-set)
+1. **#162** Speech (+Plate/Combinator) panel binding-safe rebuild — FIRST.
+2. **#90** TX monitor build (Route 1 HL2 jack; Route 2 PC device as the
+   follow-on within #90 / IVAC Stage 5).
+
+Memory: `project-lyra-cpp-monitor` (the #90 locked design).
+
+---
+
 ## 2026-06-13 (Saturday — ⭐ TX BRING-UP COMPLETE + v0.2.3 RELEASED)
 
 **`main` == `tx-rebuild` == HEAD `e8aafbc` (pushed).**  Tags: milestone

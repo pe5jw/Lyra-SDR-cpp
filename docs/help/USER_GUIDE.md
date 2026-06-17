@@ -1646,6 +1646,34 @@ ride mic gain manually.
 > than the reference on the same whistle/voice" investigation; the
 > Leveler closes that gap completely.
 
+### ATT on TX (RX-ADC protection)
+
+While you transmit, your own TX carrier couples back into the receiver.
+Without protection it can drive the RX front-end ADC into overload — the
+panadapter goes wide / off-scale and the S-meter pegs on key-down. **ATT
+on TX** forces the HL2 step attenuator (drives the AD9866 RX LNA to
+minimum gain) for the duration of every transmission, then restores your
+RX setting on key-up. This mirrors the reference's Setup → General →
+Ant/Filters → "ATT on Tx" + "ATT: 31".
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **Enabled** | ON | Master ATT-on-TX. Default ON (the reference HL2 working posture). Turning it OFF removes RX-ADC protection during TX — only do so for a specific reason. |
+| **ATT** | 31 dB | Step-attenuator value forced on the RX front end while transmitting. 31 dB = maximum attenuation (LNA to minimum gain) = strongest protection and the reference default. Range 0..31. Effective only when Enabled. |
+
+**Front-panel "ATT" lamp.** The TX panel shows a live ATT lamp (in the
+gap between the Mic and Tune sliders) so you can see the protection
+state at a glance:
+- **gray `ATT off`** — disabled.
+- **orange `ATT 31`** — enabled + armed (on RX): the value it will apply on key-down.
+- **red `ATT -31`** — engaged (keyed): the attenuation now applied to the front end.
+
+Click the lamp to toggle ATT-on-TX (same control as the Settings
+checkbox). The lamp snaps orange → red on key-down — your visible
+confirmation that the front end is protected. (Note: the LNA gain
+*readout* itself keeps showing your RX setpoint — the ATT lamp is the
+TX-state indicator, not the LNA number.)
+
 ### TR Sequencing + Amplitude Envelope (timing knobs below)
 
 Seven operator-tunable knobs that control the **timing of the MOX → RF

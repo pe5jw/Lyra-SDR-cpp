@@ -167,6 +167,31 @@ These rules were earned through the Stage B aamix.c port arc
 >    dynamics → v0.3 PS), NOT a hard compile dependency — so RX2 slots
 >    between F and PS.
 
+> ⭐ **2026-06-17 — VAC closeout v0.3.1 + Stage-F native TX DSP rack +
+> Profiles + TX monitor SHIPPED (post-P4).**  All native (Lyra-side, NOT
+> direct ports — see the SHIPPED-WORK LOG entry for hashes).  **v0.3.1**
+> (`a3a517f`, 2026-06-15) closed the VAC arc: the enable/disable crash fix,
+> Vol/Mute routed to VAC, AND the TX MIC/ALC/LEV metering the v0.3.0 banner
+> above flagged UNVERIFIED is now wired Thetis-format (`9594bd5` #160) — so
+> that loose-end is **resolved in code** (the WDSP leveler/ALC rows below are
+> flipped to [DONE] for their cffi bindings + metering wiring).  NOTE: the
+> #160 metering **bench close-out + Brent/Timmy v0.3.1 field-confirmation are
+> still IN PROGRESS** — the meters are shipped, not yet field-validated.
+> **Stage F TX DSP rack (native):**
+> 8-band parametric EQ (#50), Speech processor / Auto-AGC leveller + de-esser
+> (#88), X-Air-style Combinator (#51), Plate (#52), with digital-mode
+> auto-bypass + digital/CW lamp dim (#163).  **Profiles #49** rack
+> capture/apply (schema v3) + sideband/band-agnostic SSB profile + panel-lock
+> fix + Speech-profile capture/lamp refresh (#162).  **TX audio monitor #90**
+> — 3 reference-faithful routes (HL2 jack / VAC device / TCI RX-audio) + the
+> inline Audio-panel "Out" picker & MON→MON-TX relabel (#164).  Released as
+> **v0.3.1** (`main` == `tx-rebuild`); the native DSP/profile/monitor work
+> rides on top (HEAD `dc45485`).  **NEXT (current open queue — one task):** an
+> AM/DSB RX-DSP bug — AM and DSB produce only the upper sideband (lower
+> missing); the WDSP passband for AM/DSB is likely set one-sided instead of
+> symmetric -W..+W.  (GitHub / main-branch posture questions pending operator
+> discussion.)
+
 Format: per-file or per-component row.  Status tags (ASCII so they render identically in the PDF/DOCX siblings):
 - [DONE] DONE + operator-bench-validated
 - [WIP] IN-PROGRESS (committed but not yet bench-validated, or
@@ -185,7 +210,7 @@ Format: per-file or per-component row.  Status tags (ASCII so they render identi
 | `ChannelMaster\cmbuffs.{h,c}` (CMB ring + cm_main pump) | `src/wire/CmBuffs.{h,cpp}` (P0.d)   | [DONE]     | **P0.d `afc7950` 2026-06-12.** VERBATIM rewrite (`cmb,*CMB`, `#define CMB_MULT (3)`, malloc0/_aligned_free; the Phase-C retrofit's calloc/intptr_t/guard deviations removed; `pcm->in[]` alloc moved back to create_cmaster per reference). Mechanical diff = whitespace-only. [DONE] **P0.d operator HL2 RX-regression bench PASSED 2026-06-12.** |
 | `ChannelMaster\cmsetup.{h,c}` (radio structure + id helpers) | `src/wire/cmsetup.{h,cpp}` (P0.d, NEW) | [DONE]     | **P0.d `afc7950`.** VERBATIM: cmMAX* sizing macros (16/4/4/2/32), rxid/txid/sp0id/stype/chid/inid/mixinid/getbuffsize, SetRadioStructure + set_cmdefault_rates. main.cpp config: SetRadioStructure(2,1,1,1,0,…) -> chid(0,0)=0 RX1 / chid(1,0)=1 TX matches the live channel layout. [DONE] Bench PASSED 2026-06-12. |
 | `ChannelMaster\cmaster.{h,c}` (FULL: struct + create/destroy + xcmaster + setters) | `src/wire/CMaster.{h,cpp}` (P0.d)   | [DONE]     | **P0.d `afc7950`.** VERBATIM rewrite: full `_cmaster` struct (cmaster.h:39-99 incl. the PS surface — out[3]/panalalloc/pgain/peer), `cmaster,*CMASTER`, raw TCI callback fn ptrs, `enum AudioCODEC`, `cm = {0}`. Verbatim no-arg create_xmtr/destroy_xmtr (out[0..2] malloc0 + OpenChannel(ch 1) + XCreateAnalyzer(TX disp 1) + create_ilv through the wdspcalls seam — **the TxChannel RAII carve-out is DELETED**, `src/wdsp/TxChannel.{h,cpp}` retired). create_cmaster/destroy_cmaster verbatim per-stream loops (update[] CS + cmbuffs + in[] for all cmSTREAM streams). xcmaster verbatim (update[] CS restored, real stype/txid/chid, TCI memset restored; fexchange0 + monitor xMixAudio + xilv live). All Sendp*/Set* setters ported. Deferred subsystem lines (dexp/anti-vox/txgain/sidetone/pipe/cmasio/analyzers.c/create_rcvr-body) carried IN PLACE as reference text with DEFERRED tags; **eer RESTORED VERBATIM at P2.a 2026-06-12** (create_eer run=0 / destroy_eer / xeer / pSetEER* via the wdspcalls seam — the object exists so the sendOutbound/sendProtocol1Samples `peer->run` derefs are valid, per cmaster.c:212-224). Sole code accommodation: `(char*)""` at XCreateAnalyzer. [DONE] **Operator HL2 RX-regression bench PASSED 2026-06-12** (RX working on the new per-stream pump/ring layout). |
-| `ChannelMaster\obbuffs.c` (TX-out ring/seam) | `src/wire/ObBuffs.{h,cpp}` (P1, NEW)       | [WIP]     | **P1 SHIPPED 2026-06-12** — obbuffs.{h,c} verbatim (obb/*OBB twin typedef, file-scope obp four-alias bank, the reference's own calloc/free 2014-era idioms kept). Mechanical diff: .cpp IDENTICAL; .h sole delta = the include-guard define replaced by #pragma once (documented packaging). Sole deferred line: `sendOutbound(id, a->out)` in ob_main (network.c:1237 = P2 scope), carried as reference text. TU is DORMANT — no Lyra caller of create_obbuffs until P3/P4; wire bytes unchanged. |
+| `ChannelMaster\obbuffs.c` (TX-out ring/seam) | `src/wire/ObBuffs.{h,cpp}` (P1, NEW)       | [DONE]     | **P1 `75754c2` 2026-06-12** — obbuffs.{h,c} verbatim (obb/*OBB twin typedef, file-scope obp four-alias bank, the reference's own calloc/free 2014-era idioms kept). Mechanical diff: .cpp IDENTICAL; .h sole delta = the include-guard define replaced by #pragma once (documented packaging). The `sendOutbound(id, a->out)` ob_main hand-off was restored at P2.c (no longer deferred). **Wire-LIVE since P4.b 2026-06-13** — create_obbuffs/ob_main are live in the direct-port TX chain (TU no longer dormant); was [WIP] SHIPPED while dormant, now DONE in the live chain. |
 | `ChannelMaster\networkproto1.c` (HL2 wire writer) | `src/wire/NetworkProto1.cpp` (sendProtocol1Samples) + FrameComposer write_main_loop_hl2 (LIVE) | [DONE]     | **Wire-LIVE at P4.b 2026-06-13.** sendProtocol1Samples verbatim drives the EP2 writer thread; FrameComposer monolithic write_main_loop_hl2 is the WriteMainLoop_HL2 equivalent (#121/#122 fold). The old `hl2_stream.cpp` Step-14 mix retired at §7. |
 | `ChannelMaster\network.c` (UDP + keepalive) | `src/wire/ObBuffs.{h,cpp}` ob_main + sendOutbound (LIVE) | [DONE]     | **Wire-LIVE at P4.b.** sendOutbound verbatim (P2.c); the Step-14 Lyra-native OutboundRing + Ep2SendThread translations RETIRED at §7 (`fe6a438`). |
 | `ChannelMaster\netInterface.c::create_rnet` | `src/wire/RadioNet.cpp::create_rnet` (LIVE)     | [DONE]     | Direct port shipped earlier. The Stage-A SendpOutboundRx no-op stub at line 272 was DELETED 2026-06-08 (B.6.b-fix1, commit `8b8e0da`) because it clobbered the AAMix wire-up; future codec-id switching must NOT re-introduce a default registration here. P3 = the outbound registrations (SendpOutboundTx(OutBound) etc.) — MUST register AFTER create_xmtr (the verbatim setters have NO null guards, reference ordering). |
@@ -204,13 +229,13 @@ Format: per-file or per-component row.  Status tags (ASCII so they render identi
 |----------------------------------|------------------------------------------------|--------|-------|
 | `wdsp\TXA.c` (channel scaffold)  | (consumed via `wire/wdspcalls` seam — P0.a/P0.d)| [DONE]     | **TxChannel class DELETED at P0.d `afc7950`** — the verbatim create_xmtr in `wire/CMaster.cpp` opens the WDSP TXA channel itself (OpenChannel/fexchange0/CloseChannel through the wdspcalls seam, cmaster.c:177-190 byte-exact), which removed the runtime-DLL RAII justification the class existed for. `wdsp_native.{h,cpp}` still carries the SetTXA*/GetTXAMeter cdefs for the operator-control surface. |
 | `wdsp\bandpass.c` (bp0/bp1)      | (consumed via WDSP cffi — SetTXABandpassFreqs) | [N/A]     | The §15.23 trap (SetTXABandpassRun overrides bp1 to a stale state) is documented in CLAUDE.md + project_lyra_cpp_tx.md. cffi-only access is the correct posture. |
-| `wdsp\compress.c` (TX compressor) | `src/wdsp/Compress.{h,cpp}` OR cffi binding   | [PEND]     | Operator choice: direct port (~150 LOC) for v0.2.1 EQ + dynamics ship, OR cffi-only binding if WDSP DLL exports are sufficient. Direct port recommended for parity with Lyra's existing UI control surface. |
-| `wdsp\cfcomp.c` (5-band CFC)     | `src/wdsp/CFComp.{h,cpp}` OR cffi binding      | [PEND]     | Same operator-choice. ~600 LOC; one of the heavier ports. Replaced in Python Lyra plan by a Lyra-native Combinator per §15.19; cpp may take the same path (custom Combinator instead of WDSP CFC) — operator design call. |
+| `wdsp\compress.c` (TX compressor) | `src/wdsp/Compress.{h,cpp}` OR cffi binding   | [N/A]     | **Superseded by the native TX DSP rack (post-P4).** Operator chose the Lyra-native path: the Speech processor (#88, `902b814`/`93adb39`) + Combinator (#51) cover speech dynamics natively, pre-WDSP-TXA. No WDSP compress.c port/cffi binding shipped. |
+| `wdsp\cfcomp.c` (5-band CFC)     | `src/wdsp/CFComp.{h,cpp}` OR cffi binding      | [N/A]     | **Superseded by the native Combinator #51** (`013bf12`/`61e16c4`/`b53ae35`) per the §15.19 plan — Lyra-native multiband compressor replaces the WDSP CFC. No CFC port shipped. |
 | `wdsp\osctrl.c` (CESSB)          | cffi binding (SetTXAosctrlRun)                 | [PEND]     | Likely cffi-only; ~200 LOC port not justified unless operator UI need surfaces. |
-| `wdsp\wcpagc.c` mode 5 (leveler) | cffi binding (SetTXALeveler*)                  | [WIP]     | cdef already present in `wdsp_native.cpp`. UI surface exists in TX-1 components on `main`. Confirm reference-parity at the call-site setter sequence. |
-| `wdsp\wcpagc.c` mode 5 (ALC)     | cffi binding (SetTXAALCMaxGain)                | [WIP]     | cdef present; SetTXAALCThresh does NOT exist (§15.23-class trap — only MaxGain governs ALC ceiling). |
-| `wdsp\eqp.c` (parametric EQ)     | `src/wdsp/EQ.{h,cpp}` OR cffi binding          | [PEND]     | Per CLAUDE.md §4.1 v0.2.1; ~300 LOC. Lyra-native parametric EQ likely (§15.19 lists 3-or-5-band parametric replacing the WDSP 10-band graphic). |
-| `wdsp\gen.c` (gen0/gen1 generators) | cffi binding (SetTXAPreGen*/SetTXAPostGen*) | [WIP]     | gen1 (postgen) used today for TUN tone. gen0 (pregen) cdefs deferred per §15.23 (bench-tooling nicety, not on the signal path). |
+| `wdsp\wcpagc.c` mode 5 (leveler) | cffi binding (SetTXALeveler*)                  | [DONE]     | cffi binding live in the wire-LIVE TXA chain. **TX LEV metering wired Thetis-format at #160 `9594bd5` (v0.3.1)** + #49 profile Leveler fields — addresses the v0.3.0 "UNVERIFIED" metering loose-end (shipped in code; #160 bench close-out / tester confirm still IN PROGRESS). |
+| `wdsp\wcpagc.c` mode 5 (ALC)     | cffi binding (SetTXAALCMaxGain)                | [DONE]     | cffi present; SetTXAALCThresh does NOT exist (§15.23-class trap — only MaxGain governs ALC ceiling). **TX ALC metering wired Thetis-format at #160 `9594bd5` (v0.3.1)** — addresses the v0.3.0 "UNVERIFIED" flag (shipped in code; #160 bench close-out / tester confirm still IN PROGRESS). |
+| `wdsp\eqp.c` (parametric EQ)     | `src/wdsp/EQ.{h,cpp}` OR cffi binding          | [N/A]     | **Superseded by the native EQ #50** (`edbaa52`/`17a28b7`/`eb92231`) — native RBJ-biquad 8-band parametric EQ (ParamEq engine + EESDR3-style panel), wired pre-WDSP-TXA. No WDSP eqp.c port shipped. |
+| `wdsp\gen.c` (gen0/gen1 generators) | cffi binding (SetTXAPreGen*/SetTXAPostGen*) | [WIP]     | gen1 (postgen) live for TUN tone — wire-LIVE + bench-passed since P4.b 2026-06-13 (Thetis-exact zero-beat). gen0 (pregen) cdefs still deferred per §15.23 (bench-tooling nicety, not on the signal path) — hence row stays [WIP]. |
 
 ### TX PureSignal (per CLAUDE.md §4.1 v0.3)
 
@@ -225,11 +250,11 @@ Format: per-file or per-component row.  Status tags (ASCII so they render identi
 
 | Source                              | Target (lyra-cpp)                          | Status | Notes |
 |-------------------------------------|--------------------------------------------|--------|-------|
-| `Console\console.cs::chkMOX_CheckedChanged2` | `src/ptt.{h,cpp}` + `src/wdsp_engine.cpp` keydown/keyup | [WIP]     | Lyra-native FSM shipped on `main`. Verified against the reference's keydown/keyup ordering invariants (RX-DSP stop on keydown -> wire MOX -> TX-DSP start; keyup TX-DSP off -> mox_delay -> clear MOX -> ptt_out_delay -> RX-DSP restart). No direct port — C# is study-only by license. |
+| `Console\console.cs::chkMOX_CheckedChanged2` | `src/ptt.{h,cpp}` + `src/wdsp_engine.cpp` keydown/keyup | [DONE]     | Lyra-native FSM. Verified against the reference's keydown/keyup ordering invariants (RX-DSP stop on keydown -> wire MOX -> TX-DSP start; keyup TX-DSP off -> mox_delay -> clear MOX -> ptt_out_delay -> RX-DSP restart). **Live + operator-HL2-bench-passed at P4.b 2026-06-13** (SSB voice both sidebands + RF-safety kill-test exercise the FSM end-to-end). No direct port — C# is study-only by license. |
 | `Console\console.cs` (TR delays)    | `src/tx/TrSequencing.{h,cpp}` (LIVE)       | [DONE]     | Lyra-native shipped with operator's Thetis-DB-verified defaults (mox=15/rf=50/space_mox=13/ptt_out=5/key_up=10 ms). |
-| `Console\console.cs::m_bATTonTX`    | `src/tx/AttOnTxPolicy.{h,cpp}` (LIVE)      | [WIP]     | Lyra-native shipped on `main`. Reference posture: keydown save per-band step-att + force-31 (when PS-A off OR CW); keyup restore. Implementation verified against `console.cs:30293-30327` + `:30391-30410`. |
+| `Console\console.cs::m_bATTonTX`    | `src/hl2_stream.cpp` `fsmAdvance` + `compose_case_11` (LIVE wire) | [WIP]     | Lyra-native. Reference posture: keydown force step-att 31 (PS-A off OR CW); keyup restore. **WIRE path traced live + functional 2026-06-17:** `fsmAdvance` raises `setTxStepAttnDb(31)` on keydown (`hl2_stream.cpp:1651`) → `tx_step_attn = 31−31 = 0` → XmitBit-gated `compose_case_11` C4 = `0x40` → ak4951v4 cmd_addr 0x0a rx_gain = 0 = min LNA during TX. **BUT NOT [DONE]:** (a) the `src/tx/AttOnTxPolicy.{h,cpp}` class is **unused / wire-inert** (its own header says so) — the live mechanism is inline in hl2_stream.cpp, the earlier doc citation was wrong; (b) ~~operator-reported 2026-06-17: NO UI surface~~ → **UI surface BUILT 2026-06-17 (§15.31):** TxPanel "ATT" lamp in the Mic↔Tune gap (gray `ATT off` / orange `ATT 31` armed-RX / solid-red `ATT -31` engaged-TX, AUTO/TUN/MOX idiom) + Settings → TX → "ATT on TX (RX-ADC protection)" group (Enable + dB 0..31 spin); operator-gated, default ON/31, QSettings `tx/attOnTx*`; `fsmAdvance` now gates on the toggle + uses the value (replaces the hardcoded `kAttOnTxDb`). Operator-approved in review; **awaiting on-air bench confirm to flip [DONE].** The `AttOnTxPolicy` class stays unused (flag: delete-or-wire-up later). Broader **Task #114 still PENDING** (panadapter TX offset + PA-enable safety). |
 | `Console\PSForm.cs`                 | `src/ui/PsDialog.{h,cpp}` (NEW, v0.3)      | [PEND]     | v0.3 PureSignal UI. C# study only; write Qt/QML native. |
-| `Console\HPSDR\IoBoardHl2.cs`       | `src/hl2_stream.cpp` (LIVE)                | [WIP]     | HL2 I/O quirks already implemented Lyra-native via the protocol-byte verification + gateware-RTL ground-truth pass (CLAUDE.md §15.26). |
+| `Console\HPSDR\IoBoardHl2.cs`       | `src/hl2_stream.cpp` (LIVE)                | [DONE]     | HL2 I/O quirks implemented Lyra-native via the protocol-byte verification + gateware-RTL ground-truth pass (CLAUDE.md §15.26). Live + bench-passed across the RX + P4.b TX chain (incl. on-air FT8). |
 
 ---
 
@@ -251,7 +276,7 @@ HL2 bench gate.
 | **P0.b** | [DONE] DONE | ilv.{h,c} verbatim -> `wire/ILV.{h,cpp}` + new `wire/cmcomm.{h,cpp}` | `1f49d98` 2026-06-11; test_ilv ALL PASS |
 | **P0.c** | [DONE] DONE | aamix.{h,c} verbatim -> `wire/AAMix.{h,cpp}` + `wire/resample.h` RESAMPLE ABI | `e0f2584`; [DONE] operator HL2 RX bench PASSED 2026-06-11 |
 | **P0.d** | [DONE] DONE | cmbuffs/cmaster/cmsetup verbatim -> `wire/CmBuffs`/`wire/CMaster`/`wire/cmsetup`; full `_cmaster` struct (PS surface); TxChannel carve-out DELETED | `afc7950` 2026-06-12; [DONE] **operator HL2 RX-regression bench PASSED 2026-06-12** |
-| **P1**  | [WIP] SHIPPED | obbuffs.c verbatim -> `wire/ObBuffs.{h,cpp}` (the TX-out seam; separate TU from cmbuffs; sendOutbound call DEFERRED to P2) | 2026-06-12; dormant/wire-inert — optional operator RX smoke; clean build 0 warnings; mechanical diff IDENTICAL |
+| **P1**  | [DONE] | obbuffs.c verbatim -> `wire/ObBuffs.{h,cpp}` (the TX-out seam; separate TU from cmbuffs; sendOutbound call restored at P2.c) | `75754c2` 2026-06-12; shipped dormant, then **wire-LIVE at P4.b 2026-06-13** (create_obbuffs/ob_main live in the direct-port TX chain); clean build 0 warnings; mechanical diff IDENTICAL |
 | **P2**  | [DONE]      | sendOutbound / sendProtocol1Samples fidelity audit of the dormant wire layer — **COMPLETE 2026-06-12** (P2.a eer completion + P2.b prn outbound surface verbatim + P2.c wire/Network.cpp sendOutbound verbatim, mechanical diff IDENTICAL; the ObBuffs ob_main hand-off restored).  **P2.a SHIPPED 2026-06-12** — eer completion (verbatim struct + seam entries + the four CMaster restore sites); kills the null-`peer` landmine both reference functions deref.  NEXT: P2.b prn outbound surface verbatim (outLRbufp/outIQbufp/OutBufp -> reference pointer fields + the HANDLE semaphore quartet; callers bend) -> P2.c wire/Network.cpp sendOutbound verbatim (P1 branch live, ETH branch DEFERRED) + restore the ObBuffs ob_main call. | Audit finding: Lyra's Step-14 OutboundRing/Ep2SendThread are functionally-parallel idiom translations (vector buffers, bool+cv semaphores) predating the verbatim mandate — retired at P4 when the verbatim chain goes live. |
 | **P3**  | [DONE]      | netInterface registrations + obbuffs ring lifecycle.  **SHIPPED + operator HL2 bench PASSED 2026-06-12** (RX fine; stop/start + shutdown clean) — create_rnet moved to once-per-process at the main.cpp QTimer AFTER create_xmtr (the reference C#-init order; fixes the per-open prn re-allocation leak); SendpOutboundTx(OutBound) restored at the reference site (netInterface.c:1761, tail of create_rnet); UpdateRadioProtocolSampleSize verbatim (netInterface.c:1836-1858, diff IDENTICAL) called per-open per StartAudio:45 — creates obbuffs rings 0/1 (2 new ob_main pump threads per session, idle: no producers until P4); destroy_obbuffs(0/1) at close() per StopAudio:112-113.  RX side deliberately NOT registered (WdspEngine hybrid owns RX dispatch until P4 — the B.6.b clobber class). | [DONE] Operator HL2 bench PASSED 2026-06-12. |
 | **P4**  | [DONE]      | Wire-LIVE switchover — **COMPLETE + operator HL2 bench PASSED 2026-06-13.**  P4.a prep (2 wire-inert commits): sendProtocol1Samples verbatim in src/wire/NetworkProto1.cpp + io_keep_running + FrameComposer tail flipped to ReleaseSemaphore(hobbuffsRun) + SetTXAPostGen wdspcalls + TxReadBufp double* / hWriteThreadMain HANDLE.  **P4.b SHIPPED** in 3 commits: `fb9ec41` Wire-LIVE RX-out gate, `0b551b4` first modulated RF through the direct-port chain, `9db2c50` SSB sideband fix (USB transmits USB, 9100-verified).  Plus `84dbb12` TUN panadapter-spike fix (Thetis-exact zero-beat confirmed, display-only bug).  **§7 retirements DONE** (`fe6a438` OutboundRing+Ep2SendThread, `99fd24a` txWorkerLoop+composeCC+keepalive, `e711256` old HL2-jack EP2 ring).  **TCI digital TX re-home** `bd61d07` (TciTxBridge fills the §10.3 skeleton; on-air FT8 QSOs).  Released v0.2.3. | Bench gates PASSED: SSB voice both sidebands + RF-safety kill-test + MSHV→TCI→FT8 on-air. |
@@ -331,6 +356,90 @@ unilaterally — surface them when picking up tomorrow:
 
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
+
+### 2026-06-14 -> 2026-06-17 — post-P4: VAC v0.3.0/v0.3.1, native TX DSP rack, Profiles, TX monitor (#90), Out picker
+
+These are post-direct-port work: native (Lyra-side) TX-DSP /
+host-audio / profile features that land ON TOP of the verbatim
+P0–P4 chain.  They are NOT direct ports (no Thetis ChannelMaster/
+WDSP source counterpart) — logged here as a post-P4 section so
+the P0–P4 port-stage record above stays intact.
+
+- **VAC / IVAC (#102/#158)** — PC/VAC mic-input + RX-to-PC path.
+  `ivac.c` -> `wire/Ivac` direct port (Stage 0/1 `4831db7`/`52adff3`),
+  #158 complete (RX decode + TX on-air + auto-start + profile VAC
+  source) `6c3fecb`.  Released **v0.2.4** "Profiles + VAC" `c48c94d`;
+  VAC mic mono-combine fix `b57bd09` -> **v0.2.5** `f55da2c`.
+  Device-layer rework DL-0..DL-5 (PortAudio 19.7.0 vendored static,
+  single full-duplex stream, Thetis-faithful host-API/device
+  pickers, RX-muted-on-TX via SetIVACmox, old Qt two-stream
+  `ivac_audio` retired): `11812f9`..`e8d0239`; plus two crash fixes
+  — VAC-teardown UAF `f0c6497`, TCI dangling-owner `d508b8e`.
+  TX MIC/ALC/LVL meters re-homed onto wire-live `GetTXAMeter`
+  `993e10e`.  Released **v0.3.0** `accee55`.  Then **v0.3.1**
+  `a3a517f`: VAC enable/disable crash fix + Vol/Mute routed to VAC
+  `77dc55d` (#161) + Thetis-format TX MIC/ALC/LEV metering + #49
+  profile Leveler/ALC fields `9594bd5` (#160).  v0.3.1 addresses the
+  v0.3.0-banner "TX metering UNVERIFIED" loose-end in code (#160
+  bench close-out / Brent+Timmy field-confirm still in progress).
+  Interim VAC-UI
+  fixes (`88bdab1` relabel, `b57bd09` combine, `a01d308`
+  output-"(none)") shipped along the way.
+
+- **Stage F — native TX DSP rack (pre-WDSP-TXA mic rack):**
+  - **EQ #50** — native ParamEq (RBJ biquad cascade) `edbaa52`;
+    EqModel + EESDR3-style panel `17a28b7`; wired into the live TX
+    mic rack `eb92231`.
+  - **Digital-mode auto-bypass** of the native mic DSP (DIGU/DIGL)
+    `c8441a6`.
+  - **Speech #88** — native SpeechProcessor (Auto-AGC leveller +
+    de-esser) `902b814`; Speech panel + EQ analyzer + Reset-All
+    `93adb39`.
+  - **Combinator #51** — native engine `013bf12`; model+panel+dock
+    `61e16c4`; wired into the live rack after EQ `b53ae35`.
+  - **Plate #52** — native Schroeder–Moorer engine `ae9c5d3`;
+    PlateModel + "Plating" panel `0cfd7e5`; wired after Combinator
+    `e96a6e8`.
+  - Rack-lamp dim in digital/CW + EQ analyzer recolor (#163)
+    `9be1fc1` / `558d5d9`.
+
+- **Profiles #49 (TX/RX profile manager):** rack
+  saveState/loadState round-trip `e0f264e` (Stage 1); schema v3
+  bundling the native rack blobs `b453320` (Stage 2); rack wired
+  into profile capture/apply `29f9b92` (Stage 3).  Sideband- and
+  band-agnostic SSB profile `296cafc`.  Panel-lock float-drag fix
+  `a82eb77` (exclude TX rack panels from LOCK) + lock also blocks
+  resize/custom-float `cf976c1`.  TX Speech profile capture +
+  toggle-lamp refresh on recall (#162) `c17960c` / `46a428f`.
+
+- **TX audio monitor #90** — Route 1 (MON button + Monitor slider,
+  HL2 jack) `6e6a282`; Routes 2+3 (VAC device + TCI RX-audio)
+  `e1fd186`.  Reference-verified against Thetis audio.cs.
+
+- **#164** — inline Audio-panel "Out" output-device picker wired +
+  MON->MON-TX relabel `740f769`.
+
+- USER_GUIDE catch-up commits (minor): `66adc5e`, `266d8cd`,
+  `dc45485`.
+
+### 2026-06-13 — P4 Wire-LIVE switchover + v0.2.3 release ([DONE] HL2 bench PASSED)
+
+- **P4.a prep** (wire-inert): sendProtocol1Samples verbatim
+  `a4aa8c3` + SetTXAPostGen/TxReadBufp/hWriteThreadMain field types
+  `baef866`.
+- **P4.b SHIPPED** (3 commits, operator HL2 bench PASSED 2026-06-13):
+  `fb9ec41` Wire-LIVE RX-out gate, `0b551b4` first modulated RF
+  through the direct-port chain, `9db2c50` SSB sideband fix (USB
+  transmits USB, 9100-verified).  Plus `84dbb12` TUN
+  panadapter-spike fix (display-only, Thetis-exact zero-beat).
+- **§7 retirements DONE:** `fe6a438` OutboundRing+Ep2SendThread,
+  `99fd24a` txWorkerLoop+composeCC+keepalive, `e711256` old
+  HL2-jack EP2 ring.
+- **TCI digital TX re-home** `bd61d07` (first FT8 QSOs via MSHV/TCI
+  through the verbatim chain) + space-bar PTT toggle `2824ebf`
+  (#157).
+- Released **v0.2.3** "Transmit (SSB + digital TCI) on air"
+  `e8aafbc` (tags `v0.2.3` + `tx-working-2026-06-13`).
 
 ### 2026-06-12 — P0.d cmbuffs/cmaster/cmsetup VERBATIM port ([DONE] HL2 bench PASSED)
 
@@ -424,12 +533,26 @@ covered in `project_lyra_cpp_tx.md` (memory file).
    `project_lyra_cpp_tx.md`
 4. Read `SESSION_LOG.md` newest entry for arc detail
 
-**Then:** wait for operator decision on which Stage (C / D / E
-/ F / open-questions item) to land next.  Each Stage gets its
-own grounded design + reference-read + smallest-revertable-
-step + bench-gated implementation pattern matching the
+**Then — current open queue (one task):** an **AM/DSB
+sideband bug** — AM and DSB modes produce only the upper
+sideband (lower sideband missing).  RX-DSP investigation: the
+WDSP passband for AM/DSB is likely being set one-sided instead
+of symmetric (-W..+W around DC).  Grounded design + reference-
+read + smallest-revertable-step + bench-gate, matching the
 Stage B arc.
+
+Also pending operator discussion: **GitHub / main-branch
+posture** (`main` vs `tx-rebuild` reconciliation; current HEAD
+== `tx-rebuild` == `dc45485`).
+
+The earlier post-P4 ordering (TX metering -> Stage F DSP rack ->
+Profiles -> RX2/Split -> PureSignal) is largely SHIPPED through
+v0.3.1: TX metering closed (#160), Stage F native DSP rack +
+Profiles #49 + TX monitor #90 all landed (see the SHIPPED-WORK
+LOG).  Still PEND: RX2 + Split (#96–#101) and PureSignal
+(Stage G/H, v0.3) — both remain as the next major arcs after the
+AM/DSB fix.
 
 ---
 
-*Last updated: 2026-06-15 — VAC #158 shipped as v0.3.0; post-P4 feature ordering LOCKED (TX metering → Stage F DSP chain → RX2/Split → PureSignal).  Active task: TX MIC/ALC metering close-out (deep Thetis-reference read + port + bench) — treat the meters as UNVERIFIED, not done.  See the STATUS REGISTRY banner for detail.*
+*Last updated: 2026-06-17 — post-P4 native work SHIPPED: VAC closeout v0.3.1 (TX metering #160 addresses the v0.3.0 UNVERIFIED loose-end in code; #160 bench close-out + tester field-confirm still in progress), Stage-F native TX DSP rack (EQ #50 / Speech #88 / Combinator #51 / Plate #52), Profiles #49, TX monitor #90 + Out picker #164.  P1/obbuffs flipped [WIP]->[DONE] (wire-LIVE since P4.b).  HEAD == tx-rebuild == `dc45485`.  Active task: AM/DSB-only-upper-sideband RX-DSP bug.  RX2/Split + PureSignal remain PEND.*

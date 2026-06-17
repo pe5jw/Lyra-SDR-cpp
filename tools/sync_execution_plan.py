@@ -36,7 +36,7 @@ PDF_PATH = DOCS / "EXECUTION_PLAN.pdf"
 # Markdown -> DOCX
 # ---------------------------------------------------------------------------
 
-def md_to_docx(md_text: str, out_path: Path) -> None:
+def md_to_docx(md_text: str, out_path: Path, title: str, src_name: str) -> None:
     """Render a subset of Markdown into a Word document.
 
     Supported:
@@ -85,9 +85,9 @@ def md_to_docx(md_text: str, out_path: Path) -> None:
     # ----- Header / footer with generation timestamp -----
     header_p = doc.sections[0].header.paragraphs[0]
     header_p.text = (
-        f"Lyra-cpp Execution Plan — auto-generated "
+        f"{title} — auto-generated "
         f"{_dt.datetime.now().strftime('%Y-%m-%d %H:%M')} "
-        f"(source: docs/EXECUTION_PLAN.md)"
+        f"(source: {src_name})"
     )
     header_p.runs[0].font.size = Pt(8)
     header_p.runs[0].font.color.rgb = RGBColor(0x80, 0x80, 0x80)
@@ -293,7 +293,7 @@ def md_to_docx(md_text: str, out_path: Path) -> None:
 # Optional: MD -> PDF via reportlab (simpler than DOCX renderer)
 # ---------------------------------------------------------------------------
 
-def md_to_pdf(md_text: str, out_path: Path) -> None:
+def md_to_pdf(md_text: str, out_path: Path, title: str) -> None:
     """Render the markdown into a paginated PDF.
 
     Uses reportlab Platypus.  Same subset as md_to_docx renders identically
@@ -485,7 +485,7 @@ def md_to_pdf(md_text: str, out_path: Path) -> None:
         canvas.setFillColor(colors.HexColor("#808080"))
         canvas.drawString(
             0.5 * inch, 0.3 * inch,
-            f"Lyra-cpp Execution Plan — auto-generated "
+            f"{title} — auto-generated "
             f"{_dt.datetime.now().strftime('%Y-%m-%d %H:%M')} "
             f"— page {doc_.page}")
         canvas.restoreState()
@@ -494,7 +494,7 @@ def md_to_pdf(md_text: str, out_path: Path) -> None:
         str(out_path), pagesize=LETTER,
         leftMargin=0.5 * inch, rightMargin=0.5 * inch,
         topMargin=0.5 * inch, bottomMargin=0.5 * inch,
-        title="Lyra-cpp TX Execution Plan",
+        title=title,
         author="N8SDR + Claude")
     pdf_doc.build(flowables, onFirstPage=_footer, onLaterPages=_footer)
 
@@ -514,6 +514,11 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"Destination DOCX (default: {DOCX_PATH})")
     parser.add_argument("--pdf-path", type=Path, default=PDF_PATH,
                         help=f"Destination PDF (default: {PDF_PATH})")
+    parser.add_argument("--no-docx", action="store_true",
+                        help="Skip the DOCX (PDF-only output)")
+    parser.add_argument("--title", default=None,
+                        help="Doc title for header/footer/metadata "
+                             "(default: the MD's first H1, else the filename)")
     args = parser.parse_args(argv)
 
     if not args.md.exists():
@@ -523,14 +528,25 @@ def main(argv: list[str] | None = None) -> int:
 
     md_text = args.md.read_text(encoding="utf-8")
 
-    print(f"[sync] reading {args.md}")
-    print(f"[sync] writing DOCX -> {args.docx}")
-    md_to_docx(md_text, args.docx)
-    print(f"[sync] DOCX OK ({args.docx.stat().st_size:,} bytes)")
+    # Title: explicit --title, else the MD's first H1, else the filename stem.
+    title = args.title
+    if not title:
+        for ln in md_text.splitlines():
+            if ln.startswith("# "):
+                title = ln[2:].strip()
+                break
+        if not title:
+            title = args.md.stem
+
+    print(f"[sync] reading {args.md}  (title: {title})")
+    if not args.no_docx:
+        print(f"[sync] writing DOCX -> {args.docx}")
+        md_to_docx(md_text, args.docx, title, args.md.name)
+        print(f"[sync] DOCX OK ({args.docx.stat().st_size:,} bytes)")
 
     if args.pdf:
         print(f"[sync] writing PDF -> {args.pdf_path}")
-        md_to_pdf(md_text, args.pdf_path)
+        md_to_pdf(md_text, args.pdf_path, title)
         print(f"[sync] PDF OK ({args.pdf_path.stat().st_size:,} bytes)")
 
     return 0
