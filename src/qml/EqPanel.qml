@@ -45,6 +45,15 @@ Rectangle {
     // Collapse is local for 2a (persisted as Prefs.eqCollapsed in Stage 4).
     property bool collapsed: false
 
+    // The TX rack is bypassed in the digital data modes (DIGU/DIGL, gated by
+    // SetTxRackBypass) and is moot in CW.  Gray the ON lamp + flag the header
+    // so the operator sees the EQ isn't shaping audio there.  Purely visual —
+    // the engine/profile state is untouched and re-lights on USB/LSB.
+    readonly property bool rackInactive: {
+        var m = WdspEngine.mode.toUpperCase()
+        return m === "DIGU" || m === "DIGL" || m === "CWU" || m === "CWL"
+    }
+
     // Revision tick: any engine change bumps it so the invokable-derived
     // node/tile/curve bindings re-evaluate (QML doesn't auto-track
     // Q_INVOKABLE calls).
@@ -134,17 +143,23 @@ Rectangle {
                 onClicked: Eq.bypass = !checked
                 background: Rectangle {
                     radius: 4
-                    color: onBtn.checked ? "#0b3a44" : "#1f2a35"
-                    border.color: onBtn.checked ? root.cAccent : "#3a5060"
+                    color: (onBtn.checked && !root.rackInactive) ? "#0b3a44" : "#1f2a35"
+                    border.color: (onBtn.checked && !root.rackInactive) ? root.cAccent : "#3a5060"
                     border.width: 2
                 }
                 contentItem: Text {
                     text: onBtn.text
-                    color: onBtn.checked ? root.cAccent : root.cMuted
+                    color: (onBtn.checked && !root.rackInactive) ? root.cAccent : root.cMuted
                     font.bold: true
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
+            }
+
+            Label {
+                visible: root.rackInactive
+                text: qsTr("• bypassed (") + WdspEngine.mode.toUpperCase() + ")"
+                color: "#e0a030"; font.pixelSize: 11
             }
 
             Item { width: 8 }
@@ -453,17 +468,17 @@ Rectangle {
                                     ctx.strokeStyle = "rgba(90,210,255,0.85)"; ctx.lineWidth = 1.5
                                     trace(post); ctx.stroke()
                                 }
-                                // Before (pre-EQ) overlay — amber line.
+                                // Before (pre-EQ) overlay — white line.
                                 if (preArr) {
-                                    ctx.strokeStyle = "rgba(255,190,70,0.9)"; ctx.lineWidth = 1.5
+                                    ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5
                                     trace(preArr); ctx.stroke()
                                 }
-                                // Peak-hold lines: cyan (after) + amber (before).
+                                // Peak-hold lines: red (after) + white (before).
                                 if (Eq.accumulate) {
-                                    ctx.strokeStyle = "rgba(180,240,255,0.95)"; ctx.lineWidth = 1.5
+                                    ctx.strokeStyle = "rgba(255,70,70,0.95)"; ctx.lineWidth = 1.5
                                     trace(peakHold); ctx.stroke()
                                     if (preArr) {
-                                        ctx.strokeStyle = "rgba(255,210,120,0.95)"; ctx.lineWidth = 1.5
+                                        ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 1.5
                                         trace(peakHoldPre); ctx.stroke()
                                     }
                                 }
@@ -485,17 +500,17 @@ Rectangle {
                                     // after peak cap (cyan)
                                     if (Eq.accumulate) {
                                         var apy = graph.yForDb(bandMax(peakHold, fLo, fHi))
-                                        ctx.fillStyle = "rgba(180,240,255,0.95)"
+                                        ctx.fillStyle = "rgba(255,70,70,0.95)"
                                         ctx.fillRect(bx, apy - 1.5, bwid, 1.5)
                                     }
-                                    // before (pre-EQ): amber outline + peak cap
+                                    // before (pre-EQ): white outline + peak cap
                                     if (preArr) {
                                         var py = graph.yForDb(bandMax(preArr, fLo, fHi))
-                                        ctx.strokeStyle = "rgba(255,190,70,0.9)"; ctx.lineWidth = 1
+                                        ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1
                                         ctx.strokeRect(bx + 0.5, py + 0.5, Math.max(1, bwid - 1), Math.max(0, h - py - 1))
                                         if (Eq.accumulate) {
                                             var ppy2 = graph.yForDb(bandMax(peakHoldPre, fLo, fHi))
-                                            ctx.fillStyle = "rgba(255,210,120,0.95)"
+                                            ctx.fillStyle = "rgba(255,255,255,0.95)"
                                             ctx.fillRect(bx, ppy2 - 1.5, bwid, 1.5)
                                         }
                                     }
