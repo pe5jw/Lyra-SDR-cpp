@@ -20,6 +20,7 @@
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
 #include "eqmodel.h"                  // complete type for new EqModel + context property
 #include "speechmodel.h"              // complete type for new SpeechModel + context property
+#include "combinatormodel.h"          // complete type for new CombinatorModel + context property
 #include "profileui.h"                // native Save-Profile dialog (front panel)
 #include "wdsp_engine.h"
 #include "help.h"
@@ -231,6 +232,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // pre-EQ in the mic rack (wired via SendpTxSpeechProcessor in main.cpp).
     speechModel_ = new SpeechModel(this);
 
+    // #51 combinator model (drives CombinatorPanel.qml) — 5-band multiband
+    // comp + SBC, after the EQ in the mic rack.  Wire-INERT until Stage 3
+    // routes the rack through it (SendpTxCombinatorProcessor).
+    combinatorModel_ = new CombinatorModel(this);
+
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
@@ -387,6 +393,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Eq"), eqModel_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Speech"), speechModel_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Combinator"), combinatorModel_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -599,12 +607,17 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("txeq"), tr("TX EQ"),
                  QStringLiteral("EqPanel.qml"),
                  QStringLiteral("txeq"), Qt::BottomDockWidgetArea);
+    // TX Combinator (#51) — 5-band multiband comp + SBC.  Own dock (see TX
+    // Speech) — after the EQ in the chain (mic → Speech → EQ → Combinator).
+    addQuickDock(QStringLiteral("txcombinator"), tr("TX Combinator"),
+                 QStringLiteral("CombinatorPanel.qml"),
+                 QStringLiteral("txcombinator"), Qt::BottomDockWidgetArea);
     // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
     // window so the front panel stays clean — the header "TX DSP" chip-strip
     // summons one (it pops as a movable/resizable float), and Save-my-layout
     // remembers what's open + where.  restoreLayout() below overrides this
     // with the operator's saved arrangement when one exists.
-    for (const char *nm : {"txspeech", "txeq"}) {
+    for (const char *nm : {"txspeech", "txeq", "txcombinator"}) {
         if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
             d->setFloating(true);
             d->hide();
@@ -840,7 +853,7 @@ void MainWindow::buildToolbar() {
         txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
                                   "movable window; layout is remembered."));
         tb->addWidget(txDspLabel);
-        for (const char *nm : {"txspeech", "txeq"}) {
+        for (const char *nm : {"txspeech", "txeq", "txcombinator"}) {
             if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
                 tb->addAction(d->toggleViewAction());
             }

@@ -303,6 +303,9 @@ qt_add_executable(lyra
     # #88 — speech-rack model (bridges dsp/SpeechProcessor to SpeechPanel.qml).
     src/speechmodel.h
     src/speechmodel.cpp
+    # #51 — combinator model (bridges dsp/Combinator to CombinatorPanel.qml).
+    src/combinatormodel.h
+    src/combinatormodel.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -341,6 +344,7 @@ qt_add_qml_module(lyra
         src/qml/TxPanel.qml
         src/qml/EqPanel.qml
         src/qml/SpeechPanel.qml
+        src/qml/CombinatorPanel.qml
         src/qml/ProfilePanel.qml
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml
