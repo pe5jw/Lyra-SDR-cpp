@@ -863,7 +863,12 @@ so you're never surprised:
   automatically skips the entire native rack (EQ + Speech + Combinator +
   Plating) so FT8 / JS8 / etc. transmit unshaped — you don't have to switch
   anything off. (This auto-gate is a Lyra convenience; the reference leaves
-  it to you to untick manually or load a digital profile.)
+  it to you to untick manually or load a digital profile.) The panels show
+  this at a glance: in **DIGU / DIGL** — and in **CW**, where there's no mic
+  audio to shape — each rack panel's **ON** lamp greys out, its controls dim,
+  and an amber **"bypassed (MODE)"** hint appears in the header. It's purely
+  cosmetic: your settings are untouched and the panels re-light the instant
+  you return to a voice mode (USB / LSB / AM / FM).
 
 ### TX EQ — 10-band parametric
 
@@ -882,11 +887,11 @@ A draggable response curve over a live spectrum analyzer.
   collapse ▼.
 - **Analyzer behind the curve** — the **Spec** button cycles
   **Off → Spectrum → RTA** (a line/fill spectrum, or log-spaced 1/N-octave
-  band bars). **Acc** adds a peak-hold overlay; **right-click Acc** for the
-  hang preset: **Live** (tracks the instantaneous signal, no hold) /
+  band bars). **Acc** adds a **red peak-hold** overlay; **right-click Acc**
+  for the hang preset: **Live** (tracks the instantaneous signal, no hold) /
   **Fast** / **Medium** / **Slow** / **Hold** (never decays). **B/A**
-  overlays the pre-EQ ("before") trace in amber against the post-EQ cyan
-  so you can see exactly what the EQ did. On an HL2+ the mic codec free-
+  overlays the pre-EQ ("before") trace in **white** against the post-EQ
+  **cyan** so you can see exactly what the EQ did. On an HL2+ the mic codec free-
   runs, so the analyzer animates on receive too — you can shape your EQ
   while just listening, no need to key up (it's analysed, not
   transmitted, until you actually key).
