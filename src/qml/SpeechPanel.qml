@@ -22,6 +22,16 @@ Rectangle {
 
     property bool collapsed: false
 
+    // The whole TX rack is bypassed in the digital data modes (DIGU/DIGL,
+    // gated by SetTxRackBypass) and is moot in CW (no mic audio).  Dim the
+    // stage lamps + controls so the operator sees at a glance the rack isn't
+    // shaping audio in those modes.  Purely visual — the model/profile state
+    // is untouched and re-lights the instant the mode returns to USB/LSB.
+    readonly property bool rackInactive: {
+        var m = WdspEngine.mode.toUpperCase()
+        return m === "DIGU" || m === "DIGL" || m === "CWU" || m === "CWL"
+    }
+
     // A labelled slider row: [label] [====slider====] [value].
     component CtlRow : RowLayout {
         property string label: ""
@@ -63,8 +73,8 @@ Rectangle {
         Layout.fillWidth: true
         radius: 4
         color: "#0b141b"
-        border.color: on ? accent : "#1c2a36"
-        border.width: on ? 2 : 1
+        border.color: (on && !root.rackInactive) ? accent : "#1c2a36"
+        border.width: (on && !root.rackInactive) ? 2 : 1
         implicitHeight: col.implicitHeight + 16
         ColumnLayout {
             id: col
@@ -86,12 +96,12 @@ Rectangle {
                     onClicked: stage.toggled(checked)
                     background: Rectangle {
                         radius: 11
-                        color: en.checked ? accent : "#1f2a35"
-                        border.color: en.checked ? accent : "#3a5060"
+                        color: (en.checked && !root.rackInactive) ? accent : "#1f2a35"
+                        border.color: (en.checked && !root.rackInactive) ? accent : "#3a5060"
                     }
                     contentItem: Text {
                         text: en.checked ? "ON" : "OFF"
-                        color: en.checked ? "#0d141b" : root.cMuted
+                        color: (en.checked && !root.rackInactive) ? "#0d141b" : root.cMuted
                         font.bold: true; font.pixelSize: 10
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
@@ -115,7 +125,7 @@ Rectangle {
             }
             Item { id: body; Layout.fillWidth: true
                    implicitHeight: childrenRect.height
-                   opacity: on ? 1.0 : 0.5 }
+                   opacity: (on && !root.rackInactive) ? 1.0 : 0.5 }
         }
     }
 
@@ -132,6 +142,11 @@ Rectangle {
                     font.bold: true; font.pixelSize: 14 }
             Label { text: qsTr("pre-EQ rack"); color: root.cMuted
                     font.pixelSize: 11 }
+            Label {
+                visible: root.rackInactive
+                text: qsTr("• bypassed (") + WdspEngine.mode.toUpperCase() + ")"
+                color: "#e0a030"; font.pixelSize: 11
+            }
             Item { Layout.fillWidth: true }
             Button {
                 implicitWidth: 28; implicitHeight: 22

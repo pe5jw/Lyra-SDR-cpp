@@ -29,6 +29,15 @@ Rectangle {
     property int  rev: 0        // bumped on paramsChanged -> re-eval per-band getters
     property int  mtick: 0      // bumped on metersChanged -> re-eval meter getters
 
+    // The whole TX rack is bypassed in the digital data modes (DIGU/DIGL,
+    // gated by SetTxRackBypass) and is moot in CW.  Dim the ON lamp +
+    // controls so the operator sees the rack isn't shaping audio there.
+    // Purely visual — model/profile state untouched, re-lights on USB/LSB.
+    readonly property bool rackInactive: {
+        var m = WdspEngine.mode.toUpperCase()
+        return m === "DIGU" || m === "DIGL" || m === "CWU" || m === "CWL"
+    }
+
     Connections { target: Combinator
         function onParamsChanged()  { root.rev++ }
         function onMetersChanged()  { root.mtick++ }
@@ -78,6 +87,11 @@ Rectangle {
                     font.bold: true; font.pixelSize: 14 }
             Label { text: qsTr("5-band multiband comp"); color: root.cMuted
                     font.pixelSize: 11 }
+            Label {
+                visible: root.rackInactive
+                text: qsTr("• bypassed (") + WdspEngine.mode.toUpperCase() + ")"
+                color: "#e0a030"; font.pixelSize: 11
+            }
             Item { Layout.fillWidth: true }
             Button {
                 id: onBtn
@@ -85,11 +99,11 @@ Rectangle {
                 implicitWidth: 50; implicitHeight: 22
                 onClicked: Combinator.bypass = !checked
                 background: Rectangle { radius: 4
-                    color: onBtn.checked ? "#0b3a44" : "#1f2a35"
-                    border.color: onBtn.checked ? root.cAccent : "#3a5060"
+                    color: (onBtn.checked && !root.rackInactive) ? "#0b3a44" : "#1f2a35"
+                    border.color: (onBtn.checked && !root.rackInactive) ? root.cAccent : "#3a5060"
                     border.width: 2 }
                 contentItem: Text { text: onBtn.checked ? "ON" : "OFF"
-                    color: onBtn.checked ? root.cAccent : root.cMuted
+                    color: (onBtn.checked && !root.rackInactive) ? root.cAccent : root.cMuted
                     font.bold: true; horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter }
             }
@@ -109,7 +123,7 @@ Rectangle {
             visible: !root.collapsed
             Layout.fillWidth: true
             spacing: 4
-            opacity: Combinator.bypass ? 0.5 : 1.0
+            opacity: (Combinator.bypass || root.rackInactive) ? 0.5 : 1.0
             CtlRow { label: qsTr("Mix"); from: 0; to: 100; step: 1; suffix: " %"
                 value: Combinator.mix * 100
                 onMoved: (v) => Combinator.mix = v / 100 }
@@ -138,7 +152,7 @@ Rectangle {
             visible: !root.collapsed
             Layout.fillWidth: true
             spacing: 8
-            opacity: Combinator.bypass ? 0.5 : 1.0
+            opacity: (Combinator.bypass || root.rackInactive) ? 0.5 : 1.0
             Button {
                 id: sbcBtn
                 checkable: true; checked: Combinator.sbcEnabled
@@ -223,7 +237,7 @@ Rectangle {
             visible: !root.collapsed
             Layout.fillWidth: true
             spacing: 4
-            opacity: Combinator.bypass ? 0.5 : 1.0
+            opacity: (Combinator.bypass || root.rackInactive) ? 0.5 : 1.0
             RowLayout {
                 Layout.fillWidth: true
                 Label { text: { root.rev; qsTr("Band: ") + Combinator.bandName(Combinator.selectedBand) }
