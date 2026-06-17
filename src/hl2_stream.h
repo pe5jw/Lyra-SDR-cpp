@@ -385,6 +385,21 @@ class HL2Stream : public QObject {
     Q_PROPERTY(int    levelerDecayMs          READ levelerDecayMs
                WRITE setLevelerDecayMs          NOTIFY levelerDecayMsChanged)
 
+    // §15.31 — ATT-on-TX operator surface (RX-front-end protection on
+    // key-down).  When enabled, the keydown FSM forces the HL2 step
+    // attenuator to attOnTxDb so the RX ADC isn't blinded by TX
+    // coupling (the XmitBit-gated case-11 wire path drives the AD9866
+    // rx_gain to minimum during TX); keyup restores the operator's
+    // pre-key value.  Default ENABLED / 31 dB = the verified reference's
+    // HL2 working posture (Setup → General → Ant/Filters → "ATT on Tx"
+    // ✓ / "ATT: 31").  Disabling removes RX-ADC protection during TX —
+    // operator opt-out, default ON; the PS-A-conditional Force/Auto
+    // sub-options are deferred to the v0.3 PureSignal dialog.
+    Q_PROPERTY(bool attOnTxEnabled READ attOnTxEnabled
+               WRITE setAttOnTxEnabled NOTIFY attOnTxEnabledChanged)
+    Q_PROPERTY(int  attOnTxDb       READ attOnTxDb
+               WRITE setAttOnTxDb       NOTIFY attOnTxDbChanged)
+
 public:
     explicit HL2Stream(QObject *parent = nullptr);
     ~HL2Stream() override;
@@ -596,6 +611,9 @@ public:
     bool    levelerOn()             const { return levelerOn_;             }
     double  levelerMaxGainLinear()  const { return levelerMaxGainLinear_;  }
     int     levelerDecayMs()        const { return levelerDecayMs_;        }
+    // §15.31 — ATT-on-TX operator surface getters.
+    bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
+    int     attOnTxDb()             const { return attOnTxDb_;             }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -841,6 +859,11 @@ public slots:
     void setLevelerOn(bool on);
     void setLevelerMaxGainLinear(double linear);
     void setLevelerDecayMs(int decay_ms);
+    // §15.31 — ATT-on-TX enable + dB value.  Persist under tx/<key>,
+    // emit the changed signal, and (if keyed right now) re-apply to the
+    // wire live so the operator sees the effect mid-TX.
+    void setAttOnTxEnabled(bool on);
+    void setAttOnTxDb(int db);
 
     // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
     // to the TX channel via the registered TxControl.setMode callback.
@@ -970,6 +993,9 @@ signals:
     void levelerOnChanged(bool on);
     void levelerMaxGainLinearChanged(double linear);
     void levelerDecayMsChanged(int decay_ms);
+    // §15.31 — ATT-on-TX operator surface.
+    void attOnTxEnabledChanged(bool on);
+    void attOnTxDbChanged(int db);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -1466,6 +1492,13 @@ private:
     bool   levelerOn_              = kDefaultLevelerOn;
     double levelerMaxGainLinear_   = kDefaultLevelerMaxGainLinear;
     int    levelerDecayMs_         = kDefaultLevelerDecayMs;
+    // §15.31 — ATT-on-TX operator surface.  Default ENABLED / 31 dB
+    // (kAttOnTxDb) = the reference HL2 working posture.  Touched by the
+    // Q_PROPERTY setters on the Qt main thread; the FSM reads them on
+    // the same thread (keydown/keyup run via QTimer::singleShot here).
+    static constexpr bool kDefaultAttOnTxEnabled = true;
+    bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
+    int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
 
     // §3.9-5 revert (operator-rejected 2026-06-06): the Lyra-native
     // cos² SSB envelope shim (MoxEdgeFade) was deleted per Rule 1

@@ -3059,6 +3059,65 @@ QWidget *SettingsDialog::buildTxTab() {
         rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column (Leveler)
     }
 
+    // ── ATT on TX (RX-ADC protection) group ──────────────────────
+    // §15.31.  Mirrors the reference's Setup → General → Ant/Filters →
+    // "ATT on Tx" ✓ + "ATT: 31" spin (HL2/HL2+ working posture).  On
+    // key-down the FSM forces the HL2 step attenuator to this value so
+    // TX coupling can't blind the RX ADC; keyup restores.  Lives in the
+    // LEFT (safety / set-once) column.  The PS-A-conditional Force/Auto
+    // sub-rows in the reference are deferred to the v0.3 PureSignal
+    // dialog.  Front-panel TxPanel "ATT" lamp toggles the same value.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("ATT on TX  (RX-ADC protection)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *enBox = new QCheckBox(
+            tr("Enabled  (attenuate RX front end while transmitting)"), grp);
+        enBox->setChecked(stream_->attOnTxEnabled());
+        enBox->setToolTip(tr(
+            "Forces the HL2 step attenuator (drives the AD9866 RX LNA to "
+            "minimum gain) for the duration of every transmission, so the "
+            "TX carrier coupling into the receiver can't blind the RX ADC "
+            "(panadapter going wide / S-meter pegging on key-down).\n\n"
+            "Default ON — matches the reference's HL2 working posture "
+            "(Setup → General → Ant/Filters → \"ATT on Tx\").  Turning it "
+            "OFF removes RX-ADC protection during TX; only do so if you "
+            "have a specific reason.  The TxPanel \"ATT\" lamp shows the "
+            "live state (orange = armed, red = engaged)."));
+        connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setAttOnTxEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::attOnTxEnabledChanged, enBox,
+                [enBox](bool on) {
+                    if (enBox->isChecked() != on) enBox->setChecked(on);
+                });
+        form->addRow(enBox);
+
+        auto *attSpin = new QSpinBox(grp);
+        attSpin->setRange(0, 31);
+        attSpin->setSingleStep(1);
+        attSpin->setSuffix(tr(" dB"));
+        attSpin->setValue(stream_->attOnTxDb());
+        attSpin->setToolTip(tr(
+            "Step-attenuator value forced on the RX front end while "
+            "transmitting.  31 dB = maximum attenuation (RX LNA driven to "
+            "minimum gain) = the reference default and the strongest "
+            "RX-ADC protection.  Range 0..31 matches the reference's spin "
+            "exactly.\n\n"
+            "Has effect only when Enabled above is ticked."));
+        connect(attSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    if (stream_) stream_->setAttOnTxDb(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::attOnTxDbChanged, attSpin,
+                [attSpin](int v) {
+                    if (attSpin->value() != v) attSpin->setValue(v);
+                });
+        form->addRow(tr("ATT:"), attSpin);
+
+        leftCol->addWidget(grp);   // §15.31 — SAFETY / set-once column
+    }
+
     // §15.28 — push groups to top of each column so trailing whitespace
     // sits between the body and the Restore button instead of between
     // groups.  Mismatched group counts (3 left vs 2 right) otherwise

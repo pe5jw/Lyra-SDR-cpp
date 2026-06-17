@@ -176,7 +176,72 @@ Rectangle {
             Layout.preferredWidth: 52
         }
 
-        Item { Layout.fillWidth: true }   // pushes TUN + MOX to the right
+        Item { Layout.fillWidth: true }   // left half of the gap
+
+        // ── ATT-on-TX lamp (§15.31) ─────────────────────────────────
+        // Operator-flagged: no visible confirmation that the RX front
+        // end is being protected on key-down (Thetis shows the ATT jump
+        // to 31).  This lit button sits in the gap between the Mic and
+        // Tune sliders; same orange-armed / red-live idiom as the LNA
+        // "Auto" lamp + the TUN/MOX buttons.  Gray = disabled; orange =
+        // enabled + armed (on RX); red = engaged NOW (wire MOX live, RX
+        // front end attenuated).  Click toggles enable (bidirectional
+        // with Settings → TX).  Disabling drops RX-ADC protection during
+        // TX — default ON.
+        Button {
+            id: attBtn
+            checkable: true
+            implicitWidth: 72
+            implicitHeight: 30
+            checked: Stream.attOnTxEnabled
+            onToggled: Stream.setAttOnTxEnabled(checked)
+            // engaged = protection actually live on the wire right now
+            readonly property bool engaged: Stream.attOnTxEnabled && Stream.moxActive
+            // Disabled → "ATT off"; armed (RX) → "ATT 31" (the setpoint
+            // it will apply on key-down); engaged (TX) → "ATT -31" (the
+            // attenuation now applied to the RX front end — negative to
+            // read as a gain reduction, matching the operator's mental
+            // model of the LNA dropping to -31 on TX).
+            text: !Stream.attOnTxEnabled
+                      ? qsTr("ATT off")
+                  : attBtn.engaged
+                      ? qsTr("ATT -%1").arg(Stream.attOnTxDb)
+                      : qsTr("ATT %1").arg(Stream.attOnTxDb)
+            font.bold: true
+            font.pixelSize: 13
+            background: Rectangle {
+                // Engaged = solid saturated red with white text (the MOX-
+                // live idiom) — NOT a light-salmon-on-dark-maroon blend,
+                // which read pink.  Armed = orange (TUN/Auto idiom);
+                // disabled = gray.
+                radius: 4
+                color: attBtn.engaged ? root.cMox
+                     : attBtn.checked ? "#3a2a14"
+                     : "#161e28"
+                border.color: attBtn.engaged ? root.cMoxEdge
+                            : attBtn.checked ? root.cOn
+                            : "#2a3a4a"
+                border.width: 2
+            }
+            contentItem: Text {
+                text: attBtn.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: attBtn.engaged ? "#ffffff"
+                     : attBtn.checked ? root.cOn
+                     : root.cText
+                font: attBtn.font
+            }
+            ToolTip.text: qsTr("ATT-on-TX — forces the HL2 step attenuator (RX LNA "
+                + "to minimum) while transmitting so TX coupling can't blind the "
+                + "RX ADC.  Orange = armed, red = engaged (keyed).  Click to "
+                + "toggle (also in Settings → TX); value set there too.  "
+                + "Disabling removes RX-ADC protection on TX.")
+            ToolTip.delay: 1000
+            ToolTip.visible: hovered && !pressed
+        }
+
+        Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
 
         // ── Tune-drive % (Task #74) — inline operator-tuned drive
         //    level applied only while TUN is armed; visible only when

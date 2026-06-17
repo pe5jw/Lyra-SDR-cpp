@@ -353,6 +353,13 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         QSettings().value(QStringLiteral("tx/levelerDecayMs"),
                           kDefaultLevelerDecayMs).toInt(),
         kMinLevelerDecayMs, kMaxLevelerDecayMs);
+    // §15.31 — ATT-on-TX operator surface.  Default ENABLED / 31 dB
+    // (the verified reference's HL2 working posture); clamped on load.
+    attOnTxEnabled_ = QSettings().value(QStringLiteral("tx/attOnTxEnabled"),
+                                        kDefaultAttOnTxEnabled).toBool();
+    attOnTxDb_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/attOnTxDb"), kAttOnTxDb).toInt(),
+        0, 31);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -1648,7 +1655,11 @@ void HL2Stream::fsmAdvance() {
         // gateware T/R relay engages).
         fsmRunning_ = true;
         savedTxStepAttn_ = txStepAttnDb_.load(std::memory_order_relaxed);
-        setTxStepAttnDb(kAttOnTxDb);
+        // §15.31: operator-gated ATT-on-TX.  Enabled → force the
+        // configured protective value (default 31 dB → wire min LNA
+        // gain); disabled → axis 0 (= the reference's SetTxAttenData(0)
+        // "no ATT on TX" posture, RX-ADC unprotected during TX).
+        setTxStepAttnDb(attOnTxEnabled_ ? attOnTxDb_ : 0);
         // Switch the OC pattern to the TX-side per-band bits FIRST so
         // the external filter board's relays have the mox_delay window
         // (~15 ms) to settle into TX configuration before the MOX bit
@@ -1659,8 +1670,10 @@ void HL2Stream::fsmAdvance() {
         // to settle before RF appears.  Hot-switch safety.
         updateOcPattern(/*transmitting=*/true);
         emit logLine(QStringLiteral(
-            "TX: keydown — ATT-on-TX %1 dB, mox_delay %2 ms")
-            .arg(kAttOnTxDb).arg(moxDelayMs_));
+            "TX: keydown — ATT-on-TX %1, mox_delay %2 ms")
+            .arg(attOnTxEnabled_ ? QStringLiteral("%1 dB").arg(attOnTxDb_)
+                                 : QStringLiteral("off"))
+            .arg(moxDelayMs_));
         QTimer::singleShot(moxDelayMs_, this,
                            [this]() { fsmKeydownPostMox(); });
     } else if (!requestedMox_ && wireOn) {
@@ -2130,6 +2143,37 @@ void HL2Stream::setLevelerOn(bool on) {
         topLinear = levelerMaxGainLinear_;
     }
     if (fwd) fwd(on, topLinear);
+}
+
+// §15.31 — ATT-on-TX enable.  Persists + emits; if currently keyed,
+// re-applies to the wire live so the operator sees the front-end
+// attenuation engage/disengage mid-TX (the FSM otherwise only sets it
+// on the keydown/keyup edges).  Disabling removes RX-ADC protection on
+// TX — operator opt-out; default ON.  Runs on the Qt main thread, same
+// as the FSM steps (no lock needed — the AttOnTxPolicy-precedent
+// single-int prn write, mirroring setLnaGainDb).
+void HL2Stream::setAttOnTxEnabled(bool on) {
+    if (on == attOnTxEnabled_) return;
+    attOnTxEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/attOnTxEnabled"), on);
+    emit attOnTxEnabledChanged(on);
+    if (mox_.load(std::memory_order_relaxed))
+        setTxStepAttnDb(on ? attOnTxDb_ : 0);
+    safetyLog(QStringLiteral("TX: ATT-on-TX -> %1")
+              .arg(on ? QStringLiteral("ON (%1 dB)").arg(attOnTxDb_)
+                      : QStringLiteral("off (RX-ADC unprotected on TX)")));
+}
+
+// §15.31 — ATT-on-TX dB value (0..31; default 31).  Persists + emits;
+// re-applies live while keyed + enabled.
+void HL2Stream::setAttOnTxDb(int db) {
+    const int clamped = std::clamp(db, 0, 31);
+    if (clamped == attOnTxDb_) return;
+    attOnTxDb_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/attOnTxDb"), clamped);
+    emit attOnTxDbChanged(clamped);
+    if (attOnTxEnabled_ && mox_.load(std::memory_order_relaxed))
+        setTxStepAttnDb(clamped);
 }
 
 // §15.27 Commit B — Leveler max-gain ceiling (LINEAR factor,
