@@ -443,6 +443,8 @@ void xcmaster (int stream)
 				(*pcm->TxSpeechProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 			if (pcm->TxEqProcess)
 				(*pcm->TxEqProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
+			if (pcm->TxCombinatorProcess)
+				(*pcm->TxCombinatorProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 		}
 		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
@@ -544,6 +546,13 @@ PORT
 void SendpTxSpeechProcessor (void (*Process)(int nsamples, double* buff))
 {
 	pcm->TxSpeechProcess = Process;
+}
+
+// #51 — register the native 5-band Combinator (runs after the EQ).
+PORT
+void SendpTxCombinatorProcessor (void (*Process)(int nsamples, double* buff))
+{
+	pcm->TxCombinatorProcess = Process;
 }
 
 // #50 — gate the whole native TX rack on/off (digital-mode bypass).
