@@ -448,7 +448,13 @@ void xcmaster (int stream)
 			if (pcm->TxPlateProcess)
 				(*pcm->TxPlateProcess)(pcm->xcm_insize[stream], pcm->in[stream]);
 		}
-		fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
+		// #90 TX-monitor tap — capture the post-rack mic (== the fexchange0
+			// input, "what you sound like") for the operator monitor.  Sits
+			// OUTSIDE the rack-bypass gate so digital/CW are captured too (just
+			// unprocessed).  READ-ONLY on pcm->in; the cb must never write it.
+			if (pcm->TxMonitorTap)
+				(*pcm->TxMonitorTap)(pcm->xcm_insize[stream], pcm->in[stream]);
+			fexchange0 (chid (stream, 0), pcm->in[stream], pcm->xmtr[tx].out[0], &error);			// dsp
 		// WriteAudio(10.0, pcm->xmtr[tx].ch_outrate, pcm->xmtr[tx].ch_outsize, pcm->xmtr[tx].out[0], 3);
 		// DEFERRED [sidetone — CW v0.2.2]:
 		//   xsidetone(tx);
@@ -541,6 +547,11 @@ PORT
 void SendpTxEqProcessor (void (*Process)(int nsamples, double* buff))
 {
 	pcm->TxEqProcess = Process;
+}
+
+void SendpTxMonitorTap (void (*Tap)(int nsamples, double* buff))			// #90
+{
+	pcm->TxMonitorTap = Tap;
 }
 
 // #88 — register the native TX speech pre-processor (runs before the EQ).

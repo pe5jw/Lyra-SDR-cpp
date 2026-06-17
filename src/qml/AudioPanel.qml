@@ -190,6 +190,62 @@ Rectangle {
                 ToolTip.visible: hovered
             }
 
+            Item { width: 10 }
+
+            // ── TX monitor (#90) — MON toggle + Monitor level ──
+            Button {
+                id: monBtn
+                text: qsTr("MON")
+                checkable: true
+                checked: WdspEngine.monEnabled
+                onToggled: WdspEngine.setMonEnabled(checked)
+                implicitWidth: 50; implicitHeight: 24
+                background: Rectangle {
+                    radius: 3
+                    color: monBtn.checked ? "#3a2a14" : "#161e28"
+                    border.color: monBtn.checked ? root.cOn : "#2a3a4a"
+                    border.width: 1
+                }
+                contentItem: Text {
+                    text: monBtn.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: monBtn.checked ? root.cOn : root.cText
+                    font.pixelSize: 12
+                }
+                ToolTip.text: qsTr("Monitor — hear your own processed TX audio "
+                    + "(post-rack: Speech / EQ / Combinator / Plating) on the "
+                    + "headphone jack while you transmit. It's your voice through "
+                    + "the DSP rack, before the radio's corrective ALC and TX "
+                    + "bandpass — set the level with the Monitor slider. "
+                    + "(HL2 jack now; a separate PC monitor device comes later.)")
+                ToolTip.visible: hovered
+            }
+            Slider {
+                id: monSlider
+                Layout.preferredWidth: 96
+                from: 0.0; to: 1.0
+                enabled: WdspEngine.monEnabled
+                value: WdspEngine.monVolume
+                onMoved: WdspEngine.setMonVolume(value)
+                WheelHandler {
+                    onWheel: (ev) => {
+                        var nv = WdspEngine.monVolume
+                                 + (ev.angleDelta.y > 0 ? 0.02 : -0.02)
+                        WdspEngine.setMonVolume(Math.max(0.0, Math.min(1.0, nv)))
+                    }
+                }
+                ToolTip.text: qsTr("Monitor level — how loud your own TX audio is in the monitor.")
+                ToolTip.visible: hovered
+            }
+            Label {
+                text: WdspEngine.monVolume <= 0.0
+                      ? qsTr("-∞ dB")
+                      : Math.round(20 * Math.log(WdspEngine.monVolume) / Math.LN10) + qsTr(" dB")
+                color: WdspEngine.monEnabled ? root.cText : root.cDim
+                font.family: "Consolas"; Layout.preferredWidth: 48
+            }
+
             Item { Layout.fillWidth: true }
 
             Button { text: qsTr("Out"); enabled: false; opacity: 0.45

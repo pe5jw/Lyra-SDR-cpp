@@ -347,6 +347,12 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     balance_.store(std::clamp(
         s.value(QStringLiteral("audio/balance"), 0.0).toDouble(), -1.0, 1.0),
         std::memory_order_relaxed);
+    // #90 TX monitor — restore the MON toggle + level (default OFF, 0.5).
+    monEnabled_.store(s.value(QStringLiteral("audio/monEnabled"), false).toBool(),
+                      std::memory_order_relaxed);
+    monVolume_.store(std::clamp(
+        s.value(QStringLiteral("audio/monVolume"), 0.5).toDouble(), 0.0, 1.0),
+        std::memory_order_relaxed);
     const QString savedDev =
         s.value(QStringLiteral("audio/deviceName")).toString();
     if (!savedDev.isEmpty()) {
@@ -1277,6 +1283,7 @@ void WdspEngine::rebuildVac1()
     // audio from rmatchIN when the mic source is "PC Soundcard (VAC1)"
     // (use_vac_audio).  Idempotent (just stores the fn ptr).
     SendpInboundVacTxAudio(&WdspEngine::vacInboundCb);
+    SendpTxMonitorTap(&WdspEngine::txMonitorTapCb);   // #90 post-rack TX-monitor tap
 
     // Silence block for the mixer's TX-monitor input (stream 2) — sized to
     // the same audio block the RX tee feeds (2*outSize_ doubles).  Assigned
@@ -2021,6 +2028,26 @@ void WdspEngine::setVolume(double v)
     volume_.store(v, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("audio/volume"), v);
     emit volumeChanged();
+}
+
+// #90 TX monitor — operator MON toggle + level.  Stage 1 stores + persists;
+// dispatchAudioFrame consumes monEnabled_/monVolume_ on the audio thread in
+// Stage 3 (when MOX is up + MON on, emit the post-rack monitor tap scaled by
+// monVolume_ in place of the auto-muted RX audio).  Inert until then.
+void WdspEngine::setMonEnabled(bool on)
+{
+    const bool prev = monEnabled_.exchange(on, std::memory_order_relaxed);
+    if (prev == on) return;
+    QSettings().setValue(QStringLiteral("audio/monEnabled"), on);
+    emit monEnabledChanged();
+}
+
+void WdspEngine::setMonVolume(double v)
+{
+    v = std::clamp(v, 0.0, 1.0);
+    monVolume_.store(v, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("audio/monVolume"), v);
+    emit monVolumeChanged();
 }
 
 void WdspEngine::setTxMuted(bool m)
@@ -3045,6 +3072,37 @@ void WdspEngine::aamixOutbound(int /*id*/, int nsamples, double *buff)
     }
 }
 
+// #90 TX-monitor tap — registered via SendpTxMonitorTap.  Runs on the cm_main
+// TX pump thread (xcmaster case 1) at the mic block rate, on the post-rack mic
+// (== the fexchange0 input, "what you sound like").  READ-ONLY: copies the
+// mono I-lane (buff is interleaved I/Q doubles, nsamples complex; mic is fed
+// I=Q=mono) into the lock-free monitorRing_; dispatchAudioFrame drains it onto
+// the jack when MOX is up + MON on (Stage 3).  NEVER writes buff.  Self via
+// g_aamixOutboundSelf (same lifetime contract as vacInboundCb/aamixOutbound —
+// cleared after destroy_aamix in closeRx1, so a late TX-thread call no-ops).
+void WdspEngine::txMonitorTapCb(int nsamples, double *buff)
+{
+    WdspEngine *self = g_aamixOutboundSelf;
+    if (self == nullptr || buff == nullptr || nsamples <= 0) {
+        return;
+    }
+    // Only fill the ring when MON is on — saves the copy on every TX block
+    // when the operator isn't monitoring, and keeps the ring from
+    // accumulating latency (dispatchAudioFrame also flushes it when idle).
+    if (!self->monEnabled_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // Stack scratch sized to the mic block (xcm_insize, typ. <= 1024).  Clamp
+    // rather than ever allocate on the real-time TX thread.
+    constexpr int kMaxMono = 4096;
+    if (nsamples > kMaxMono) nsamples = kMaxMono;
+    double mono[kMaxMono];
+    for (int i = 0; i < nsamples; ++i) {
+        mono[i] = buff[2 * i];
+    }
+    self->monitorRing_.push(mono, static_cast<std::size_t>(nsamples));
+}
+
 // #158 (#161 UAF fix) — VAC-in → TX bridge, registered via
 // SendpInboundVacTxAudio.  Runs on the cm_main TX pump thread (xcmaster
 // case 1) at the mic block rate when the xmtr's use_vac_audio is set.
@@ -3168,15 +3226,46 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
     const double bal = balance_.load(std::memory_order_relaxed);
     const double lBal = (bal > 0.0) ? (1.0 - bal) : 1.0;
     const double rBal = (bal < 0.0) ? (1.0 + bal) : 1.0;
+    // #90 TX monitor (Route 1) — when MOX is up AND MON is on, the operator
+    // hears their own post-rack TX audio on the output IN PLACE of the (auto-
+    // muted) RX.  Drain the tap ring into a mono scratch; an underrun zero-
+    // pads (never blocks).  When inactive, flush the ring so the next key-up
+    // starts fresh + low-latency.  Scaled below by the Monitor volume + the
+    // same HL2-jack attenuation the RX path uses; BIN/balance are skipped
+    // (mono self-monitor).  NOTE: this is pre-WDSP-ALC/bandpass — it's your
+    // voice through the DSP rack, not the radio's corrective ALC (by design).
+    const bool monActive = monEnabled_.load(std::memory_order_relaxed) &&
+                           txMuted_.load(std::memory_order_relaxed);
+    if (monActive) {
+        if (static_cast<int>(monScratch_.size()) != nframes) {
+            monScratch_.assign(static_cast<size_t>(nframes), 0.0);
+        } else {
+            std::fill(monScratch_.begin(), monScratch_.end(), 0.0);
+        }
+        monitorRing_.pop(monScratch_.data(), static_cast<size_t>(nframes));
+    } else {
+        monitorRing_.clear();
+    }
+    const double monGain = monVolume_.load(std::memory_order_relaxed)
+                         * (hl2Out_ ? kHl2OutAtten : 1.0);
     for (int f = 0; f < nframes; ++f) {
-        double l = audio[static_cast<size_t>(2 * f + 0)] * gain;
-        double r = audio[static_cast<size_t>(2 * f + 1)] * gain;
-        // BIN -- synthesize the stereo pair from the mono (L=R)
-        // signal via the Hilbert post-processor (last stage).
-        if (binEnabled_)
-            binauralStep(l, &l, &r);
-        l *= lBal;
-        r *= rBal;
+        double l, r;
+        if (monActive) {
+            // #90 monitor: mono self-listen, same on both channels; no BIN /
+            // balance (those are RX niceties).  Replaces the muted RX entirely.
+            const double m = monScratch_[static_cast<size_t>(f)] * monGain;
+            l = m;
+            r = m;
+        } else {
+            l = audio[static_cast<size_t>(2 * f + 0)] * gain;
+            r = audio[static_cast<size_t>(2 * f + 1)] * gain;
+            // BIN -- synthesize the stereo pair from the mono (L=R)
+            // signal via the Hilbert post-processor (last stage).
+            if (binEnabled_)
+                binauralStep(l, &l, &r);
+            l *= lBal;
+            r *= rBal;
+        }
         l = std::clamp(l, -1.0, 1.0);
         r = std::clamp(r, -1.0, 1.0);
         // Processed RX-audio doubles for the verbatim OutBound(0) tee

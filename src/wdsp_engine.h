@@ -39,6 +39,8 @@
 #include <mutex>
 #include <vector>
 
+#include "dsp/MonitorRing.h"   // #90 — TX-monitor SPSC ring (value member)
+
 class QAudioSink;
 
 // P0.c direct port — the reference `aamix, *AAMIX` twin typedef
@@ -108,6 +110,14 @@ class WdspEngine : public QObject {
     // pans the mono demod across L/R in the output stage (Lyra-side).
     Q_PROPERTY(double afGainDb    READ afGainDb    NOTIFY afGainChanged)
     Q_PROPERTY(double balance     READ balance     NOTIFY balanceChanged)
+    // #90 TX monitor — hear your own post-rack (Speech/EQ/Combinator/
+    // Plating) TX audio on the headphone jack while transmitting.
+    // monEnabled is the MON toggle; monVolume (0..1, perceptual like
+    // volume_) sets the level.  Both persisted.  Consumed on the audio
+    // thread in dispatchAudioFrame when MOX is up + MON on (Stage 3);
+    // inert until that stage lands.
+    Q_PROPERTY(bool   monEnabled  READ monEnabled  NOTIFY monEnabledChanged)
+    Q_PROPERTY(double monVolume   READ monVolume   NOTIFY monVolumeChanged)
     Q_PROPERTY(int    audioDeviceIndex READ audioDeviceIndex NOTIFY audioDeviceChanged)
     // Panadapter frequency span (Hz) = the IQ sample rate DIVIDED BY the
     // zoom factor — the displayed bandwidth, centred on the RX1 DDC freq.
@@ -267,6 +277,8 @@ public:
     bool   autoMuteOnTx() const { return autoMuteOnTx_.load(std::memory_order_relaxed); }
     double afGainDb() const { return afGainDb_; }
     double balance()  const { return balance_.load(std::memory_order_relaxed); }
+    bool   monEnabled() const { return monEnabled_.load(std::memory_order_relaxed); }
+    double monVolume()  const { return monVolume_.load(std::memory_order_relaxed); }
     // Output-list index: 0 = HL2 audio jack, 1..N = PC devices.
     int    audioDeviceIndex() const {
         return hl2Out_ ? 0 : deviceIndex_ + 1;
@@ -377,6 +389,8 @@ public:
     Q_INVOKABLE void setAutoMuteOnTx(bool on);
     Q_INVOKABLE void setAfGainDb(double db);   // 0..+40 dB makeup (WDSP panel gain)
     Q_INVOKABLE void setBalance(double b);     // -1 (L) .. +1 (R)
+    Q_INVOKABLE void setMonEnabled(bool on);   // #90 TX monitor toggle
+    Q_INVOKABLE void setMonVolume(double v);   // #90 monitor level 0..1
 
     // RX DSP operator controls.  Getters are cheap reads of the
     // persisted state; setters store, persist (QSettings), push to WDSP
@@ -615,6 +629,8 @@ signals:
     void autoMuteOnTxChanged();
     void afGainChanged();
     void balanceChanged();
+    void monEnabledChanged();
+    void monVolumeChanged();
     void audioDeviceChanged();
     void vac1Changed();   // #158 — VAC1 enable / device / RX gain
     void zoomChanged();
@@ -679,6 +695,13 @@ private:
     // dispatchAudioFrame) keeps xvacIN off a freed / mid-rebuilt rmatchIN
     // during a VAC device change or enable/disable.
     static void vacInboundCb(int nsamples, double *buff);
+    // #90 — READ-ONLY post-rack TX-monitor tap (registered via
+    // SendpTxMonitorTap).  Like vacInboundCb, a static member so the
+    // raw fn-ptr reaches monitorRing_ via g_aamixOutboundSelf.  Runs on
+    // the cm_main TX pump thread (xcmaster) at the mic block rate; copies
+    // the mono I-lane into monitorRing_ (Stage 2).  dispatchAudioFrame
+    // drains the ring onto the jack when MOX + MON (Stage 3).
+    static void txMonitorTapCb(int nsamples, double *buff);
     // Push the current mode_/bw_ to WDSP (SetRXAMode + RXASetPassband).
     // No-op when the channel isn't open (applied on the next openRx1).
     void applyModeFilter();
@@ -839,6 +862,9 @@ private:
     // it's an atomic the RX worker reads.
     double              afGainDb_ = 0.0;
     std::atomic<double> balance_{0.0};
+    // #90 TX monitor (Stage 1: persisted + UI; consumed in Stage 3).
+    std::atomic<bool>   monEnabled_{false};
+    std::atomic<double> monVolume_{0.5};
     // Panadapter zoom (1.0 = full span).  Written from the UI/main
     // thread; read by spanHz() (UI) + copySpectrum() (crop).
     std::atomic<double> zoom_{1.0};
@@ -1025,6 +1051,11 @@ private:
     // RX frame to keep the mixer synced — exactly as the reference feeds a
     // silent TX monitor during RX.  Sized 2*outSize_ in rebuildVac1.
     std::vector<double>   vacMonSilence_;
+    // #90 TX monitor — post-rack mic captured on the cm_main TX thread
+    // (txMonitorTapCb), drained on the audio thread (dispatchAudioFrame,
+    // Stage 3).  Lock-free SPSC; ~340 ms @ 48 k mono.
+    lyra::dsp::MonitorRing monitorRing_;
+    std::vector<double>    monScratch_;   // #90 audio-thread drain scratch (mono)
     // #161 — RX audio scaled by the monitor volume(+mute) for the VAC tee
     // (reference RXOutputGain is pre-tap).  Kept separate so the sink loop
     // still receives the raw post-RXA `audio`.  Sized 2*outSize_ on first use.
