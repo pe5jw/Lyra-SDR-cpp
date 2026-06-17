@@ -63,6 +63,11 @@ public:
     // No-op when no EqModel exists or the EQ is bypassed.
     static void txProcessCb(int nSamples, double *iqPairs);
 
+    // Live single instance (one EqModel for the app lifetime, a MainWindow
+    // member).  Lets the main.cpp profile capture/apply reach this model's
+    // saveState/loadState without it being in scope there (#49).
+    static EqModel *instance() { return s_self; }
+
     bool   bypass() const { return bypass_; }
     double makeupDb() const { return makeupDb_; }
     int    selectedBand() const { return selected_; }
@@ -142,6 +147,7 @@ private:
     // Set in the ctor, cleared in the dtor.  Lock-free reads on the TX thread.
     static std::atomic<lyra::dsp::ParamEq *>     s_txEngine;
     static std::atomic<lyra::dsp::EqAnalyzer *>  s_txAnalyzer;
+    static EqModel *s_self;
 
     lyra::dsp::ParamEq      eq_;
     lyra::dsp::EqAnalyzer   analyzer_;

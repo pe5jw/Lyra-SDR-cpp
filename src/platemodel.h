@@ -36,6 +36,9 @@ public:
 
     static void txProcessCb(int nSamples, double *iqPairs);
 
+    // Live single instance (#49 profile capture/apply bridge).
+    static PlateModel *instance() { return s_self; }
+
     bool   bypass()     const { return bypass_; }
     double preDelayMs() const { return preDelayMs_; }
     double decayS()     const { return decayS_; }
@@ -75,6 +78,7 @@ signals:
 
 private:
     static std::atomic<lyra::dsp::Plate *> s_txEngine;
+    static PlateModel *s_self;
 
     lyra::dsp::Plate plate_;
 

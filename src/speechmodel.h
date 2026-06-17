@@ -63,6 +63,9 @@ public:
     // both stages off.
     static void txProcessCb(int nSamples, double *iqPairs);
 
+    // Live single instance (#49 profile capture/apply bridge).
+    static SpeechModel *instance() { return s_self; }
+
     lyra::dsp::SpeechProcessor *engine() { return &sp_; }
 
     // Profile bundle (#49): serialize / restore the full speech-rack state.
@@ -74,6 +77,7 @@ signals:
 
 private:
     static std::atomic<lyra::dsp::SpeechProcessor *> s_txEngine;
+    static SpeechModel *s_self;
 
     lyra::dsp::SpeechProcessor sp_;
     bool   gateEnabled_   = false;

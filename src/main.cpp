@@ -744,6 +744,14 @@ int main(int argc, char *argv[])
         p.levelerDecayMs       = stream->levelerDecayMs();
         p.txTimeoutSec    = stream->txTimeoutSec();
         p.txTimeoutBypass = stream->txTimeoutBypass();
+        // Native TX DSP rack (#49 v3) — capture each stage's full state via
+        // its live model (a MainWindow member; reached statically since the
+        // models aren't in this lambda's scope).  instance() is null until
+        // MainWindow builds them, so an early capture just omits the blobs.
+        if (auto *m = lyra::ui::EqModel::instance())         p.eq         = m->saveState();
+        if (auto *m = lyra::ui::SpeechModel::instance())     p.speech     = m->saveState();
+        if (auto *m = lyra::ui::CombinatorModel::instance()) p.combinator = m->saveState();
+        if (auto *m = lyra::ui::PlateModel::instance())      p.plate      = m->saveState();
         return p;
     };
     pb.apply = [prefs, stream, wdspEngine](const lyra::profile::Profile &p) {
@@ -782,6 +790,14 @@ int main(int argc, char *argv[])
         stream->setLevelerDecayMs(p.levelerDecayMs);
         stream->setTxTimeoutSec(p.txTimeoutSec);
         stream->setTxTimeoutBypass(p.txTimeoutBypass);
+        // Native TX DSP rack (#49 v3) — apply each stage to its live model.
+        // Tolerant: an empty blob (pre-rack profile) leaves the stage at its
+        // current state.  Runs after the wire chain so it never interleaves
+        // with the BW/source switches above.
+        if (auto *m = lyra::ui::EqModel::instance())         m->loadState(p.eq);
+        if (auto *m = lyra::ui::SpeechModel::instance())     m->loadState(p.speech);
+        if (auto *m = lyra::ui::CombinatorModel::instance()) m->loadState(p.combinator);
+        if (auto *m = lyra::ui::PlateModel::instance())      m->loadState(p.plate);
     };
     auto *profiles = new lyra::profile::ProfileManager(
         std::move(pb), lyra::profile::ProfileStore(profileSettings), &app);
@@ -824,7 +840,11 @@ int main(int argc, char *argv[])
     QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::autoMuteOnTxChanged, profiles,
                      &lyra::profile::ProfileManager::refreshModified);
 
-    profiles->applyDefaultAtStartup();   // no-op until a default profile exists
+    // applyDefaultAtStartup() is deferred to AFTER MainWindow is built (see
+    // below) — the #49 rack models (EqModel/.../PlateModel) are MainWindow
+    // members, so the default profile's rack blobs only have somewhere to
+    // land once the window exists.  The non-rack fields apply identically
+    // either way (it behaves like loading the default profile at launch).
 
     // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
     // the operator arms TUN and Prefs.useTuneDrive is on, stash the
@@ -914,6 +934,36 @@ int main(int argc, char *argv[])
                                          wdspEngine, prefs, wx, profiles);
     winRef = win;   // populate the aboutToQuit teardown handler's reference
     win->show();
+
+    // #49 v3 — the TX DSP rack models now exist (MainWindow members).
+    // (1) Flag the active profile ● modified when any rack control changes,
+    //     so dirty-tracking covers the rack (operator-confirmed).
+    // (2) Apply the default profile NOW (deferred from before MainWindow) so
+    //     its rack blobs reach the live models at startup.
+    if (auto *m = lyra::ui::EqModel::instance()) {
+        QObject::connect(m, &lyra::ui::EqModel::bandsChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+        QObject::connect(m, &lyra::ui::EqModel::bypassChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+        QObject::connect(m, &lyra::ui::EqModel::makeupDbChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+    }
+    if (auto *m = lyra::ui::SpeechModel::instance())
+        QObject::connect(m, &lyra::ui::SpeechModel::changed, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+    if (auto *m = lyra::ui::CombinatorModel::instance()) {
+        QObject::connect(m, &lyra::ui::CombinatorModel::paramsChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+        QObject::connect(m, &lyra::ui::CombinatorModel::bypassChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+    }
+    if (auto *m = lyra::ui::PlateModel::instance()) {
+        QObject::connect(m, &lyra::ui::PlateModel::paramsChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+        QObject::connect(m, &lyra::ui::PlateModel::bypassChanged, profiles,
+                         &lyra::profile::ProfileManager::refreshModified);
+    }
+    profiles->applyDefaultAtStartup();   // no-op until a default profile exists
 
     // Defer the WDSP load / wisdom / channel-open to the FIRST
     // event-loop iteration via a zero-delay single-shot.  These steps

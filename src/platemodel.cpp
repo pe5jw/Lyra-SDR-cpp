@@ -5,6 +5,7 @@
 namespace lyra::ui {
 
 std::atomic<lyra::dsp::Plate *> PlateModel::s_txEngine{nullptr};
+PlateModel *PlateModel::s_self = nullptr;
 
 PlateModel::PlateModel(QObject *parent) : QObject(parent) {
     plate_.setSampleRate(48000.0);
@@ -21,10 +22,12 @@ PlateModel::PlateModel(QObject *parent) : QObject(parent) {
     plate_.setBypass(bypass_);     // default OFF
 
     s_txEngine.store(&plate_, std::memory_order_release);
+    s_self = this;
 }
 
 PlateModel::~PlateModel() {
     s_txEngine.store(nullptr, std::memory_order_release);
+    if (s_self == this) s_self = nullptr;
 }
 
 void PlateModel::txProcessCb(int nSamples, double *iqPairs) {

@@ -49,6 +49,9 @@ public:
     // model exists or the stage is bypassed.
     static void txProcessCb(int nSamples, double *iqPairs);
 
+    // Live single instance (#49 profile capture/apply bridge).
+    static CombinatorModel *instance() { return s_self; }
+
     bool   bypass()    const { return bypass_; }
     double mix()       const { return mix_; }
     double attackMs()  const { return attMs_; }
@@ -112,6 +115,7 @@ private:
     static constexpr int kN = lyra::dsp::Combinator::kNumBands;
 
     static std::atomic<lyra::dsp::Combinator *> s_txEngine;
+    static CombinatorModel *s_self;
 
     lyra::dsp::Combinator cmb_;
     QTimer *pollTimer_ = nullptr;

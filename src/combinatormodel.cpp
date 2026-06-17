@@ -8,6 +8,7 @@
 namespace lyra::ui {
 
 std::atomic<lyra::dsp::Combinator *> CombinatorModel::s_txEngine{nullptr};
+CombinatorModel *CombinatorModel::s_self = nullptr;
 
 CombinatorModel::CombinatorModel(QObject *parent) : QObject(parent) {
     cmb_.setSampleRate(48000.0);   // HL2 mic / TX rack rate
@@ -32,6 +33,7 @@ CombinatorModel::CombinatorModel(QObject *parent) : QObject(parent) {
     cmb_.setBypass(bypass_);        // default OFF
 
     s_txEngine.store(&cmb_, std::memory_order_release);
+    s_self = this;
 
     pollTimer_ = new QTimer(this);
     pollTimer_->setInterval(33);    // ~30 Hz meter refresh
@@ -41,6 +43,7 @@ CombinatorModel::CombinatorModel(QObject *parent) : QObject(parent) {
 
 CombinatorModel::~CombinatorModel() {
     s_txEngine.store(nullptr, std::memory_order_release);
+    if (s_self == this) s_self = nullptr;
 }
 
 void CombinatorModel::txProcessCb(int nSamples, double *iqPairs) {

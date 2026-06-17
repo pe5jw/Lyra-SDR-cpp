@@ -5,6 +5,7 @@
 namespace lyra::ui {
 
 std::atomic<lyra::dsp::SpeechProcessor *> SpeechModel::s_txEngine{nullptr};
+SpeechModel *SpeechModel::s_self = nullptr;
 
 SpeechModel::SpeechModel(QObject *parent) : QObject(parent) {
     sp_.setSampleRate(48000.0);
@@ -18,10 +19,12 @@ SpeechModel::SpeechModel(QObject *parent) : QObject(parent) {
     sp_.setDeessThreshDb(deessThreshDb_);
     sp_.setDeessRangeDb(deessRangeDb_);
     s_txEngine.store(&sp_, std::memory_order_release);
+    s_self = this;
 }
 
 SpeechModel::~SpeechModel() {
     s_txEngine.store(nullptr, std::memory_order_release);
+    if (s_self == this) s_self = nullptr;
 }
 
 void SpeechModel::setGateEnabled(bool on) {
