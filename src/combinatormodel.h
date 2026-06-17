@@ -13,6 +13,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QJsonObject>
 
 #include <array>
 #include <atomic>
@@ -89,6 +90,11 @@ public:
     Q_INVOKABLE QString bandName(int i) const;
 
     lyra::dsp::Combinator *engine() { return &cmb_; }
+
+    // Profile bundle (#49): serialize / restore the full combinator state
+    // (globals + per-band).  Meters/selectedBand are NOT included.
+    QJsonObject saveState() const;
+    void        loadState(const QJsonObject &o);
 
 signals:
     void bypassChanged();

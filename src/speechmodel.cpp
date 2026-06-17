@@ -75,4 +75,35 @@ void SpeechModel::txProcessCb(int nSamples, double *iqPairs) {
         e->processInterleaved(iqPairs, nSamples);
 }
 
+QJsonObject SpeechModel::saveState() const {
+    QJsonObject o;
+    o["gateOn"]        = gateEnabled_;
+    o["gateThreshDb"]  = gateThreshDb_;
+    o["gateRangeDb"]   = gateRangeDb_;
+    o["gateHoldMs"]    = gateHoldMs_;
+    o["agcOn"]         = agcEnabled_;
+    o["agcTargetDb"]   = agcTargetDb_;
+    o["agcMaxGainDb"]  = agcMaxGainDb_;
+    o["deessOn"]       = deessEnabled_;
+    o["deessFreqHz"]   = deessFreqHz_;
+    o["deessThreshDb"] = deessThreshDb_;
+    o["deessRangeDb"]  = deessRangeDb_;
+    return o;
+}
+
+void SpeechModel::loadState(const QJsonObject &o) {
+    if (o.isEmpty()) return;
+    if (o.contains("gateThreshDb"))  setGateThreshDb(o["gateThreshDb"].toDouble(gateThreshDb_));
+    if (o.contains("gateRangeDb"))   setGateRangeDb(o["gateRangeDb"].toDouble(gateRangeDb_));
+    if (o.contains("gateHoldMs"))    setGateHoldMs(o["gateHoldMs"].toDouble(gateHoldMs_));
+    if (o.contains("gateOn"))        setGateEnabled(o["gateOn"].toBool(gateEnabled_));
+    if (o.contains("agcTargetDb"))   setAgcTargetDb(o["agcTargetDb"].toDouble(agcTargetDb_));
+    if (o.contains("agcMaxGainDb"))  setAgcMaxGainDb(o["agcMaxGainDb"].toDouble(agcMaxGainDb_));
+    if (o.contains("agcOn"))         setAgcEnabled(o["agcOn"].toBool(agcEnabled_));
+    if (o.contains("deessFreqHz"))   setDeessFreqHz(o["deessFreqHz"].toDouble(deessFreqHz_));
+    if (o.contains("deessThreshDb")) setDeessThreshDb(o["deessThreshDb"].toDouble(deessThreshDb_));
+    if (o.contains("deessRangeDb"))  setDeessRangeDb(o["deessRangeDb"].toDouble(deessRangeDb_));
+    if (o.contains("deessOn"))       setDeessEnabled(o["deessOn"].toBool(deessEnabled_));
+}
+
 }  // namespace lyra::ui

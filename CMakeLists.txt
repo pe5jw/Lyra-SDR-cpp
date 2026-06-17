@@ -641,3 +641,24 @@ target_include_directories(test_plate PRIVATE src)
 if(MSVC)
     target_compile_options(test_plate PRIVATE /utf-8 /Zc:preprocessor)
 endif()
+
+# #49 Stage 1 — TX DSP rack save/load round-trip (the four model states the
+# TX profile bundle captures).  Qt Core (the models are QObject).
+add_executable(test_profile_rack EXCLUDE_FROM_ALL
+    scratch/test_profile_rack.cpp
+    src/eqmodel.h          src/eqmodel.cpp
+    src/dsp/ParamEq.h      src/dsp/ParamEq.cpp
+    src/dsp/EqAnalyzer.h   src/dsp/EqAnalyzer.cpp
+    src/speechmodel.h      src/speechmodel.cpp
+    src/dsp/SpeechProcessor.h src/dsp/SpeechProcessor.cpp
+    src/combinatormodel.h  src/combinatormodel.cpp
+    src/dsp/Combinator.h   src/dsp/Combinator.cpp
+    src/platemodel.h       src/platemodel.cpp
+    src/dsp/Plate.h        src/dsp/Plate.cpp
+)
+target_include_directories(test_profile_rack PRIVATE src)
+target_link_libraries(test_profile_rack PRIVATE Qt6::Core)
+set_target_properties(test_profile_rack PROPERTIES AUTOMOC ON)
+if(MSVC)
+    target_compile_options(test_profile_rack PRIVATE /utf-8 /Zc:preprocessor)
+endif()

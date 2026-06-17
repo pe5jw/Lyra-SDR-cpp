@@ -97,4 +97,33 @@ QString PlateModel::presetName(int idx) const {
     return idx == 0 ? QStringLiteral("W5UDX") : QStringLiteral("N8SDR");
 }
 
+QJsonObject PlateModel::saveState() const {
+    QJsonObject o;
+    o["bypass"]     = bypass_;
+    o["preDelayMs"] = preDelayMs_;
+    o["decayS"]     = decayS_;
+    o["damp"]       = damp_;
+    o["size"]       = size_;
+    o["density"]    = density_;
+    o["diff"]       = diff_;
+    o["bassDb"]     = bassDb_;
+    o["trebDb"]     = trebDb_;
+    o["mix"]        = mix_;
+    return o;
+}
+
+void PlateModel::loadState(const QJsonObject &o) {
+    if (o.isEmpty()) return;
+    if (o.contains("preDelayMs")) setPreDelayMs(o["preDelayMs"].toDouble(preDelayMs_));
+    if (o.contains("decayS"))     setDecayS(o["decayS"].toDouble(decayS_));
+    if (o.contains("damp"))       setDamp(o["damp"].toDouble(damp_));
+    if (o.contains("size"))       setSize(o["size"].toDouble(size_));
+    if (o.contains("density"))    setDensity(o["density"].toDouble(density_));
+    if (o.contains("diff"))       setDiff(o["diff"].toDouble(diff_));
+    if (o.contains("bassDb"))     setBassDb(o["bassDb"].toDouble(bassDb_));
+    if (o.contains("trebDb"))     setTrebDb(o["trebDb"].toDouble(trebDb_));
+    if (o.contains("mix"))        setMix(o["mix"].toDouble(mix_));
+    if (o.contains("bypass"))     setBypass(o["bypass"].toBool(bypass_));
+}
+
 }  // namespace lyra::ui

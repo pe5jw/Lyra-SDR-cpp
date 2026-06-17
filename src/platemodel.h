@@ -9,6 +9,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QJsonObject>
 
 #include <atomic>
 
@@ -63,6 +64,10 @@ public:
     Q_INVOKABLE QString presetName(int idx) const;
 
     lyra::dsp::Plate *engine() { return &plate_; }
+
+    // Profile bundle (#49): serialize / restore the full plate state.
+    QJsonObject saveState() const;
+    void        loadState(const QJsonObject &o);
 
 signals:
     void bypassChanged();

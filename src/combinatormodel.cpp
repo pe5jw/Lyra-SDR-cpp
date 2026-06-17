@@ -3,6 +3,7 @@
 #include "combinatormodel.h"
 
 #include <QTimer>
+#include <QJsonArray>
 
 namespace lyra::ui {
 
@@ -125,6 +126,51 @@ QString CombinatorModel::bandName(int i) const {
     case 4: return QStringLiteral("HIGH");
     }
     return QString();
+}
+
+QJsonObject CombinatorModel::saveState() const {
+    QJsonObject o;
+    o["bypass"]    = bypass_;
+    o["mix"]       = mix_;
+    o["attackMs"]  = attMs_;
+    o["releaseMs"] = relMs_;
+    o["ratio"]     = ratio_;
+    o["threshDb"]  = threshDb_;
+    o["makeupDb"]  = makeupDb_;
+    o["xover"]     = xover_;
+    o["sbcOn"]     = sbcOn_;
+    o["sbcSpeed"]  = sbcSpeed_;
+    QJsonArray bands;
+    for (int b = 0; b < kN; ++b) {
+        QJsonObject jb;
+        jb["thr"] = bandThresh_[b];
+        jb["gain"] = bandGain_[b];
+        jb["en"]  = bandOn_[b];
+        bands.append(jb);
+    }
+    o["bands"] = bands;
+    return o;
+}
+
+void CombinatorModel::loadState(const QJsonObject &o) {
+    if (o.isEmpty()) return;
+    if (o.contains("mix"))       setMix(o["mix"].toDouble(mix_));
+    if (o.contains("attackMs"))  setAttackMs(o["attackMs"].toDouble(attMs_));
+    if (o.contains("releaseMs")) setReleaseMs(o["releaseMs"].toDouble(relMs_));
+    if (o.contains("ratio"))     setRatio(o["ratio"].toDouble(ratio_));
+    if (o.contains("threshDb"))  setThreshDb(o["threshDb"].toDouble(threshDb_));
+    if (o.contains("makeupDb"))  setMakeupDb(o["makeupDb"].toDouble(makeupDb_));
+    if (o.contains("xover"))     setXover(o["xover"].toDouble(xover_));
+    if (o.contains("sbcSpeed"))  setSbcSpeed(o["sbcSpeed"].toDouble(sbcSpeed_));
+    if (o.contains("sbcOn"))     setSbcEnabled(o["sbcOn"].toBool(sbcOn_));
+    const QJsonArray bands = o["bands"].toArray();
+    for (int b = 0; b < bands.size() && b < kN; ++b) {
+        const QJsonObject jb = bands[b].toObject();
+        if (jb.contains("thr"))  setBandThreshDb(b, jb["thr"].toDouble(bandThresh_[b]));
+        if (jb.contains("gain")) setBandGainDb(b, jb["gain"].toDouble(bandGain_[b]));
+        if (jb.contains("en"))   setBandEnabled(b, jb["en"].toBool(bandOn_[b]));
+    }
+    if (o.contains("bypass"))    setBypass(o["bypass"].toBool(bypass_));
 }
 
 void CombinatorModel::pollMeters() { emit metersChanged(); }

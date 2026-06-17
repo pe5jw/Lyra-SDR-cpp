@@ -16,6 +16,7 @@
 #include <QObject>
 #include <QString>
 #include <QVariantList>
+#include <QJsonObject>
 
 #include <atomic>
 #include <vector>
@@ -86,6 +87,12 @@ public:
     Q_INVOKABLE void setBandQ(int i, double q);
     Q_INVOKABLE void resetBand(int i);   // restore that band's default
     Q_INVOKABLE void resetAll();         // restore every band's default (flatten)
+
+    // Profile bundle (#49): serialize / restore the full EQ chain state
+    // (bypass + makeup + all bands).  Display-only analyzer options are
+    // NOT included — they're visualization, not the TX signal chain.
+    QJsonObject saveState() const;
+    void        loadState(const QJsonObject &o);
 
     // Summed response in dB at freqHz — drives the drawn curve (what you
     // see is what you hear: same coeffs the engine's process() applies).

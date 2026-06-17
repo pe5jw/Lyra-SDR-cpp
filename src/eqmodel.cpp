@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include <QJsonArray>
+
 #include <QTimer>
 #include <QVariant>
 
@@ -188,6 +190,39 @@ void EqModel::resetAll() {
     for (int i = 0; i < lyra::dsp::ParamEq::kNumBands; ++i)
         eq_.setBand(i, fresh.band(i));
     emit bandsChanged();          // one redraw for the whole flatten
+}
+
+QJsonObject EqModel::saveState() const {
+    QJsonObject o;
+    o["bypass"]   = bypass_;
+    o["makeupDb"] = makeupDb_;
+    QJsonArray bands;
+    for (int i = 0; i < lyra::dsp::ParamEq::kNumBands; ++i) {
+        QJsonObject b;
+        b["en"]   = bandEnabled(i);
+        b["type"] = bandType(i);
+        b["f"]    = bandFreq(i);
+        b["g"]    = bandGain(i);
+        b["q"]    = bandQ(i);
+        bands.append(b);
+    }
+    o["bands"] = bands;
+    return o;
+}
+
+void EqModel::loadState(const QJsonObject &o) {
+    if (o.isEmpty()) return;                       // tolerant: no-op on empty
+    if (o.contains("bypass"))   setBypass(o["bypass"].toBool(bypass_));
+    if (o.contains("makeupDb")) setMakeupDb(o["makeupDb"].toDouble(makeupDb_));
+    const QJsonArray bands = o["bands"].toArray();
+    for (int i = 0; i < bands.size() && i < lyra::dsp::ParamEq::kNumBands; ++i) {
+        const QJsonObject b = bands[i].toObject();
+        if (b.contains("type")) setBandType(i, b["type"].toInt(bandType(i)));
+        if (b.contains("f"))    setBandFreq(i, b["f"].toDouble(bandFreq(i)));
+        if (b.contains("g"))    setBandGain(i, b["g"].toDouble(bandGain(i)));
+        if (b.contains("q"))    setBandQ(i, b["q"].toDouble(bandQ(i)));
+        if (b.contains("en"))   setBandEnabled(i, b["en"].toBool(bandEnabled(i)));
+    }
 }
 
 double EqModel::magnitudeDb(double freqHz) const { return eq_.magnitudeDb(freqHz); }

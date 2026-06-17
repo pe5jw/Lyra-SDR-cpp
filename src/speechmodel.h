@@ -7,6 +7,7 @@
 #pragma once
 
 #include <QObject>
+#include <QJsonObject>
 
 #include <atomic>
 
@@ -63,6 +64,10 @@ public:
     static void txProcessCb(int nSamples, double *iqPairs);
 
     lyra::dsp::SpeechProcessor *engine() { return &sp_; }
+
+    // Profile bundle (#49): serialize / restore the full speech-rack state.
+    QJsonObject saveState() const;
+    void        loadState(const QJsonObject &o);
 
 signals:
     void changed();
