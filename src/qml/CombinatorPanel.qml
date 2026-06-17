@@ -56,8 +56,8 @@ Rectangle {
         signal moved(real v)
         Layout.fillWidth: true
         spacing: 8
-        Label { text: parent.label; color: root.cMuted; font.pixelSize: 12
-                Layout.preferredWidth: 64 }
+        Label { text: parent.label; color: root.cText; font.bold: true
+                font.pixelSize: 13; Layout.preferredWidth: 72 }
         Slider {
             Layout.fillWidth: true
             from: parent.from; to: parent.to; stepSize: parent.step
@@ -68,7 +68,7 @@ Rectangle {
         Label {
             text: parent.value.toFixed(parent.decimals) + parent.suffix
             color: root.cText; font.family: "Consolas"; font.bold: true
-            font.pixelSize: 12; Layout.preferredWidth: 64
+            font.pixelSize: 13; Layout.preferredWidth: 68
             horizontalAlignment: Text.AlignRight
         }
     }
@@ -199,8 +199,8 @@ Rectangle {
                         }
                     }
                     Label { text: Combinator.bandName(index)
-                        color: index === Combinator.selectedBand ? root.bandCol[index] : root.cMuted
-                        font.pixelSize: 9; font.bold: index === Combinator.selectedBand
+                        color: index === Combinator.selectedBand ? root.bandCol[index] : root.cText
+                        font.pixelSize: 11; font.bold: index === Combinator.selectedBand
                         Layout.alignment: Qt.AlignHCenter }
                 }
             }
@@ -224,8 +224,8 @@ Rectangle {
                         border.color: checked ? root.bandCol[index] : "#3a5060"
                         border.width: checked ? 2 : 1 }
                     contentItem: Text { text: Combinator.bandName(index)
-                        color: checked ? root.bandCol[index] : root.cMuted
-                        font.pixelSize: 10; font.bold: true
+                        color: checked ? root.bandCol[index] : root.cText
+                        font.pixelSize: 11; font.bold: true
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter }
                 }
@@ -247,14 +247,14 @@ Rectangle {
                     id: bandEn
                     checkable: true
                     checked: { root.rev; Combinator.bandEnabled(Combinator.selectedBand) }
-                    implicitWidth: 60; implicitHeight: 20
+                    implicitWidth: 72; implicitHeight: 22
                     onClicked: Combinator.setBandEnabled(Combinator.selectedBand, checked)
                     background: Rectangle { radius: 4
                         color: bandEn.checked ? "#0b3a44" : "#1f2a35"
                         border.color: bandEn.checked ? root.cAccent : "#3a5060" }
                     contentItem: Text { text: bandEn.checked ? qsTr("BAND ON") : qsTr("BAND OFF")
                         color: bandEn.checked ? root.cAccent : root.cMuted
-                        font.pixelSize: 9; font.bold: true
+                        font.pixelSize: 11; font.bold: true
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter }
                 }

@@ -57,3 +57,7 @@ __pycache__/
 # Release artifacts — the installer is attached to the GitHub Release,
 # never committed (see CMakeLists OutputDir / installer/lyra.iss).
 dist/
+
+# Local operator-machine launch helper + stray run-log capture
+_run_lyra_vac1.bat
+Line

@@ -866,9 +866,27 @@ void MainWindow::buildToolbar() {
         txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
                                   "movable window; layout is remembered."));
         tb->addWidget(txDspLabel);
+        // Style each launcher as a proper boxed button (was flat text-only,
+        // indistinguishable from a label until hover).  Checked = that
+        // stage's panel is open — fill with the accent so "what's on" reads
+        // at a glance.  Per-button stylesheet keeps the rest of the toolbar
+        // (Start/Stop, Update, clocks) on the default look.
+        static const char *kTxDspChipQss =
+            "QToolButton{border:1px solid #3a4750;border-radius:4px;"
+            "padding:2px 9px;margin:0 2px;color:#cfd8dc;background:#1c252b;}"
+            "QToolButton:hover{border-color:#5b6b76;background:#243038;}"
+            "QToolButton:checked{background:#2e7d9a;border-color:#7fd6ef;"
+            "color:#ffffff;font-weight:600;}"
+            "QToolButton:checked:hover{background:#3690ad;}";
         for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate"}) {
             if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
-                tb->addAction(d->toggleViewAction());
+                QAction *act = d->toggleViewAction();
+                tb->addAction(act);
+                if (auto *btn = qobject_cast<QToolButton *>(
+                        tb->widgetForAction(act))) {
+                    btn->setObjectName(QStringLiteral("txDspChip"));
+                    btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+                }
             }
         }
     }

@@ -312,9 +312,31 @@ Rectangle {
             visible: !root.collapsed
             opacity: Eq.bypass ? 0.45 : 1.0
 
-            // Axis maps: log freq 30 Hz–12 kHz, linear ±15 dB.
+            // Axis maps: log freq, linear ±15 dB.
+            // #168 — the upper frequency tracks the TX audio passband so the
+            // visible curve reflects what actually goes on the air: SSB/digital
+            // audio runs out to the TX BW high edge; the double-sideband modes
+            // (AM/DSB/FM/SAM) mirror audio into both sidebands, so their audio
+            // top is HALF the occupied TX BW.  Clamped to a sane, always-usable
+            // window (4 k floor so low bands never vanish; 12 k ceiling for
+            // ultra-wide ESSB).  txEdgeHz is the exact audio top (the dashed
+            // marker), fMax adds a little headroom so the edge isn't jammed at
+            // the right.
             readonly property real fMin: 30
-            readonly property real fMax: 12000
+            readonly property real txEdgeHz: {
+                var bw = Prefs.txBandwidth
+                if (!bw || bw <= 0) return 0
+                var m = WdspEngine.mode.toUpperCase()
+                if (m === "AM" || m === "SAM" || m === "DSB" || m === "FM")
+                    bw = bw / 2
+                return bw
+            }
+            readonly property real fMax: {
+                var top = txEdgeHz
+                if (top <= 0) return 12000
+                return Math.max(4000, Math.min(12000, top * 1.15))
+            }
+            onFMaxChanged: root.rev++      // re-eval node/curve bindings + repaint
             readonly property real dbR: 15
             function xForFreq(f) { return width * Math.log(f / fMin) / Math.log(fMax / fMin) }
             function freqForX(x) {
@@ -519,33 +541,59 @@ Rectangle {
                         }
                     }
 
-                    // Vertical grid at decade-ish freqs.
+                    // Vertical grid at decade-ish freqs + a frequency marker
+                    // row across the top (#167) so you can read where on the
+                    // curve a given frequency sits.  Only the freqs inside the
+                    // current window are drawn/labelled (fMax tracks TX BW, #168).
                     ctx.lineWidth = 1
+                    ctx.font = "bold 11px 'Segoe UI', sans-serif"
+                    ctx.textBaseline = "top"
+                    ctx.textAlign = "center"
                     var fl = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
-                    ctx.strokeStyle = root.cGrid
                     for (var k = 0; k < fl.length; ++k) {
+                        if (fl[k] < graph.fMin || fl[k] > graph.fMax) continue
                         var gx = graph.xForFreq(fl[k])
-                        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke()
+                        ctx.strokeStyle = root.cGrid
+                        ctx.beginPath(); ctx.moveTo(gx, 13); ctx.lineTo(gx, h); ctx.stroke()
+                        ctx.fillStyle = root.cText
+                        ctx.fillText(root.fmtFreq(fl[k]), gx, 1)
                     }
+                    // TX passband-edge marker (#168) — the audio top frequency
+                    // the TX bandwidth allows on air.  Amber dashed line + label
+                    // so you see where your transmitted passband ends.
+                    if (graph.txEdgeHz > graph.fMin && graph.txEdgeHz <= graph.fMax) {
+                        var ex = graph.xForFreq(graph.txEdgeHz)
+                        ctx.strokeStyle = "rgba(224,160,48,0.8)"
+                        ctx.setLineDash([4, 3])
+                        ctx.beginPath(); ctx.moveTo(ex, 13); ctx.lineTo(ex, h); ctx.stroke()
+                        ctx.setLineDash([])
+                        ctx.fillStyle = "rgba(224,160,48,0.95)"
+                        ctx.textAlign = "right"
+                        ctx.fillText("TX " + root.fmtFreq(graph.txEdgeHz), ex - 3, 1)
+                    }
+                    ctx.textAlign = "left"   // restore default for the dB labels
                     // Horizontal dB grid every 3 dB across the ±15 axis.
                     // Major lines (every 6 dB) are brighter + labelled on the
                     // left so the operator reads gain vs flat; the 3 dB
                     // intermediates are dim, unlabelled tick lines.  0 dB =
                     // flat/centre, emphasised.
-                    ctx.font = "9px 'Segoe UI', sans-serif"
+                    // Every 3 dB line is now labelled (operator ask: add the
+                    // ±3 / ±9 rows).  Majors (0 / ±6 / ±12) keep a brighter
+                    // gridline; the ±3 / ±9 intermediates get a mid line so
+                    // their label has a visible rule.  All labels bright; 0 dB
+                    // in a bright blue.
+                    ctx.font = "bold 11px 'Segoe UI', sans-serif"
                     ctx.textBaseline = "bottom"
                     for (var db = -12; db <= 12; db += 3) {
                         var gy = graph.yForGain(db)
                         var major = (db % 6) === 0
                         ctx.strokeStyle = (db === 0) ? root.cGrid0
-                                        : (major ? root.cGrid : "#1a2935")
+                                        : (major ? root.cGrid : "#243a48")
                         ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke()
-                        if (db === 0 || major) {
-                            ctx.fillStyle = (db === 0) ? root.cGrid0 : root.cMuted
-                            ctx.fillText((db > 0 ? "+" : "") + db
-                                         + (db === 0 ? " dB (flat)" : ""),
-                                         5, gy - 2)
-                        }
+                        ctx.fillStyle = (db === 0) ? "#7fb8d4" : root.cText
+                        ctx.fillText((db > 0 ? "+" : "") + db
+                                     + (db === 0 ? " dB (flat)" : " dB"),
+                                     5, gy - 2)
                     }
 
                     // Summed response curve — sample magnitudeDb per ~3 px.

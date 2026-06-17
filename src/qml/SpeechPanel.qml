@@ -43,8 +43,8 @@ Rectangle {
         signal moved(real v)
         Layout.fillWidth: true
         spacing: 8
-        Label { text: parent.label; color: root.cMuted; font.pixelSize: 12
-                Layout.preferredWidth: 64 }
+        Label { text: parent.label; color: root.cText; font.bold: true
+                font.pixelSize: 13; Layout.preferredWidth: 72 }
         Slider {
             id: sl
             Layout.fillWidth: true
@@ -56,7 +56,7 @@ Rectangle {
         Label {
             text: Math.round(parent.value) + parent.suffix
             color: root.cText; font.family: "Consolas"; font.bold: true
-            font.pixelSize: 12; Layout.preferredWidth: 60
+            font.pixelSize: 13; Layout.preferredWidth: 64
             horizontalAlignment: Text.AlignRight
         }
     }
