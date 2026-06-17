@@ -474,19 +474,23 @@ laid out in old Lyra's three-row arrangement:
 - **Bal** — stereo balance: pans the audio left/right. Centre = both
   channels equal; the slider snaps to dead-centre near the middle so it's
   easy to recentre.
-- **MON · Monitor** — *hear yourself transmit.* With **MON** on, while you're
-  keyed up Lyra plays your own **post-rack** TX audio (Speech → EQ →
-  Combinator → Plating) on the same output you use for receive, in place of
-  the auto-muted receiver. The **Monitor** slider rides its level (dB beside
-  it). It's your voice **through the DSP rack but before** the radio's
-  corrective ALC and TX bandpass — so it shows what your *processing* is
-  doing, not the exact transmitted envelope. MON does nothing on receive, and
-  in **DIGU / DIGL / CW** (rack bypassed / no mic audio) there's nothing to
-  monitor. A separate PC monitor *device* (rather than your RX output) is
-  planned for a later build.
-- **Auto · Out** are still greyed in their final positions — each lights up
-  as its control is wired in. Choosing **where** the audio goes (HL2
-  headphone jack vs. a PC sound device) lives in **[Settings → Audio](#settings--audio)**.
+- **MON TX · Monitor** — *hear yourself transmit.* With **MON TX** on, while
+  you're keyed up Lyra plays your own **post-rack** TX audio (Speech → EQ →
+  Combinator → Plating) in place of the auto-muted receiver. The **Monitor**
+  slider rides its level (dB beside it). It's your voice **through the DSP rack
+  but before** the radio's corrective ALC and TX bandpass — so it shows what
+  your *processing* is doing, not the exact transmitted envelope. MON TX does
+  nothing on receive, and in **DIGU / DIGL / CW** (rack bypassed / no mic
+  audio) there's nothing to monitor. The monitor follows wherever your RX audio
+  goes — the **HL2 jack or selected output device** (the **Out** picker), and,
+  when enabled, a **VAC** PC device **and** your **TCI** clients — all from the
+  single MON TX toggle (matching the reference's monitor routing).
+- **Auto · Out** — **Auto** rides the LNA on the ADC-overload edge (see
+  **LNA** above). **Out** is a live output-device quick switch: click it for a
+  pop-up list of the **HL2 audio jack** + your **PC output devices** (the
+  current one marked), and pick one to move RX audio — and the monitor — there
+  live. The full audio setup (host API, exclusive mode, VAC) still lives in
+  **[Settings → Audio](#settings--audio)**.
 
 **Row 2 — DSP toggles + AGC**
 - A row of effect buttons **NB · BIN · NR · ANF · LMS · SQ · APF · NF**.
