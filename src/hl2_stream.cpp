@@ -360,6 +360,11 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     attOnTxDb_ = std::clamp(
         QSettings().value(QStringLiteral("tx/attOnTxDb"), kAttOnTxDb).toInt(),
         0, 31);
+    // #93/#106 — AM/SAM carrier level (% of 0..1 c_level; 50 % = WDSP default).
+    amCarrierPct_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/amCarrierPct"),
+                          kDefaultAmCarrierPct).toDouble(),
+        0.0, 100.0);
     txSafetyTimer_ = new QTimer(this);
     txSafetyTimer_->setSingleShot(true);
     connect(txSafetyTimer_, &QTimer::timeout,
@@ -1488,9 +1493,13 @@ int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
     // unchanged.  Same kTuneCwPitchHz both sides → they cancel.
     if (!tuneEnabled_.load(std::memory_order_relaxed))
         return static_cast<int>(dialHz);
-    const int off = (txMode_.load(std::memory_order_relaxed) == 1)
-        ? -kTuneCwPitchHz    // USB: dial − cw_pitch
-        : +kTuneCwPitchHz;   // LSB: dial + cw_pitch
+    // ∓cw_pitch by sideband so the ±cw_pitch postgen tone cancels to a
+    // carrier at the dial.  Double-sideband modes (DSB/FM/AM/SAM) are
+    // centered → no offset; LSB-side {LSB,CWL,DIGL} +pitch; USB-side −pitch.
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    const int off = (tm == 2 || tm == 5 || tm == 6 || tm == 10) ? 0
+                  : (tm == 0 || tm == 3 || tm == 9) ? +kTuneCwPitchHz
+                  :                                   -kTuneCwPitchHz;
     return static_cast<int>(dialHz) + off;
 }
 
@@ -1498,9 +1507,10 @@ int HL2Stream::txAnalyzerOffsetHz() const {
     // = txDdsHzForTune(d) − d (freq-independent): the NCO−dial offset the
     // panadapter crop must undo so the TUN carrier paints on the marker.
     if (!tuneEnabled_.load(std::memory_order_relaxed)) return 0;
-    return (txMode_.load(std::memory_order_relaxed) == 1)
-        ? -kTuneCwPitchHz    // USB: NCO = dial − cw_pitch
-        : +kTuneCwPitchHz;   // LSB: NCO = dial + cw_pitch
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    return (tm == 2 || tm == 5 || tm == 6 || tm == 10) ? 0   // DSB/FM/AM/SAM centered
+         : (tm == 0 || tm == 3 || tm == 9) ? +kTuneCwPitchHz  // LSB/CWL/DIGL
+         :                                   -kTuneCwPitchHz; // USB/CWU/DIGU
 }
 
 void HL2Stream::setTuneEnabled(bool on) {
@@ -2217,6 +2227,34 @@ void HL2Stream::setLevelerDecayMs(int decay_ms) {
     if (fwd) fwd(clamped);
 }
 
+// #93/#106 — AM/SAM carrier level, operator-facing as a percent of the
+// STANDARD AM carrier (0..100 %, default 100 % = standard full-carrier AM).
+// The operator percent is a POWER ratio: it maps to the WDSP carrier
+// coefficient (SetTXAAMCarrierLevel, 0..1) as  c = sqrt(pct/100) * 0.5  so
+// the displayed number tracks carrier power linearly and "100 %" is the
+// textbook AM carrier (coefficient 0.5 = carrier at half the peak envelope
+// amplitude = 25 % of PEP).  Higher = more carrier power (less relative
+// sideband); 0 → suppressed-carrier (DSB-like).  This mirrors the reference
+// (Setup → AM carrier %) exactly so operator-stored values transfer 1:1.
+// WDSP ignores the coefficient outside AM/SAM, so it can be pushed any time.
+static inline double amPctToCarrierLevel(double pct) {
+    return std::sqrt(std::clamp(pct, 0.0, 100.0) * 0.01) * 0.5;
+}
+
+void HL2Stream::setAmCarrierPct(double pct) {
+    const double clamped = std::clamp(pct, 0.0, 100.0);
+    if (clamped == amCarrierPct_) return;
+    amCarrierPct_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/amCarrierPct"), clamped);
+    emit amCarrierPctChanged(clamped);
+    std::function<void(double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setAmCarrierLevel;
+    }
+    if (fwd) fwd(amPctToCarrierLevel(clamped));   // % power → WDSP 0..1 c_level
+}
+
 // TX-1 component 8a-tx-mode — relay the operator's WDSP TXA mode to the
 // TX channel via the registered TxControl.setMode callback.  No
 // persistence here (RX mode in WdspEngine is the operator-driven source
@@ -2227,9 +2265,12 @@ void HL2Stream::setLevelerDecayMs(int decay_ms) {
 // wdspMode argument is the raw WDSP TXA mode integer (0=LSB, 1=USB);
 // clamped to [0, 1] here as a defence against translator bugs.
 void HL2Stream::setTxMode(int wdspMode) {
-    const int clamped = std::clamp(wdspMode, 0, 1);
-    // Mirror the WDSP TX mode so txDdsHzForTune signs the TUN DDS offset
-    // (USB −cw_pitch / LSB +cw_pitch) correctly.
+    // Full WDSP TXA modulation-mode range (0=LSB..10=SAM, up to 13).  Was
+    // clamped to [0,1] (SSB-only) — widened so AM(6)/DSB(2)/FM(5)/SAM(10)
+    // reach SetTXAMode and modulate natively.  Mirror it so txDdsHzForTune
+    // signs the TUN DDS offset by sideband (USB −cw_pitch / LSB +cw_pitch /
+    // double-sideband centered).
+    const int clamped = std::clamp(wdspMode, 0, 13);
     txMode_.store(clamped, std::memory_order_relaxed);
     std::function<void(int)> fwd;
     {
@@ -2348,8 +2389,10 @@ void HL2Stream::registerTxControl(TxControl ctl) {
     std::function<void(int)>          pushAlcDecay;
     std::function<void(bool,double)>  pushLeveler;
     std::function<void(int)>          pushLevelerDecay;
+    std::function<void(double)>       pushAmCarrier;
     bool   levOn;
     double levTop;
+    double amCarLin;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         txControl_ = std::move(ctl);
@@ -2361,14 +2404,17 @@ void HL2Stream::registerTxControl(TxControl ctl) {
         pushAlcDecay     = txControl_.setAlcDecayMs;
         pushLeveler      = txControl_.setLevelerOn;
         pushLevelerDecay = txControl_.setLevelerDecayMs;
+        pushAmCarrier    = txControl_.setAmCarrierLevel;
         levOn            = levelerOn_;
         levTop           = levelerMaxGainLinear_;
+        amCarLin         = amPctToCarrierLevel(amCarrierPct_);   // % power → c_level
     }
     if (pushMic)          pushMic(micGainDb_);
     if (pushAlc)          pushAlc(alcMaxGainLinear_);
     if (pushAlcDecay)     pushAlcDecay(alcDecayMs_);
     if (pushLeveler)      pushLeveler(levOn, levTop);
     if (pushLevelerDecay) pushLevelerDecay(levelerDecayMs_);
+    if (pushAmCarrier)    pushAmCarrier(amCarLin);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer

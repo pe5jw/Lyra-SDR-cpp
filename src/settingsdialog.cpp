@@ -3059,6 +3059,39 @@ QWidget *SettingsDialog::buildTxTab() {
         rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column (Leveler)
     }
 
+    // ── AM Carrier (AM / SAM modulation) group ───────────────────
+    // #93/#106 — operator AM/SAM carrier level.  Splits TX power between
+    // the carrier and the sidebands.  DSB is always suppressed-carrier and
+    // FM/SSB ignore it, so this only bites in AM/SAM.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("AM Carrier  (AM / SAM modulation)"), page);
+        auto *form = new QFormLayout(grp);
+        auto *carSpin = new QDoubleSpinBox(grp);
+        carSpin->setRange(0.0, 100.0);
+        carSpin->setSingleStep(5.0);
+        carSpin->setDecimals(0);
+        carSpin->setSuffix(tr(" %"));
+        carSpin->setValue(stream_->amCarrierPct());
+        carSpin->setToolTip(tr(
+            "AM carrier level as a percent of the STANDARD AM carrier (power).  "
+            "100 % = standard AM — carrier at 25 % of PEP, sidebands swing the "
+            "envelope toward full power on modulation peaks.  Lower moves toward "
+            "reduced / controlled-carrier (more relative sideband, 0 % ≈ DSB); "
+            "higher pushes a heavier carrier.  Matches the reference AM carrier "
+            "control 1:1.  Affects AM and SAM only — DSB is always "
+            "suppressed-carrier and FM/SSB ignore it."));
+        connect(carSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    if (stream_) stream_->setAmCarrierPct(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::amCarrierPctChanged, carSpin,
+                [carSpin](double v) {
+                    if (carSpin->value() != v) carSpin->setValue(v);
+                });
+        form->addRow(tr("Carrier:"), carSpin);
+        rightCol->addWidget(grp);   // #93 — AUDIO + GAIN column (AM Carrier)
+    }
+
     // ── ATT on TX (RX-ADC protection) group ──────────────────────
     // §15.31.  Mirrors the reference's Setup → General → Ant/Filters →
     // "ATT on Tx" ✓ + "ATT: 31" spin (HL2/HL2+ working posture).  On

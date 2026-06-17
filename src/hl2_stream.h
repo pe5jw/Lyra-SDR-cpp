@@ -400,6 +400,12 @@ class HL2Stream : public QObject {
     Q_PROPERTY(int  attOnTxDb       READ attOnTxDb
                WRITE setAttOnTxDb       NOTIFY attOnTxDbChanged)
 
+    // #93/#106 — AM/SAM carrier level, operator-facing as a percent
+    // (0..100 %, default 50 = WDSP's 0.5 default = standard AM).  Higher =
+    // more carrier power / less sideband; 0 → suppressed-carrier (DSB-like).
+    Q_PROPERTY(double amCarrierPct READ amCarrierPct
+               WRITE setAmCarrierPct NOTIFY amCarrierPctChanged)
+
 public:
     explicit HL2Stream(QObject *parent = nullptr);
     ~HL2Stream() override;
@@ -481,6 +487,8 @@ public:
         std::function<void(int)>         setAlcDecayMs;
         std::function<void(bool,double)> setLevelerOn;        // (enabled, topLinear)
         std::function<void(int)>         setLevelerDecayMs;
+        // #93/#106 — AM/SAM carrier fraction (0..1) → SetTXAAMCarrierLevel.
+        std::function<void(double)>      setAmCarrierLevel;
         // TX-1 component 8c — operator TX bandpass.  Receives (low Hz,
         // high Hz); TxChannel internally sign-codes per the current
         // WDSP mode (USB pass-through, LSB negate-and-swap).  Called
@@ -614,6 +622,8 @@ public:
     // §15.31 — ATT-on-TX operator surface getters.
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     int     attOnTxDb()             const { return attOnTxDb_;             }
+    // #93/#106 — AM/SAM carrier level (percent).
+    double  amCarrierPct()          const { return amCarrierPct_;          }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -864,6 +874,9 @@ public slots:
     // wire live so the operator sees the effect mid-TX.
     void setAttOnTxEnabled(bool on);
     void setAttOnTxDb(int db);
+    // #93/#106 — AM/SAM carrier level (0..100 %); persists, emits, forwards
+    // the 0..1 fraction to SetTXAAMCarrierLevel.
+    void setAmCarrierPct(double pct);
 
     // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
     // to the TX channel via the registered TxControl.setMode callback.
@@ -996,6 +1009,8 @@ signals:
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
     void attOnTxDbChanged(int db);
+    // #93/#106 — AM/SAM carrier level (percent).
+    void amCarrierPctChanged(double pct);
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -1499,6 +1514,11 @@ private:
     static constexpr bool kDefaultAttOnTxEnabled = true;
     bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
     int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
+    // #93/#106 — AM/SAM carrier level, % of standard carrier POWER
+    // (100 % = standard AM = WDSP c_level 0.5 = 25 % of PEP).  Maps via
+    // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.
+    static constexpr double kDefaultAmCarrierPct = 100.0;
+    double amCarrierPct_           = kDefaultAmCarrierPct;
 
     // §3.9-5 revert (operator-rejected 2026-06-06): the Lyra-native
     // cos² SSB envelope shim (MoxEdgeFade) was deleted per Rule 1

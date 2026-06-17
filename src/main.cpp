@@ -1141,14 +1141,41 @@ int main(int argc, char *argv[])
                 // earlier wire-seam port wired setMode=SetTXAMode-only +
                 // setBandpass=raw, dropping both — that was the bug.
                 // Shared state so setMode + setBandpass re-push coherently.
-                struct TxFilter { int mode = 0; double low = 200.0; double high = 3100.0; };
+                struct TxFilter { int mode = 1; double low = 200.0; double high = 3100.0; };
                 auto txf = std::make_shared<TxFilter>();
                 auto pushTxFilter = [txch, txf]() {
+                    // Per-mode sign-coded bandpass (TX mirror of RX §14.2):
+                    //   USB-side (USB/CWU/DIGU)         → +low..+high   (positive baseband)
+                    //   LSB-side (LSB/CWL/DIGL)         → -high..-low   (negative baseband)
+                    //   double-sideband (DSB/FM/AM/SAM) → -high/2..+high/2 (symmetric)
+                    // The symmetric edges are what make AM/DSB/FM occupy BOTH
+                    // sidebands — the SSB-only sign-coding was why keying AM put a
+                    // one-sided USB signal on the air.  txf->high carries the set
+                    // TX BW (Prefs.txBandwidth, e.g. 6000 for "6k").  For SSB that
+                    // value IS the one-sided edge (low..high ≈ the BW wide).  For a
+                    // double-sideband mode the occupied width is the FULL ±edge span,
+                    // so the symmetric edge must be high/2 to make the occupied BW
+                    // equal the set TX BW — mirroring the RX convention exactly
+                    // (WdspEngine::computePassband: half = bw/2, ±half).  Using ±high
+                    // doubled the occupied bandwidth (operator bench: AM at 6k filled
+                    // ±6k = 12k instead of ±3k = 6k).
                     double lo, hi;
-                    if (txf->mode == 1) { lo =  txf->low;  hi =  txf->high; }  // USB: positive baseband
-                    else                { lo = -txf->high; hi = -txf->low;  }  // LSB: negative baseband
+                    switch (txf->mode) {
+                        case 0: case 3: case 9:               // LSB / CWL / DIGL
+                            lo = -txf->high; hi = -txf->low;  break;
+                        case 2: case 5: case 6: case 10: {    // DSB / FM / AM / SAM
+                            const double half = txf->high / 2.0;
+                            lo = -half;      hi =  half;      break;
+                        }
+                        default:                              // USB / CWU / DIGU
+                            lo =  txf->low;  hi =  txf->high; break;
+                    }
                     lyra::wire::SetTXABandpassFreqs(txch, lo, hi);  // sign-coded edges FIRST
                     lyra::wire::SetTXAMode(txch, txf->mode);        // then mode (re-runs TXASetupBPFilters)
+                    // FM's TXA modulator defaults CTCSS ON at 100 Hz — silence the
+                    // sub-tone for basic FM (operator CTCSS/deviation control is #107).
+                    if (txf->mode == 5 && lyra::wire::SetTXACTCSSRun)
+                        lyra::wire::SetTXACTCSSRun(txch, 0);
                 };
 
                 stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
@@ -1168,10 +1195,12 @@ int main(int argc, char *argv[])
                         // but the FSM still calls it so keep it a no-op.
                     },
                     .setMode = [txf, pushTxFilter](int wdspMode) {
-                        // §15.23 fix: re-push the SIGN-CODED bandpass for
-                        // the new sideband, not just SetTXAMode (which
-                        // alone can't flip the sideband — see pushTxFilter).
-                        txf->mode = (wdspMode == 1) ? 1 : 0;        // 0 = LSB, 1 = USB
+                        // §15.23 fix: re-push the sign-coded bandpass for the
+                        // new mode, not just SetTXAMode (which alone can't flip
+                        // the sideband — see pushTxFilter).  Full WDSP TXA mode
+                        // passthrough (was clamped to LSB/USB) so AM/DSB/FM/SAM
+                        // modulate double-sideband.
+                        txf->mode = wdspMode;
                         pushTxFilter();
                     },
                     .setMicGainDb = [txch](double db) {
@@ -1189,6 +1218,10 @@ int main(int argc, char *argv[])
                     },
                     .setLevelerDecayMs = [txch](int ms) {
                         lyra::wire::SetTXALevelerDecay(txch, ms);
+                    },
+                    .setAmCarrierLevel = [txch](double c) {   // #93/#106 AM/SAM carrier (0..1)
+                        if (lyra::wire::SetTXAAMCarrierLevel)
+                            lyra::wire::SetTXAAMCarrierLevel(txch, c);
                     },
                     .setBandpass = [txf, pushTxFilter](double lo, double hi) {
                         // Operator passes POSITIVE magnitudes; pushTxFilter
@@ -1241,10 +1274,21 @@ int main(int argc, char *argv[])
                 // + on every RX-mode change.
                 auto wdspTxModeFor = [](const QString &uiMode) -> int {
                     const QString m = uiMode.toUpper();
-                    if (m == QStringLiteral("LSB")  || m == QStringLiteral("CWL") ||
-                        m == QStringLiteral("DIGL") || m == QStringLiteral("DRMD"))
-                        return 0;   // WDSP TXA LSB
-                    return 1;       // WDSP TXA USB (USB/CWU/DIGU/AM/FM/DSB/SAM/...)
+                    // WDSP TXA modulation mode (coincides with the RX modeToWdsp
+                    // enum for these).  AM/DSB/FM/SAM now pass through (were all
+                    // clamped to USB) so WDSP's TXA modulates them natively as
+                    // symmetric double-sideband instead of a one-sided USB signal.
+                    if (m == QStringLiteral("LSB"))  return 0;
+                    if (m == QStringLiteral("USB"))  return 1;
+                    if (m == QStringLiteral("DSB"))  return 2;
+                    if (m == QStringLiteral("CWL"))  return 3;
+                    if (m == QStringLiteral("CWU"))  return 4;
+                    if (m == QStringLiteral("FM"))   return 5;
+                    if (m == QStringLiteral("AM"))   return 6;
+                    if (m == QStringLiteral("DIGU")) return 7;
+                    if (m == QStringLiteral("DIGL")) return 9;
+                    if (m == QStringLiteral("SAM"))  return 10;
+                    return 1;       // USB default
                 };
                 // #50 native-rack digital gate: bypass the WHOLE mic DSP rack
                 // (EQ + future Speech/Combinator/Plate) in the digital data

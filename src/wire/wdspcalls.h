@@ -208,6 +208,10 @@ extern void (*SetTXAALCMaxGain)(int channel, double maxgain);
 extern void (*SetTXALevelerSt)(int channel, int state);
 extern void (*SetTXALevelerDecay)(int channel, int decay);
 extern void (*SetTXALevelerTop)(int channel, double maxgain);
+//   fmmod.c:178      void SetTXACTCSSRun (int channel, int run);
+extern void (*SetTXACTCSSRun)(int channel, int run);
+//   ammod.c:103      void SetTXAAMCarrierLevel (int channel, double c_level);
+extern void (*SetTXAAMCarrierLevel)(int channel, double c_level);
 
 // ---- PureSignal (calcc.c exports; committed feature, v0.3 consumer) ------
 // Signatures harvested from wdsp/calcc.c definition sites (PORT-
