@@ -53,6 +53,7 @@ Rectangle {
 
     // A stage card: header (ON toggle + name + sublabel) + its controls.
     component Stage : Rectangle {
+        id: stage
         default property alias content: body.data
         property string name: ""
         property string sub: ""
@@ -77,7 +78,12 @@ Rectangle {
                     id: en
                     checkable: true; checked: on
                     implicitWidth: 46; implicitHeight: 22
-                    onClicked: toggled(checked)
+                    // #162: qualify with the Stage id — an unqualified
+                    // `toggled` resolves to AbstractButton's built-in
+                    // `toggled` signal (shadowing the Stage's custom one),
+                    // so the model write never fired and Speech saved
+                    // defaults.  stage.toggled() emits the right signal.
+                    onClicked: stage.toggled(checked)
                     background: Rectangle {
                         radius: 11
                         color: en.checked ? accent : "#1f2a35"

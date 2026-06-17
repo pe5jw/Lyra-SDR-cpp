@@ -14,6 +14,56 @@ attribution header).
 
 ---
 
+## 0. RESOLVED — TX Speech panel options not saved by Profiles (#162, fixed + registry-verified 2026-06-17)
+
+Operator: the **TX Speech** panel's ON/OFF stages weren't saved by
+Profiles while EQ/Combinator/Plate were. Decisive repro: De-esser ON,
+recall an all-off profile → De-esser stayed ON.
+
+**It WAS a capture/write bug (operator's instinct was right; my first
+"QML binding-break / UI-refresh" theory was WRONG).** Ground truth came
+from dumping the actual stored profile
+(`HKCU\Software\N8SDR\Lyra-cpp\profiles\item\<name>` = the compact JSON):
+in `DSP-TEST` the `eq`/`combinator`/`plate` blobs held real operator
+changes (custom EQ gains, Combinator attack/ratio/SBC, Plate `bypass:false`),
+but `speech` was **all-default** (`deessOn:false …`) even though the De-esser
+had been turned ON — proving the panel changes never reached `SpeechModel`
+at capture time.
+
+**Root cause — QML signal shadowing.** `SpeechPanel`'s reusable `Stage`
+card declares `signal toggled(bool v)` and the ON `Button` emitted it via
+unqualified `onClicked: toggled(checked)`. But a Qt Quick `Button`
+(`AbstractButton`) **already has a built-in `toggled` signal**, which
+shadows the Stage's custom one inside the button's scope — so the click
+emitted the *button's* `toggled` (a no-op here), the Stage's
+`onToggled: (v) => Speech.X = v` never fired, and the model never updated.
+The `checkable` button still flipped visually (why it *looked* ON but
+saved OFF). Sliders were unaffected — they emit `parent.moved(value)`
+(explicitly qualified → the CtlRow's signal). EQ/Combinator/Plate were
+unaffected — none use a custom `toggled` signal; their toggles write the
+model directly.
+
+**Fix (SHIPPED to branch 2026-06-17, registry-verified):** `id: stage` on
+the `Stage` component + `onClicked: stage.toggled(checked)` (qualify the
+emit). One QML file, two lines; NO `checkable`/`Binding` changes. After
+the fix, saving with De-esser ON + Thresh −11 + Range 5 stored
+`deessOn:true, deessThreshDb:-11, deessRangeDb:5` — confirmed in the
+registry.
+
+**Lesson:** a clean build + qmllint is NOT proof — an earlier inferred
+"fix" (non-checkable toggles + a fighting `Binding` on draggable sliders)
+made the whole Speech panel inert and was reverted. Verify UI changes by
+launching/clicking (or, for capture, dumping the stored profile bytes)
+before declaring done.
+
+**Residual (separate, cosmetic, NOT fixed):** after clicking a `checkable`
+toggle in-session, its `checked: <model>` binding is severed, so recalling
+a *different* profile updates model+DSP+next-save correctly but may not
+refresh the button's lit state. Startup/first-recall is fine. Handle
+carefully + self-verify if pursued.
+
+---
+
 ## 1. Reference findings — how Thetis does audio I/O
 
 ### 1.1 Host audio = the IVAC engine (`ChannelMaster/ivac.c`)
