@@ -474,6 +474,16 @@ laid out in old Lyra's three-row arrangement:
 - **Bal** — stereo balance: pans the audio left/right. Centre = both
   channels equal; the slider snaps to dead-centre near the middle so it's
   easy to recentre.
+- **MON · Monitor** — *hear yourself transmit.* With **MON** on, while you're
+  keyed up Lyra plays your own **post-rack** TX audio (Speech → EQ →
+  Combinator → Plating) on the same output you use for receive, in place of
+  the auto-muted receiver. The **Monitor** slider rides its level (dB beside
+  it). It's your voice **through the DSP rack but before** the radio's
+  corrective ALC and TX bandpass — so it shows what your *processing* is
+  doing, not the exact transmitted envelope. MON does nothing on receive, and
+  in **DIGU / DIGL / CW** (rack bypassed / no mic audio) there's nothing to
+  monitor. A separate PC monitor *device* (rather than your RX output) is
+  planned for a later build.
 - **Auto · Out** are still greyed in their final positions — each lights up
   as its control is wired in. Choosing **where** the audio goes (HL2
   headphone jack vs. a PC sound device) lives in **[Settings → Audio](#settings--audio)**.
