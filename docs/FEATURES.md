@@ -169,11 +169,14 @@ All 🟡 LOCKED — these are operator-locked scope from old Lyra
 because you locked it.
 
 ### 3.1 Modulators
-🟡 SSB (USB/LSB) — WDSP TXA chain.
+🟢 SSB (USB/LSB) — WDSP TXA chain.
+🟢 AM / SAM — WDSP-native DSB-with-carrier; operator AM Carrier Level
+   (% of standard, default 100; #93).
+🟢 DSB — suppressed-carrier double-sideband.
+🟢 FM (basic) — WDSP FM modulator, CTCSS silenced. Operator deviation /
+   pre-emphasis / CTCSS knobs are the remaining refinement (#107).
 🟡 CW with internal keyer + sidetone (HL2 CW state bits per §3.8
-   of old Lyra docs).
-🟡 AM (DSB + SAM + carrier-restore).
-🟡 FM with deviation control + pre-emphasis + CTCSS.
+   of old Lyra docs) — #105, not built.
 
 ### 3.2 Dynamics — load-bearing
 🟡 ALC (xwcpagc on TXA.c line 579) — 1 ms attack / 10 ms decay /

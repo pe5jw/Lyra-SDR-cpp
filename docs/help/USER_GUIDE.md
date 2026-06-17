@@ -370,12 +370,17 @@ Sets how RX1 demodulates and how wide the receive filter is.
   mirror the other for the current mode. Click to toggle. Toggling it
   ON pulls the RX bandwidth into TX. With the lock OFF, RX and TX BW
   are independent per-mode.
-- **TX BW** — the transmit filter bandwidth (high edge for SSB).
-  Per-mode just like RX BW. The actual TX passband is the **Filter
-  Low edge** (set in Settings → Audio, shared with RX) up to this
-  high edge — e.g. with Filter Low = 70 Hz and TX BW = 4 kHz, your
-  TX runs a 70-4000 Hz bandpass. Sign-codes correctly per mode (USB
-  positive, LSB negative-and-swapped) inside the WDSP TXA chain.
+- **TX BW** — the transmit filter bandwidth. Per-mode just like RX BW.
+  For **SSB / digital** it's the high edge: the TX passband runs from
+  the **Filter Low edge** (Settings → Audio, shared with RX) up to this
+  high edge — e.g. Filter Low = 70 Hz and TX BW = 4 kHz gives a
+  70-4000 Hz single sideband. For the **double-sideband modes (AM,
+  DSB, FM, SAM)** the value is the **total occupied width**: the TX
+  filter is symmetric around the carrier at **±(TX BW / 2)**, so AM at
+  TX BW = 6 kHz transmits ±3 kHz = 6 kHz total and lands exactly inside
+  the on-screen filter markers (matching RX). Sign-codes correctly per
+  mode (USB positive, LSB negative-and-swapped, double-sideband
+  symmetric) inside the WDSP TXA chain.
 
 SSB and digital filters open at the **Filter Low edge** (Settings → Audio
 → Filter Low edge, shared RX+TX, default 100 Hz); CW filters are
@@ -1645,6 +1650,31 @@ ride mic gain manually.
 > was the root cause of the §15.27 / #79 "Lyra produces less power
 > than the reference on the same whistle/voice" investigation; the
 > Leveler closes that gap completely.
+
+### AM Carrier (AM / SAM modulation)
+
+AM and SAM are **double-sideband-with-carrier** modes — they put a steady
+carrier on the air plus your audio in both sidebands. This control sets how
+much power goes into that carrier, as a **percent of the standard AM
+carrier**:
+
+| Setting | Meaning |
+|---|---|
+| **100 %** (default) | **Standard full-carrier AM.** The carrier sits at one quarter of your peak (PEP) power — on 100 % modulation peaks the envelope swings up to full power, the textbook AM relationship. |
+| **< 100 %** | **Reduced / controlled carrier** — softens the carrier and puts relatively more of your power into the sidebands (talk power / efficiency). Many AM operators run 40–85 % here. |
+| **0 %** | Suppressed carrier (DSB-like). |
+
+The percent is a **power ratio** (it maps to the modulator coefficient as
+`√(pct/100) × 0.5`), so the number tracks carrier power linearly and "100 %"
+is the standard carrier. The control affects **AM and SAM only** — DSB is
+always suppressed-carrier, and FM / SSB / CW ignore it, so you can leave it
+set and it only bites when you key an AM/SAM signal. The value persists
+across sessions.
+
+> **Carrier vs PEP:** at 100 % (standard AM) the carrier amplitude is half
+> the peak envelope amplitude, so carrier power = 25 % of PEP. On a rig
+> rated for 100 W PEP that's a ~25 W carrier, with the sidebands swinging
+> the envelope toward 100 W on modulation peaks.
 
 ### ATT on TX (RX-ADC protection)
 

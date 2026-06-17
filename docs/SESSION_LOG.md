@@ -4,6 +4,60 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-17 (cont. — AM/DSB/FM native TX modulation + AM carrier #106/#93)
+
+### #165 follow-on → basic WDSP-native AM / DSB / FM transmit
+Operator: keying AM showed only the upper sideband. RX was correct; the
+one-sided signal was the operator's own TX — the modulator was SSB-only.
+- **`hl2_stream.cpp` `setTxMode`**: widened the WDSP-mode clamp `0..1` →
+  `0..13` so AM(6)/DSB(2)/FM(5)/SAM(10) reach `SetTXAMode` instead of
+  being pinned to USB.
+- **`main.cpp` `wdspTxModeFor`**: full mode map (LSB0…SAM10, default USB),
+  replacing the AM/FM/DSB/SAM→USB collapse.
+- **`main.cpp` `pushTxFilter`**: per-mode sign-coded bandpass (TX mirror of
+  the RX §14.2 convention) — USB-side `+low..+high`, LSB-side `-high..-low`,
+  double-sideband symmetric. NEVER calls `SetTXABandpassRun` (§15.23 trap);
+  `SetTXABandpassFreqs` + `SetTXAMode` configure bp0. FM CTCSS silenced via
+  `SetTXACTCSSRun(ch,0)` (TXA defaults it ON at 100 Hz).
+- **TUN ∓cw_pitch offset** generalized in `txDdsHzForTune` /
+  `txAnalyzerOffsetHz` so double-sideband modes stay centred.
+- New wire bindings: `SetTXACTCSSRun`, `SetTXAAMCarrierLevel`
+  (`wdspcalls.{h,cpp}` — pointer + X-table + extern).
+
+### Doubled-bandwidth bug (operator bench) — FIXED
+AM straddled centre correctly but occupied ~2× the set TX BW. Cause: the
+symmetric branch used `±high` = 2×high total. `txf->high` is the set TX BW
+(`Prefs.txBandwidth`); a double-sideband signal occupies the full ±span, so
+the edge must be **±high/2** — mirroring `WdspEngine::computePassband`
+(`half = bw/2`, ±half) which also draws the filter markers. Now AM at 6k =
+±3k = 6k total, inside the markers. Operator bench: **correct**.
+
+### AM carrier level control (#93) — operator-facing, reference-faithful
+- HL2Stream `amCarrierPct` Q_PROPERTY (+ getter/setter/signal/member,
+  QSettings `tx/amCarrierPct`), `TxControl.setAmCarrierLevel` callback,
+  `main.cpp` lambda → `SetTXAAMCarrierLevel`. Settings → TX "AM Carrier"
+  spinbox (0–100 %).
+- **Mapping matches the reference exactly** (verified at
+  `setup.cs:9846`): UI is **% of standard carrier POWER**, coefficient =
+  `√(pct/100) × 0.5`, **default 100 = standard AM** (= 25 % of PEP). So
+  operator-stored values transfer 1:1. Helper `amPctToCarrierLevel()`,
+  applied at both push sites. (Earlier draft passed pct→coeff straight,
+  default 50 — corrected before bench.)
+- N8SDR's exported profiles confirm the intent: `8K-AM-N8SDR`=40,
+  `*-N8SDR-AM`=84, `AM 10k CFC`=95 (reduced/controlled carrier).
+
+### Profile import — decided NOT to pursue (operator call)
+DSP chain is Lyra-native (EQ/Speech/Combinator/Plate, not WDSP/CFC), so
+importing reference profiles is pointless — the *sound* lives in the native
+rack, which has no reference equivalent. `amCarrierPct` NOT added to the
+Profile struct. Profile manager stays as-is.
+
+### Status
+All built clean + operator-bench-confirmed (AM/DSB/FM both sidebands inside
+the markers; AM carrier behaves). Committed this session; #106/#93 closed.
+
+---
+
 ## 2026-06-17 (cont. — doc reconciliation + ATT-on-TX UI §15.31)
 
 ### Doc reconciliation (operator-delegated while out)

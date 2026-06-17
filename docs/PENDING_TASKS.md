@@ -33,9 +33,10 @@ So you know what the pending list is filling in *around*:
 | SSB (USB / LSB) | ✅ Live — full WDSP TXA chain |
 | TUN (tune carrier) | ✅ Live — output-side single-tone gen, drive %-governed |
 | Digital via TCI | ✅ Live — MSHV / JTDX / WSJT-X stream into TXA chain |
-| **CW** | ❌ Not built |
-| **AM / DSB / SAM** | ❌ Not built |
-| **FM** | ❌ Not built |
+| **AM / SAM** | ✅ Live — WDSP-native DSB-with-carrier; operator AM Carrier Level (#93) |
+| **DSB** | ✅ Live — suppressed-carrier double-sideband |
+| **FM** | ✅ Live (basic) — WDSP FM modulator, CTCSS silenced; deviation / pre-emphasis / operator CTCSS knobs are the remaining #107 refinement |
+| **CW** | ❌ Not built (#105) |
 
 ### Mic inputs
 
@@ -69,15 +70,16 @@ So you know what the pending list is filling in *around*:
 
 ## Pending — Group 1: TX Modulators (v0.2.2 arc)
 
-The three missing modulators that let you transmit anything besides SSB.
-Bundles naturally as one v0.2.2 cycle.
+Basic AM / DSB / SAM / FM transmit now lands via the WDSP TXA modulator
+(per-mode `SetTXAMode` + sign-coded bandpass). CW and the FM operator-knob
+refinement remain.
 
 | # | Item | Effort | Notes |
 |---|---|---|---|
+| **#106** | ✅ DONE — AM / DSB / SAM TX (WDSP-native DSB-with-carrier) | — | Shipped 2026-06-17. Per-mode mode map + double-sideband symmetric ±(BW/2) bandpass (matches RX `computePassband`). Partners with #93. |
+| **#93** | ✅ DONE — AM Carrier Level spinner (Settings → TX) | — | Shipped 2026-06-17. UI is % of standard carrier power; coeff = √(pct/100)·0.5, default 100 = standard AM (25 % of PEP). Reference-faithful mapping. |
+| **#107** | FM TX **refinement** — operator deviation + pre-emphasis position-1 + CTCSS sub-tones | ~2-3 days | Basic FM transmit is already live (CTCSS silenced at 100 Hz default). This is the operator-knob layer. |
 | **#105** | CW TX modulator — internal keyer + CWX + sidetone + CW state bits packed into HL2 TX I-LSBs | ~1 week | TxChannel `Mode` enum extends to CWU/CWL. Adds CW key as new PttSource. Per CLAUDE.md §3.8 — HL2 has 4 CW state bits (cwx_ptt / dot / dash / cwx) packed into TX I-sample LSBs. |
-| **#106** | AM TX modulator — DSB + SAM + carrier-restore | ~3-4 days | Partners with #93 AM Carrier Level spinner. |
-| **#107** | FM TX modulator — deviation + pre-emphasis position-1 + CTCSS | ~3-4 days | Useful for 10m / 6m FM repeater work. |
-| **#93** | AM Carrier Level spinner (Settings → TX) | bundled with #106 | UI surface, no behaviour until #106 lands. |
 
 ---
 
