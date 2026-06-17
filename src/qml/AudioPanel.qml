@@ -195,11 +195,11 @@ Rectangle {
             // ── TX monitor (#90) — MON toggle + Monitor level ──
             Button {
                 id: monBtn
-                text: qsTr("MON")
+                text: qsTr("MON TX")
                 checkable: true
                 checked: WdspEngine.monEnabled
                 onToggled: WdspEngine.setMonEnabled(checked)
-                implicitWidth: 50; implicitHeight: 24
+                implicitWidth: 60; implicitHeight: 24
                 background: Rectangle {
                     radius: 3
                     color: monBtn.checked ? "#3a2a14" : "#161e28"
@@ -248,10 +248,93 @@ Rectangle {
 
             Item { Layout.fillWidth: true }
 
-            Button { text: qsTr("Out"); enabled: false; opacity: 0.45
-                     implicitWidth: 46; implicitHeight: 24
-                     ToolTip.text: qsTr("Output device — set in Settings → Audio.")
-                     ToolTip.visible: hovered }
+            // #164 — inline output-device quick-switch (HL2 jack <-> PC
+            // devices), one click, no Settings trip.  Reads the same list +
+            // setter the Settings -> Audio combo uses (audioOutputDevices() /
+            // setAudioOutputDevice / audioDeviceIndex; index 0 = HL2 jack).
+            // Full setup (host API, exclusive, VAC) stays in Settings.
+            Button {
+                id: outBtn
+                text: qsTr("Out")
+                implicitWidth: 46; implicitHeight: 24
+                onClicked: outPopup.open()
+                background: Rectangle { radius: 3; color: "#161e28"
+                    border.color: "#2a3a4a" }
+                contentItem: Text { text: outBtn.text; color: root.cText
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter }
+                ToolTip.text: {
+                    var d = WdspEngine.audioOutputDevices()
+                    var i = WdspEngine.audioDeviceIndex
+                    return qsTr("Audio output: ")
+                         + ((i >= 0 && i < d.length) ? d[i] : "?")
+                         + qsTr(" — click to switch (full setup in Settings → Audio).")
+                }
+                ToolTip.visible: hovered
+                // #164 — styled list popup: a titled dark panel with one row
+                // per device, the current one ▶-marked / accented, hover
+                // highlight, and an as-needed scrollbar.  Reads the same
+                // audioOutputDevices()/audioDeviceIndex/setAudioOutputDevice
+                // the Settings → Audio combo uses.
+                Popup {
+                    id: outPopup
+                    // Render as its own top-level window so the list ISN'T
+                    // clipped to the short AudioPanel QQuickWidget (which cut
+                    // the list off at the panel bottom with no way to scroll).
+                    popupType: Popup.Window
+                    x: outBtn.width - width
+                    y: outBtn.height + 2
+                    width: 248
+                    padding: 1
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    onAboutToShow: outList.model = WdspEngine.audioOutputDevices()
+                    background: Rectangle { color: "#0d141b"
+                        border.color: root.cAccent; radius: 4 }
+                    contentItem: ColumnLayout {
+                        spacing: 0
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Output device")
+                            color: root.cAccent; font.bold: true; font.pixelSize: 11
+                            leftPadding: 8; topPadding: 5; bottomPadding: 5
+                            background: Rectangle { color: "#11202b" }
+                        }
+                        ListView {
+                            id: outList
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.min(count * 26, 8 * 26)
+                            clip: true
+                            model: WdspEngine.audioOutputDevices()
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            delegate: ItemDelegate {
+                                id: devDel
+                                width: outList.width
+                                height: 26
+                                onClicked: {
+                                    WdspEngine.setAudioOutputDevice(index)
+                                    outPopup.close()
+                                }
+                                contentItem: Text {
+                                    text: (index === WdspEngine.audioDeviceIndex
+                                           ? "▶  " : "      ") + modelData
+                                    color: index === WdspEngine.audioDeviceIndex
+                                           ? root.cAccent : root.cText
+                                    font.pixelSize: 12
+                                    font.bold: index === WdspEngine.audioDeviceIndex
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    color: index === WdspEngine.audioDeviceIndex ? "#13222c"
+                                           : (devDel.hovered ? "#162230" : "transparent")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ── Row 2 — DSP toggles + AGC readout ───────────────────────
