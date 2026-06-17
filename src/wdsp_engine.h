@@ -1056,6 +1056,7 @@ private:
     // Stage 3).  Lock-free SPSC; ~340 ms @ 48 k mono.
     lyra::dsp::MonitorRing monitorRing_;
     std::vector<double>    monScratch_;   // #90 audio-thread drain scratch (mono)
+    std::vector<double>    vacMonStereo_; // #90 Route 2 — VAC stream-2 stereo feed
     // #161 — RX audio scaled by the monitor volume(+mute) for the VAC tee
     // (reference RXOutputGain is pre-tap).  Kept separate so the sink loop
     // still receives the raw post-RXA `audio`.  Sized 2*outSize_ on first use.

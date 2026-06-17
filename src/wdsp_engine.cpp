@@ -1327,6 +1327,11 @@ void WdspEngine::rebuildVac1()
     if (vacMox_) {
         SetIVACmox(kVac1Id, 1);
     }
+    // #90 Route 2 — a fresh ivac starts mon=0 / unity mon-vol; re-apply the
+    // operator's MON state + Monitor level so the VAC monitor survives a
+    // (re)build (e.g. a sample-rate reopen mid-session).
+    SetIVACmon(kVac1Id, monEnabled_.load(std::memory_order_relaxed) ? 1 : 0);
+    SetIVACmonVol(kVac1Id, monVolume_.load(std::memory_order_relaxed));
     emitLog(QStringLiteral("[vac1] LIVE (PortAudio duplex): out='%1' (RX gain "
                            "%2 dB) | in='%3' (TX gain %4 dB) | %5 Hz, vac %6")
                 .arg(vac1OutName_).arg(vac1RxGainDb_)
@@ -2040,6 +2045,13 @@ void WdspEngine::setMonEnabled(bool on)
     if (prev == on) return;
     QSettings().setValue(QStringLiteral("audio/monEnabled"), on);
     emit monEnabledChanged();
+    // #90 Route 2 — drive the IVAC monitor routing (RX vs TX-monitor into the
+    // VAC-out mixer).  No-op when VAC1 isn't live; rebuildVac1 re-applies on
+    // (re)build.  Main-thread call, serialized with rebuild/teardown by the
+    // event loop — same gate as setVacMox.
+    if (lyra::wire::ivacGet(kVac1Id)) {
+        lyra::wire::SetIVACmon(kVac1Id, on ? 1 : 0);
+    }
 }
 
 void WdspEngine::setMonVolume(double v)
@@ -2048,6 +2060,10 @@ void WdspEngine::setMonVolume(double v)
     monVolume_.store(v, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("audio/monVolume"), v);
     emit monVolumeChanged();
+    // #90 Route 2 — set the VAC monitor mixer level (mixer input 1 scale).
+    if (lyra::wire::ivacGet(kVac1Id)) {
+        lyra::wire::SetIVACmonVol(kVac1Id, v);
+    }
 }
 
 void WdspEngine::setTxMuted(bool m)
@@ -3157,6 +3173,49 @@ void WdspEngine::vacInboundCb(int nsamples, double *buff)
 
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
+    // #90 TX monitor — drain the post-rack tap ONCE per block into monScratch_
+    // (mono), shared by Route 1 (HL2 jack, in the output loop below) and
+    // Route 2 (VAC stream-2 feed in the tee block).  monActive = MOX up + MON
+    // on.  An underrun zero-pads (never blocks); when inactive the ring is
+    // flushed so the next key-up is fresh + low-latency.  Pre-WDSP-ALC/bandpass
+    // by design (your rack processing, not the radio's corrective ALC).
+    const bool monActive = monEnabled_.load(std::memory_order_relaxed) &&
+                           txMuted_.load(std::memory_order_relaxed);
+    if (monActive) {
+        if (static_cast<int>(monScratch_.size()) != nframes) {
+            monScratch_.assign(static_cast<size_t>(nframes), 0.0);
+        } else {
+            std::fill(monScratch_.begin(), monScratch_.end(), 0.0);
+        }
+        monitorRing_.pop(monScratch_.data(), static_cast<size_t>(nframes));
+    } else {
+        monitorRing_.clear();
+    }
+
+    // #90 Route 3 — TCI RX-audio stream tap (centralized here with the jack +
+    // VAC monitor routes: one ring drain, one thread; tciAudioBlock is a
+    // QueuedConnection so the emit thread is irrelevant).  Mono float32, pre
+    // operator-volume.  Reference SetTCIRxAudioMox/SetTCIRxAudioMon
+    // (audio.cs:368-404): on the air the RX is muted out of the TCI stream,
+    // and replaced by the TX monitor (post-rack mic × Monitor vol) when MON
+    // is on.  txMuted_ is the raw wire-MOX flag (TCI mutes on MOX regardless
+    // of the autoMuteOnTx operator pref, matching the reference).
+    if (tciAudioOn_.load(std::memory_order_relaxed)) {
+        QByteArray b(nframes * int(sizeof(float)), Qt::Uninitialized);
+        float *d = reinterpret_cast<float *>(b.data());
+        if (monActive) {
+            const double mv = monVolume_.load(std::memory_order_relaxed);
+            for (int f = 0; f < nframes; ++f)
+                d[f] = static_cast<float>(monScratch_[static_cast<size_t>(f)] * mv);
+        } else if (txMuted_.load(std::memory_order_relaxed)) {
+            std::fill_n(d, nframes, 0.0f);   // RX muted out of TCI on the air
+        } else {
+            for (int f = 0; f < nframes; ++f)
+                d[f] = static_cast<float>(audio[static_cast<size_t>(2 * f)]);
+        }
+        emit tciAudioBlock(b, cfg_.outRate);
+    }
+
     // #158 (#161) — VAC1 RX-out tee.  Feed the POST-RXA receiver audio
     // (post AGC/NR/demod/AF-panel-gain) into the IVAC RX-audio mixer input
     // (xvacOUT stream 1), scaled by the operator monitor VOLUME — and muted
@@ -3195,7 +3254,23 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
                 vacRxScaled_[static_cast<size_t>(i)] = audio[i] * vacGain;
             }
             lyra::wire::xvacOUT(kVac1Id, /*stream*/1, vacRxScaled_.data());
-            if (static_cast<int>(vacMonSilence_.size()) == 2 * nframes) {
+            // #90 Route 2 — feed the TX monitor into VAC stream-2 (mixer
+            // input 1) when monitoring; else silence so the 2-input mixer
+            // never starves.  Unscaled: SetIVACmonVol applies the Monitor
+            // level on the mixer side, and SetIVACmox/SetIVACmon route RX vs
+            // monitor (RX muted out of the VAC on the air when MON is on).
+            if (monActive &&
+                static_cast<int>(monScratch_.size()) == nframes) {
+                if (static_cast<int>(vacMonStereo_.size()) != 2 * nframes) {
+                    vacMonStereo_.assign(static_cast<size_t>(2 * nframes), 0.0);
+                }
+                for (int i = 0; i < nframes; ++i) {
+                    const double m = monScratch_[static_cast<size_t>(i)];
+                    vacMonStereo_[static_cast<size_t>(2 * i + 0)] = m;
+                    vacMonStereo_[static_cast<size_t>(2 * i + 1)] = m;
+                }
+                lyra::wire::xvacOUT(kVac1Id, /*stream*/2, vacMonStereo_.data());
+            } else if (static_cast<int>(vacMonSilence_.size()) == 2 * nframes) {
                 lyra::wire::xvacOUT(kVac1Id, /*stream*/2,
                                     vacMonSilence_.data());
             }
@@ -3226,26 +3301,9 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
     const double bal = balance_.load(std::memory_order_relaxed);
     const double lBal = (bal > 0.0) ? (1.0 - bal) : 1.0;
     const double rBal = (bal < 0.0) ? (1.0 + bal) : 1.0;
-    // #90 TX monitor (Route 1) — when MOX is up AND MON is on, the operator
-    // hears their own post-rack TX audio on the output IN PLACE of the (auto-
-    // muted) RX.  Drain the tap ring into a mono scratch; an underrun zero-
-    // pads (never blocks).  When inactive, flush the ring so the next key-up
-    // starts fresh + low-latency.  Scaled below by the Monitor volume + the
-    // same HL2-jack attenuation the RX path uses; BIN/balance are skipped
-    // (mono self-monitor).  NOTE: this is pre-WDSP-ALC/bandpass — it's your
-    // voice through the DSP rack, not the radio's corrective ALC (by design).
-    const bool monActive = monEnabled_.load(std::memory_order_relaxed) &&
-                           txMuted_.load(std::memory_order_relaxed);
-    if (monActive) {
-        if (static_cast<int>(monScratch_.size()) != nframes) {
-            monScratch_.assign(static_cast<size_t>(nframes), 0.0);
-        } else {
-            std::fill(monScratch_.begin(), monScratch_.end(), 0.0);
-        }
-        monitorRing_.pop(monScratch_.data(), static_cast<size_t>(nframes));
-    } else {
-        monitorRing_.clear();
-    }
+    // #90 Route 1 jack gain for the monitor (drained at the top into
+    // monScratch_): Monitor volume + the same HL2-jack attenuation the RX
+    // path uses.  BIN/balance are skipped below (mono self-monitor).
     const double monGain = monVolume_.load(std::memory_order_relaxed)
                          * (hl2Out_ ? kHl2OutAtten : 1.0);
     for (int f = 0; f < nframes; ++f) {
@@ -3422,16 +3480,10 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         const double db = (peak > 0.0) ? 20.0 * std::log10(peak) : -200.0;
         audioDbFs_.store(db, std::memory_order_relaxed);
 
-        // TCI audio stream tap: post-DSP demod audio as mono float32 (the
-        // demod is mono → L channel), pre operator-volume so the client
-        // gets the raw RX audio.  Native outRate (48 kHz).
-        if (tciAudioOn_.load(std::memory_order_relaxed)) {
-            QByteArray b(outSize_ * int(sizeof(float)), Qt::Uninitialized);
-            float *d = reinterpret_cast<float *>(b.data());
-            for (int f = 0; f < outSize_; ++f)
-                d[f] = static_cast<float>(outBuf_[size_t(2 * f)]);
-            emit tciAudioBlock(b, cfg_.outRate);
-        }
+        // TCI audio stream tap MOVED to dispatchAudioFrame (#90 Route 3) so
+        // all monitor routes drain the one ring on one thread.  The
+        // tciAudioBlock signal is QueuedConnection, so emitting from the mix
+        // thread instead of here is behavior-identical for the client.
 
         // Step 3e/5 — Stage B.6.b-retry: push the WDSP RX channel's
         // output block into the ported AAMix's stream-0 ring via
