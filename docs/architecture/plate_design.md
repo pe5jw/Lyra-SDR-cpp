@@ -89,11 +89,14 @@ Lyra-native curves (documented in code, bench-tunable) — the operator
 | BASS | −16 dB | −16 dB |
 | TREB | +16 dB | +16 dB |
 
-**OPEN — MIX value not in the captured presets (R4).** A reverb needs a
-wet/dry amount and the DSP2024P captures didn't include the effect
-mix/level. ESSB "air" is subtle — I'll default **MIX ~15 %** and flag it
-for the operator to set their actual wet level (or dial on the bench).
-Both presets otherwise complete.
+**MIX (R4) — RESOLVED 2026-06-16 (operator).** The DSP2024P effect mix
+isn't part of the 8 captured reverb params, but the operator set it: on
+the 2024P, MIX runs **6–15** for ESSB air; **default 7 % (operator's
+personal value)**, and the **slider caps at 15 %** so you stay in the
+useful range and can't accidentally over-wet. Engine stores MIX as a
+0..1 fraction (general); the UI presents 0..15 %. Loading a preset
+(W5UDX / N8SDR) sets the 8 reverb params and **leaves MIX alone** (it's a
+personal wet-level, not part of the captured preset).
 
 ---
 

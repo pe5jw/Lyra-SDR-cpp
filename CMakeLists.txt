@@ -310,6 +310,9 @@ qt_add_executable(lyra
     # #51 — combinator model (bridges dsp/Combinator to CombinatorPanel.qml).
     src/combinatormodel.h
     src/combinatormodel.cpp
+    # #52 — plate model (bridges dsp/Plate to PlatePanel.qml).
+    src/platemodel.h
+    src/platemodel.cpp
     src/usb_bcd.h
     src/usb_bcd.cpp
     src/help.h
@@ -349,6 +352,7 @@ qt_add_qml_module(lyra
         src/qml/EqPanel.qml
         src/qml/SpeechPanel.qml
         src/qml/CombinatorPanel.qml
+        src/qml/PlatePanel.qml
         src/qml/ProfilePanel.qml
         src/qml/DisplayPanel.qml
         src/qml/BandPanel.qml

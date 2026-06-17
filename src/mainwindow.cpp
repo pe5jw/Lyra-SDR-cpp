@@ -21,6 +21,7 @@
 #include "eqmodel.h"                  // complete type for new EqModel + context property
 #include "speechmodel.h"              // complete type for new SpeechModel + context property
 #include "combinatormodel.h"          // complete type for new CombinatorModel + context property
+#include "platemodel.h"               // complete type for new PlateModel + context property
 #include "profileui.h"                // native Save-Profile dialog (front panel)
 #include "wdsp_engine.h"
 #include "help.h"
@@ -237,6 +238,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // routes the rack through it (SendpTxCombinatorProcessor).
     combinatorModel_ = new CombinatorModel(this);
 
+    // #52 plate-reverb model (drives PlatePanel.qml) — last native rack
+    // stage, after the Combinator.  Wire-INERT until Stage 3 registers
+    // SendpTxPlateProcessor.
+    plateModel_ = new PlateModel(this);
+
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
@@ -395,6 +401,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Speech"), speechModel_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Combinator"), combinatorModel_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Plate"), plateModel_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -612,12 +620,17 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("txcombinator"), tr("TX Combinator"),
                  QStringLiteral("CombinatorPanel.qml"),
                  QStringLiteral("txcombinator"), Qt::BottomDockWidgetArea);
+    // TX Plate (#52) — Schroeder-Moorer reverb.  Own dock — last in the
+    // chain (mic → Speech → EQ → Combinator → Plate).
+    addQuickDock(QStringLiteral("txplate"), tr("TX Plating"),
+                 QStringLiteral("PlatePanel.qml"),
+                 QStringLiteral("txplate"), Qt::BottomDockWidgetArea);
     // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
     // window so the front panel stays clean — the header "TX DSP" chip-strip
     // summons one (it pops as a movable/resizable float), and Save-my-layout
     // remembers what's open + where.  restoreLayout() below overrides this
     // with the operator's saved arrangement when one exists.
-    for (const char *nm : {"txspeech", "txeq", "txcombinator"}) {
+    for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate"}) {
         if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
             d->setFloating(true);
             d->hide();
@@ -853,7 +866,7 @@ void MainWindow::buildToolbar() {
         txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
                                   "movable window; layout is remembered."));
         tb->addWidget(txDspLabel);
-        for (const char *nm : {"txspeech", "txeq", "txcombinator"}) {
+        for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate"}) {
             if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
                 tb->addAction(d->toggleViewAction());
             }

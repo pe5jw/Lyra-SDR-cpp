@@ -34,6 +34,7 @@ class ProfileUi;
 class EqModel;
 class SpeechModel;
 class CombinatorModel;
+class PlateModel;
 
 class Prefs;
 class SettingsDialog;
@@ -223,6 +224,7 @@ private:
     EqModel                    *eqModel_ = nullptr;   // #50/#59 parametric EQ (EqPanel.qml)
     SpeechModel                *speechModel_ = nullptr; // #88 speech rack (SpeechPanel.qml)
     CombinatorModel            *combinatorModel_ = nullptr; // #51 combinator (CombinatorPanel.qml)
+    PlateModel                 *plateModel_ = nullptr;     // #52 plate reverb (PlatePanel.qml)
     lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
     ProfileUi                  *profileUi_ = nullptr;  // native Save-Profile dialog (front panel)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
