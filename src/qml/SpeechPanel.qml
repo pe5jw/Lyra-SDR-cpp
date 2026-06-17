@@ -97,6 +97,14 @@ Rectangle {
                         verticalAlignment: Text.AlignVCenter
                     }
                 }
+                // #162 (lamp refresh): a checkable Button flips its own
+                // `checked` on click, severing the inline `checked: on`
+                // binding — so a later Profile recall wouldn't update the
+                // lamp.  This Binding re-asserts `checked` from the model
+                // whenever `on` changes (recall).  Safe for a toggle: it
+                // only re-fires on a model change, not continuously, so it
+                // can't fight the click (the model write happens after).
+                Binding { target: en; property: "checked"; value: on }
                 ColumnLayout {
                     spacing: 0
                     Label { text: name; color: root.cText; font.bold: true
