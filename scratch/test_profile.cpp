@@ -41,6 +41,24 @@ int main(int argc, char **argv) {
         // tolerant fromJson: missing keys keep defaults
         Profile def = Profile::fromJson("Y", QJsonObject{});
         CHECK(def.micSource == "mic1");
+
+        // v3 native rack blobs (#49): round-trip + dirty-detect + clean omit.
+        Profile r; r.name = "R";
+        QJsonObject eqj;  eqj["bypass"] = false; eqj["makeupDb"] = 2.0;
+        QJsonObject plj;  plj["mix"] = 0.07;     plj["decayS"]   = 1.5;
+        r.eq = eqj; r.plate = plj;
+        Profile r2 = Profile::fromJson("R", r.toJson());
+        CHECK(r2.schemaVersion == 3);
+        CHECK(r.sameValues(r2));
+        CHECK(r2.eq == eqj);
+        CHECK(r2.plate == plj);
+        // any rack-blob change flags ● modified
+        Profile r3 = r2; QJsonObject eqj2 = eqj; eqj2["makeupDb"] = 5.0; r3.eq = eqj2;
+        CHECK(!r.sameValues(r3));
+        // empty blobs are omitted from the JSON (pre-rack profiles stay clean)
+        Profile e; e.name = "E";
+        CHECK(!e.toJson().contains("eq"));
+        CHECK(!e.toJson().contains("plate"));
     }
 
     // --- temp QSettings (no registry/app pollution) ---

@@ -31,6 +31,12 @@ QJsonObject Profile::toJson() const {
     o["levelerDecayMs"]       = levelerDecayMs;
     o["txTimeoutSec"]  = txTimeoutSec;
     o["txTimeoutBypass"] = txTimeoutBypass;
+    // Native rack blobs (#49 v3) — omit empties to keep pre-rack profiles
+    // byte-clean on disk.
+    if (!eq.isEmpty())         o["eq"]         = eq;
+    if (!speech.isEmpty())     o["speech"]     = speech;
+    if (!combinator.isEmpty()) o["combinator"] = combinator;
+    if (!plate.isEmpty())      o["plate"]      = plate;
     return o;
 }
 
@@ -64,6 +70,10 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("levelerDecayMs"))       p.levelerDecayMs       = o["levelerDecayMs"].toInt(p.levelerDecayMs);
     if (o.contains("txTimeoutSec"))  p.txTimeoutSec  = o["txTimeoutSec"].toInt(p.txTimeoutSec);
     if (o.contains("txTimeoutBypass")) p.txTimeoutBypass = o["txTimeoutBypass"].toBool(p.txTimeoutBypass);
+    if (o.contains("eq"))         p.eq         = o["eq"].toObject();
+    if (o.contains("speech"))     p.speech     = o["speech"].toObject();
+    if (o.contains("combinator")) p.combinator = o["combinator"].toObject();
+    if (o.contains("plate"))      p.plate      = o["plate"].toObject();
     return p;
 }
 
@@ -95,7 +105,14 @@ bool Profile::sameValues(const Profile &b) const {
         && dEq(levelerMaxGainLinear, b.levelerMaxGainLinear)
         && levelerDecayMs == b.levelerDecayMs
         && txTimeoutSec == b.txTimeoutSec
-        && txTimeoutBypass == b.txTimeoutBypass;
+        && txTimeoutBypass == b.txTimeoutBypass
+        // Native rack blobs — QJsonObject has value equality, so any EQ /
+        // Speech / Combinator / Plate change flags the profile ● modified
+        // (operator-confirmed 2026-06-16: dirty-tracking includes the rack).
+        && eq == b.eq
+        && speech == b.speech
+        && combinator == b.combinator
+        && plate == b.plate;
 }
 
 }  // namespace lyra::profile

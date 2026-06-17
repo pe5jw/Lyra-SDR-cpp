@@ -29,7 +29,9 @@ namespace lyra::profile {
 
 struct Profile {
     QString name;
-    int     schemaVersion = 2;   // v2 (#160): + ALC max gain + Leveler trio
+    int     schemaVersion = 3;   // v2 (#160): ALC max gain + Leveler trio
+                                 // v3 (#49):  + native rack blobs (eq/speech/
+                                 //            combinator/plate)
 
     // --- TX/RX bandwidth ---
     // NOTE: the operating mode is deliberately NOT a profile field.
@@ -94,6 +96,18 @@ struct Profile {
     // --- TX safety ---
     int     txTimeoutSec    = 600;
     bool    txTimeoutBypass = false;
+
+    // --- native TX DSP rack (#49 v3) ---
+    // Each stage serialized as an opaque blob the owning model produces
+    // (EqModel / SpeechModel / CombinatorModel / PlateModel saveState()).
+    // The Profile struct stays decoupled from the UI models — capture/apply
+    // in main.cpp bridges model<->blob.  An empty object means "not stored"
+    // (pre-v3 profile, or a stage never captured) → apply leaves the live
+    // stage untouched (tolerant loadState).
+    QJsonObject eq;
+    QJsonObject speech;
+    QJsonObject combinator;
+    QJsonObject plate;
 
     QJsonObject toJson() const;
     static Profile fromJson(const QString &name, const QJsonObject &o);
