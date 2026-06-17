@@ -196,6 +196,10 @@ qt_add_executable(lyra
     # until the model/panel/wire stages land.
     src/dsp/Combinator.h
     src/dsp/Combinator.cpp
+    # #52 — native Plate reverb (Schroeder-Moorer).  Wire-inert until the
+    # model/panel/wire stages land.
+    src/dsp/Plate.h
+    src/dsp/Plate.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -620,4 +624,16 @@ add_executable(test_combinator EXCLUDE_FROM_ALL
 target_include_directories(test_combinator PRIVATE src)
 if(MSVC)
     target_compile_options(test_combinator PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #52 — native Plate reverb unit test (decay tail + bypass + MIX).
+# EXCLUDE_FROM_ALL; `cmake --build build --target test_plate`.  No Qt.
+add_executable(test_plate EXCLUDE_FROM_ALL
+    scratch/test_plate.cpp
+    src/dsp/Plate.h
+    src/dsp/Plate.cpp
+)
+target_include_directories(test_plate PRIVATE src)
+if(MSVC)
+    target_compile_options(test_plate PRIVATE /utf-8 /Zc:preprocessor)
 endif()
