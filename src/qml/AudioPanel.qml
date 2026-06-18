@@ -457,6 +457,43 @@ Rectangle {
             }
 
             Item { Layout.fillWidth: true }
+
+            // ── CW sidetone monitor (#105) — gateware HW sidetone level,
+            // visible only in CW.  This is "how loud you hear your own CW
+            // while keying."  Deliberately SEPARATE from the MON TX monitor
+            // (host post-rack tap) — it drives the radio's hardware sidetone
+            // (Stream.cwSidetoneLevel, 0-127), not the MON circuit.  Sits on
+            // row 2's right edge, under the MON TX slider on row 1.
+            RowLayout {
+                spacing: 4
+                visible: WdspEngine.mode === "CWL" || WdspEngine.mode === "CWU"
+                Label {
+                    text: qsTr("CW MON")
+                    color: root.cMuted; font.pixelSize: 11
+                    Layout.alignment: Qt.AlignVCenter
+                }
+                Slider {
+                    id: cwMonSlider
+                    Layout.preferredWidth: 96
+                    from: 0; to: 127; stepSize: 1
+                    value: Stream.cwSidetoneLevel
+                    onMoved: Stream.cwSidetoneLevel = Math.round(value)
+                    WheelHandler {
+                        onWheel: (ev) => Stream.cwSidetoneLevel =
+                            Math.max(0, Math.min(127, Stream.cwSidetoneLevel
+                                     + (ev.angleDelta.y > 0 ? 2 : -2)))
+                    }
+                    ToolTip.text: qsTr("CW sidetone level — how loud you hear "
+                        + "your own CW while keying (0-127). The radio's "
+                        + "hardware sidetone; separate from the MON TX monitor.")
+                    ToolTip.visible: hovered
+                }
+                Label {
+                    text: Stream.cwSidetoneLevel
+                    color: root.cText; font.family: "Consolas"
+                    Layout.preferredWidth: 28
+                }
+            }
         }
 
         // ── Row 3 — NR character + reference ────────────────────────

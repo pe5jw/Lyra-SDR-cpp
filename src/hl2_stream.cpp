@@ -371,7 +371,8 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     cwModeB_  = QSettings().value(QStringLiteral("tx/cw/modeB"), false).toBool();
     cwRevPaddle_ = QSettings().value(QStringLiteral("tx/cw/revPaddle"), false).toBool();
     cwStrictSpacing_ = QSettings().value(QStringLiteral("tx/cw/strictSpacing"), false).toBool();
-    cwBreakIn_ = QSettings().value(QStringLiteral("tx/cw/breakIn"), true).toBool();
+    cwBreakInMode_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/breakInMode"), 1).toInt(), 0, 2);  // default Semi
     cwHangDelayMs_ = std::clamp(
         QSettings().value(QStringLiteral("tx/cw/hangDelayMs"), 300).toInt(), 0, 1000);
     cwSidetoneOn_ = QSettings().value(QStringLiteral("tx/cw/sidetoneOn"), true).toBool();
@@ -1686,11 +1687,15 @@ void HL2Stream::onHwPttPoll() {
     // stale edge.  (Manual/foot-switch TX in CW is a future break-in-mode
     // option, matching the reference's Semi/Manual paths.)
     const int tm = txMode_.load(std::memory_order_relaxed);
-    const bool cwFirmwareKeyer = cwFwKeyer_ && (tm == 3 || tm == 4);  // CWL/CWU
-    if (!hwPttEnabled_.load(std::memory_order_acquire) || cwFirmwareKeyer) {
-        // Gate closed (opt-in off) OR firmware-keyer CW — keep lastHwPttLevel_
-        // tracking the wire so a re-enable / mode change doesn't fire a
-        // spurious edge on the next tick.
+    // Suppress host MOX off the key line ONLY in QSK (firmware-keyer CW):
+    // gateware keys autonomously, host stays RX (reference QSKEnabled gate).
+    // Semi/Manual DO host-MOX off this line (Semi = MOX while keying; Manual =
+    // foot-switch PTT) — matching the reference's per-break-in-mode behaviour.
+    const bool cwQskNoHostMox =
+        cwFwKeyer_ && (tm == 3 || tm == 4) && cwBreakInMode_ == 0;  // 0 = QSK
+    if (!hwPttEnabled_.load(std::memory_order_acquire) || cwQskNoHostMox) {
+        // Gate closed (opt-in off) OR QSK CW — keep lastHwPttLevel_ tracking
+        // the wire so a re-enable / mode change doesn't fire a spurious edge.
         lastHwPttLevel_ = (lyra::wire::prn->ptt_in != 0);
         return;
     }
@@ -2289,7 +2294,7 @@ void HL2Stream::applyCwConfigToPrn() {
     p->cw.mode_b         = cwModeB_         ? 1 : 0;
     p->cw.rev_paddle     = cwRevPaddle_     ? 1 : 0;
     p->cw.strict_spacing = cwStrictSpacing_ ? 1 : 0;
-    p->cw.break_in       = cwBreakIn_       ? 1 : 0;
+    p->cw.break_in       = (cwBreakInMode_ != 2) ? 1 : 0;  // QSK+Semi on; Manual off
     p->cw.hang_delay     = cwHangDelayMs_;
     p->cw.sidetone       = cwSidetoneOn_    ? 1 : 0;
     p->cw.sidetone_level = cwSidetoneLevel_;
@@ -2375,12 +2380,14 @@ void HL2Stream::setCwStrictSpacing(bool on) {
     applyCwConfigToPrn();
 }
 
-void HL2Stream::setCwBreakIn(bool on) {
-    if (on == cwBreakIn_) return;
-    cwBreakIn_ = on;
-    QSettings().setValue(QStringLiteral("tx/cw/breakIn"), on);
-    emit cwBreakInChanged(on);
-    applyCwConfigToPrn();
+void HL2Stream::setCwBreakInMode(int mode) {
+    const int m = std::clamp(mode, 0, 2);   // 0=QSK 1=Semi 2=Manual
+    if (m == cwBreakInMode_) return;
+    cwBreakInMode_ = m;
+    QSettings().setValue(QStringLiteral("tx/cw/breakInMode"), m);
+    emit cwBreakInModeChanged(m);
+    applyCwConfigToPrn();   // re-derives prn->cw.break_in; the host-MOX gate
+                            // (onHwPttPoll) reads cwBreakInMode_ live.
 }
 
 void HL2Stream::setCwHangDelayMs(int ms) {

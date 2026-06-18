@@ -2589,37 +2589,49 @@ QWidget *SettingsDialog::buildCwTab() {
             if (strict->isChecked() != on) { QSignalBlocker s(strict); strict->setChecked(on); }
         });
 
-        auto *bk = new QCheckBox(tr("Break-in  (semi)"), grp);
-        bk->setChecked(stream_->cwBreakIn());
+        // #105 — break-in mode (QSK / Semi / Manual), matching the reference's
+        // BreakIn enum.  QSK = full break-in, gateware keys autonomously and
+        // the host stays in RX (no panadapter flip to TX); Semi = host
+        // transmits while keying and drops after the hang; Manual = hold PTT
+        // (foot switch) and key within.  Default Semi.
+        auto *bk = new QComboBox(grp);
+        bk->addItem(tr("QSK (full break-in)"));   // 0
+        bk->addItem(tr("Semi break-in"));         // 1
+        bk->addItem(tr("Manual (hold PTT)"));     // 2
+        bk->setCurrentIndex(std::clamp(stream_->cwBreakInMode(), 0, 2));
         bk->setToolTip(tr(
-            "Semi break-in: keying auto-keys MOX and drops back to RX "
-            "after the hang delay below.  HL2 supports semi break-in; "
-            "full QSK is ANAN/Saturn-only.  OFF = manual PTT."));
-        form->addRow(bk);
+            "CW break-in mode:\n"
+            "• QSK — full break-in: the radio's keyer keys the carrier on its "
+            "own and the receiver stays live (no display flip to TX).\n"
+            "• Semi — the radio transmits while you key and drops back to RX "
+            "after the Break-in hang below.\n"
+            "• Manual — you hold PTT (e.g. a foot switch) and key within it."));
+        form->addRow(tr("Break-in:"), bk);
 
         auto *hang = new QSpinBox(grp);
         hang->setRange(0, 1000);
         hang->setSuffix(tr(" ms"));
         hang->setValue(stream_->cwHangDelayMs());
-        hang->setEnabled(stream_->cwBreakIn());
+        hang->setEnabled(stream_->cwBreakInMode() != 2);   // not Manual
         hang->setToolTip(tr(
-            "Semi break-in hang — how long the radio stays keyed after "
-            "the last element before dropping to RX.  Range 0-1000 ms; "
-            "default 300.  Only applies with break-in on."));
+            "Break-in hang — how long the radio stays keyed after the last "
+            "element before dropping back to RX.  Range 0-1000 ms; default "
+            "300.  Applies to QSK / Semi (not Manual)."));
         connect(hang, qOverload<int>(&QSpinBox::valueChanged), grp,
                 [this](int v) { stream_->setCwHangDelayMs(v); });
         connect(stream_, &lyra::ipc::HL2Stream::cwHangDelayMsChanged, hang,
                 [hang](int v) { if (hang->value()!=v) hang->setValue(v); });
         form->addRow(tr("Break-in hang:"), hang);
 
-        connect(bk, &QCheckBox::toggled, grp, [this, hang](bool on) {
-            stream_->setCwBreakIn(on);
-            hang->setEnabled(on);
+        connect(bk, qOverload<int>(&QComboBox::currentIndexChanged), grp,
+                [this, hang](int idx) {
+            stream_->setCwBreakInMode(idx);
+            hang->setEnabled(idx != 2);
         });
-        connect(stream_, &lyra::ipc::HL2Stream::cwBreakInChanged, bk,
-                [bk, hang](bool on) {
-            if (bk->isChecked() != on) { QSignalBlocker s(bk); bk->setChecked(on); }
-            hang->setEnabled(on);
+        connect(stream_, &lyra::ipc::HL2Stream::cwBreakInModeChanged, bk,
+                [bk, hang](int mode) {
+            if (bk->currentIndex() != mode) { QSignalBlocker s(bk); bk->setCurrentIndex(mode); }
+            hang->setEnabled(mode != 2);
         });
 
         auto *st = new QCheckBox(tr("Sidetone  (radio hardware)"), grp);

@@ -415,8 +415,8 @@ class HL2Stream : public QObject {
                WRITE setCwRevPaddle      NOTIFY cwRevPaddleChanged)
     Q_PROPERTY(bool cwStrictSpacing  READ cwStrictSpacing
                WRITE setCwStrictSpacing  NOTIFY cwStrictSpacingChanged)
-    Q_PROPERTY(bool cwBreakIn        READ cwBreakIn
-               WRITE setCwBreakIn        NOTIFY cwBreakInChanged)
+    Q_PROPERTY(int  cwBreakInMode    READ cwBreakInMode
+               WRITE setCwBreakInMode    NOTIFY cwBreakInModeChanged)
     Q_PROPERTY(int  cwHangDelayMs    READ cwHangDelayMs
                WRITE setCwHangDelayMs    NOTIFY cwHangDelayMsChanged)
     Q_PROPERTY(bool cwSidetoneOn     READ cwSidetoneOn
@@ -655,7 +655,7 @@ public:
     bool    cwModeB()               const { return cwModeB_;               }
     bool    cwRevPaddle()           const { return cwRevPaddle_;           }
     bool    cwStrictSpacing()       const { return cwStrictSpacing_;       }
-    bool    cwBreakIn()             const { return cwBreakIn_;             }
+    int     cwBreakInMode()        const { return cwBreakInMode_;        }
     int     cwHangDelayMs()         const { return cwHangDelayMs_;         }
     bool    cwSidetoneOn()          const { return cwSidetoneOn_;          }
     int     cwSidetoneLevel()       const { return cwSidetoneLevel_;       }
@@ -922,7 +922,7 @@ public slots:
     void setCwModeB(bool on);
     void setCwRevPaddle(bool on);
     void setCwStrictSpacing(bool on);
-    void setCwBreakIn(bool on);
+    void setCwBreakInMode(int mode);   // 0=QSK 1=Semi 2=Manual
     void setCwHangDelayMs(int ms);
     void setCwSidetoneOn(bool on);
     void setCwSidetoneLevel(int level);
@@ -1079,7 +1079,7 @@ signals:
     void cwModeBChanged(bool on);
     void cwRevPaddleChanged(bool on);
     void cwStrictSpacingChanged(bool on);
-    void cwBreakInChanged(bool on);
+    void cwBreakInModeChanged(int mode);
     void cwHangDelayMsChanged(int ms);
     void cwSidetoneOnChanged(bool on);
     void cwSidetoneLevelChanged(int level);
@@ -1603,7 +1603,11 @@ private:
     bool   cwModeB_          = false;  // prn->cw.mode_b (false = iambic A)
     bool   cwRevPaddle_      = false;  // prn->cw.rev_paddle
     bool   cwStrictSpacing_  = false;  // prn->cw.strict_spacing
-    bool   cwBreakIn_        = true;   // prn->cw.break_in (true = SEMI; HL2 has no full QSK)
+    // #105 CW break-in mode (Thetis BreakIn enum): 0=QSK, 1=Semi (default),
+    // 2=Manual.  Drives prn->cw.break_in (QSK+Semi=1, Manual=0) AND the
+    // host-MOX gate in onHwPttPoll (QSK = host stays RX; Semi/Manual = host
+    // MOXes off the key line, the reference QSKEnabled distinction).
+    int    cwBreakInMode_    = 1;
     int    cwHangDelayMs_    = 300;    // prn->cw.hang_delay (0..1000 ms)
     bool   cwSidetoneOn_     = true;   // prn->cw.sidetone (FPGA HW sidetone)
     int    cwSidetoneLevel_  = 64;     // prn->cw.sidetone_level (0..127)
