@@ -4,6 +4,79 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-18 — CW TX ON AIR: paddle + keyboard console + CW-over-TCI (#105)
+
+CW transmit went from "design mapped" to fully on-air this session.
+
+### CW-2 paddle (gateware iambic) — SHIPPED + operator-confirmed
+- `applyCwKeyerEnable` arms `prn->cw.cw_enable` in CW mode (CWL/CWU) — the
+  firmware-keyer + sidetone master; paddle in the HL2 KEY jack keys the
+  carrier autonomously (gateware CWTX), host stays out of timing.
+- Carrier-on-marker fix: keyed carrier rides the marker in both sidebands
+  (single shared `cwPitchHz`); the off-marker was a DISPLAY bug (host MOX
+  off the gateware key line switched to the TX analyzer) — fixed by NOT
+  forwarding host MOX in firmware-keyer CW (QSK). Break-in selector
+  QSK(default)/Semi/Manual; CW MON sidetone slider on the Audio panel.
+- Manual break-in foot-switch confirmed ("tone footswitch and paddle"):
+  foot switch = PTT hold (gateware PTTTX), paddle keys within (→CWTX).
+- Vestigial `cwSidetoneFreqHz` path removed (`14be1ed`) — CW pitch is the
+  single freq source.
+
+### CW-3a/3b host software keyer (CWX) + CW console — SHIPPED `8904749`
+- Gateware-verified (radio.v / dsopenhpsdr1.v): host CWX keys the carrier
+  via the SAME CWTX path as the paddle — host drives `tx[0].cwx` (per
+  element) + `cwx_ptt` (held per message); `cw_enable` (CW-mode armed)
+  enables BOTH the host EP2 overlay AND the gateware CWX decode
+  (`cmd_data[24]` = the 0x0f C1 bit). NO WDSP / no host carrier gen. The
+  earlier "dot/dash bit" guess was WRONG — tracing corrected it.
+- `tx/CwMorse` (table + PARIS timing + operator weight, pure/testable),
+  `tx/CwKeyer` (dedicated-thread element pump, monotonic absolute-deadline
+  scheduling, interruptible abort), HL2Stream `sendCw`/`abortCw` +
+  `setCwxKey`/`setCwxPtt` + lazy keyer + abort-on-close.
+- `qml/CwConsolePanel` — chip→floating console (audio-rack idiom): WPM,
+  type+Enter sends / Esc aborts, Send+Stop, reserved CW-5 decoder pane.
+  "CW" launcher chip after the TX DSP strip.
+- Design doc `docs/architecture/cw3_software_keyer_design.md`.
+
+### CW-4 CW-over-TCI — SHIPPED `fcfcb6b`, EESDR-spec-verified
+- `tci_server` dispatch routes the EESDR TCI CW commands into the CW-3
+  keyer: `cw_macros` (plain send), `cw_msg` (contest prefix/call/suffix
+  + `$N` repeat), `cw_macros_speed`/`cw_keyer_speed` (WPM, bidirectional),
+  `cw_macros_stop`. Reserved-char un-escape `^~*`→`:,;`. sendCw/abortCw
+  marshalled to the stream thread (QueuedConnection) — no race vs the
+  console. CW-mode-only.
+- **Verified vs the EESDR TCI protocol manual** (operator added
+  `docs/TCI Protocol.pdf` §3.2) + Thetis TCIServer.cs + SDRLogger+. The
+  EESDR cross-check caught 3 drafting errors: `cw_macros_empty` is a
+  server→client terminal signal (not a stop), reserved-char un-escape was
+  missing, and `cw_msg` (the canonical contest cmd) was missing.
+
+### Docs
+- `docs/help/USER_GUIDE.md` (`2a09824`): new "CW operating" section
+  (paddle/console/TCI + break-in + CW MON) + "CW keying over TCI" + TOC.
+
+### Standing directive (recorded)
+- TCI work verifies against BOTH Thetis `TCIServer.cs` AND the EESDR TCI
+  manual (`docs/TCI Protocol.pdf`) — the authoritative spec.
+
+### Next
+- **CW-5 (#173)** — RX CW decoder (faithful port of SDRLogger+'s
+  Bayesian/AFC/Farnsworth decoder, `hamlog/cw.html`) into the console's
+  reserved pane + a macros field. Deep-read the decoder first.
+- CW follow-ons: Semi/Manual host-MOX for CWX, F-key memories, CWFWKeyer
+  toggle; TCI `cw_terminal`/`cw_macros_delay`/`|..|`+`<>` macro syntax.
+- On-air TCI CW bench via SDRLogger+ still TODO (spec-verified + builds).
+
+### Commit summary (today)
+```
+2a09824 docs(cw): USER_GUIDE — CW operating + CW-over-TCI
+fcfcb6b feat(cw): CW-4 — CW keying over TCI, verified vs EESDR TCI spec
+8904749 feat(cw): CW-3a/3b — host software keyer (CWX) + CW console
+14be1ed refactor(cw): remove the vestigial cwSidetoneFreqHz path
+```
+
+---
+
 ## 2026-06-17 EOD — v0.4.0 RELEASED + main consolidated + CW TX mapped
 
 ### UI readability batch (shipped `8fe2100`)

@@ -545,14 +545,29 @@ was correct; the one-sided signal was the operator's own transmit) →
 Plus operator-visible ATT-on-TX (§15.31) and a UI-readability batch.
 **Released v0.4.0** (33 commits since v0.3.1; installer published to GitHub).
 
-**Next major candidate — CW transmit (#105): DESIGN MAPPED 2026-06-17.**
-See **`docs/architecture/cw_tx_design.md`** (full port plan from a 2-lane
-reference dive). Key finding: HL2 CW is **100 % gateware-keyed** — no host
-DSP/WDSP carrier synthesis, EP2 TX-I/Q bypassed during CW; the host sends
-key-state bits (the verbatim packer is ALREADY in tree at
-`NetworkProto1.cpp:99-108`, dormant). Build order C-1..C-5 in the design
-doc; watch the **0x0b C&C register collision** with the shipped ATT-on-TX
-step-attenuator before composing CW keyer config.
+**CW transmit (#105) — ON AIR 2026-06-18 (CW-2/CW-3a/CW-3b/CW-4 SHIPPED).**
+Design `docs/architecture/cw_tx_design.md`; software-keyer design
+`docs/architecture/cw3_software_keyer_design.md`. HL2 CW is **100 %
+gateware-keyed** (confirmed vs radio.v/dsopenhpsdr1.v) — no host DSP/WDSP
+carrier; host sends key-state bits, the verbatim EP2 packer
+(`NetworkProto1.cpp:99-108`) carries them, gated by `cw_enable` which also
+enables the gateware CWX decode (`cmd_data[24]` = the 0x0f C1 bit).
+- **CW-2 paddle** (gateware iambic) — SHIPPED + operator-confirmed;
+  carrier-on-marker, QSK/Semi/Manual break-in, CW MON sidetone, foot-switch.
+- **CW-3a/3b** host software keyer (CWX) + chip→floating CW console —
+  SHIPPED `8904749`. `tx/CwMorse` (PARIS + operator weight) + `tx/CwKeyer`
+  (dedicated timer thread) + HL2Stream `sendCw`/`abortCw`/`setCwx*` +
+  `qml/CwConsolePanel`. Host drives `tx[0].cwx`/`cwx_ptt`; gateware keys.
+- **CW-4** CW-over-TCI — SHIPPED `fcfcb6b`, verified vs the **EESDR TCI
+  manual** (`docs/TCI Protocol.pdf` §3.2) + Thetis TCIServer.cs +
+  SDRLogger+. `cw_macros` / `cw_msg`(+`$N`) / `cw_macros_speed` /
+  `cw_macros_stop` → the CW-3 keyer; reserved-char un-escape; CW-mode-only.
+- The earlier **0x0b register-collision** worry was a non-issue: `cw_enable`
+  (0x0f C1) is what arms both sides; the step-att path is separate.
+- **NEXT — CW-5 (#173):** RX CW decoder (faithful port of SDRLogger+'s
+  Bayesian/AFC/Farnsworth decoder) into the console's reserved pane +
+  macros field. Plus CW follow-ons (Semi/Manual host-MOX for CWX, F-key
+  memories, CWFWKeyer toggle; TCI cw_terminal/cw_macros_delay/macro syntax).
 
 Other open major arcs (unchanged): **RX2 + Split** (#96–#101) and
 **PureSignal** (Stage G/H). Smaller items: VOX (#91), voice keyer (#89),
@@ -561,9 +576,10 @@ parked #156 (restart-after-hard-kill, intermittent).
 
 ---
 
-*Last updated: 2026-06-17 EOD — **v0.4.0 RELEASED** (AM/DSB/FM transmit +
-AM carrier #106/#93, native TX DSP rack EQ/Speech/Combinator/Plate, Profiles
-#49, TX monitor #90, ATT-on-TX §15.31, UI-readability batch).  `main` is the
-trunk again: `main`==`origin/main`==`tx-rebuild`==v0.4.0.  CW TX (#105)
-DESIGN MAPPED → `docs/architecture/cw_tx_design.md`.  RX2/Split + PureSignal
-remain the next major arcs.*
+*Last updated: 2026-06-18 — **CW TX ON AIR (#105)**: CW-2 paddle (gateware
+iambic) + CW-3a/3b host software keyer (CWX) & chip→floating CW console
+(`8904749`) + CW-4 CW-over-TCI (`fcfcb6b`, EESDR-spec-verified) + USER_GUIDE
+CW section (`2a09824`), all on `main`/`origin/main`.  NEXT = CW-5 (#173) RX
+CW decoder.  Prior (2026-06-17): v0.4.0 RELEASED (AM/DSB/FM transmit + AM
+carrier #106/#93, native TX DSP rack, Profiles #49, TX monitor #90,
+ATT-on-TX §15.31).  RX2/Split + PureSignal remain the next major arcs.*
