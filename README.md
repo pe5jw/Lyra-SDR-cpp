@@ -36,16 +36,32 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.1.5)
+## Features (v0.4.0)
 
-A working receive-side SDR for the Hermes Lite 2 / 2+, native C++ end to
-end.  (Transmit is on the roadmap; the current build is RX-focused.)
+A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
+native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
+SAM / FM) plus digital via TCI, and ships a complete native TX audio
+processing rack.  (Still on the roadmap: CW transmit, dual receiver / RX2,
+and PureSignal — see below.)
 
 * **Radio** — HPSDR Protocol 1 discovery (multi-NIC) + live RX off the
   HL2/HL2+ on dedicated OS threads; auto-connect to the last radio.
 * **DSP** — WDSP RX chain: USB/LSB/CW/AM/FM/DIG modes, per-mode filters,
   AGC, NR, auto-notch, manual notches, squelch.  Audio out the HL2 jack
   (AK4951) or PC sound card.
+* **Transmit** — every voice mode: SSB, AM, DSB, SAM, FM (proper carrier +
+  both sidebands on AM/SAM, suppressed-carrier DSB), plus digital via TCI /
+  virtual audio cable.  TX power / drive, separate tune drive, AM carrier
+  level, mic gain + boost, always-on ALC + operator Leveler.
+* **Native TX DSP rack** — a studio audio chain built into the radio, ahead
+  of the modulator: an 8-band parametric EQ with a draggable curve + live
+  RTA, a multi-stage Speech section (noise gate, auto-AGC, de-esser), a
+  5-band Combinator multiband compressor, and a Plate reverb for ESSB air.
+* **TX profiles & metering** — save/recall the whole transmit chain as named
+  profiles; multimeter (PO / SWR / MIC / COMP / ALC / PA current); hot-mic
+  monitor (HL2 jack, a PC device, or over TCI).
+* **TX safety** — ATT-on-TX RX-front-end protection, TR-sequencing for amp
+  hot-switch safety, and an operator TX time-out.
 * **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
   glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
   drag/wheel tuning; draggable RX passband; collapsible waterfall.
@@ -81,6 +97,36 @@ end.  (Transmit is on the roadmap; the current build is RX-focused.)
   operator/station identity + band-plan region in Settings.
 
 Every feature landed gated by an operator HL2 bench test.
+
+## Download & run (Windows)
+
+Just want to operate? You don't need to build anything.
+
+1. Go to the **[Releases page](https://github.com/N8SDR1/Lyra-SDR-cpp/releases)**.
+2. Download the latest **`Lyra-Setup-X.Y.Z.exe`** installer and run it.
+3. Launch Lyra. First start does a one-time FFT optimization (cached per
+   machine), then auto-discovers your HL2 / HL2+ on the network.
+
+Requires Windows 10 (1809+) or 11, 64-bit. The build-from-source
+instructions below are only needed if you want to develop or build it
+yourself.
+
+## Getting help & reporting bugs
+
+Lyra is in active development — testers and bug reports are welcome.
+See **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** first for current rough edges and
+what hasn't been built yet (so you don't report a planned feature as a bug).
+
+* **Discord:** <https://discord.gg/nbJEqvFQ> — questions, feature ideas,
+  and quick help.
+* **Bug reports:** open a
+  **[GitHub issue](https://github.com/N8SDR1/Lyra-SDR-cpp/issues)** (or post
+  in Discord). To make a report actionable, please include:
+  * Lyra version (Help → About, or the installer filename),
+  * Windows version, and whether your radio is an **HL2 or HL2+**,
+  * what you did and what happened (steps to reproduce),
+  * the in-app **diagnostic log** (in Lyra, open the diagnostic log viewer
+    and copy the relevant lines — no console window needed).
 
 ## Prerequisites (Windows)
 
@@ -125,8 +171,8 @@ ground-up implementation:
 - **[WDSP](https://github.com/TAPR/OpenHPSDR-wdsp)** — Dr. Warren
   Pratt NR0V's DSP engine.  RX audio chain (NR, AGC, ANF, LMS, NB,
   AEPF, bandpass, demod, panel pan), TX audio chain (ALC, leveler,
-  compressor, CFC, PHROT), and the future PureSignal port (calcc +
-  iqc) in v0.3.  Lyra-cpp links the bundled WDSP DLL and calls into
+  compressor, CFC, PHROT), and the planned PureSignal port (calcc +
+  iqc).  Lyra-cpp links the bundled WDSP DLL and calls into
   it from native C++; the bundled DLL itself carries WDSP's GPL v3+
   license and copyright.
 
@@ -145,7 +191,7 @@ The Python Lyra (`../lyra/`) and Lyra-cpp are both N8SDR's projects;
 Lyra-cpp is the C++23 rebuild that makes hard-realtime audio + wire
 I/O practical on Windows / macOS / Linux without Python's GIL.
 
-Cross-platform support (macOS / Linux) is planned post-v0.2 TX
-release; Qt 6 + modern C++ stdlib handles most of the cross-platform
+Cross-platform support (macOS / Linux) is planned once the transmit
+feature set settles; Qt 6 + modern C++ stdlib handles most of the cross-platform
 lifting, with platform-shim modules for Win32-specific items (MMCSS
 thread priority, WSAEventSelect → epoll/kqueue, etc.).
