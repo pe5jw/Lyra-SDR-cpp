@@ -2701,6 +2701,186 @@ QWidget *SettingsDialog::buildTxTab() {
         leftCol->addWidget(grp);   // §15.28 — TIMING column (Tune)
     }
 
+    // ── CW Keyer (#105 CW-1a-2) ──────────────────────────────────
+    // Operator CW keyer config (cw_tx_design.md §7).  Each control
+    // persists (tx/cw/*) + pushes to prn->cw (composer cases 12/13/14
+    // consume it).  Keyer speed/weight/mode/break-in/hang are element-
+    // TIMING params → LEFT column; sidetone is the FPGA hardware tone
+    // on the HL2 phones during CW TX.  Brief inert window (operator-
+    // accepted, option a): CW transmit keying lands in the paddle
+    // commit (C-2); these settings are live + persisted now.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("CW Keyer"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *spd = new QSpinBox(grp);
+        spd->setRange(1, 60);
+        spd->setSuffix(tr(" WPM"));
+        spd->setValue(stream_->cwKeyerSpeedWpm());
+        spd->setToolTip(tr(
+            "CW keyer speed in words-per-minute (PARIS).  Drives the "
+            "gateware iambic keyer (paddle) and the host keyer (computer "
+            "/ TCI CW).  Range 1-60; default 25."));
+        connect(spd, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { stream_->setCwKeyerSpeedWpm(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwKeyerSpeedWpmChanged,
+                spd, [spd](int v) { if (spd->value()!=v) spd->setValue(v); });
+        form->addRow(tr("Keyer speed:"), spd);
+
+        auto *pitch = new QSpinBox(grp);
+        pitch->setRange(200, 2250);
+        pitch->setSingleStep(10);
+        pitch->setSuffix(tr(" Hz"));
+        pitch->setValue(stream_->cwSidetoneFreqHz());
+        pitch->setToolTip(tr(
+            "CW pitch / sidetone frequency.  Sets the FPGA hardware "
+            "sidetone you hear on the HL2 phones while keying.  Range "
+            "200-2250 Hz; default 600."));
+        connect(pitch, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { stream_->setCwSidetoneFreqHz(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwSidetoneFreqHzChanged,
+                pitch, [pitch](int v) { if (pitch->value()!=v) pitch->setValue(v); });
+        form->addRow(tr("CW pitch:"), pitch);
+
+        auto *wt = new QSpinBox(grp);
+        wt->setRange(33, 66);
+        wt->setSuffix(tr(" %"));
+        wt->setValue(stream_->cwKeyerWeight());
+        wt->setToolTip(tr(
+            "Keyer weight — dot/dash mark-to-space ratio as a percent.  "
+            "50 %% = standard.  Higher = heavier (longer marks).  Range "
+            "33-66; default 50."));
+        connect(wt, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { stream_->setCwKeyerWeight(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwKeyerWeightChanged,
+                wt, [wt](int v) { if (wt->value()!=v) wt->setValue(v); });
+        form->addRow(tr("Weight:"), wt);
+
+        auto *iamb = new QCheckBox(tr("Iambic keyer  (off = straight key)"), grp);
+        iamb->setChecked(stream_->cwIambic());
+        iamb->setToolTip(tr(
+            "ON = iambic (dual-lever paddle) keyer; OFF = straight key / "
+            "single lever.  Sets the gateware keyer mode for the paddle "
+            "path."));
+        form->addRow(iamb);
+
+        auto *mode = new QComboBox(grp);
+        mode->addItem(tr("Iambic A"));
+        mode->addItem(tr("Iambic B"));
+        mode->setCurrentIndex(stream_->cwModeB() ? 1 : 0);
+        mode->setEnabled(stream_->cwIambic());
+        mode->setToolTip(tr(
+            "Iambic timing mode.  Mode B inserts the opposite element "
+            "after both paddles release (common default); Mode A does "
+            "not.  Only applies when the iambic keyer is on."));
+        connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), grp,
+                [this](int idx) { stream_->setCwModeB(idx == 1); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwModeBChanged, mode,
+                [mode](bool b) {
+            const int i = b ? 1 : 0;
+            if (mode->currentIndex() != i) { QSignalBlocker s(mode); mode->setCurrentIndex(i); }
+        });
+        form->addRow(tr("Iambic mode:"), mode);
+
+        connect(iamb, &QCheckBox::toggled, grp, [this, mode](bool on) {
+            stream_->setCwIambic(on);
+            mode->setEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::cwIambicChanged, iamb,
+                [iamb, mode](bool on) {
+            if (iamb->isChecked() != on) { QSignalBlocker s(iamb); iamb->setChecked(on); }
+            mode->setEnabled(on);
+        });
+
+        auto *rev = new QCheckBox(tr("Reverse paddles  (dot ↔ dash)"), grp);
+        rev->setChecked(stream_->cwRevPaddle());
+        rev->setToolTip(tr("Swap the dot and dash paddle contacts."));
+        form->addRow(rev);
+        connect(rev, &QCheckBox::toggled, grp,
+                [this](bool on) { stream_->setCwRevPaddle(on); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwRevPaddleChanged, rev,
+                [rev](bool on) {
+            if (rev->isChecked() != on) { QSignalBlocker s(rev); rev->setChecked(on); }
+        });
+
+        auto *strict = new QCheckBox(tr("Strict character spacing"), grp);
+        strict->setChecked(stream_->cwStrictSpacing());
+        strict->setToolTip(tr(
+            "Enforce exact inter-element spacing even when sending faster "
+            "than the set WPM."));
+        form->addRow(strict);
+        connect(strict, &QCheckBox::toggled, grp,
+                [this](bool on) { stream_->setCwStrictSpacing(on); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwStrictSpacingChanged, strict,
+                [strict](bool on) {
+            if (strict->isChecked() != on) { QSignalBlocker s(strict); strict->setChecked(on); }
+        });
+
+        auto *bk = new QCheckBox(tr("Break-in  (semi)"), grp);
+        bk->setChecked(stream_->cwBreakIn());
+        bk->setToolTip(tr(
+            "Semi break-in: keying auto-keys MOX and drops back to RX "
+            "after the hang delay below.  HL2 supports semi break-in; "
+            "full QSK is ANAN/Saturn-only.  OFF = manual PTT."));
+        form->addRow(bk);
+
+        auto *hang = new QSpinBox(grp);
+        hang->setRange(0, 1000);
+        hang->setSuffix(tr(" ms"));
+        hang->setValue(stream_->cwHangDelayMs());
+        hang->setEnabled(stream_->cwBreakIn());
+        hang->setToolTip(tr(
+            "Semi break-in hang — how long the radio stays keyed after "
+            "the last element before dropping to RX.  Range 0-1000 ms; "
+            "default 300.  Only applies with break-in on."));
+        connect(hang, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { stream_->setCwHangDelayMs(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwHangDelayMsChanged, hang,
+                [hang](int v) { if (hang->value()!=v) hang->setValue(v); });
+        form->addRow(tr("Break-in hang:"), hang);
+
+        connect(bk, &QCheckBox::toggled, grp, [this, hang](bool on) {
+            stream_->setCwBreakIn(on);
+            hang->setEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::cwBreakInChanged, bk,
+                [bk, hang](bool on) {
+            if (bk->isChecked() != on) { QSignalBlocker s(bk); bk->setChecked(on); }
+            hang->setEnabled(on);
+        });
+
+        auto *st = new QCheckBox(tr("Sidetone  (radio hardware)"), grp);
+        st->setChecked(stream_->cwSidetoneOn());
+        st->setToolTip(tr(
+            "Enable the HL2's FPGA-generated CW sidetone on the phones "
+            "jack while keying — no host audio path needed; the tone is "
+            "made in the radio at the CW pitch above."));
+        form->addRow(st);
+
+        auto *stl = new QSpinBox(grp);
+        stl->setRange(0, 127);
+        stl->setValue(stream_->cwSidetoneLevel());
+        stl->setEnabled(stream_->cwSidetoneOn());
+        stl->setToolTip(tr("Hardware sidetone level (0-127)."));
+        connect(stl, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { stream_->setCwSidetoneLevel(v); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwSidetoneLevelChanged, stl,
+                [stl](int v) { if (stl->value()!=v) stl->setValue(v); });
+        form->addRow(tr("Sidetone level:"), stl);
+
+        connect(st, &QCheckBox::toggled, grp, [this, stl](bool on) {
+            stream_->setCwSidetoneOn(on);
+            stl->setEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::cwSidetoneOnChanged, st,
+                [st, stl](bool on) {
+            if (st->isChecked() != on) { QSignalBlocker s(st); st->setChecked(on); }
+            stl->setEnabled(on);
+        });
+
+        leftCol->addWidget(grp);   // §15.28 — TIMING column (CW Keyer)
+    }
+
     // ── Mic + ALC (TXA input/output gain stages) group ───────────
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     //
