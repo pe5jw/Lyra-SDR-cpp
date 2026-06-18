@@ -36,6 +36,7 @@ not programmers — if you can click a menu, you can use this.
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
 - [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
+- [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -54,6 +55,7 @@ not programmers — if you can click a menu, you can use this.
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
+  - [CW keying over TCI](#cw-keying-over-tci)
   - [Digital modes over TCI](#digital-modes-over-tci-ft8--ft4--msk144--q65--etc)
   - [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)
   - [DX-cluster spots](#dx-cluster-spots)
@@ -978,6 +980,51 @@ the limiter; it auto-bypasses in DIGU/DIGL with the rest of the rack.
 
 ---
 
+## CW operating (paddle, keyboard, TCI)
+
+Set the mode to **CWU** or **CWL** and your tuned carrier sits on the
+marker, offset into the passband by your **CW Pitch** (the single pitch
+shared by the RX beat note, the marker, the keyed carrier, and the
+sidetone — set it on the Tuning panel or the CW console). The HL2's
+gateware makes the carrier envelope and the hardware sidetone; Lyra just
+tells it when to key. There are **three ways to key**:
+
+**1 — Paddle / straight key (into the HL2 KEY jack).** The radio's
+built-in iambic keyer reads your paddle and keys the carrier + sidetone
+on its own — the host stays out of the timing, so it's crisp regardless
+of PC load. Speed, weight, iambic A/B, and reverse are in **Settings →
+CW**.
+
+**2 — Keyboard (the CW console).** Click the **CW** chip on the top
+toolbar to pop open the floating **CW Console** (it floats by default and
+remembers where you put it — only open it when you want it). In CWU/CWL:
+type a line and press **Enter** to send it; **Esc** (or the **Stop**
+button) aborts immediately. The **WPM** slider sets the speed. Outside CW
+the send field dims — switch to CW first. The console is also where the
+**RX CW decoder** will live (coming in a later release).
+
+**3 — From a logger over TCI.** A TCI logging/contest program can key CW
+through Lyra — see [CW keying over TCI](#cw-keying-over-tci).
+
+**Break-in (Settings → CW):**
+
+- **QSK** (default) — full break-in: the gateware keys the carrier and you
+  stay on receive *between* elements, so you hear the band right up to the
+  next dit. The panadapter stays on the RX waterfall and you can watch
+  your own dits/dahs land on the marker.
+- **Semi** — the radio holds transmit through the character and drops back
+  to RX after a short hang.
+- **Manual** — you hold a foot switch (PTT) to put the radio in transmit
+  and key with your paddle inside it; release the foot switch to return to
+  RX.
+
+**Sidetone level** — the **CW MON** slider on the **Audio panel** (it
+appears only in CW) sets how loud you hear your own keying. It's the
+hardware-generated CW sidetone and is independent of the **MON** monitor
+used for SSB.
+
+---
+
 ## Profiles (TX/RX chain presets)
 
 A **profile** is a named snapshot of your operator TX/RX *signal chain* —
@@ -1802,6 +1849,25 @@ it attaches.
 
 > RX2 over TCI is deferred until Lyra has a second receiver. Today the
 > server advertises a single channel.
+
+### CW keying over TCI
+
+A TCI logging or contest program can **key CW through Lyra** — it sends
+the text, Lyra's keyer generates the Morse and the radio puts it on the
+air (the same path the on-screen CW Console uses). Lyra implements the
+Expert Electronics TCI CW commands:
+
+- **`cw_macros`** — send a plain message ("CQ TEST DE N8SDR"), the
+  everyday "send this text" command.
+- **`cw_msg`** — the contest exchange as prefix / callsign / suffix
+  (e.g. `TU` / `N8SDR` / `599 004`), with `$N` to repeat the callsign.
+- **`cw_macros_speed`** — set the keying speed (WPM); a bare query reads
+  it back.
+- **`cw_macros_stop`** — abort the current send immediately.
+
+Keying only happens in **CWU/CWL** (in any other mode the commands are
+ignored). Set your logger's TCI keyer to Lyra and it sends straight
+through. SDRLogger+, N1MM and similar work this way.
 
 ### Digital modes over TCI (FT8 / FT4 / MSK144 / Q65 / etc.)
 
