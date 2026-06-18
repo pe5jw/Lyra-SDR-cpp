@@ -22,15 +22,6 @@ These are on the roadmap, not broken:
 * **macOS / Linux** — Windows only for now; the codebase is built to port
   later.
 
-## Rough edges under active hardening
-
-If you hit one of these, a report with details (below) genuinely helps:
-
-* **Restart right after a force-kill during transmit.** If Lyra is killed
-  (Task Manager / crash) *while transmitting*, reopening the radio can
-  occasionally hang. Restarting Lyra clears it. Report if you can reproduce
-  it reliably.
-
 ## Expected behavior (not bugs)
 
 * **First launch is slow / unresponsive for a minute.** Lyra does a one-time
