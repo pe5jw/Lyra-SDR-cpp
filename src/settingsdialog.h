@@ -58,6 +58,8 @@ private:
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
                                  // + cos² amplitude envelope (amp
                                  // hot-switch protection knobs)
+    QWidget *buildCwTab();       // #105 CW mode: keyer + sidetone
+                                 // (RX pitch/peaking + decoder later)
     QWidget *buildProfilesTab(); // #49 editor: profile list + Save/
                                  // Save As/Load/Rename/Delete/Set-Default
                                  // + per-mode auto-recall bindings
