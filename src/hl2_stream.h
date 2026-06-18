@@ -1594,8 +1594,20 @@ private:
     bool   cwSidetoneOn_     = true;   // prn->cw.sidetone (FPGA HW sidetone)
     int    cwSidetoneLevel_  = 64;     // prn->cw.sidetone_level (0..127)
     int    cwSidetoneFreqHz_ = 600;    // prn->cw.sidetone_freq (= CW pitch, 200..2250)
+    // #105 CW-2 — firmware (gateware) CW keyer enable.  Mirrors Thetis
+    // CWFWKeyer (console.cs, default true): when in CW it arms the HL2's
+    // internal iambic keyer so a physical paddle/key in the radio jack
+    // keys + shapes the carrier + runs the HW sidetone autonomously (the
+    // gateware TX state machine engages on ext_keydown — NO host MOX).
+    // Default true (firmware keyer is the only CW path until the software
+    // keyer + a CWFWKeyer Settings toggle land in CW-3).
+    bool   cwFwKeyer_        = true;
     // Push the whole CW block into prn->cw (no-op if prn not yet created).
     void   applyCwConfigToPrn();
+    // #105 CW-2 — Thetis EnableCWKeyer analog: arm/disarm prn->cw.cw_enable
+    // (the firmware-keyer + sidetone master).  Armed only in CW mode so a
+    // paddle press outside CW can't key a CW carrier.  No-op if prn null.
+    void   applyCwKeyerEnable();
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER
     // (100 % = standard AM = WDSP c_level 0.5 = 25 % of PEP).  Maps via
     // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.

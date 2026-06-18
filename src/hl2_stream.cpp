@@ -885,9 +885,12 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::XmitBit =                    // wire MOX gate (0 = RX at open)
             mox_.load(std::memory_order_relaxed) ? 1 : 0;
         // #105 CW-1a — seed prn->cw from the autoloaded operator config
-        // (cases 12/13/14 read it).  cw_enable stays 0 → TX-inert until
-        // the keying commit; the gateware ignores keyer config until CW.
+        // (cases 12/13/14 read it).
         applyCwConfigToPrn();
+        // #105 CW-2 — arm the firmware CW keyer if the radio came up in CW
+        // (Thetis EnableCWKeyer): cw_enable follows txMode_.  Non-CW at open
+        // → stays 0 (TX-inert).  The keyer config above is dormant until set.
+        applyCwKeyerEnable();
     }
 
     ep6Thread_.start(static_cast<int>(socket_));
@@ -2233,7 +2236,35 @@ void HL2Stream::applyCwConfigToPrn() {
     p->cw.sidetone       = cwSidetoneOn_    ? 1 : 0;
     p->cw.sidetone_level = cwSidetoneLevel_;
     p->cw.sidetone_freq  = cwSidetoneFreqHz_;
-    // cw_enable intentionally untouched (keying commit owns it).
+    // cw_enable intentionally untouched here — owned by applyCwKeyerEnable()
+    // (the Thetis EnableCWKeyer analog), driven by CW-mode entry/exit.
+}
+
+// #105 CW-2 — Thetis EnableCWKeyer analog.
+//
+// Reference: console.cs CWFWKeyer (default true) -> netInterface.c:1044
+// EnableCWKeyer(enable) { prn->cw.cw_enable = enable; SetSidetoneRun(...); }.
+// cw_enable is the FIRMWARE-keyer + sidetone master: with it set, the HL2's
+// internal iambic keyer (hl2_rtl_radio.v TX state machine) reads the physical
+// paddle/key on ext_keydown, shapes + keys the carrier, runs the HW sidetone,
+// and handles semi break-in (cw_hang_time / CWHANG state) — all autonomously,
+// with NO host MOX.  The host's only job for paddle CW is to arm this bit.
+//
+// Lyra ties the arm to CW mode (CWL=3 / CWU=4) rather than a persistent Setup
+// checkbox: outside CW the bit is cleared so a stray paddle press can't key a
+// CW carrier mid-SSB.  Same wire effect as Thetis's CWFWKeyer; a CWFWKeyer
+// Settings toggle + the software-keyer path land together in CW-3.
+//
+// Wire: composer case 13 (addr 0x0f) C1 carries prn->cw.cw_enable on the next
+// C&C round-robin cycle (Thetis pushes immediately via CmdTx(); Lyra's
+// round-robin re-emits every full cycle, ~ms — fine for a mode-change arm,
+// which is not keydown-timing-critical).
+void HL2Stream::applyCwKeyerEnable() {
+    auto* p = lyra::wire::prn;
+    if (!p) return;                         // radio not created yet
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    const bool cw = (tm == 3 || tm == 4);   // WDSP CWL / CWU
+    p->cw.cw_enable = (cwFwKeyer_ && cw) ? 1 : 0;
 }
 
 void HL2Stream::setCwKeyerSpeedWpm(int wpm) {
@@ -2415,6 +2446,10 @@ void HL2Stream::setTxMode(int wdspMode) {
     // double-sideband centered).
     const int clamped = std::clamp(wdspMode, 0, 13);
     txMode_.store(clamped, std::memory_order_relaxed);
+    // #105 CW-2 — arm/disarm the firmware CW keyer on the mode edge (Thetis
+    // EnableCWKeyer): cw_enable on in CWL/CWU, off otherwise.  Must follow
+    // the txMode_ store above (applyCwKeyerEnable reads it).
+    applyCwKeyerEnable();
     std::function<void(int)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
