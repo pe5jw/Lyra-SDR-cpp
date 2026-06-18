@@ -4,6 +4,58 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-17 EOD — v0.4.0 RELEASED + main consolidated + CW TX mapped
+
+### UI readability batch (shipped `8fe2100`)
+- TX DSP launcher chips (Speech/EQ/Combinator/Plating) → boxed buttons that
+  fill with the accent when their panel is open (were flat text-only).
+- EQ graph: frequency-marker row across the top; x-range tracks the TX audio
+  passband (SSB/digital = high edge, AM/DSB/FM/SAM = half occupied) + amber
+  dashed TX-edge marker; gain scale bigger (bold 11px) + brighter, labelled
+  every 3 dB (added ±3/±9 rows), 0 dB bright blue.
+- Speech/Combinator/Plate parameter labels + readouts brighter + bold 13px;
+  Combinator per-band micro-labels 9/10→11px. Operator: "easier on the old
+  eyes." `.gitignore` += `_run_lyra_vac1.bat`, `Line`.
+
+### main consolidated (operator request)
+- `origin/main` fast-forwarded `a3a517f..8fe2100` (clean, 32 commits, no
+  foreign divergence). Local `main` moved up + checked out — **`main` is the
+  working trunk again** (TX largely done; stops the "forgot to FF main"
+  risk). `tx-rebuild` kept as a legacy ref.
+
+### v0.4.0 RELEASED
+- Version bump 0.3.1→0.4.0 (CMakeLists + installer/lyra.iss); release notes
+  `docs/releases/v0.4.0.md`; commit `88f17f2`. Full rebuild (version baked),
+  Inno Setup installer `dist/Lyra-Setup-0.4.0.exe` (~68 MB). Annotated tag
+  `v0.4.0`, pushed main + tag, GitHub Release published with installer
+  attached + verified. `main`==`origin/main`==`v0.4.0`==`88f17f2`.
+
+### #156 (restart-after-hard-kill) — PARKED
+- Operator empirical: a real accidental hard kill of lyra.exe mid-VOICE-TX
+  (my pre-build force-kill fired while they were tuning) → **restarted
+  CLEAN**. Only ever one observed hang (2026-06-13 mid-TUN). Intermittent →
+  parked until it reproduces; prime suspect noted (infinite
+  `hReadThreadInitSem.acquire()`), optional bounded-timeout hardening if
+  revisited. PROCESS RULE logged: don't force-kill lyra for a build when the
+  operator may be on air — ask first.
+
+### CW TX (#105) — DESIGN MAPPED (rainy-night research, no code)
+- 2-lane reference dive (Thetis host cwx.cs/console.cs/TXA.c + HL2 wire
+  networkproto1.c + operator's HL2+ gateware RTL). Wrote
+  **`docs/architecture/cw_tx_design.md`** — full port plan.
+- THE finding: HL2 CW is **100 % gateware-keyed** (no host/WDSP carrier;
+  `TXA.c` SetTXAMode has no CWL/CWU case; `radio.v:1145` bypasses EP2 TX-I/Q
+  during CW, feeds the FPGA envelope ramp; FPGA also makes the hardware
+  sidetone). Host just sends key-state. **The verbatim EP2 CW packer is
+  ALREADY in tree** (`NetworkProto1.cpp:99-108`, dormant) + `prn->cw` seeded;
+  EP6 dot/ptt decode already avoids the reference's left-shift bug. Missing:
+  CW C&C composer cases (0x0f/0x10/0x0b) + the native CWX keyer engine + FSM
+  CW PttSource + UX. Build order C-1..C-5 in the doc. ⚠ flagged: 0x0b
+  register collision with the shipped ATT-on-TX step-att — resolve before
+  composing.
+
+---
+
 ## 2026-06-17 (cont. — AM/DSB/FM native TX modulation + AM carrier #106/#93)
 
 ### #165 follow-on → basic WDSP-native AM / DSB / FM transmit

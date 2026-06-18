@@ -533,26 +533,37 @@ covered in `project_lyra_cpp_tx.md` (memory file).
    `project_lyra_cpp_tx.md`
 4. Read `SESSION_LOG.md` newest entry for arc detail
 
-**Then — current open queue (one task):** an **AM/DSB
-sideband bug** — AM and DSB modes produce only the upper
-sideband (lower sideband missing).  RX-DSP investigation: the
-WDSP passband for AM/DSB is likely being set one-sided instead
-of symmetric (-W..+W around DC).  Grounded design + reference-
-read + smallest-revertable-step + bench-gate, matching the
-Stage B arc.
+**Branch posture (RESOLVED 2026-06-17):** `main` is the working trunk again
+— `main` == `origin/main` == `tx-rebuild` == the **v0.4.0** release commit.
+Operator consolidated onto `main` (TX largely done) to stop forgetting to
+fast-forward it. Do future work on `main`; `tx-rebuild` is a legacy ref.
 
-Also pending operator discussion: **GitHub / main-branch
-posture** (`main` vs `tx-rebuild` reconciliation; current HEAD
-== `tx-rebuild` == `dc45485`).
+**SHIPPED since the last revision of this pointer:** the AM/DSB one-sided
+bug is **FIXED** (it was the SSB-only TX modulator, not an RX-DSP bug — RX
+was correct; the one-sided signal was the operator's own transmit) →
+**native AM/DSB/SAM/FM transmit + AM carrier level** shipped (#106/#93).
+Plus operator-visible ATT-on-TX (§15.31) and a UI-readability batch.
+**Released v0.4.0** (33 commits since v0.3.1; installer published to GitHub).
 
-The earlier post-P4 ordering (TX metering -> Stage F DSP rack ->
-Profiles -> RX2/Split -> PureSignal) is largely SHIPPED through
-v0.3.1: TX metering closed (#160), Stage F native DSP rack +
-Profiles #49 + TX monitor #90 all landed (see the SHIPPED-WORK
-LOG).  Still PEND: RX2 + Split (#96–#101) and PureSignal
-(Stage G/H, v0.3) — both remain as the next major arcs after the
-AM/DSB fix.
+**Next major candidate — CW transmit (#105): DESIGN MAPPED 2026-06-17.**
+See **`docs/architecture/cw_tx_design.md`** (full port plan from a 2-lane
+reference dive). Key finding: HL2 CW is **100 % gateware-keyed** — no host
+DSP/WDSP carrier synthesis, EP2 TX-I/Q bypassed during CW; the host sends
+key-state bits (the verbatim packer is ALREADY in tree at
+`NetworkProto1.cpp:99-108`, dormant). Build order C-1..C-5 in the design
+doc; watch the **0x0b C&C register collision** with the shipped ATT-on-TX
+step-attenuator before composing CW keyer config.
+
+Other open major arcs (unchanged): **RX2 + Split** (#96–#101) and
+**PureSignal** (Stage G/H). Smaller items: VOX (#91), voice keyer (#89),
+DSP buffer/latency options (#159), FM operator-knob refinement (#107),
+parked #156 (restart-after-hard-kill, intermittent).
 
 ---
 
-*Last updated: 2026-06-17 — post-P4 native work SHIPPED: VAC closeout v0.3.1 (TX metering #160 addresses the v0.3.0 UNVERIFIED loose-end in code; #160 bench close-out + tester field-confirm still in progress), Stage-F native TX DSP rack (EQ #50 / Speech #88 / Combinator #51 / Plate #52), Profiles #49, TX monitor #90 + Out picker #164.  P1/obbuffs flipped [WIP]->[DONE] (wire-LIVE since P4.b).  HEAD == tx-rebuild == `dc45485`.  Active task: AM/DSB-only-upper-sideband RX-DSP bug.  RX2/Split + PureSignal remain PEND.*
+*Last updated: 2026-06-17 EOD — **v0.4.0 RELEASED** (AM/DSB/FM transmit +
+AM carrier #106/#93, native TX DSP rack EQ/Speech/Combinator/Plate, Profiles
+#49, TX monitor #90, ATT-on-TX §15.31, UI-readability batch).  `main` is the
+trunk again: `main`==`origin/main`==`tx-rebuild`==v0.4.0.  CW TX (#105)
+DESIGN MAPPED → `docs/architecture/cw_tx_design.md`.  RX2/Split + PureSignal
+remain the next major arcs.*
