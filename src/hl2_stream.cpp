@@ -11,6 +11,7 @@
 // callers of the new wire layer for the first time; nothing reads
 // the bound state yet (rxWorkerLoop / txWorkerLoop are still the
 // live RX/TX path until later stages).
+#include "tx/CwKeyer.h"         // #105 CW-3a — host CW keyer (CWX) element pump
 #include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize, SampleRateIn2Bits
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
@@ -985,6 +986,10 @@ void HL2Stream::close() {
         return;
     }
     emit logLine(QStringLiteral("closing EP6 stream ..."));
+    // #105 CW-3a — quiesce the CW keyer BEFORE prn teardown so its
+    // element-pump thread stops touching tx[0].cwx/cwx_ptt (the setters
+    // guard prn-null, but abort() ends any in-flight message first).
+    if (cwKeyer_) cwKeyer_->abort();
     // Record the force-release-all (below) so a captured stderr log
     // shows "session N ended RX, MOX/tune dropped before the workers
     // were joined."  PA enable is preserved (operator preference) and
@@ -2326,6 +2331,58 @@ void HL2Stream::applyCwKeyerEnable() {
     const int tm = txMode_.load(std::memory_order_relaxed);
     const bool cw = (tm == 3 || tm == 4);   // WDSP CWL / CWU
     p->cw.cw_enable = (cwFwKeyer_ && cw) ? 1 : 0;
+}
+
+// =========================================================================
+// #105 CW-3a — host software keyer (CWX): wire-bit setters + send/abort.
+//
+// The keyer thread (CwKeyer) drives tx[0].cwx (per Morse element) and
+// tx[0].cwx_ptt (held for the message) via the injected callbacks below.
+// `cw_enable` (armed in CW mode by applyCwKeyerEnable) gates BOTH the host
+// EP2 overlay (NetworkProto1.cpp packs these bits) AND the gateware CWX
+// decode (cmd_data[24] = the 0x0f C1 bit = cw_enable, hl2_rtl_dsopenhpsdr1
+// .v:394) — so in CW mode the bits flow and the gateware keys the carrier
+// (cwx -> cwx_keydown, CWTX) + holds TX between elements via cwx_ptt + its
+// 500-unit spacing hang, and makes the HW sidetone.  Host carrier/WDSP NOT
+// involved.  QSK (default break-in): host stays RX, like the paddle.
+// =========================================================================
+void HL2Stream::ensureCwKeyer() {
+    if (cwKeyer_) return;
+    cwKeyer_ = std::make_unique<lyra::tx::CwKeyer>(
+        [this](bool down) { setCwxKey(down); },
+        [this](bool on)   { setCwxPtt(on);   },
+        [this](bool /*tx*/) {
+            // Break-in policy hook.  QSK (default): the gateware keys the
+            // carrier autonomously from cwx/cwx_ptt while the host stays
+            // RX — no host MOX, exactly like the paddle (CW-2).  Semi /
+            // Manual host-MOX integration (mirroring onHwPttPoll's gate)
+            // is a CW-3 follow-on; left a no-op here so the default path
+            // behaves like the operator-validated paddle QSK.
+        });
+}
+
+void HL2Stream::setCwxKey(bool down) {
+    auto* p = lyra::wire::prn;
+    if (!p) return;                         // radio gone / not created
+    p->tx[0].cwx = down ? 1 : 0;
+}
+
+void HL2Stream::setCwxPtt(bool on) {
+    auto* p = lyra::wire::prn;
+    if (!p) return;
+    p->tx[0].cwx_ptt = on ? 1 : 0;
+}
+
+void HL2Stream::sendCw(const QString& text) {
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    if (!(tm == 3 || tm == 4)) return;      // CW mode only (cw_enable gate)
+    if (text.isEmpty()) return;
+    ensureCwKeyer();
+    cwKeyer_->send(text.toStdString(), cwKeyerSpeedWpm_, cwKeyerWeight_);
+}
+
+void HL2Stream::abortCw() {
+    if (cwKeyer_) cwKeyer_->abort();
 }
 
 void HL2Stream::setCwKeyerSpeedWpm(int wpm) {

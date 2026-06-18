@@ -625,6 +625,17 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("txplate"), tr("TX Plating"),
                  QStringLiteral("PlatePanel.qml"),
                  QStringLiteral("txplate"), Qt::BottomDockWidgetArea);
+    // CW Console (#105 CW-3b) — chip-launched floating panel for keyboard
+    // CW send (+ the CW-5 decoder pane).  Its OWN dock; floats by default
+    // (hidden until its header chip summons it) so the front panel stays
+    // clean for the majority who never keyboard-send / decode CW.
+    addQuickDock(QStringLiteral("cwconsole"), tr("CW"),
+                 QStringLiteral("CwConsolePanel.qml"),
+                 QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea);
+    if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
+        d->setFloating(true);
+        d->hide();
+    }
     // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
     // window so the front panel stays clean — the header "TX DSP" chip-strip
     // summons one (it pops as a movable/resizable float), and Save-my-layout
@@ -887,6 +898,21 @@ void MainWindow::buildToolbar() {
                     btn->setObjectName(QStringLiteral("txDspChip"));
                     btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
                 }
+            }
+        }
+        // CW console launcher (#105 CW-3b) — its own chip after the TX DSP
+        // strip; summons the floating CW Console (keyboard send + the CW-5
+        // decoder pane).  Same boxed style; the chip IS the dock's
+        // toggleViewAction so open/close stays in sync + rides Save-layout.
+        tb->addSeparator();
+        if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("CW"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
         }
     }

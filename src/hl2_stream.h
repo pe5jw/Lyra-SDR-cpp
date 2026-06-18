@@ -91,6 +91,10 @@
 // register_sink() + router_instance(0) calls (the post-rxWorker_
 // IQ-dispatch path).
 #include "wire/Router.h"
+#include <memory>
+
+// #105 CW-3a — host CW keyer (CWX); the full type is pulled in the .cpp.
+namespace lyra::tx { class CwKeyer; }
 
 namespace lyra::ipc {
 
@@ -928,6 +932,15 @@ public slots:
     // carrier paints on the marker, and the gateware HW sidetone freq.  Wired
     // from WdspEngine::cwPitchChanged in main.cpp; clamps 200..1500.
     void setCwPitchHz(int hz);
+    // #105 CW-3a — host software keyer (CWX).  sendCw queues `text` to the
+    // morse keyer at the operator WPM/weight; no-op outside CW mode (the
+    // gateware ignores the CW bits unless cw_enable, which is CW-mode only).
+    // abortCw flushes the queue + drops the key.  The keyer drives
+    // tx[0].cwx (per element) + tx[0].cwx_ptt (held per message); the
+    // gateware keys the carrier + HW sidetone.  QSK (default break-in):
+    // host stays RX, exactly like the paddle.  Thread-safe.
+    Q_INVOKABLE void sendCw(const QString& text);
+    Q_INVOKABLE void abortCw();
     // #93/#106 — AM/SAM carrier level (0..100 %); persists, emits, forwards
     // the 0..1 fraction to SetTXAAMCarrierLevel.
     void setAmCarrierPct(double pct);
@@ -1622,6 +1635,16 @@ private:
     // (the firmware-keyer + sidetone master).  Armed only in CW mode so a
     // paddle press outside CW can't key a CW carrier.  No-op if prn null.
     void   applyCwKeyerEnable();
+    // #105 CW-3a — host CW keyer (CWX).  setCwxKey/setCwxPtt write the
+    // wire CW bits (guard prn-null; single-int writes tolerate the EP2
+    // writer's 1-frame read skew, benign for CW element timing).  The
+    // keyer is lazily created and runs its element pump on a dedicated
+    // thread, calling these via injected callbacks.  ensureCwKeyer()
+    // builds it on first use; close() aborts it before prn teardown.
+    void   setCwxKey(bool down);   // → tx[0].cwx     (per-element key)
+    void   setCwxPtt(bool on);     // → tx[0].cwx_ptt (message-level hold)
+    void   ensureCwKeyer();
+    std::unique_ptr<lyra::tx::CwKeyer> cwKeyer_;
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER
     // (100 % = standard AM = WDSP c_level 0.5 = 25 % of PEP).  Maps via
     // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.

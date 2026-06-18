@@ -218,6 +218,11 @@ qt_add_executable(lyra
     src/tx/TrSequencing.h
     src/tx/MoxEdgeFade.h
     src/tx/MoxEdgeFade.cpp
+    # #105 CW-3a — host CW morse engine + keyer pump (FSM wiring follows).
+    src/tx/CwMorse.h
+    src/tx/CwMorse.cpp
+    src/tx/CwKeyer.h
+    src/tx/CwKeyer.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -351,6 +356,7 @@ qt_add_qml_module(lyra
         src/qml/TxPanel.qml
         src/qml/EqPanel.qml
         src/qml/SpeechPanel.qml
+        src/qml/CwConsolePanel.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
         src/qml/ProfilePanel.qml
