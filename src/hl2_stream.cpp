@@ -378,8 +378,6 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     cwSidetoneOn_ = QSettings().value(QStringLiteral("tx/cw/sidetoneOn"), true).toBool();
     cwSidetoneLevel_ = std::clamp(
         QSettings().value(QStringLiteral("tx/cw/sidetoneLevel"), 64).toInt(), 0, 127);
-    cwSidetoneFreqHz_ = std::clamp(
-        QSettings().value(QStringLiteral("tx/cw/sidetoneFreqHz"), 600).toInt(), 200, 2250);
     // #93/#106 — AM/SAM carrier level (% of 0..1 c_level; 50 % = WDSP default).
     amCarrierPct_ = std::clamp(
         QSettings().value(QStringLiteral("tx/amCarrierPct"),
@@ -2413,15 +2411,6 @@ void HL2Stream::setCwSidetoneLevel(int level) {
     cwSidetoneLevel_ = c;
     QSettings().setValue(QStringLiteral("tx/cw/sidetoneLevel"), c);
     emit cwSidetoneLevelChanged(c);
-    applyCwConfigToPrn();
-}
-
-void HL2Stream::setCwSidetoneFreqHz(int hz) {
-    const int c = std::clamp(hz, 200, 2250);
-    if (c == cwSidetoneFreqHz_) return;
-    cwSidetoneFreqHz_ = c;
-    QSettings().setValue(QStringLiteral("tx/cw/sidetoneFreqHz"), c);
-    emit cwSidetoneFreqHzChanged(c);
     applyCwConfigToPrn();
 }
 

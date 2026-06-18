@@ -423,8 +423,6 @@ class HL2Stream : public QObject {
                WRITE setCwSidetoneOn     NOTIFY cwSidetoneOnChanged)
     Q_PROPERTY(int  cwSidetoneLevel  READ cwSidetoneLevel
                WRITE setCwSidetoneLevel  NOTIFY cwSidetoneLevelChanged)
-    Q_PROPERTY(int  cwSidetoneFreqHz READ cwSidetoneFreqHz
-               WRITE setCwSidetoneFreqHz NOTIFY cwSidetoneFreqHzChanged)
 
     // #93/#106 — AM/SAM carrier level, operator-facing as a percent
     // (0..100 %, default 50 = WDSP's 0.5 default = standard AM).  Higher =
@@ -659,7 +657,6 @@ public:
     int     cwHangDelayMs()         const { return cwHangDelayMs_;         }
     bool    cwSidetoneOn()          const { return cwSidetoneOn_;          }
     int     cwSidetoneLevel()       const { return cwSidetoneLevel_;       }
-    int     cwSidetoneFreqHz()      const { return cwSidetoneFreqHz_;      }
     // #93/#106 — AM/SAM carrier level (percent).
     double  amCarrierPct()          const { return amCarrierPct_;          }
 
@@ -926,7 +923,6 @@ public slots:
     void setCwHangDelayMs(int ms);
     void setCwSidetoneOn(bool on);
     void setCwSidetoneLevel(int level);
-    void setCwSidetoneFreqHz(int hz);
     // #105 CW-2 — the single CW pitch (shared with WdspEngine::cwPitchHz /
     // the RX pitch / the marker).  Drives the keyed CW carrier offset so the
     // carrier paints on the marker, and the gateware HW sidetone freq.  Wired
@@ -1083,7 +1079,6 @@ signals:
     void cwHangDelayMsChanged(int ms);
     void cwSidetoneOnChanged(bool on);
     void cwSidetoneLevelChanged(int level);
-    void cwSidetoneFreqHzChanged(int hz);
     // #93/#106 — AM/SAM carrier level (percent).
     void amCarrierPctChanged(double pct);
     // Fires once when the safety timeout actually expires and the FSM
@@ -1613,7 +1608,6 @@ private:
     int    cwHangDelayMs_    = 300;    // prn->cw.hang_delay (0..1000 ms)
     bool   cwSidetoneOn_     = true;   // prn->cw.sidetone (FPGA HW sidetone)
     int    cwSidetoneLevel_  = 64;     // prn->cw.sidetone_level (0..127)
-    int    cwSidetoneFreqHz_ = 600;    // prn->cw.sidetone_freq (= CW pitch, 200..2250)
     // #105 CW-2 — firmware (gateware) CW keyer enable.  Mirrors Thetis
     // CWFWKeyer (console.cs, default true): when in CW it arms the HL2's
     // internal iambic keyer so a physical paddle/key in the radio jack
