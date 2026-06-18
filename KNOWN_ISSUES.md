@@ -26,10 +26,6 @@ These are on the roadmap, not broken:
 
 If you hit one of these, a report with details (below) genuinely helps:
 
-* **Virtual Audio Cable (VAC) enable/disable.** Earlier builds could crash
-  when toggling VAC on/off or moving the VAC volume slider; this path was
-  substantially reworked. If you still see a crash or stuck audio around
-  VAC, please report your audio device(s) and the exact steps.
 * **Restart right after a force-kill during transmit.** If Lyra is killed
   (Task Manager / crash) *while transmitting*, reopening the radio can
   occasionally hang. Restarting Lyra clears it. Report if you can reproduce
