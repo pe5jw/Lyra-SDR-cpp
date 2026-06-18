@@ -587,6 +587,16 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::txAnalyzerOffsetChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxAnalyzerOffsetHz);
 
+    // #105 CW-2 — one CW pitch.  WdspEngine::cwPitchHz (the RX pitch / marker,
+    // edited from the Tuning panel + the CW tab) is the single source; feed it
+    // to the stream so the keyed CW carrier offset lands on the marker and the
+    // HW sidetone runs at the CW pitch.  Seeded once, then tracks live.
+    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::cwPitchChanged,
+                     stream, [stream, wdspEngine] {
+                         stream->setCwPitchHz(wdspEngine->cwPitchHz());
+                     });
+    stream->setCwPitchHz(wdspEngine->cwPitchHz());   // seed from persisted RX pitch
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still

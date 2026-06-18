@@ -1511,6 +1511,33 @@ void HL2Stream::setMicBoost(bool on) {
                       : QStringLiteral("off (0 dB HW)")));
 }
 
+int HL2Stream::cwTxCarrierOffsetHz() const {
+    // #105 CW-2 — VFO − DDS for the current TX mode, == WdspEngine::
+    // cwMarkerOffsetForMode so the keyed CW carrier paints on the marker.
+    // CWU(4) carrier sits +pitch above the DDC, CWL(3) −pitch below; every
+    // other mode 0.  Uses the live shared CW pitch (cwPitchHz_, fed from the
+    // RX pitch) — the same value the marker uses — NOT the tune constant.
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    const int p  = cwPitchHz_.load(std::memory_order_relaxed);
+    return (tm == 4) ? +p : (tm == 3) ? -p : 0;   // CWU / CWL / other
+}
+
+void HL2Stream::setCwPitchHz(int hz) {
+    // #105 CW-2 — the single CW pitch (shared with the RX pitch / marker,
+    // WdspEngine::cwPitchHz; wired in main.cpp).  Drives the keyed CW carrier
+    // offset (cwTxCarrierOffsetHz) so the carrier tracks the marker, and the
+    // gateware HW sidetone freq (= CW pitch).  Clamp matches WdspEngine.
+    const int c = std::clamp(hz, 200, 1500);
+    if (c == cwPitchHz_.load(std::memory_order_relaxed)) return;
+    cwPitchHz_.store(c, std::memory_order_relaxed);
+    // Re-push the TX NCO so the keyed CW carrier offset follows the new pitch
+    // (the marker moved to the new pitch too — keep the carrier on it).  The
+    // HW-sidetone-follows-pitch unification is the item-2 UI commit.
+    if (lyra::wire::prn != nullptr)
+        lyra::wire::set_tx_freq(
+            txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));
+}
+
 int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
     // P4.b TUN zero-beat — Thetis tx_freq computation gated on chkTUN
     // (console.cs:32574-32587): while tuning, offset the TX NCO by
@@ -1518,7 +1545,11 @@ int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
     // setTune) cancels to a carrier at the dial.  Not tuning → dial
     // unchanged.  Same kTuneCwPitchHz both sides → they cancel.
     if (!tuneEnabled_.load(std::memory_order_relaxed))
-        return static_cast<int>(dialHz);
+        // #105 CW-2 fix — the keyed CW carrier must land on the marker (the
+        // displayed VFO = DDS + markerOffset), NOT at the DDC centre.  Add the
+        // CW carrier offset (CWU +pitch / CWL −pitch / other 0), using the
+        // live shared CW pitch.  Non-CW → 0 so SSB/AM/FM/DSB are unchanged.
+        return static_cast<int>(dialHz) + cwTxCarrierOffsetHz();
     // ∓cw_pitch by sideband so the ±cw_pitch postgen tone cancels to a
     // carrier at the dial.  Double-sideband modes (DSB/FM/AM/SAM) are
     // centered → no offset; LSB-side {LSB,CWL,DIGL} +pitch; USB-side −pitch.
@@ -2467,14 +2498,15 @@ void HL2Stream::setTxMode(int wdspMode) {
           fwd ? "forwarded to TxControl.setMode"
               : "NO-OP (TxControl.setMode not registered)");
     if (fwd) fwd(clamped);
-    // If tuning when the sideband changes, re-push the TX NCO so the
-    // DDS offset flips sign with the mode (keeps the tune carrier
-    // zero-beat).  Rare (mode change mid-tune) but kept coherent.
-    if (tuneEnabled_.load(std::memory_order_relaxed) && lyra::wire::prn != nullptr) {
+    // Re-push the TX NCO on every mode change: the CW carrier offset
+    // (cwTxCarrierOffsetHz) flips sign between CWU/CWL, and the TUN DDS offset
+    // (when tuning) flips too — keep the keyed/tune carrier on the marker.
+    // Benign during RX (TX NCO is consumed only while transmitting).
+    if (lyra::wire::prn != nullptr) {
         lyra::wire::set_tx_freq(
             txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));
-        // P4.b TUN display-honesty: the NCO offset sign flipped with the
-        // sideband — re-tell the panadapter so the crop stays on the marker.
+        // Display-honesty: re-tell the panadapter so the TX crop stays on
+        // the marker when the offset sign flips with the sideband.
         emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
     }
 }

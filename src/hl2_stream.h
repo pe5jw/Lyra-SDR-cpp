@@ -927,6 +927,11 @@ public slots:
     void setCwSidetoneOn(bool on);
     void setCwSidetoneLevel(int level);
     void setCwSidetoneFreqHz(int hz);
+    // #105 CW-2 — the single CW pitch (shared with WdspEngine::cwPitchHz /
+    // the RX pitch / the marker).  Drives the keyed CW carrier offset so the
+    // carrier paints on the marker, and the gateware HW sidetone freq.  Wired
+    // from WdspEngine::cwPitchChanged in main.cpp; clamps 200..1500.
+    void setCwPitchHz(int hz);
     // #93/#106 — AM/SAM carrier level (0..100 %); persists, emits, forwards
     // the 0..1 fraction to SetTXAAMCarrierLevel.
     void setAmCarrierPct(double pct);
@@ -948,6 +953,11 @@ public slots:
     // dial.  Mirrors Thetis's tx_freq computation gated on chkTUN
     // (console.cs:32574-32587).
     int txDdsHzForTune(quint32 dialHz) const;
+    // #105 CW-2 — VFO − DDS carrier offset for the current TX mode (CWU
+    // +pitch / CWL −pitch / other 0), == WdspEngine::cwMarkerOffsetForMode,
+    // using the live cwPitchHz_.  Added to the non-tuning TX NCO so the keyed
+    // CW carrier lands on the marker.
+    int cwTxCarrierOffsetHz() const;
 
     // P4.b TUN display-honesty — the NCO−dial offset the panadapter crop
     // needs (= txDdsHzForTune(dial) − dial, freq-independent): ∓kTuneCwPitchHz
@@ -1312,6 +1322,10 @@ private:
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)
+    // #105 CW-2 — the single live CW pitch (shared with the RX pitch +
+    // marker; fed from WdspEngine::cwPitchHz via setCwPitchHz, wired in
+    // main.cpp).  Drives the keyed CW carrier offset + the HW sidetone freq.
+    std::atomic<int>     cwPitchHz_{600};
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
     std::atomic<bool>    micBoost_{false};      // 0x12 C2 bit 0 (+20 dB HW boost)
     // TX-0c-tune — operator-armed tune-tone generator.  Atomic so the
