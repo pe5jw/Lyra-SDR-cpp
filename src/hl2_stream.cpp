@@ -1533,12 +1533,17 @@ void HL2Stream::setCwPitchHz(int hz) {
     const int c = std::clamp(hz, 200, 1500);
     if (c == cwPitchHz_.load(std::memory_order_relaxed)) return;
     cwPitchHz_.store(c, std::memory_order_relaxed);
-    // Re-push the TX NCO so the keyed CW carrier offset follows the new pitch
-    // (the marker moved to the new pitch too — keep the carrier on it).  The
-    // HW-sidetone-follows-pitch unification is the item-2 UI commit.
-    if (lyra::wire::prn != nullptr)
+    if (auto* p = lyra::wire::prn) {
+        // One pitch: the gateware HW sidetone runs at the CW pitch (no
+        // separate sidetone-freq control).
+        p->cw.sidetone_freq = c;
+        // Re-push the TX NCO so the keyed CW carrier offset follows the new
+        // pitch (the marker moved to the new pitch too — keep the carrier on it).
         lyra::wire::set_tx_freq(
             txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));
+    }
+    // The panadapter TX-analyzer crop (NCO − DDS) changed with the pitch.
+    emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
 }
 
 int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
@@ -1564,13 +1569,16 @@ int HL2Stream::txDdsHzForTune(quint32 dialHz) const {
 }
 
 int HL2Stream::txAnalyzerOffsetHz() const {
-    // = txDdsHzForTune(d) − d (freq-independent): the NCO−dial offset the
-    // panadapter crop must undo so the TUN carrier paints on the marker.
-    if (!tuneEnabled_.load(std::memory_order_relaxed)) return 0;
-    const int tm = txMode_.load(std::memory_order_relaxed);
-    return (tm == 2 || tm == 5 || tm == 6 || tm == 10) ? 0   // DSB/FM/AM/SAM centered
-         : (tm == 0 || tm == 3 || tm == 9) ? +kTuneCwPitchHz  // LSB/CWL/DIGL
-         :                                   -kTuneCwPitchHz; // USB/CWU/DIGU
+    // The panadapter TX-analyzer crop = TX NCO − DDS, so the analyzer carrier
+    // (which sits at the NCO) paints on the marker (= DDS + markerOffset).
+    // #105 fix: the CW keyed carrier offset moved the NCO to the carrier for
+    // ALL CW TX (not just TUN), so the crop must follow it for keyed CW too —
+    // otherwise the analyzer paints the carrier at panadapter centre, off the
+    // marker (CWL above / CWU below — the operator's bench report).  Computing
+    // it as NCO − DDS covers SSB (0), keyed CW, and TUN uniformly, and tracks
+    // the live CW pitch (txDdsHzForTune uses cwPitchHz_).
+    const int dds = static_cast<int>(txFreqHz_.load(std::memory_order_relaxed));
+    return txDdsHzForTune(dds) - dds;
 }
 
 void HL2Stream::setTuneEnabled(bool on) {
@@ -2269,7 +2277,7 @@ void HL2Stream::applyCwConfigToPrn() {
     p->cw.hang_delay     = cwHangDelayMs_;
     p->cw.sidetone       = cwSidetoneOn_    ? 1 : 0;
     p->cw.sidetone_level = cwSidetoneLevel_;
-    p->cw.sidetone_freq  = cwSidetoneFreqHz_;
+    p->cw.sidetone_freq  = cwPitchHz_.load(std::memory_order_relaxed);  // one pitch (== RX/CW pitch)
     // cw_enable intentionally untouched here — owned by applyCwKeyerEnable()
     // (the Thetis EnableCWKeyer analog), driven by CW-mode entry/exit.
 }

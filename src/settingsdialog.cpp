@@ -2488,20 +2488,32 @@ QWidget *SettingsDialog::buildCwTab() {
                 spd, [spd](int v) { if (spd->value()!=v) spd->setValue(v); });
         form->addRow(tr("Keyer speed:"), spd);
 
-        auto *pitch = new QSpinBox(grp);
-        pitch->setRange(200, 2250);
-        pitch->setSingleStep(10);
-        pitch->setSuffix(tr(" Hz"));
-        pitch->setValue(stream_->cwSidetoneFreqHz());
-        pitch->setToolTip(tr(
-            "CW pitch / sidetone frequency.  Sets the FPGA hardware "
-            "sidetone you hear on the HL2 phones while keying.  Range "
-            "200-2250 Hz; default 600."));
-        connect(pitch, qOverload<int>(&QSpinBox::valueChanged), grp,
-                [this](int v) { stream_->setCwSidetoneFreqHz(v); });
-        connect(stream_, &lyra::ipc::HL2Stream::cwSidetoneFreqHzChanged,
-                pitch, [pitch](int v) { if (pitch->value()!=v) pitch->setValue(v); });
-        form->addRow(tr("CW pitch:"), pitch);
+        // #105 — ONE CW pitch.  This control edits the SAME value as the
+        // Tuning-panel "Pitch" (WdspEngine::cwPitchHz) — change one, both
+        // move.  It sets the RX beat, the marker, the TX keyed-carrier offset,
+        // AND the gateware HW sidetone (which now follows the CW pitch).  No
+        // separate sidetone-frequency control.  (engine_ is the WDSP engine,
+        // the single source of truth for the pitch.)
+        if (engine_) {
+            auto *pitch = new QSpinBox(grp);
+            pitch->setRange(200, 1500);
+            pitch->setSingleStep(10);
+            pitch->setSuffix(tr(" Hz"));
+            pitch->setValue(engine_->cwPitchHz());
+            pitch->setToolTip(tr(
+                "CW pitch — the single value shared by RX and TX: the RX beat "
+                "note, the carrier marker, the TX keyed-carrier offset, and "
+                "the HW sidetone all use it.  Same control as the Tuning "
+                "panel Pitch.  Range 200-1500 Hz; default 600."));
+            connect(pitch, qOverload<int>(&QSpinBox::valueChanged), grp,
+                    [this](int v) { engine_->setCwPitchHz(v); });
+            connect(engine_, &lyra::dsp::WdspEngine::cwPitchChanged,
+                    pitch, [this, pitch] {
+                        const int v = engine_->cwPitchHz();
+                        if (pitch->value() != v) pitch->setValue(v);
+                    });
+            form->addRow(tr("CW pitch:"), pitch);
+        }
 
         auto *wt = new QSpinBox(grp);
         wt->setRange(33, 66);
