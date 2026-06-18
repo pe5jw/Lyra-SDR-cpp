@@ -1,6 +1,10 @@
 # CW Transmit — port plan (#105)
 
-Status: **DESIGN / mapped-out 2026-06-17** (research dive, no code yet).
+Status: **DESIGN / mapped-out 2026-06-17; TCI-keying study + re-scope
+2026-06-18** (no code yet). Operator scope: paddle + TCI keying first.
+**Read §10–§12 for the TCI study + the revised build order (CW-1…CW-5).**
+Key result: TCI CW keying needs the native keyer engine (CW-3); the 0x0b
+collision risk is resolved (§2 update).
 Grounded in a 2-lane reference dive: Thetis 2.10.3.13 host side
 (`Console\cwx.cs`, `console.cs`, `setup.cs`, `wdsp\TXA.c`) + the HL2 wire
 (`ChannelMaster\networkproto1.c`, `network.h`) + the operator's HL2+
@@ -67,9 +71,19 @@ gateware keyer its config and reads the key line for UI/semi-break-in.
   reference `networkproto1.c:332-334` computes `dot_in=(C0<<2)&1` which is
   always 0 — a real reference defect; Lyra already avoids it.)
 
-**Gap to verify/build:** the **CW C&C composer cases** are NOT in the
-FrameComposer yet (grep of the composer found no 0x0b/0x0f/0x10 CW frames).
-Those need adding (see §3).
+**UPDATE 2026-06-18 — the C&C composer cases ARE now in tree** (the doc's
+original "not yet" predates the TX wire-layer rebuild, which ported them
+verbatim). Verified in `src/wire/FrameComposer.cpp`:
+- **case 13 / addr 0x0f** (lines ~349-365): `cw_enable` + `sidetone_level` + `rf_delay`.
+- **case 14 / addr 0x10** (~368-383): `hang_delay` split + `sidetone_freq` split.
+- **case 12 / addr 0x0b** (~550-595): C1/C2 = ADC1/ADC2 `rx_step_attn`, **C3 = keyer_speed(6b)+CWMode(7:6), C4 = keyer_weight(7b)+strict_spacing(7)**.
+All dispatched (switch ~926-934) and read from `prn->cw`. **The §9 "0x0b
+collision" RISK IS RESOLVED:** CW keyer config is in case-12 **C3/C4**, the
+step-att in case-12 **C1/C2**, and the main ATT-on-TX step-attenuator on
+*different* registers entirely (case 4 / 0x1c C3 + case 11 / 0x14 C4) — no
+byte overlap. The remaining C-1 work is only the operator→`prn->cw` config
+plumbing (today only `edge_length` is seeded, RadioNet.cpp:80) + confirming
+`CWMode` is derived from the `prn->cw` mode field.
 
 ---
 
@@ -232,3 +246,145 @@ gateware-paddle (Path A) + computer-CW (Path B); a host iambic is optional.
   EP2-cadence lessons — dedicated timer/thread).
 - No on-air testing possible until weather clears; C-1/C-2/C-3 are
   bench-on-dummy-load verifiable.
+
+---
+
+## 10. TCI as a CW keyer (study 2026-06-18, 3-source dive)
+
+Sources: **TCI Protocol v2.0 manual** (`D:\sdrprojects\TCI Protocol.pdf`,
+41 pp); **Thetis `Console\TCIServer.cs` + `cwx.cs`** (impl reference); Lyra
+**`src/tci_server.cpp`** (current state). Provenance only — shipped Lyra
+code uses RF terms, not reference names.
+
+### 10.0 THE mechanism (settles the C-3-is-needed question)
+TCI keys CW primarily by the client sending **morse TEXT** (`cw_macros` /
+`cw_msg`); the **host application renders the morse itself and keys the
+radio element-by-element.** Thetis is NOT a "send text, radio makes WPM"
+black box — it is a PC app whose CWX engine (`cwx.cs`) renders text → element
+FIFO → a **Win32 multimedia timer at the dot rate** → `SetCWX()` keys the
+wire. **Lyra is the same kind of host app**, so **TCI CW keying REQUIRES
+Lyra's own native keyer engine** (the §4 / C-3 deliverable). There is no TCI
+shortcut that avoids building the keyer. **Corollary: the TCI text path and
+the future keyboard/computer-CW path feed ONE shared keyer engine** → EP2
+`cwx`/`cwx_ptt` bits (§3a). Build the engine once; both consume it.
+
+A secondary discrete path, **`keyer:rx,<bool>,<prev_elem_ms>`**, bypasses the
+morse engine (the client supplies element timing; the host just gates the key
+line with PC-clock-accurate duration + a stuck-key watchdog). This is the
+natural bridge for an external straight key / Winkeyer over TCI (#171).
+
+### 10.1 TCI CW command surface (client→radio unless noted)
+| Token | Args | Role |
+|---|---|---|
+| `cw_macros` | `rx,text` | free morse text to key; queues; inline `>`/`<` = ±5 WPM; `\|XX\|` run-together; `:`,`,`,`;` escaped `^`,`~`,`*` |
+| `cw_msg` | `rx,prefix,call,suffix` | structured msg; `$2` repeats call; **higher priority than macros**; 1-arg form = live-correct the not-yet-sent callsign |
+| `cw_macros_stop` | — | **abort** all macros/messages |
+| `cw_macros_speed` | `wpm` (1–99) | macro WPM (bidir/query) |
+| `cw_keyer_speed` | `wpm` | hardware/paddle keyer WPM (client→radio) |
+| `cw_macros_speed_up` / `_down` | `n` | ±N WPM live |
+| `cw_macros_delay` | `ms` | PTT→key delay (bidir) |
+| `cw_terminal` | `bool` | stay in TX after macro (enables the callbacks below) |
+| `cw_macros_empty` | `rx` | **radio→client** — last queued letter started (terminal mode) |
+| `callsign_send` | `call` | **radio→client** — final keyed callsign (post-correction) |
+| `mon_enable` / `mon_volume` | — | generic TX monitor (covers CW sidetone; pitch is NOT a TCI param) |
+
+Thetis behavior to mirror (TCIServer.cs / cwx.cs): new macros **queue, no
+preempt** (only `cw_msg` mid-`cw_msg` replaces the not-yet-sent callsign;
+`cw_macros_stop` is the only abort); element timing on a **dedicated timer/
+thread, never the UI thread**; the `keyer:` straight-key path on its own
+high-priority Stopwatch thread + 3 s watchdog; `cw_macros_empty`/
+`callsign_send` emitted from the keyer's char-started/segment-complete hooks.
+
+### 10.2 Lyra TCI current state (`src/tci_server.cpp`)
+- **Works:** `CW_PITCH` (RX sidetone pitch) + CW mode-token mapping
+  (`CWL`/`CWU`↔`CW`); modulations list already advertises `CWL,CWU(,CW)`.
+- **Silent no-ops** (the accept-and-drop block ~1452-1459): `KEYER`,
+  `CW_MACROS*` (one blanket prefix — none individually parsed),
+  `CW_MSG`, `CW_TERMINAL`, `CW_KEYER_SPEED`. → sending `cw_msg:0,CQ` does
+  nothing on the wire today. The header even documents "cw_* acknowledged
+  inactive." Root cause: no CW TX modulator yet (this task).
+
+### 10.3 Confirmed against SDRLogger+ — the operator's daily TCI client
+SDRLogger+ (sibling project, `Y:\Claude local\hamlog\main.py`) is a TCI
+*client*; its CW keyer emits EXACTLY (main.py:2181-2202):
+- `cw_macros_speed:<wpm>` — set WPM
+- `cw_macros:0,<text>` — send morse text (client-side expands `{MYRIG}`/
+  `{MYGRID}` etc. BEFORE sending → Lyra receives plain text + inline
+  `>`/`<`/`|XX|` controls only; no macro-var expansion needed server-side)
+- `cw_macros_stop` — abort
+It does NOT use `cw_msg` or the discrete `keyer:` path for TCI (it has
+separate WinKeyer-serial + HamLib CW backends). **→ The CW-4 interop MVP for
+the operator's own logger is just these three handlers** wired to the keyer
+engine (`cw_macros_speed` → WPM; `cw_macros:0,text` → render+key;
+`cw_macros_stop` → abort). The fuller §10.1 surface (`cw_msg`, callbacks,
+terminal, speed_up/down) is for broader client compatibility. SDRLogger+ also
+has a CW **decoder** (RX-side: received CW → text) — out of scope for #105 TX,
+noted as a possible future Lyra RX feature.
+
+---
+
+## 11. TCI handshake + Network-tab settings — gaps (audit 2026-06-18)
+
+### 11.1 Handshake (`sendInit`, tci_server.cpp ~923-981) — present vs gap
+Advertises: `protocol Lyra,1.9` · `device HermesLite2` · `receive_only false`
+· `trx_count 1` · `channel_count 1` (+legacy `channels_count`) · `vfo_limits
+10000,55000000` · `if_limits ±rate/2` · `modulations_list
+USB,LSB,CWU,CWL,AM,SAM,DSB,FM,DIGU,DIGL(,CW)` · audio-stream params · `ready`.
+**Gaps:** advertises **1.9** though it speaks v2.0 binary streams (consider
+2.0); **no CW params echoed** at connect (`cw_macros_speed`/`_delay`/
+`cw_keyer_speed` — clients init their CW panel from these); **`tx_enable`
+only reactive** (sent on query, not advertised — MSHV wants the echo to permit
+TX); **`vfo_limits` hardcoded** (not band/HL2-derived).
+
+### 11.2 Network-tab TCI settings (settingsdialog.cpp ~638-827)
+Present: bind host, port, rate-limit, send-initial-state, "add CW to
+modulations", emulate-ExpertSDR3, emulate-SunSDR2, RX-out gain, TX-in gain,
+master enable + status. **Missing (the operator's "settings we still need"):**
+- **CW group** (lands with the keyer): keyer WPM default, keyer mode
+  (straight / iambic A / B), reverse paddles, weight, strict-spacing,
+  break-in OFF/SEMI, hang/PTT-delay, HW-sidetone enable+level, CWX speed +
+  PTT-delay + drop/hang. (These map to §7's control table — the Settings→TX
+  CW group and the TCI CW params are the SAME state, just two surfaces.)
+- **Advertised protocol version** selector (locked 1.9).
+- **TX-enable / receive-only** operator toggle (hardcoded today).
+- **Audio/IQ stream params** (rate / channels / packet / buffering — all
+  hardcoded constants; no operator surface).
+- **Max-clients / allowed-clients** (binds + accepts any).
+
+---
+
+## 12. Revised build order (operator scope 2026-06-18: paddle + TCI first)
+
+Supersedes §8 for the chosen scope. The keyer engine is the shared core that
+both TCI-keying and (later) keyboard-CW need, so paddle goes first for the
+fastest on-air win, then the engine, then TCI rides the engine.
+
+- **CW-1 — Foundation (shared):** `Cw` `PttSource` on the PTT FSM
+  (`hl2_stream.*`) → CW-TX state that sets `cw_enable`, does NOT start the
+  WDSP TXA modulator, holds carrier at the dial (no TX-NCO offset), SEMI
+  break-in hang. + operator→`prn->cw` config plumbing (composer already
+  consumes it, §2 update) + **Settings → TX → CW group** (§7 defaults).
+  Wire-inert until keyed → RX/voice-TX byte-identical. Bench: dummy load.
+- **CW-2 — Paddle / gateware iambic → FIRST CW ON AIR.** Push keyer config
+  (0x0b case 12 C3/C4) so a physical paddle/key in the HL2 jack works (FPGA
+  keys + makes HW sidetone); read EP6 key-line for display + semi-break-in
+  trigger. Small — no host engine. Bench: paddle → clean keying, sidetone,
+  zero-beat at dial.
+- **CW-3 — Native keyer engine (the core).** Morse table → element FIFO →
+  steady **off-Qt-thread** timer (EP2-cadence discipline) → drive
+  `prn->tx[0].cwx`/`cwx_ptt` + `cw_enable`; integrate the FSM `Cw` source;
+  queue + `stop` abort + inline ±5 WPM. Port the algorithm of `cwx.cs`
+  Lyra-native. This unlocks BOTH TCI keying and keyboard CW.
+- **CW-4 — TCI keying (rides CW-3).** Wire the silent-no-op handlers to the
+  engine: `cw_macros`/`cw_msg`/`cw_macros_stop`/`cw_macros_speed`/`_up`/
+  `_down`/`cw_keyer_speed`/`cw_terminal`; emit `cw_macros_empty` +
+  `callsign_send`; queue/priority/abort per §10.1; advertise CW params +
+  (optionally) bump protocol to 2.0 + advertise `tx_enable`.
+- **CW-5 — Network-tab + Settings→TX CW surface** (§11.2 list; the CW
+  controls are shared state with CW-1's group). Non-CW TCI polish (protocol
+  selector, stream params, tx-enable toggle, max-clients) can be its own
+  small task.
+- Later: keyboard-CW UX (type + F1–F9 memories) on CW-3; external USB keyer
+  (#171) via the `keyer:` discrete path + a COM-port surface.
+- **Phase-3-EXIT safety gate** before antenna CW: kill-test + stuck-carrier
+  check on dummy load (same as the voice modulators).
