@@ -1174,6 +1174,78 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             sendTo(ws, QStringLiteral("cw_pitch:0,%1").arg(engine_->cwPitchHz()));
         return;
     }
+    // #105 CW-4 — host CW keying over TCI.  Verified against the EESDR TCI
+    // protocol spec (docs/TCI Protocol.pdf §3.2) + Thetis TCIServer.cs +
+    // SDRLogger+ (hamlog/main.py).  Routes into the CW-3 host keyer; no-op
+    // outside CW mode (HL2Stream::sendCw gates on txMode).  sendCw/abortCw
+    // are marshalled to the stream thread (both Q_INVOKABLE) so the keyer
+    // is only ever touched there — no race vs the QML console's sendCw.
+    //
+    // Reserved-char un-escape (spec §3.2.1): clients replace : , ; in macro
+    // text with ^ ~ * so they don't break protocol framing — convert back.
+    auto cwUnescape = [](QString s) {
+        return s.replace(QLatin1Char('^'), QLatin1Char(':'))
+                .replace(QLatin1Char('~'), QLatin1Char(','))
+                .replace(QLatin1Char('*'), QLatin1Char(';'));
+    };
+    if (cmd == QStringLiteral("CW_MACROS_SPEED") ||
+        cmd == QStringLiteral("CW_KEYER_SPEED")) {
+        if (stream_ && !args.isEmpty()) {                 // Set
+            bool ok = false; const int wpm = args.last().toInt(&ok);
+            if (ok) stream_->setCwKeyerSpeedWpm(wpm);
+        } else if (stream_) {                             // Read -> Reply (bidirectional)
+            sendTo(ws, QStringLiteral("cw_macros_speed:%1")
+                          .arg(stream_->cwKeyerSpeedWpm()));
+        }
+        return;
+    }
+    if (cmd == QStringLiteral("CW_MACROS_STOP")) {         // immediate stop (spec §3.2.2)
+        if (stream_)
+            QMetaObject::invokeMethod(stream_, "abortCw", Qt::QueuedConnection);
+        return;
+    }
+    if (cmd == QStringLiteral("CW_MACROS")) {
+        // cw_macros:<tcvr>,<text> — arg[0] = transceiver index (ignored).
+        // Raw commas in text are escaped to ~, so the text is a single arg;
+        // the join+unescape is robust regardless.  Inline | | prosign-combine
+        // and < > speed-step are macro-text niceties (follow-on); plain text
+        // keys correctly today (CwMorse skips unknown glyphs like | < >).
+        if (stream_ && args.size() >= 2) {
+            const QString text = cwUnescape(args.mid(1).join(QLatin1Char(',')));
+            if (!text.isEmpty())
+                QMetaObject::invokeMethod(stream_, "sendCw",
+                                          Qt::QueuedConnection,
+                                          Q_ARG(QString, text));
+        }
+        return;
+    }
+    if (cmd == QStringLiteral("CW_MSG")) {
+        // cw_msg:<tcvr>,<prefix>,<callsign>,<suffix> (spec §3.2.2) — the
+        // contest exchange; "$N" after the callsign repeats it N times.
+        // The 1-arg callsign-edit form (cw_msg:<tcvr>;) + the CW_MSG-over-
+        // CW_MACROS interrupt/priority semantics are a follow-on (this cut
+        // assembles + sends the full message).
+        if (stream_ && args.size() >= 4) {
+            QString call = args[2];
+            int rep = 1;
+            const int dollar = call.indexOf(QLatin1Char('$'));
+            if (dollar >= 0) {
+                bool ok = false; const int n = call.mid(dollar + 1).toInt(&ok);
+                if (ok && n > 0) rep = n;
+                call = call.left(dollar);
+            }
+            QStringList parts;
+            if (!args[1].isEmpty()) parts << cwUnescape(args[1]);      // prefix
+            for (int i = 0; i < rep; ++i) parts << cwUnescape(call);   // callsign ×N
+            if (!args[3].isEmpty()) parts << cwUnescape(args[3]);      // suffix
+            const QString text = parts.join(QLatin1Char(' '));
+            if (!text.isEmpty())
+                QMetaObject::invokeMethod(stream_, "sendCw",
+                                          Qt::QueuedConnection,
+                                          Q_ARG(QString, text));
+        }
+        return;
+    }
 
     // ── sensors / S-meter ────────────────────────────────────────
     if (cmd == QStringLiteral("RX_SENSORS_ENABLE")) {
