@@ -1603,11 +1603,13 @@ private:
     bool   cwModeB_          = false;  // prn->cw.mode_b (false = iambic A)
     bool   cwRevPaddle_      = false;  // prn->cw.rev_paddle
     bool   cwStrictSpacing_  = false;  // prn->cw.strict_spacing
-    // #105 CW break-in mode (Thetis BreakIn enum): 0=QSK, 1=Semi (default),
-    // 2=Manual.  Drives prn->cw.break_in (QSK+Semi=1, Manual=0) AND the
-    // host-MOX gate in onHwPttPoll (QSK = host stays RX; Semi/Manual = host
-    // MOXes off the key line, the reference QSKEnabled distinction).
-    int    cwBreakInMode_    = 1;
+    // #105 CW break-in mode: 0=QSK (default), 1=Semi, 2=Manual.  Drives
+    // prn->cw.break_in (QSK+Semi=1, Manual=0) AND the host-MOX gate in
+    // onHwPttPoll (QSK = host stays RX, clean dits/dahs on the RX waterfall;
+    // Semi/Manual = host MOXes off the key line, the reference QSKEnabled
+    // distinction).  Default QSK: operator prefers it — the TX-analyzer view
+    // Semi triggers settles a beat late + smears the keying into a blob.
+    int    cwBreakInMode_    = 0;
     int    cwHangDelayMs_    = 300;    // prn->cw.hang_delay (0..1000 ms)
     bool   cwSidetoneOn_     = true;   // prn->cw.sidetone (FPGA HW sidetone)
     int    cwSidetoneLevel_  = 64;     // prn->cw.sidetone_level (0..127)

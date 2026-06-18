@@ -372,7 +372,7 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     cwRevPaddle_ = QSettings().value(QStringLiteral("tx/cw/revPaddle"), false).toBool();
     cwStrictSpacing_ = QSettings().value(QStringLiteral("tx/cw/strictSpacing"), false).toBool();
     cwBreakInMode_ = std::clamp(
-        QSettings().value(QStringLiteral("tx/cw/breakInMode"), 1).toInt(), 0, 2);  // default Semi
+        QSettings().value(QStringLiteral("tx/cw/breakInMode"), 0).toInt(), 0, 2);  // default QSK
     cwHangDelayMs_ = std::clamp(
         QSettings().value(QStringLiteral("tx/cw/hangDelayMs"), 300).toInt(), 0, 1000);
     cwSidetoneOn_ = QSettings().value(QStringLiteral("tx/cw/sidetoneOn"), true).toBool();
