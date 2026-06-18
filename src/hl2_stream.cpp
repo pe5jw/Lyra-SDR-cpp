@@ -360,6 +360,25 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     attOnTxDb_ = std::clamp(
         QSettings().value(QStringLiteral("tx/attOnTxDb"), kAttOnTxDb).toInt(),
         0, 31);
+    // #105 CW-1a — CW keyer config (cw_tx_design.md §7 defaults; clamped
+    // on load against hand-edited QSettings).  prn doesn't exist yet at
+    // ctor time — applyCwConfigToPrn() at open() seeds prn->cw from these.
+    cwKeyerSpeedWpm_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/keyerSpeedWpm"), 25).toInt(), 1, 60);
+    cwKeyerWeight_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/keyerWeight"), 50).toInt(), 33, 66);
+    cwIambic_ = QSettings().value(QStringLiteral("tx/cw/iambic"), true).toBool();
+    cwModeB_  = QSettings().value(QStringLiteral("tx/cw/modeB"), false).toBool();
+    cwRevPaddle_ = QSettings().value(QStringLiteral("tx/cw/revPaddle"), false).toBool();
+    cwStrictSpacing_ = QSettings().value(QStringLiteral("tx/cw/strictSpacing"), false).toBool();
+    cwBreakIn_ = QSettings().value(QStringLiteral("tx/cw/breakIn"), true).toBool();
+    cwHangDelayMs_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/hangDelayMs"), 300).toInt(), 0, 1000);
+    cwSidetoneOn_ = QSettings().value(QStringLiteral("tx/cw/sidetoneOn"), true).toBool();
+    cwSidetoneLevel_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/sidetoneLevel"), 64).toInt(), 0, 127);
+    cwSidetoneFreqHz_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/cw/sidetoneFreqHz"), 600).toInt(), 200, 2250);
     // #93/#106 — AM/SAM carrier level (% of 0..1 c_level; 50 % = WDSP default).
     amCarrierPct_ = std::clamp(
         QSettings().value(QStringLiteral("tx/amCarrierPct"),
@@ -865,6 +884,10 @@ void HL2Stream::open(const QString &ip) {
             txStepAttnDb_.load(std::memory_order_relaxed));
         lyra::wire::XmitBit =                    // wire MOX gate (0 = RX at open)
             mox_.load(std::memory_order_relaxed) ? 1 : 0;
+        // #105 CW-1a — seed prn->cw from the autoloaded operator config
+        // (cases 12/13/14 read it).  cw_enable stays 0 → TX-inert until
+        // the keying commit; the gateware ignores keyer config until CW.
+        applyCwConfigToPrn();
     }
 
     ep6Thread_.start(static_cast<int>(socket_));
@@ -2184,6 +2207,126 @@ void HL2Stream::setAttOnTxDb(int db) {
     emit attOnTxDbChanged(clamped);
     if (attOnTxEnabled_ && mox_.load(std::memory_order_relaxed))
         setTxStepAttnDb(clamped);
+}
+
+// =========================================================================
+// #105 CW-1a — CW keyer config setters + the prn->cw push.
+//
+// Each setter clamps, stores the member, persists (tx/cw/*), emits, and
+// pushes the whole CW block to prn->cw.  applyCwConfigToPrn() does NOT
+// touch prn->cw.cw_enable — that bit is owned by the keying FSM commit
+// (CW-2/CW-3); until it is set the gateware ignores all of this, so these
+// setters are wire-INERT (composer cases 12/13/14 carry safe config but
+// the FPGA only acts on it in CW).
+// =========================================================================
+void HL2Stream::applyCwConfigToPrn() {
+    auto* p = lyra::wire::prn;
+    if (!p) return;                         // radio not created yet
+    p->cw.keyer_speed    = cwKeyerSpeedWpm_;
+    p->cw.keyer_weight   = cwKeyerWeight_;
+    p->cw.iambic         = cwIambic_        ? 1 : 0;
+    p->cw.mode_b         = cwModeB_         ? 1 : 0;
+    p->cw.rev_paddle     = cwRevPaddle_     ? 1 : 0;
+    p->cw.strict_spacing = cwStrictSpacing_ ? 1 : 0;
+    p->cw.break_in       = cwBreakIn_       ? 1 : 0;
+    p->cw.hang_delay     = cwHangDelayMs_;
+    p->cw.sidetone       = cwSidetoneOn_    ? 1 : 0;
+    p->cw.sidetone_level = cwSidetoneLevel_;
+    p->cw.sidetone_freq  = cwSidetoneFreqHz_;
+    // cw_enable intentionally untouched (keying commit owns it).
+}
+
+void HL2Stream::setCwKeyerSpeedWpm(int wpm) {
+    const int c = std::clamp(wpm, 1, 60);
+    if (c == cwKeyerSpeedWpm_) return;
+    cwKeyerSpeedWpm_ = c;
+    QSettings().setValue(QStringLiteral("tx/cw/keyerSpeedWpm"), c);
+    emit cwKeyerSpeedWpmChanged(c);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwKeyerWeight(int weight) {
+    const int c = std::clamp(weight, 33, 66);
+    if (c == cwKeyerWeight_) return;
+    cwKeyerWeight_ = c;
+    QSettings().setValue(QStringLiteral("tx/cw/keyerWeight"), c);
+    emit cwKeyerWeightChanged(c);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwIambic(bool on) {
+    if (on == cwIambic_) return;
+    cwIambic_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/iambic"), on);
+    emit cwIambicChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwModeB(bool on) {
+    if (on == cwModeB_) return;
+    cwModeB_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/modeB"), on);
+    emit cwModeBChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwRevPaddle(bool on) {
+    if (on == cwRevPaddle_) return;
+    cwRevPaddle_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/revPaddle"), on);
+    emit cwRevPaddleChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwStrictSpacing(bool on) {
+    if (on == cwStrictSpacing_) return;
+    cwStrictSpacing_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/strictSpacing"), on);
+    emit cwStrictSpacingChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwBreakIn(bool on) {
+    if (on == cwBreakIn_) return;
+    cwBreakIn_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/breakIn"), on);
+    emit cwBreakInChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwHangDelayMs(int ms) {
+    const int c = std::clamp(ms, 0, 1000);
+    if (c == cwHangDelayMs_) return;
+    cwHangDelayMs_ = c;
+    QSettings().setValue(QStringLiteral("tx/cw/hangDelayMs"), c);
+    emit cwHangDelayMsChanged(c);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwSidetoneOn(bool on) {
+    if (on == cwSidetoneOn_) return;
+    cwSidetoneOn_ = on;
+    QSettings().setValue(QStringLiteral("tx/cw/sidetoneOn"), on);
+    emit cwSidetoneOnChanged(on);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwSidetoneLevel(int level) {
+    const int c = std::clamp(level, 0, 127);
+    if (c == cwSidetoneLevel_) return;
+    cwSidetoneLevel_ = c;
+    QSettings().setValue(QStringLiteral("tx/cw/sidetoneLevel"), c);
+    emit cwSidetoneLevelChanged(c);
+    applyCwConfigToPrn();
+}
+
+void HL2Stream::setCwSidetoneFreqHz(int hz) {
+    const int c = std::clamp(hz, 200, 2250);
+    if (c == cwSidetoneFreqHz_) return;
+    cwSidetoneFreqHz_ = c;
+    QSettings().setValue(QStringLiteral("tx/cw/sidetoneFreqHz"), c);
+    emit cwSidetoneFreqHzChanged(c);
+    applyCwConfigToPrn();
 }
 
 // §15.27 Commit B — Leveler max-gain ceiling (LINEAR factor,

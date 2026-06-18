@@ -399,6 +399,32 @@ class HL2Stream : public QObject {
                WRITE setAttOnTxEnabled NOTIFY attOnTxEnabledChanged)
     Q_PROPERTY(int  attOnTxDb       READ attOnTxDb
                WRITE setAttOnTxDb       NOTIFY attOnTxDbChanged)
+    // #105 CW-1a — CW keyer config (operator surface).  Plumbed into
+    // prn->cw (the composer cases 12/13/14 already consume it); INERT
+    // until the keying commit sets cw_enable.  Defaults per
+    // cw_tx_design.md §7.
+    Q_PROPERTY(int  cwKeyerSpeedWpm  READ cwKeyerSpeedWpm
+               WRITE setCwKeyerSpeedWpm  NOTIFY cwKeyerSpeedWpmChanged)
+    Q_PROPERTY(int  cwKeyerWeight    READ cwKeyerWeight
+               WRITE setCwKeyerWeight    NOTIFY cwKeyerWeightChanged)
+    Q_PROPERTY(bool cwIambic         READ cwIambic
+               WRITE setCwIambic         NOTIFY cwIambicChanged)
+    Q_PROPERTY(bool cwModeB          READ cwModeB
+               WRITE setCwModeB          NOTIFY cwModeBChanged)
+    Q_PROPERTY(bool cwRevPaddle      READ cwRevPaddle
+               WRITE setCwRevPaddle      NOTIFY cwRevPaddleChanged)
+    Q_PROPERTY(bool cwStrictSpacing  READ cwStrictSpacing
+               WRITE setCwStrictSpacing  NOTIFY cwStrictSpacingChanged)
+    Q_PROPERTY(bool cwBreakIn        READ cwBreakIn
+               WRITE setCwBreakIn        NOTIFY cwBreakInChanged)
+    Q_PROPERTY(int  cwHangDelayMs    READ cwHangDelayMs
+               WRITE setCwHangDelayMs    NOTIFY cwHangDelayMsChanged)
+    Q_PROPERTY(bool cwSidetoneOn     READ cwSidetoneOn
+               WRITE setCwSidetoneOn     NOTIFY cwSidetoneOnChanged)
+    Q_PROPERTY(int  cwSidetoneLevel  READ cwSidetoneLevel
+               WRITE setCwSidetoneLevel  NOTIFY cwSidetoneLevelChanged)
+    Q_PROPERTY(int  cwSidetoneFreqHz READ cwSidetoneFreqHz
+               WRITE setCwSidetoneFreqHz NOTIFY cwSidetoneFreqHzChanged)
 
     // #93/#106 — AM/SAM carrier level, operator-facing as a percent
     // (0..100 %, default 50 = WDSP's 0.5 default = standard AM).  Higher =
@@ -622,6 +648,18 @@ public:
     // §15.31 — ATT-on-TX operator surface getters.
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     int     attOnTxDb()             const { return attOnTxDb_;             }
+    // #105 CW-1a — CW keyer config getters.
+    int     cwKeyerSpeedWpm()       const { return cwKeyerSpeedWpm_;       }
+    int     cwKeyerWeight()         const { return cwKeyerWeight_;         }
+    bool    cwIambic()              const { return cwIambic_;              }
+    bool    cwModeB()               const { return cwModeB_;               }
+    bool    cwRevPaddle()           const { return cwRevPaddle_;           }
+    bool    cwStrictSpacing()       const { return cwStrictSpacing_;       }
+    bool    cwBreakIn()             const { return cwBreakIn_;             }
+    int     cwHangDelayMs()         const { return cwHangDelayMs_;         }
+    bool    cwSidetoneOn()          const { return cwSidetoneOn_;          }
+    int     cwSidetoneLevel()       const { return cwSidetoneLevel_;       }
+    int     cwSidetoneFreqHz()      const { return cwSidetoneFreqHz_;      }
     // #93/#106 — AM/SAM carrier level (percent).
     double  amCarrierPct()          const { return amCarrierPct_;          }
 
@@ -874,6 +912,21 @@ public slots:
     // wire live so the operator sees the effect mid-TX.
     void setAttOnTxEnabled(bool on);
     void setAttOnTxDb(int db);
+    // #105 CW-1a — CW keyer config setters.  Each clamps, stores, persists
+    // (tx/cw/*), emits, and (if prn exists) pushes the whole CW block to
+    // prn->cw via applyCwConfigToPrn().  INERT on the wire until the keying
+    // commit sets cw_enable.
+    void setCwKeyerSpeedWpm(int wpm);
+    void setCwKeyerWeight(int weight);
+    void setCwIambic(bool on);
+    void setCwModeB(bool on);
+    void setCwRevPaddle(bool on);
+    void setCwStrictSpacing(bool on);
+    void setCwBreakIn(bool on);
+    void setCwHangDelayMs(int ms);
+    void setCwSidetoneOn(bool on);
+    void setCwSidetoneLevel(int level);
+    void setCwSidetoneFreqHz(int hz);
     // #93/#106 — AM/SAM carrier level (0..100 %); persists, emits, forwards
     // the 0..1 fraction to SetTXAAMCarrierLevel.
     void setAmCarrierPct(double pct);
@@ -1009,6 +1062,18 @@ signals:
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
     void attOnTxDbChanged(int db);
+    // #105 CW-1a — CW keyer config.
+    void cwKeyerSpeedWpmChanged(int wpm);
+    void cwKeyerWeightChanged(int weight);
+    void cwIambicChanged(bool on);
+    void cwModeBChanged(bool on);
+    void cwRevPaddleChanged(bool on);
+    void cwStrictSpacingChanged(bool on);
+    void cwBreakInChanged(bool on);
+    void cwHangDelayMsChanged(int ms);
+    void cwSidetoneOnChanged(bool on);
+    void cwSidetoneLevelChanged(int level);
+    void cwSidetoneFreqHzChanged(int hz);
     // #93/#106 — AM/SAM carrier level (percent).
     void amCarrierPctChanged(double pct);
     // Fires once when the safety timeout actually expires and the FSM
@@ -1514,6 +1579,23 @@ private:
     static constexpr bool kDefaultAttOnTxEnabled = true;
     bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
     int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
+    // #105 CW-1a — CW keyer config (operator surface; cw_tx_design.md §7
+    // defaults).  Mirrored into prn->cw via applyCwConfigToPrn(); the
+    // composer (cases 12/13/14) reads prn->cw.  INERT until cw_enable is
+    // set by the keying commit (CW-2/CW-3).
+    int    cwKeyerSpeedWpm_  = 25;     // prn->cw.keyer_speed (1..60 WPM)
+    int    cwKeyerWeight_    = 50;     // prn->cw.keyer_weight (33..66)
+    bool   cwIambic_         = true;   // prn->cw.iambic (false = straight key)
+    bool   cwModeB_          = false;  // prn->cw.mode_b (false = iambic A)
+    bool   cwRevPaddle_      = false;  // prn->cw.rev_paddle
+    bool   cwStrictSpacing_  = false;  // prn->cw.strict_spacing
+    bool   cwBreakIn_        = true;   // prn->cw.break_in (true = SEMI; HL2 has no full QSK)
+    int    cwHangDelayMs_    = 300;    // prn->cw.hang_delay (0..1000 ms)
+    bool   cwSidetoneOn_     = true;   // prn->cw.sidetone (FPGA HW sidetone)
+    int    cwSidetoneLevel_  = 64;     // prn->cw.sidetone_level (0..127)
+    int    cwSidetoneFreqHz_ = 600;    // prn->cw.sidetone_freq (= CW pitch, 200..2250)
+    // Push the whole CW block into prn->cw (no-op if prn not yet created).
+    void   applyCwConfigToPrn();
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER
     // (100 % = standard AM = WDSP c_level 0.5 = 25 % of PEP).  Maps via
     // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.
