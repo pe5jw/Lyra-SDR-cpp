@@ -1671,9 +1671,25 @@ void HL2Stream::requestMoxFromHwPtt(bool on) {
 // in after a per-unit bench check).
 void HL2Stream::onHwPttPoll() {
     if (lyra::wire::prn == nullptr) return;          // stream torn down
-    if (!hwPttEnabled_.load(std::memory_order_acquire)) {
-        // Gate closed — keep lastHwPttLevel_ tracking the wire
-        // so a re-enable after a level change doesn't fire a
+    // #105 CW (Thetis QSK / firmware keyer) — the HL2's internal CW keyer
+    // raises the SAME EP6 PTT/key line on every keyed element
+    // (`ptt_resp = cw_on | ext_ptt`, hl2_rtl_radio.v:456).  In CW with the
+    // firmware keyer the gateware keys the carrier AUTONOMOUSLY and the host
+    // must stay in RECEIVE — the reference gates its whole PollPTT host-MOX
+    // block on `!QSKEnabled` (console.cs:26010) so a paddle never flips the
+    // host to TX.  Lyra previously forwarded this line to host MOX, which
+    // switched the panadapter to the TX analyzer on every dit and painted the
+    // keyed carrier off the marker (operator bench).  Match the reference:
+    // do NOT forward host MOX from this line in firmware-keyer CW; the keyed
+    // carrier is shown correctly on the marker by the (unchanged) RX path.
+    // Keep lastHwPttLevel_ tracking the wire so a return to SSB doesn't fire a
+    // stale edge.  (Manual/foot-switch TX in CW is a future break-in-mode
+    // option, matching the reference's Semi/Manual paths.)
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    const bool cwFirmwareKeyer = cwFwKeyer_ && (tm == 3 || tm == 4);  // CWL/CWU
+    if (!hwPttEnabled_.load(std::memory_order_acquire) || cwFirmwareKeyer) {
+        // Gate closed (opt-in off) OR firmware-keyer CW — keep lastHwPttLevel_
+        // tracking the wire so a re-enable / mode change doesn't fire a
         // spurious edge on the next tick.
         lastHwPttLevel_ = (lyra::wire::prn->ptt_in != 0);
         return;
