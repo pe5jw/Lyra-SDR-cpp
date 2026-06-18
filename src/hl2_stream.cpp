@@ -861,7 +861,7 @@ void HL2Stream::open(const QString &ip) {
         lyra::wire::set_rx_freq(0, rxHz);   // DDC0 RX1 (case 2/8/9)
         lyra::wire::set_rx_freq(1, rxHz);   // DDC1 (case 3 — RX1-mirror until RX2)
         lyra::wire::set_tx_freq(            // TX NCO + DDC2/3 mirror (case 1/5/6)
-            static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+            txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));  // #105 CW carrier offset (carrier, not DDS)
         lyra::wire::set_rx_step_attn_db(    // LNA gain (case 11 !XmitBit)
             std::clamp(lnaGainDb_.load(std::memory_order_relaxed),
                        kLnaMinDb, kLnaMaxDb) + 12, 0);   // HPSDR P1 +12 bias
@@ -1422,7 +1422,10 @@ void HL2Stream::setTxFreqHz(quint32 hz) {
         // setRx1FreqHz mirrors this; the standalone setter covers
         // split-mode / direct TX-freq paths.
         if (lyra::wire::prn != nullptr)
-            lyra::wire::set_tx_freq(static_cast<int>(hz));
+            // #105 CW carrier offset — transmit at the carrier (= DDS +
+            // markerOffset in CW), not the bare DDS, so the keyed carrier
+            // lands on the marker like every other TX NCO push.
+            lyra::wire::set_tx_freq(txDdsHzForTune(hz));
         emit logLine(QStringLiteral("TX freq -> %1 Hz (%2 MHz)")
                      .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
     }
@@ -2503,11 +2506,19 @@ void HL2Stream::setTxMode(int wdspMode) {
     // (when tuning) flips too — keep the keyed/tune carrier on the marker.
     // Benign during RX (TX NCO is consumed only while transmitting).
     if (lyra::wire::prn != nullptr) {
-        lyra::wire::set_tx_freq(
-            txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed)));
+        const int dds = static_cast<int>(txFreqHz_.load(std::memory_order_relaxed));
+        const int nco = txDdsHzForTune(dds);
+        lyra::wire::set_tx_freq(nco);
         // Display-honesty: re-tell the panadapter so the TX crop stays on
         // the marker when the offset sign flips with the sideband.
         emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
+        // #105 CW carrier diagnostic — ground truth for the carrier-on-marker
+        // bench.  In CW the TX NCO should equal the carrier = DDS + offset
+        // (== the marker, which WdspEngine draws at DDS + cwMarkerOffset).
+        qInfo("[tx] CW-carrier: mode=%d(CWL=3/CWU=4) dds=%d cwPitch=%d "
+              "offset=%+d -> TX_NCO=%d (should == marker = dds+offset)",
+              clamped, dds, cwPitchHz_.load(std::memory_order_relaxed),
+              cwTxCarrierOffsetHz(), nco);
     }
 }
 
