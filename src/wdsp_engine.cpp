@@ -14,6 +14,8 @@
 #include "wire/AAMix.h"  // P0.c direct port (reference aamix.h verbatim)
 #include "wire/ObBuffs.h" // P4.b — OutBound(0,…): RX audio → r1 ring → ob_main → sendOutbound (the asioOUT-pattern tee, cmasio.c:137-145)
 #include "wire/Ivac.h"   // #158 — create_ivac / destroy_ivac / xvacOUT / xvacIN / ivacGet
+#include "dsp/ParamEq.h"     // #59 — RX EQ engine (processMonoDup / bypassed)
+#include "dsp/EqAnalyzer.h"  // #59 — RX EQ analyzer feed (pre/post)
 #include "wire/CMaster.h" // #158 Stage 4 — SendpInboundVacTxAudio (VAC-in seam)
 #include <QDataStream>
 #include <QDateTime>
@@ -1704,6 +1706,11 @@ void WdspEngine::setMode(const QString &m)
         return;
     }
     mode_ = m;
+    // #59 RX EQ digital-mode auto-bypass — audio-thread-safe atomic, set here
+    // on the UI thread alongside mode_ (mirrors the TX rack's DIGU/DIGL gate;
+    // avoids reading the mode_ QString from the audio thread).
+    rxEqModeBypass_.store(m == QLatin1String("DIGU") || m == QLatin1String("DIGL"),
+                          std::memory_order_relaxed);
     recomputePassband();   // overlay edges (even when closed)
     applyModeFilter();     // SetRXAMode + new passband (no-op if closed)
     pushSquelchState();    // re-route SSQL/FMSQ/AMSQ for the new mode
@@ -3171,8 +3178,45 @@ void WdspEngine::vacInboundCb(int nsamples, double *buff)
     }
 }
 
+// #59 RX EQ — point the post-RXA audio at the RX EqModel's engine + analyzer
+// (nullptr to detach).  release-store so the audio thread sees a fully-built
+// engine; the analyzer is stored first so a non-null engine implies it's set.
+void WdspEngine::setRxEqEngine(lyra::dsp::ParamEq *eng,
+                               lyra::dsp::EqAnalyzer *analyzer)
+{
+    rxEqAnalyzer_.store(analyzer, std::memory_order_release);
+    rxEq_.store(eng, std::memory_order_release);
+}
+
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
+    // #59 RX EQ — shape the post-RXA receive audio (mono-dup L==R) BEFORE all
+    // tees (jack / PC sink / TCI / VAC), the way the reference EQs inside RXA.
+    // `audio` is const + feeds every consumer, so EQ a mutable copy and
+    // repoint the local pointer at it.  Gated: engine present, operator not
+    // bypassing (the panel ON/OFF, any mode), and not a digital mode
+    // (DIGU/DIGL stay flat for the decoders).  Analyzer fed pre/post (panel).
+    if (auto *rxeq = rxEq_.load(std::memory_order_acquire);
+        rxeq && nframes > 0 && !rxeq->bypassed() &&
+        !rxEqModeBypass_.load(std::memory_order_relaxed)) {
+        const int n2 = 2 * nframes;
+        if (static_cast<int>(rxEqBuf_.size()) != n2)
+            rxEqBuf_.assign(static_cast<size_t>(n2), 0.0);
+        std::copy(audio, audio + n2, rxEqBuf_.begin());
+        constexpr int kRxEqMaxBlk = 4096;
+        auto *rxan = rxEqAnalyzer_.load(std::memory_order_acquire);
+        if (rxan && nframes <= kRxEqMaxBlk) {
+            thread_local double preBuf[kRxEqMaxBlk];
+            for (int k = 0; k < nframes; ++k)
+                preBuf[k] = rxEqBuf_[static_cast<size_t>(2 * k)];
+            rxeq->processMonoDup(rxEqBuf_.data(), nframes);
+            rxan->feed(preBuf, rxEqBuf_.data(), nframes);
+        } else {
+            rxeq->processMonoDup(rxEqBuf_.data(), nframes);
+        }
+        audio = rxEqBuf_.data();   // every tee below now reads the EQ'd audio
+    }
+
     // #90 TX monitor — drain the post-rack tap ONCE per block into monScratch_
     // (mono), shared by Route 1 (HL2 jack, in the output loop below) and
     // Route 2 (VAC stream-2 feed in the tee block).  monActive = MOX up + MON

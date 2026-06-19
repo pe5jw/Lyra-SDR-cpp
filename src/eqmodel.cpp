@@ -30,12 +30,17 @@ std::atomic<lyra::dsp::ParamEq *>    EqModel::s_txEngine{nullptr};
 std::atomic<lyra::dsp::EqAnalyzer *> EqModel::s_txAnalyzer{nullptr};
 EqModel *EqModel::s_self = nullptr;
 
-EqModel::EqModel(QObject *parent) : QObject(parent) {
-    eq_.setSampleRate(48000.0);        // HL2 codec / TX rack rate (mic = 48 kHz)
+EqModel::EqModel(Side side, QObject *parent) : QObject(parent), side_(side) {
+    eq_.setSampleRate(48000.0);        // HL2 codec / TX rack / RX audio = 48 kHz
     analyzer_.setSampleRate(48000.0);
-    s_txEngine.store(&eq_, std::memory_order_release);
-    s_txAnalyzer.store(&analyzer_, std::memory_order_release);
-    s_self = this;
+    // Only the TX side owns the process-global wire-pump statics (txProcessCb
+    // routes the mic rack through them).  The RX side is wired directly into
+    // WdspEngine (R-2) and must NOT clobber the TX statics.
+    if (side_ == Side::Tx) {
+        s_txEngine.store(&eq_, std::memory_order_release);
+        s_txAnalyzer.store(&analyzer_, std::memory_order_release);
+        s_self = this;
+    }
 
     // Pre-size the cached bin lists so QML always sees a stable length.
     const int nb = analyzer_.bins();
@@ -50,10 +55,13 @@ EqModel::EqModel(QObject *parent) : QObject(parent) {
 }
 
 EqModel::~EqModel() {
-    // Stop routing TX audio through this engine/analyzer before destruction.
-    s_txEngine.store(nullptr, std::memory_order_release);
-    s_txAnalyzer.store(nullptr, std::memory_order_release);
-    if (s_self == this) s_self = nullptr;
+    // Stop routing TX audio through this engine/analyzer before destruction —
+    // TX side only, so the RX instance's dtor can't null the TX statics.
+    if (side_ == Side::Tx) {
+        s_txEngine.store(nullptr, std::memory_order_release);
+        s_txAnalyzer.store(nullptr, std::memory_order_release);
+        if (s_self == this) s_self = nullptr;
+    }
 }
 
 void EqModel::txProcessCb(int nSamples, double *iqPairs) {

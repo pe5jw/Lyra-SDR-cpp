@@ -2,7 +2,7 @@
 //
 // The operator-approved EESDR3-style layout, made live against the
 // native ParamEq engine (Eq context property = lyra::ui::EqModel):
-//   • white glowing summed-response curve (Eq.magnitudeDb → what you hear)
+//   • white glowing summed-response curve (eq.magnitudeDb → what you hear)
 //   • 8 numbered typed nodes on the curve; click selects (white ring),
 //     drag = freq + gain, wheel = Q
 //   • per-band tile row: #, Type (click to cycle), freq, gain/Q;
@@ -11,10 +11,10 @@
 //
 // Stage 2b adds the analyzer behind the curve (live spectrum, Accumulate
 // peak-hold, pink-noise reference, Before/After-Mod, optional waterfall).
-// Wire-INERT until Stage 3 routes the TX mic rack through Eq.engine().
+// Wire-INERT until Stage 3 routes the TX mic rack through eq.engine().
 //
 // QML can't bind to a band struct, so node/tile bindings read index-keyed
-// Eq.bandX(i) invokables and re-evaluate off `rev` (bumped on bandsChanged).
+// eq.bandX(i) invokables and re-evaluate off `rev` (bumped on bandsChanged).
 
 import QtQuick
 import QtQuick.Controls
@@ -45,13 +45,26 @@ Rectangle {
     // Collapse is local for 2a (persisted as Prefs.eqCollapsed in Stage 4).
     property bool collapsed: false
 
+    // #59 — one panel serves BOTH the TX and the RX EQ docks.  Defaults match
+    // the TX EQ so the existing TX dock is unchanged; the RX dock overrides:
+    //   * eq          — the model/view bridge (TX context prop by default; the
+    //                   RX dock sets RxEq).  All band calls go through `eq.`.
+    //   * bwHz        — the band-edge source the graph x-range tracks (TX BW by
+    //                   default; the RX dock binds the RX bandwidth, #168 mirror).
+    //   * bypassModes — modes where the EQ is auto-bypassed (dimmed header +
+    //                   "bypassed" flag).  TX dims in digital + CW; the RX dock
+    //                   passes just the digital data modes.
+    property var  eq:    Eq
+    property real bwHz:  Prefs.txBandwidth
+    property var  bypassModes: ["DIGU", "DIGL", "CWU", "CWL"]
+
     // The TX rack is bypassed in the digital data modes (DIGU/DIGL, gated by
     // SetTxRackBypass) and is moot in CW.  Gray the ON lamp + flag the header
     // so the operator sees the EQ isn't shaping audio there.  Purely visual —
     // the engine/profile state is untouched and re-lights on USB/LSB.
     readonly property bool rackInactive: {
         var m = WdspEngine.mode.toUpperCase()
-        return m === "DIGU" || m === "DIGL" || m === "CWU" || m === "CWL"
+        return bypassModes.indexOf(m) >= 0
     }
 
     // Revision tick: any engine change bumps it so the invokable-derived
@@ -60,7 +73,7 @@ Rectangle {
     property int rev: 0
     onRevChanged: curveCanvas.requestPaint()
     Connections {
-        target: Eq
+        target: eq
         function onBandsChanged()       { root.rev++ }
         function onSelectedBandChanged() { root.rev++ }
         function onBypassChanged()      { root.rev++ }
@@ -69,8 +82,8 @@ Rectangle {
         // a toggle change → repaint (and drop peak-hold when Accumulate off).
         function onSpectrumChanged()    { curveCanvas.requestPaint() }
         function onSpectrumOptsChanged() {
-            if (!Eq.accumulate) { curveCanvas.peakHold = []; curveCanvas.peakHang = [] }
-            if (!Eq.accumulate || !Eq.beforeAfterMod) {
+            if (!eq.accumulate) { curveCanvas.peakHold = []; curveCanvas.peakHang = [] }
+            if (!eq.accumulate || !eq.beforeAfterMod) {
                 curveCanvas.peakHoldPre = []; curveCanvas.peakHangPre = []
             }
             curveCanvas.requestPaint()
@@ -89,8 +102,8 @@ Rectangle {
     Menu {
         id: typeMenu
         property int band: -1
-        function pick(t) { if (band >= 0) Eq.setBandType(band, t) }
-        function isCur(t) { root.rev; return band >= 0 && Eq.bandType(band) === t }
+        function pick(t) { if (band >= 0) eq.setBandType(band, t) }
+        function isCur(t) { root.rev; return band >= 0 && eq.bandType(band) === t }
         MenuItem { text: qsTr("Peak");     checkable: true; checked: typeMenu.isCur(0); onTriggered: typeMenu.pick(0) }
         MenuItem { text: qsTr("Lo-Shelf"); checkable: true; checked: typeMenu.isCur(1); onTriggered: typeMenu.pick(1) }
         MenuItem { text: qsTr("Hi-Shelf"); checkable: true; checked: typeMenu.isCur(2); onTriggered: typeMenu.pick(2) }
@@ -106,8 +119,8 @@ Rectangle {
     // clear).
     Menu {
         id: peakMenu
-        function pick(m) { Eq.peakDecayMode = m }
-        function isCur(m) { return Eq.peakDecayMode === m }
+        function pick(m) { eq.peakDecayMode = m }
+        function isCur(m) { return eq.peakDecayMode === m }
         MenuItem { text: qsTr("Peak decay: Live");   checkable: true; checked: peakMenu.isCur(4); onTriggered: peakMenu.pick(4) }
         MenuItem { text: qsTr("Peak decay: Fast");   checkable: true; checked: peakMenu.isCur(0); onTriggered: peakMenu.pick(0) }
         MenuItem { text: qsTr("Peak decay: Medium"); checkable: true; checked: peakMenu.isCur(1); onTriggered: peakMenu.pick(1) }
@@ -139,8 +152,8 @@ Rectangle {
                 checkable: true
                 implicitWidth: 50
                 implicitHeight: 24
-                checked: { root.rev; return !Eq.bypass }
-                onClicked: Eq.bypass = !checked
+                checked: { root.rev; return !eq.bypass }
+                onClicked: eq.bypass = !checked
                 background: Rectangle {
                     radius: 4
                     color: (onBtn.checked && !root.rackInactive) ? "#0b3a44" : "#1f2a35"
@@ -168,11 +181,11 @@ Rectangle {
             Label { text: qsTr("Makeup"); color: root.cMuted }
             RoundButton {
                 text: "−"; implicitWidth: 24; implicitHeight: 24
-                onClicked: Eq.makeupDb = Eq.makeupDb - 1
+                onClicked: eq.makeupDb = eq.makeupDb - 1
             }
             Label {
-                text: { root.rev; return (Eq.makeupDb >= 0 ? "+" : "")
-                        + Eq.makeupDb.toFixed(0) + qsTr(" dB") }
+                text: { root.rev; return (eq.makeupDb >= 0 ? "+" : "")
+                        + eq.makeupDb.toFixed(0) + qsTr(" dB") }
                 color: root.cText
                 font.family: "Consolas"
                 font.bold: true
@@ -181,7 +194,7 @@ Rectangle {
             }
             RoundButton {
                 text: "+"; implicitWidth: 24; implicitHeight: 24
-                onClicked: Eq.makeupDb = Eq.makeupDb + 1
+                onClicked: eq.makeupDb = eq.makeupDb + 1
             }
 
             Item { width: 10 }
@@ -190,7 +203,7 @@ Rectangle {
             Button {
                 id: resetBtn
                 text: qsTr("Reset"); implicitWidth: 52; implicitHeight: 22
-                onClicked: Eq.resetAll()
+                onClicked: eq.resetAll()
                 ToolTip.text: qsTr("Reset all bands to their default "
                                    + "freq / gain / Q")
                 ToolTip.visible: hovered; ToolTip.delay: 800
@@ -209,10 +222,10 @@ Rectangle {
             // ── Analyzer toggles (Stage 2b) ────────────────────────────
             Button {
                 id: specBtn
-                readonly property bool active: Eq.analyzerMode > 0
-                text: ["Off", "Spec", "RTA"][Eq.analyzerMode]
+                readonly property bool active: eq.analyzerMode > 0
+                text: ["Off", "Spec", "RTA"][eq.analyzerMode]
                 implicitWidth: 50; implicitHeight: 22
-                onClicked: Eq.analyzerMode = (Eq.analyzerMode + 1) % 3
+                onClicked: eq.analyzerMode = (eq.analyzerMode + 1) % 3
                 ToolTip.text: qsTr("Analyzer behind the curve — click to cycle "
                                    + "Off → Spectrum → RTA (live on the mic)")
                 ToolTip.visible: hovered; ToolTip.delay: 800
@@ -229,9 +242,9 @@ Rectangle {
                 id: accBtn
                 text: qsTr("Acc"); checkable: true
                 implicitWidth: 44; implicitHeight: 22
-                enabled: Eq.analyzerMode > 0
-                checked: Eq.accumulate
-                onClicked: Eq.accumulate = checked
+                enabled: eq.analyzerMode > 0
+                checked: eq.accumulate
+                onClicked: eq.accumulate = checked
                 ToolTip.text: qsTr("Accumulate — peak-hold line over the "
                                    + "spectrum.  Right-click for hang/decay.")
                 ToolTip.visible: hovered; ToolTip.delay: 800
@@ -256,9 +269,9 @@ Rectangle {
                 id: baBtn
                 text: qsTr("B/A"); checkable: true
                 implicitWidth: 44; implicitHeight: 22
-                enabled: Eq.analyzerMode > 0
-                checked: Eq.beforeAfterMod
-                onClicked: Eq.beforeAfterMod = checked
+                enabled: eq.analyzerMode > 0
+                checked: eq.beforeAfterMod
+                onClicked: eq.beforeAfterMod = checked
                 ToolTip.text: qsTr("Before/After-Mod — overlay the pre-EQ "
                                    + "(before) trace so you see what the EQ did")
                 ToolTip.visible: hovered; ToolTip.delay: 800
@@ -279,9 +292,9 @@ Rectangle {
             Label {
                 visible: !root.collapsed
                 text: { root.rev
-                        var i = Eq.selectedBand
+                        var i = eq.selectedBand
                         if (i < 0) return ""
-                        return qsTr("Band ") + (i + 1) + " · " + Eq.typeName(Eq.bandType(i)) }
+                        return qsTr("Band ") + (i + 1) + " · " + eq.typeName(eq.bandType(i)) }
                 color: root.cMuted
                 font.pixelSize: 12
             }
@@ -310,7 +323,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: !root.collapsed
-            opacity: Eq.bypass ? 0.45 : 1.0
+            opacity: eq.bypass ? 0.45 : 1.0
 
             // Axis maps: log freq, linear ±15 dB.
             // #168 — the upper frequency tracks the TX audio passband so the
@@ -324,7 +337,7 @@ Rectangle {
             // the right.
             readonly property real fMin: 30
             readonly property real txEdgeHz: {
-                var bw = Prefs.txBandwidth
+                var bw = root.bwHz
                 if (!bw || bw <= 0) return 0
                 var m = WdspEngine.mode.toUpperCase()
                 if (m === "AM" || m === "SAM" || m === "DSB" || m === "FM")
@@ -345,7 +358,7 @@ Rectangle {
             }
             function yForGain(g) { return height * (dbR - g) / (2 * dbR) }
             function gainForY(y) { return dbR - (y / height) * 2 * dbR }
-            function yForCurveFreq(f) { return yForGain(Eq.magnitudeDb(f)) }
+            function yForCurveFreq(f) { return yForGain(eq.magnitudeDb(f)) }
             // Hard floor/ceiling: a node can never be drawn (or dragged)
             // outside the graph box — so a deep cut stays grabbable at the
             // bottom edge instead of disappearing into the tile field below.
@@ -384,12 +397,12 @@ Rectangle {
                     // Drawn FIRST so the grid + EQ curve sit on top.  Mode:
                     // 1=Spectrum (line/fill), 2=RTA (band bars).  Live on the
                     // mic (continuous on the HL2+ codec → animates on RX too).
-                    var amode = Eq.analyzerMode
+                    var amode = eq.analyzerMode
                     if (amode > 0) {
-                        var post = Eq.spectrumPost()
+                        var post = eq.spectrumPost()
                         var nb = post.length
                         if (nb > 2) {
-                            var nyq = Eq.specNyquist
+                            var nyq = eq.specNyquist
                             var fMin = graph.fMin, fMax = graph.fMax
 
                             // Trace a per-bin dB array as a line (skip DC).
@@ -416,17 +429,17 @@ Rectangle {
 
                             // before (pre-EQ) source when B/A engaged.
                             var preArr = null
-                            if (Eq.beforeAfterMod) {
-                                preArr = Eq.spectrumPre()
+                            if (eq.beforeAfterMod) {
+                                preArr = eq.spectrumPre()
                                 if (preArr.length !== nb) preArr = null
                             }
 
                             // ── shared peak-hold state (per bin) — runs for
                             // BOTH modes; right-click Acc sets the hang/decay
                             // (poll ~25 fps → hang frames ≈ seconds×25).
-                            if (Eq.accumulate) {
+                            if (eq.accumulate) {
                                 var hangF, decF
-                                switch (Eq.peakDecayMode) {
+                                switch (eq.peakDecayMode) {
                                 case 4: hangF = 0;     decF = 1e9;  break  // Live (track instantly)
                                 case 0: hangF = 8;     decF = 1.5;  break  // Fast
                                 case 2: hangF = 50;    decF = 0.25; break  // Slow
@@ -496,7 +509,7 @@ Rectangle {
                                     trace(preArr); ctx.stroke()
                                 }
                                 // Peak-hold lines: red (after) + white (before).
-                                if (Eq.accumulate) {
+                                if (eq.accumulate) {
                                     ctx.strokeStyle = "rgba(255,70,70,0.95)"; ctx.lineWidth = 1.5
                                     trace(peakHold); ctx.stroke()
                                     if (preArr) {
@@ -520,7 +533,7 @@ Rectangle {
                                     ctx.fillStyle = "rgba(60,200,255,0.5)"
                                     ctx.fillRect(bx, ay, bwid, h - ay)
                                     // after peak cap (cyan)
-                                    if (Eq.accumulate) {
+                                    if (eq.accumulate) {
                                         var apy = graph.yForDb(bandMax(peakHold, fLo, fHi))
                                         ctx.fillStyle = "rgba(255,70,70,0.95)"
                                         ctx.fillRect(bx, apy - 1.5, bwid, 1.5)
@@ -530,7 +543,7 @@ Rectangle {
                                         var py = graph.yForDb(bandMax(preArr, fLo, fHi))
                                         ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1
                                         ctx.strokeRect(bx + 0.5, py + 0.5, Math.max(1, bwid - 1), Math.max(0, h - py - 1))
-                                        if (Eq.accumulate) {
+                                        if (eq.accumulate) {
                                             var ppy2 = graph.yForDb(bandMax(peakHoldPre, fLo, fHi))
                                             ctx.fillStyle = "rgba(255,255,255,0.95)"
                                             ctx.fillRect(bx, ppy2 - 1.5, bwid, 1.5)
@@ -602,7 +615,7 @@ Rectangle {
                         var first = true
                         for (var x = 0; x <= w; x += 3) {
                             var f = graph.freqForX(x)
-                            var y = graph.yForGain(Eq.magnitudeDb(f))
+                            var y = graph.yForGain(eq.magnitudeDb(f))
                             if (first) { ctx.moveTo(x, y); first = false }
                             else ctx.lineTo(x, y)
                         }
@@ -617,22 +630,22 @@ Rectangle {
 
             // Visual band nodes (event handling is the MouseArea below).
             Repeater {
-                model: Eq.numBands
+                model: eq.numBands
                 delegate: Item {
                     id: nodeWrap
                     required property int index
-                    readonly property bool usesGain: { root.rev; return Eq.typeUsesGain(Eq.bandType(index)) }
-                    readonly property real nx: { root.rev; return graph.xForFreq(Eq.bandFreq(index)) }
+                    readonly property bool usesGain: { root.rev; return eq.typeUsesGain(eq.bandType(index)) }
+                    readonly property real nx: { root.rev; return graph.xForFreq(eq.bandFreq(index)) }
                     // Gain types (Peak/shelves) ride their gain handle; cut/
                     // pass types (LP/HP/BP/Notch) ride their response curve.
                     // clampY keeps the handle inside the graph box so even a
                     // deep notch's node stays grabbable at the bottom edge.
                     readonly property real ny: { root.rev
-                        var raw = usesGain ? graph.yForGain(Eq.bandGain(index))
-                                           : graph.yForCurveFreq(Eq.bandFreq(index))
+                        var raw = usesGain ? graph.yForGain(eq.bandGain(index))
+                                           : graph.yForCurveFreq(eq.bandFreq(index))
                         return graph.clampY(raw) }
-                    readonly property bool sel: { root.rev; return Eq.selectedBand === index }
-                    readonly property bool en:  { root.rev; return Eq.bandEnabled(index) }
+                    readonly property bool sel: { root.rev; return eq.selectedBand === index }
+                    readonly property bool en:  { root.rev; return eq.bandEnabled(index) }
                     x: nx - 11; y: ny - 11; width: 22; height: 22
 
                     Rectangle {       // selection ring
@@ -665,11 +678,11 @@ Rectangle {
                 property int dragBand: -1
                 function nearest(mx, my) {
                     var best = -1, bd = 1e9
-                    for (var i = 0; i < Eq.numBands; ++i) {
-                        var nx = graph.xForFreq(Eq.bandFreq(i))
-                        var ny = graph.clampY(Eq.typeUsesGain(Eq.bandType(i))
-                                 ? graph.yForGain(Eq.bandGain(i))
-                                 : graph.yForCurveFreq(Eq.bandFreq(i)))
+                    for (var i = 0; i < eq.numBands; ++i) {
+                        var nx = graph.xForFreq(eq.bandFreq(i))
+                        var ny = graph.clampY(eq.typeUsesGain(eq.bandType(i))
+                                 ? graph.yForGain(eq.bandGain(i))
+                                 : graph.yForCurveFreq(eq.bandFreq(i)))
                         var d = Math.hypot(mx - nx, my - ny)
                         if (d < bd) { bd = d; best = i }
                     }
@@ -678,25 +691,25 @@ Rectangle {
                 onPressed: (m) => {
                     var b = nearest(m.x, m.y)
                     dragBand = b
-                    if (b >= 0) Eq.selectedBand = b
+                    if (b >= 0) eq.selectedBand = b
                 }
                 onPositionChanged: (m) => {
                     if (dragBand < 0) return
-                    Eq.setBandFreq(dragBand, graph.freqForX(m.x))
-                    if (Eq.typeUsesGain(Eq.bandType(dragBand)))
-                        Eq.setBandGain(dragBand, graph.gainForY(m.y))
+                    eq.setBandFreq(dragBand, graph.freqForX(m.x))
+                    if (eq.typeUsesGain(eq.bandType(dragBand)))
+                        eq.setBandGain(dragBand, graph.gainForY(m.y))
                 }
                 onReleased: dragBand = -1
                 onDoubleClicked: (m) => {
                     var b = nearest(m.x, m.y)
-                    if (b >= 0) Eq.setBandEnabled(b, !Eq.bandEnabled(b))
+                    if (b >= 0) eq.setBandEnabled(b, !eq.bandEnabled(b))
                 }
                 WheelHandler {
                     onWheel: (ev) => {
-                        var i = Eq.selectedBand
+                        var i = eq.selectedBand
                         if (i < 0) return
-                        var q = Eq.bandQ(i) * (ev.angleDelta.y > 0 ? 1.15 : 0.87)
-                        Eq.setBandQ(i, q)
+                        var q = eq.bandQ(i) * (ev.angleDelta.y > 0 ? 1.15 : 0.87)
+                        eq.setBandQ(i, q)
                     }
                 }
             }
@@ -708,16 +721,16 @@ Rectangle {
             visible: !root.collapsed
             spacing: 4
             Repeater {
-                model: Eq.numBands
+                model: eq.numBands
                 delegate: Rectangle {
                     id: tile
                     required property int index
                     Layout.fillWidth: true
                     implicitHeight: 58
                     radius: 4
-                    readonly property bool sel: { root.rev; return Eq.selectedBand === index }
-                    readonly property bool en:  { root.rev; return Eq.bandEnabled(index) }
-                    readonly property int ty:   { root.rev; return Eq.bandType(index) }
+                    readonly property bool sel: { root.rev; return eq.selectedBand === index }
+                    readonly property bool en:  { root.rev; return eq.bandEnabled(index) }
+                    readonly property int ty:   { root.rev; return eq.bandType(index) }
                     color: sel ? "#13222c" : "#0b141b"
                     border.color: sel ? root.bandColor[index] : "#1c2a36"
                     border.width: sel ? 2 : 1
@@ -732,8 +745,8 @@ Rectangle {
                         anchors.fill: parent
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
                         onClicked: (m) => {
-                            if (m.button === Qt.RightButton) Eq.resetBand(tile.index)
-                            else Eq.selectedBand = tile.index
+                            if (m.button === Qt.RightButton) eq.resetBand(tile.index)
+                            else eq.selectedBand = tile.index
                         }
                     }
                     ColumnLayout {
@@ -751,7 +764,7 @@ Rectangle {
                         // but the MouseArea is padded so it's an easy target.
                         Label {
                             id: typeLabel
-                            text: { root.rev; return Eq.typeName(tile.ty) + " ▾" }
+                            text: { root.rev; return eq.typeName(tile.ty) + " ▾" }
                             color: root.cAccent; font.pixelSize: 10
                             font.bold: true
                             Layout.alignment: Qt.AlignHCenter
@@ -760,25 +773,25 @@ Rectangle {
                                 anchors.margins: -4   // bigger hit target
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    Eq.selectedBand = tile.index
+                                    eq.selectedBand = tile.index
                                     typeMenu.band = tile.index
                                     typeMenu.popup()
                                 }
                             }
                         }
                         Label {
-                            text: { root.rev; return root.fmtFreq(Eq.bandFreq(tile.index)) }
+                            text: { root.rev; return root.fmtFreq(eq.bandFreq(tile.index)) }
                             color: root.cMuted; font.pixelSize: 10
                             font.family: "Consolas"
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Label {
                             text: { root.rev
-                                if (Eq.typeUsesGain(tile.ty)) {
-                                    var g = Eq.bandGain(tile.index)
+                                if (eq.typeUsesGain(tile.ty)) {
+                                    var g = eq.bandGain(tile.index)
                                     return (g >= 0 ? "+" : "") + g.toFixed(1)
                                 }
-                                return "Q " + Eq.bandQ(tile.index).toFixed(2) }
+                                return "Q " + eq.bandQ(tile.index).toFixed(2) }
                             color: root.cText; font.pixelSize: 10
                             font.family: "Consolas"
                             Layout.alignment: Qt.AlignHCenter

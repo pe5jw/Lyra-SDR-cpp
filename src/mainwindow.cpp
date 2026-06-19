@@ -58,6 +58,8 @@
 #include <QQuickWidget>
 #include <QQuickItem>
 #include <QSettings>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStyle>
 #include <QToolBar>
 #include <QStatusBar>
@@ -225,9 +227,40 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                             qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                             this);
 
-    // #50/#59 parametric EQ model (drives EqPanel.qml).  Wire-INERT until
-    // Stage 3 routes the TX mic rack through eqModel_->engine().
-    eqModel_ = new EqModel(this);
+    // #50 TX parametric EQ model (drives EqPanel.qml, "Eq" context property).
+    // Routes the TX mic rack through eqModel_->engine() (CMaster TX hook).
+    eqModel_ = new EqModel(EqModel::Side::Tx, this);
+
+    // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context
+    // property).  The RX twin of the TX EQ — same engine, shaped on the
+    // post-RXA receive audio instead of the mic.  R-2 wired
+    // WdspEngine::setRxEqEngine to run engine()+analyzer() at the top of
+    // dispatchAudioFrame (pre-tap; auto-bypassed in DIGU/DIGL; manual ON/OFF
+    // any mode).  Persists standalone (QSettings "rxeq/*"), NOT in the TX
+    // Profile (#49) — it's an RX listening setting like the RX bandwidth.
+    rxEqModel_ = new EqModel(EqModel::Side::Rx, this);
+    if (auto *we = qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_))
+        we->setRxEqEngine(rxEqModel_->engine(), rxEqModel_->analyzer());
+    {
+        // Restore the saved RX EQ chain (bypass + makeup + all bands).
+        QSettings s;
+        const QString js = s.value(QStringLiteral("rxeq/state")).toString();
+        if (!js.isEmpty()) {
+            const auto doc = QJsonDocument::fromJson(js.toUtf8());
+            if (doc.isObject()) rxEqModel_->loadState(doc.object());
+        }
+        // Persist on every edit (band / bypass / makeup).  Display-only
+        // analyzer options are excluded by saveState(), as on the TX side.
+        auto save = [this]() {
+            QSettings st;
+            st.setValue(QStringLiteral("rxeq/state"),
+                        QString::fromUtf8(QJsonDocument(rxEqModel_->saveState())
+                                              .toJson(QJsonDocument::Compact)));
+        };
+        connect(rxEqModel_, &EqModel::bandsChanged, this, save);
+        connect(rxEqModel_, &EqModel::bypassChanged, this, save);
+        connect(rxEqModel_, &EqModel::makeupDbChanged, this, save);
+    }
 
     // #88 speech-rack model (drives SpeechPanel.qml) — Auto-AGC + De-esser,
     // pre-EQ in the mic rack (wired via SendpTxSpeechProcessor in main.cpp).
@@ -397,6 +430,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("ProfileUi"), profileUi_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Eq"), eqModel_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("RxEq"), rxEqModel_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Speech"), speechModel_);
     qw->rootContext()->setContextProperty(
@@ -615,6 +650,13 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("txeq"), tr("TX EQ"),
                  QStringLiteral("EqPanel.qml"),
                  QStringLiteral("txeq"), Qt::BottomDockWidgetArea);
+    // RX EQ (#59) — the RX twin of the TX EQ.  Reuses EqPanel.qml via the thin
+    // RxEqPanel.qml wrapper (binds the RxEq model + the RX bandwidth as the
+    // graph's band-edge source + the DIGU/DIGL auto-bypass set).  Own dock,
+    // chip-summoned like the TX DSP rack (floating + hidden by default below).
+    addQuickDock(QStringLiteral("rxeq"), tr("RX EQ"),
+                 QStringLiteral("RxEqPanel.qml"),
+                 QStringLiteral("rxeq"), Qt::BottomDockWidgetArea);
     // TX Combinator (#51) — 5-band multiband comp + SBC.  Own dock (see TX
     // Speech) — after the EQ in the chain (mic → Speech → EQ → Combinator).
     addQuickDock(QStringLiteral("txcombinator"), tr("TX Combinator"),
@@ -641,7 +683,8 @@ void MainWindow::buildDocks() {
     // summons one (it pops as a movable/resizable float), and Save-my-layout
     // remembers what's open + where.  restoreLayout() below overrides this
     // with the operator's saved arrangement when one exists.
-    for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate"}) {
+    for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate",
+                           "rxeq"}) {
         if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
             d->setFloating(true);
             d->hide();
@@ -908,6 +951,26 @@ void MainWindow::buildToolbar() {
         if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
             QAction *act = d->toggleViewAction();
             act->setText(tr("CW"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // RX DSP launcher (#59) — the RX EQ pops as a floating window, same
+        // chip idiom as the TX DSP strip (the chip IS the dock's
+        // toggleViewAction, so open/close stays in sync + rides Save-layout).
+        // Its own labelled group since it shapes RX audio, not the mic rack.
+        tb->addSeparator();
+        auto *rxDspLabel = new QLabel(tr("RX DSP:"), tb);
+        rxDspLabel->setContentsMargins(8, 0, 4, 0);
+        rxDspLabel->setToolTip(tr("Receive-side panels — click to open one as "
+                                  "a movable window; layout is remembered."));
+        tb->addWidget(rxDspLabel);
+        if (QDockWidget *d = docks_.value(QStringLiteral("rxeq"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("RX EQ"));
             tb->addAction(act);
             if (auto *btn = qobject_cast<QToolButton *>(
                     tb->widgetForAction(act))) {
@@ -1300,7 +1363,8 @@ void MainWindow::applyPanelLock(bool locked) {
         // the lock, so the launchers keep working.
         const QString on = dock->objectName();
         if (on == QLatin1String("txspeech") || on == QLatin1String("txeq") ||
-            on == QLatin1String("txcombinator") || on == QLatin1String("txplate")) {
+            on == QLatin1String("txcombinator") || on == QLatin1String("txplate") ||
+            on == QLatin1String("rxeq")) {
             dock->setFeatures(kUnlockedFeatures);
             if (QWidget *tb = dock->titleBarWidget()) {
                 if (auto *fb = tb->findChild<QToolButton *>(QStringLiteral("dockFloat")))

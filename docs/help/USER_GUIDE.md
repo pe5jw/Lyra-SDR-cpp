@@ -917,6 +917,28 @@ A draggable response curve over a live spectrum analyzer.
   while just listening, no need to key up (it's analysed, not
   transmitted, until you actually key).
 
+### RX EQ — receive parametric EQ
+
+The receive-side twin of the TX EQ — the **same 10-band panel and the same
+controls** (drag a node for frequency + gain, wheel for Q, Type chips, the
+tile row, Makeup, Reset, and the analyzer behind the curve), applied to what
+you **hear** instead of to your mic. Open it from the **RX DSP → RX EQ** chip
+on the header strip; it pops as a movable window and your layout is
+remembered, exactly like the TX DSP panels.
+
+- **What it shapes** — the receive audio after WDSP, so it colours the
+  headphone/speaker output *and* anything bridged out (recording, VAC, a
+  digital-mode app).
+- **Graph width tracks the RX bandwidth** — the curve spans the receive
+  passband actually in use, so the bands sit where the audio is. Change your
+  RX filter width and the EQ rescales to match.
+- **ON / bypass** — the top-bar **ON** button bypasses the RX EQ in **any**
+  mode. It additionally **auto-bypasses in the digital data modes (DIGU /
+  DIGL)** so decoders always get flat audio; it stays available in CW and SSB.
+- **Separate from TX** — the RX EQ is a standalone listening setting (its own
+  bands + bypass + makeup, remembered across sessions). It is **not** part of
+  a TX profile — switching TX profiles never touches your receive EQ.
+
 ### TX Speech — Noise Gate → Auto-AGC → De-esser
 
 Three independent stages, processed in that order, each with its own

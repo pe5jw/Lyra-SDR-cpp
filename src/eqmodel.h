@@ -52,7 +52,13 @@ public:
     enum Type { Peak, LowShelf, HighShelf, LowPass, HighPass, BandPass, Notch };
     Q_ENUM(Type)
 
-    explicit EqModel(QObject *parent = nullptr);
+    // Which audio chain this instance shapes (#59).  Tx = the mic rack —
+    // registers the process-global txProcessCb statics + the CMaster TX hook.
+    // Rx = the post-RXA receive audio — wired DIRECTLY into WdspEngine (R-2),
+    // and must NOT touch the TX statics.  One Tx + one Rx instance, app-life.
+    enum class Side { Tx, Rx };
+
+    explicit EqModel(Side side, QObject *parent = nullptr);
     ~EqModel() override;
 
     // C-callable bridge for the wire-layer TX pump: CMaster registers this
@@ -109,6 +115,10 @@ public:
 
     // The live engine — Stage 3 hands this to the TX mic rack.
     lyra::dsp::ParamEq *engine() { return &eq_; }
+    // R-2 (#59): the RX side's analyzer — WdspEngine feeds it pre/post on the
+    // audio thread (the TX side is fed by txProcessCb instead).
+    lyra::dsp::EqAnalyzer *analyzer() { return &analyzer_; }
+    Side side() const { return side_; }
 
     // ── Stage-2b analyzer (live mic spectrum behind the curve) ──────────
     int    analyzerMode()   const { return analyzerMode_; }
@@ -143,8 +153,11 @@ private:
         return i >= 0 && i < lyra::dsp::ParamEq::kNumBands;
     }
 
+    const Side side_;            // Tx (mic rack) or Rx (post-RXA audio)
+
     // Active engine + analyzer for the wire-layer TX pump (txProcessCb).
-    // Set in the ctor, cleared in the dtor.  Lock-free reads on the TX thread.
+    // Set in the ctor, cleared in the dtor — TX side ONLY (gated on side_).
+    // Lock-free reads on the TX thread.
     static std::atomic<lyra::dsp::ParamEq *>     s_txEngine;
     static std::atomic<lyra::dsp::EqAnalyzer *>  s_txAnalyzer;
     static EqModel *s_self;

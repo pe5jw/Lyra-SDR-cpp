@@ -54,6 +54,16 @@ public:
     // (buffer length = 2*nPairs doubles).  Same RT-safe coeff publish +
     // bypass/makeup behaviour as process().
     void processInterleaved(double *iqPairs, int nPairs);
+    // RX variant (#59): the post-RXA receive audio is interleaved stereo
+    // L/R doubles, mono-dup (L==R) for a single RX.  Filter the L lane through
+    // the cascade and write the result to BOTH L and R, so every downstream
+    // tee (jack / sink / TCI / VAC) stays balanced.  nframes = number of L/R
+    // pairs (buffer = 2*nframes doubles).  Same RT-safe coeff publish +
+    // bypass/makeup as process().
+    void processMonoDup(double *interleaved, int nframes);
+    // Cheap audio-thread check so the RX path can skip the EQ copy+filter
+    // entirely when the operator bypassed it (the panel ON/OFF, any mode).
+    bool bypassed() const { return bypass_.load(std::memory_order_relaxed); }
     void reset();                           // clear filter state (call stopped)
 
     // Summed magnitude response in dB at freqHz (drives the UI curve).

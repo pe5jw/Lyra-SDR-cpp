@@ -197,6 +197,33 @@ void ParamEq::processInterleaved(double *x, int n) {
     }
 }
 
+void ParamEq::processMonoDup(double *x, int n) {
+    if (stageDirty_.load(std::memory_order_acquire)) {
+        if (stageMtx_.try_lock()) {
+            active_ = staged_;
+            stageDirty_.store(false, std::memory_order_release);
+            stageMtx_.unlock();
+        }
+    }
+    if (bypass_.load(std::memory_order_relaxed)) return;   // leave L==R untouched
+    const double mk = makeupLin_.load(std::memory_order_relaxed);
+
+    for (int s = 0; s < n; ++s) {
+        double y = x[2 * s];                   // mono RX (L lane; R is the dup)
+        for (int b = 0; b < kNumBands; ++b) {
+            const Coeffs &c = active_[b];
+            State &st = state_[b];
+            const double in = y;
+            y = c.b0 * in + st.z1;             // Transposed Direct Form II
+            st.z1 = c.b1 * in - c.a1 * y + st.z2;
+            st.z2 = c.b2 * in - c.a2 * y;
+        }
+        const double out = y * mk;
+        x[2 * s + 0] = out;                    // write BOTH lanes — keep L==R
+        x[2 * s + 1] = out;
+    }
+}
+
 double ParamEq::magnitudeDb(double freqHz) const {
     const double mkDb = 20.0 * std::log10(
         makeupLin_.load(std::memory_order_relaxed));

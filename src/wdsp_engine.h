@@ -54,6 +54,13 @@ namespace lyra::dsp {
 // from, backed by a mutex-protected stereo int16 ring.
 class AudioRing;
 
+// #59 — the RX-side parametric EQ engine + its analyzer (owned by the RX
+// EqModel in lyra::ui).  WdspEngine applies the EQ to the post-RXA audio and
+// feeds the analyzer.  Forward-declared here; full types in dsp/ParamEq.h +
+// dsp/EqAnalyzer.h (included in the .cpp).
+class ParamEq;
+class EqAnalyzer;
+
 // Captured noise profile (slice 2) + reducer (slice 3).  Held by
 // unique_ptr; only the .cpp needs the complete types.
 class CapturedProfile;
@@ -591,6 +598,12 @@ public:
     // no-op when VAC1 isn't live.
     void setVacMox(bool on);
 
+    // #59 RX EQ — point the post-RXA audio at the RX EqModel's engine +
+    // analyzer (nullptr to detach).  dispatchAudioFrame applies it (mono-dup,
+    // L==R) before ALL RX tees, gated on the engine's own !bypassed() AND not
+    // a digital (DIGU/DIGL) mode.  The analyzer is fed pre/post for the panel.
+    void setRxEqEngine(ParamEq *eng, EqAnalyzer *analyzer);
+
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
     // Accumulates into in_size blocks; each full block runs
@@ -1025,6 +1038,14 @@ private:
     // #161 — operator "Mute will mute VAC" (reference MuteWillMuteVAC1).
     // Read on the audio thread in dispatchAudioFrame; default ON.
     std::atomic<bool>     muteWillMuteVac_{true};
+
+    // #59 RX EQ — engine + analyzer (RX EqModel-owned; atomic for the audio
+    // thread), the digital-mode auto-bypass flag (set in setMode), and the
+    // mutable scratch the const RX audio is EQ'd into before the tees.
+    std::atomic<lyra::dsp::ParamEq *>    rxEq_{nullptr};
+    std::atomic<lyra::dsp::EqAnalyzer *> rxEqAnalyzer_{nullptr};
+    std::atomic<bool>                    rxEqModeBypass_{false};
+    std::vector<double>                  rxEqBuf_;
     bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
     bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
     QString               vac1OutName_;            // PC output device description ("" = none)
