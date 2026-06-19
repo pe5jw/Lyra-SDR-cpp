@@ -3313,6 +3313,38 @@ QWidget *SettingsDialog::buildTxTab() {
         rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column (Leveler)
     }
 
+    // ── #109 Phase Rotator (PHROT) group ─────────────────────────
+    // WDSP TXA speech processor that symmetrizes asymmetric voice
+    // waveforms (lowers peak-to-average → more average talk power for the
+    // same ALC ceiling).  Mirrors the reference's Setup PHROT checkbox.
+    // AUDIO + GAIN column (it's a voice processor).
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("Phase Rotator (PHROT)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *enBox = new QCheckBox(
+            tr("Enabled  (symmetrize speech for more talk power)"), grp);
+        enBox->setChecked(stream_->phrotEnabled());
+        enBox->setToolTip(tr(
+            "Phase rotator — an all-pass network that evens out the "
+            "asymmetry of speech waveforms, lowering their peak-to-average "
+            "ratio so more average power gets through for the same ALC/peak "
+            "ceiling. Helpful on SSB voice.\n\n"
+            "Turn it OFF for digital modes (FT8/FT4/RTTY/etc.) — phase "
+            "rotation distorts those waveforms. Default ON (matches the "
+            "reference posture)."));
+        connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setPhrotEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::phrotEnabledChanged, enBox,
+                [enBox](bool on) {
+                    if (enBox->isChecked() != on) enBox->setChecked(on);
+                });
+        form->addRow(enBox);
+
+        rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column
+    }
+
     // ── AM Carrier (AM / SAM modulation) group ───────────────────
     // #93/#106 — operator AM/SAM carrier level.  Splits TX power between
     // the carrier and the sidebands.  DSB is always suppressed-carrier and

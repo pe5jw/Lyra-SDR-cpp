@@ -79,6 +79,7 @@ void (*SetTXAALCMaxGain)(int, double) = nullptr;
 void (*SetTXALevelerSt)(int, int) = nullptr;
 void (*SetTXALevelerDecay)(int, int) = nullptr;
 void (*SetTXALevelerTop)(int, double) = nullptr;
+void (*SetTXAPHROTRun)(int, int) = nullptr;   // #109 phase rotator run
 void (*SetTXACTCSSRun)(int, int) = nullptr;   // FM sub-tone run (off for basic FM)
 void (*SetTXAAMCarrierLevel)(int, double) = nullptr;   // AM/SAM carrier fraction 0..1
 void (*pscc)(int, int, double*, double*) = nullptr;
@@ -165,6 +166,7 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(SetTXALevelerSt)      \
     X(SetTXALevelerDecay)   \
     X(SetTXALevelerTop)     \
+    X(SetTXAPHROTRun)       \
     X(SetTXACTCSSRun)       \
     X(SetTXAAMCarrierLevel) \
     X(pscc)                 \

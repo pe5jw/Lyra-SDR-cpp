@@ -388,6 +388,13 @@ class HL2Stream : public QObject {
                WRITE setLevelerMaxGainLinear    NOTIFY levelerMaxGainLinearChanged)
     Q_PROPERTY(int    levelerDecayMs          READ levelerDecayMs
                WRITE setLevelerDecayMs          NOTIFY levelerDecayMsChanged)
+    // #109 — PHROT (phase rotator) enable.  WDSP TXA speech processor
+    // that symmetrizes asymmetric voice waveforms → lower peak-to-average
+    // → more average talk power.  Operator on/off (mirrors the reference
+    // Setup PHROT checkbox).  Default ON = WDSP/reference posture.  Turn
+    // OFF for digital modes (it distorts FT8/RTTY/etc.).
+    Q_PROPERTY(bool   phrotEnabled            READ phrotEnabled
+               WRITE setPhrotEnabled            NOTIFY phrotEnabledChanged)
 
     // §15.31 — ATT-on-TX operator surface (RX-front-end protection on
     // key-down).  When enabled, the keydown FSM forces the HL2 step
@@ -578,6 +585,11 @@ public:
         // 30787-30801) — replaces the retired legacy DC-injection that
         // died with the EP2 packer.  Empty = no-op (pre-registration).
         std::function<void(bool)> setTune;
+        // #109 — PHROT (phase rotator) run.  Symmetrizes asymmetric
+        // speech to lower peak-to-average ratio (more average talk power
+        // for the same ALC ceiling).  Operator on/off, mirrors the
+        // reference's Setup PHROT-enable checkbox.  Empty = no-op.
+        std::function<void(bool)> setPhrotRun;
     };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
@@ -703,6 +715,7 @@ public:
     bool    levelerOn()             const { return levelerOn_;             }
     double  levelerMaxGainLinear()  const { return levelerMaxGainLinear_;  }
     int     levelerDecayMs()        const { return levelerDecayMs_;        }
+    bool    phrotEnabled()          const { return phrotEnabled_;          }
     // §15.31 — ATT-on-TX operator surface getters.
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     int     attOnTxDb()             const { return attOnTxDb_;             }
@@ -973,6 +986,7 @@ public slots:
     void setLevelerOn(bool on);
     void setLevelerMaxGainLinear(double linear);
     void setLevelerDecayMs(int decay_ms);
+    void setPhrotEnabled(bool on);   // #109 phase rotator on/off
     // §15.31 — ATT-on-TX enable + dB value.  Persist under tx/<key>,
     // emit the changed signal, and (if keyed right now) re-apply to the
     // wire live so the operator sees the effect mid-TX.
@@ -1152,6 +1166,7 @@ signals:
     void levelerOnChanged(bool on);
     void levelerMaxGainLinearChanged(double linear);
     void levelerDecayMsChanged(int decay_ms);
+    void phrotEnabledChanged(bool on);   // #109 phase rotator
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
     void attOnTxDbChanged(int db);
@@ -1704,6 +1719,11 @@ private:
     bool   levelerOn_              = kDefaultLevelerOn;
     double levelerMaxGainLinear_   = kDefaultLevelerMaxGainLinear;
     int    levelerDecayMs_         = kDefaultLevelerDecayMs;
+    // #109 — PHROT (phase rotator) enable.  Default ON = WDSP create-time
+    // / reference posture (zero behaviour change for existing users; the
+    // toggle just hands over control).  Forwarded to TxControl.setPhrotRun.
+    static constexpr bool kDefaultPhrotEnabled = true;
+    bool   phrotEnabled_          = kDefaultPhrotEnabled;
     // §15.31 — ATT-on-TX operator surface.  Default ENABLED / 31 dB
     // (kAttOnTxDb) = the reference HL2 working posture.  Touched by the
     // Q_PROPERTY setters on the Qt main thread; the FSM reads them on

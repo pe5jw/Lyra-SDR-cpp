@@ -208,6 +208,8 @@ extern void (*SetTXAALCMaxGain)(int channel, double maxgain);
 extern void (*SetTXALevelerSt)(int channel, int state);
 extern void (*SetTXALevelerDecay)(int channel, int decay);
 extern void (*SetTXALevelerTop)(int channel, double maxgain);
+//   iir.c:665+       void SetTXAPHROTRun (int channel, int run);   // #109 phase rotator
+extern void (*SetTXAPHROTRun)(int channel, int run);
 //   fmmod.c:178      void SetTXACTCSSRun (int channel, int run);
 extern void (*SetTXACTCSSRun)(int channel, int run);
 //   ammod.c:103      void SetTXAAMCarrierLevel (int channel, double c_level);

@@ -1270,6 +1270,10 @@ int main(int argc, char *argv[])
                             qInfo("[tx] TUN postgen: run=0 (stopped)");
                         }
                     },
+                    .setPhrotRun = [txch](bool on) {   // #109 phase rotator
+                        if (lyra::wire::SetTXAPHROTRun)
+                            lyra::wire::SetTXAPHROTRun(txch, on ? 1 : 0);
+                    },
                 });
                 // registerTxControl() pushes the persisted mic gain / ALC
                 // max-gain / ALC decay / leveler ONCE here, so the freshly

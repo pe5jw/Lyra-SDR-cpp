@@ -377,6 +377,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // (15.0 LINEAR / 100 ms).  All three keys clamped on load.
     levelerOn_ = QSettings().value(QStringLiteral("tx/levelerOn"),
                                    kDefaultLevelerOn).toBool();
+    // #109 — PHROT enable (default ON = WDSP/reference posture).
+    phrotEnabled_ = QSettings().value(QStringLiteral("tx/phrotEnabled"),
+                                      kDefaultPhrotEnabled).toBool();
     levelerMaxGainLinear_ = std::clamp(
         QSettings().value(QStringLiteral("tx/levelerMaxGainLinear"),
                           kDefaultLevelerMaxGainLinear).toDouble(),
@@ -2311,6 +2314,23 @@ void HL2Stream::setLevelerOn(bool on) {
     if (fwd) fwd(on, topLinear);
 }
 
+// #109 — PHROT (phase rotator) enable.  Persists + emits + forwards to
+// the registered TxControl callback (which calls SetTXAPHROTRun on the TX
+// channel).  Mirrors setLevelerOn.  Operator on/off, default ON; turn
+// OFF for digital modes.
+void HL2Stream::setPhrotEnabled(bool on) {
+    if (on == phrotEnabled_) return;
+    phrotEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/phrotEnabled"), on);
+    emit phrotEnabledChanged(on);
+    std::function<void(bool)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setPhrotRun;
+    }
+    if (fwd) fwd(on);
+}
+
 // §15.31 — ATT-on-TX enable.  Persists + emits; if currently keyed,
 // re-applies to the wire live so the operator sees the front-end
 // attenuation engage/disengage mid-TX (the FSM otherwise only sets it
@@ -2824,9 +2844,11 @@ void HL2Stream::registerTxControl(TxControl ctl) {
     std::function<void(bool,double)>  pushLeveler;
     std::function<void(int)>          pushLevelerDecay;
     std::function<void(double)>       pushAmCarrier;
+    std::function<void(bool)>         pushPhrot;
     bool   levOn;
     double levTop;
     double amCarLin;
+    bool   phrotOn;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         txControl_ = std::move(ctl);
@@ -2839,9 +2861,11 @@ void HL2Stream::registerTxControl(TxControl ctl) {
         pushLeveler      = txControl_.setLevelerOn;
         pushLevelerDecay = txControl_.setLevelerDecayMs;
         pushAmCarrier    = txControl_.setAmCarrierLevel;
+        pushPhrot        = txControl_.setPhrotRun;
         levOn            = levelerOn_;
         levTop           = levelerMaxGainLinear_;
         amCarLin         = amPctToCarrierLevel(amCarrierPct_);   // % power → c_level
+        phrotOn          = phrotEnabled_;
     }
     if (pushMic)          pushMic(micGainDb_);
     if (pushAlc)          pushAlc(alcMaxGainLinear_);
@@ -2849,6 +2873,7 @@ void HL2Stream::registerTxControl(TxControl ctl) {
     if (pushLeveler)      pushLeveler(levOn, levTop);
     if (pushLevelerDecay) pushLevelerDecay(levelerDecayMs_);
     if (pushAmCarrier)    pushAmCarrier(amCarLin);
+    if (pushPhrot)        pushPhrot(phrotOn);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer

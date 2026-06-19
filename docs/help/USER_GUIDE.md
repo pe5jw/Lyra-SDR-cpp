@@ -1721,6 +1721,24 @@ ride mic gain manually.
 > than the reference on the same whistle/voice" investigation; the
 > Leveler closes that gap completely.
 
+### Phase Rotator (PHROT)
+
+The phase rotator is an all-pass network that **symmetrizes asymmetric
+speech waveforms**. Human voice peaks much harder in one direction than
+the other; evening that out lowers the peak-to-average ratio, so more
+*average* talk power gets through for the same ALC / peak ceiling. It's a
+classic SSB voice-processing trick and matches the reference's Setup
+phase-rotator control.
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Enabled** | ON | Master phase-rotator on/off. Default ON (the WDSP / reference posture). |
+
+> **Turn it OFF for digital modes.** Phase rotation distorts FT8 / FT4 /
+> RTTY / other digital waveforms — they need a clean, linear TX chain.
+> Leave PHROT on for SSB voice, off for digital. (A future TX profile can
+> remember this per mode along with the rest of your chain.)
+
 ### AM Carrier (AM / SAM modulation)
 
 AM and SAM are **double-sideband-with-carrier** modes — they put a steady
