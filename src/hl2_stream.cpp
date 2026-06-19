@@ -2314,21 +2314,35 @@ void HL2Stream::setLevelerOn(bool on) {
     if (fwd) fwd(on, topLinear);
 }
 
-// #109 — PHROT (phase rotator) enable.  Persists + emits + forwards to
-// the registered TxControl callback (which calls SetTXAPHROTRun on the TX
-// channel).  Mirrors setLevelerOn.  Operator on/off, default ON; turn
-// OFF for digital modes.
-void HL2Stream::setPhrotEnabled(bool on) {
-    if (on == phrotEnabled_) return;
-    phrotEnabled_ = on;
-    QSettings().setValue(QStringLiteral("tx/phrotEnabled"), on);
-    emit phrotEnabledChanged(on);
+// #109 — compute the EFFECTIVE PHROT run state and push it to the WDSP
+// TX channel.  Phase rotation is a voice-only trick — it distorts digital
+// waveforms (FT8/FT4/RTTY/etc.) — so the WDSP run state is the operator's
+// intent AND-gated with "not a digital mode": auto-OFF in DIGU/DIGL even
+// when the operator toggle is on.  Mirrors the native-rack digital bypass
+// (SetTxRackBypass) and the RX EQ #59 mode gate.  WDSP TXA mode 7 = DIGU,
+// 9 = DIGL (see wdspTxModeFor in main.cpp).  Called from the operator
+// toggle, every TX-mode change, and channel open (registerTxControl).
+void HL2Stream::applyPhrotRun() {
+    const int  m       = txMode_.load(std::memory_order_relaxed);
+    const bool digital = (m == 7 || m == 9);
+    const bool run     = phrotEnabled_ && !digital;
     std::function<void(bool)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         fwd = txControl_.setPhrotRun;
     }
-    if (fwd) fwd(on);
+    if (fwd) fwd(run);
+}
+
+// #109 — PHROT (phase rotator) enable.  Persists + emits + re-derives the
+// effective WDSP run state (operator intent gated by the current mode).
+// Mirrors setLevelerOn.  Operator on/off, default ON; auto-OFF in digital.
+void HL2Stream::setPhrotEnabled(bool on) {
+    if (on == phrotEnabled_) return;
+    phrotEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/phrotEnabled"), on);
+    emit phrotEnabledChanged(on);
+    applyPhrotRun();
 }
 
 // §15.31 — ATT-on-TX enable.  Persists + emits; if currently keyed,
@@ -2717,6 +2731,10 @@ void HL2Stream::setTxMode(int wdspMode) {
     // EnableCWKeyer): cw_enable on in CWL/CWU, off otherwise.  Must follow
     // the txMode_ store above (applyCwKeyerEnable reads it).
     applyCwKeyerEnable();
+    // #109 — re-derive the PHROT run state on the mode edge: phase rotation
+    // auto-disables in DIGU/DIGL (digital), re-enables in voice modes if the
+    // operator toggle is on.  Must follow the txMode_ store above.
+    applyPhrotRun();
     std::function<void(int)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
@@ -2865,7 +2883,10 @@ void HL2Stream::registerTxControl(TxControl ctl) {
         levOn            = levelerOn_;
         levTop           = levelerMaxGainLinear_;
         amCarLin         = amPctToCarrierLevel(amCarrierPct_);   // % power → c_level
-        phrotOn          = phrotEnabled_;
+        // #109 — push the EFFECTIVE run (operator intent gated by mode):
+        // auto-OFF in DIGU/DIGL even when the toggle is on.
+        const int m      = txMode_.load(std::memory_order_relaxed);
+        phrotOn          = phrotEnabled_ && !(m == 7 || m == 9);
     }
     if (pushMic)          pushMic(micGainDb_);
     if (pushAlc)          pushAlc(alcMaxGainLinear_);

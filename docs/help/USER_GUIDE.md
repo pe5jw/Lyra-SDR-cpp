@@ -1734,10 +1734,32 @@ phase-rotator control.
 |---|---|---|
 | **Enabled** | ON | Master phase-rotator on/off. Default ON (the WDSP / reference posture). |
 
-> **Turn it OFF for digital modes.** Phase rotation distorts FT8 / FT4 /
-> RTTY / other digital waveforms — they need a clean, linear TX chain.
-> Leave PHROT on for SSB voice, off for digital. (A future TX profile can
-> remember this per mode along with the rest of your chain.)
+> **Auto-off in digital modes.** Phase rotation distorts FT8 / FT4 / RTTY /
+> other digital waveforms — they need a clean, linear TX chain — so Lyra
+> automatically disables PHROT whenever you're in **DIGU / DIGL**, even if
+> the toggle is on, and re-enables it when you return to a voice mode. The
+> Enabled checkbox is therefore your *voice-mode* intent; you don't have to
+> remember to flip it for digital.
+
+#### PHROT and wide / ESSB audio (4–10 kHz)
+
+Phase rotation is tuned around the voice fundamental range (its corner is
+down in the low hundreds of Hz), where speech asymmetry actually lives — so
+most of its peak-flattening benefit is in the low end regardless of how wide
+your TX filter is opened. On a **communications-grade** wide passband it
+still earns its keep: more average talk power without raising your peak/ALC
+ceiling, which is exactly what cuts through on a busy band.
+
+On **high-fidelity ESSB** (wide, natural-sounding audio for its own sake)
+the trade-off flips for many operators. PHROT is an all-pass network, so it
+imposes frequency-dependent group delay across the band; on a 4–10 kHz
+passband that can smear transients and take the "natural" edge off the audio
+that the wide filter was opened to capture. ESSB-focused stations commonly
+leave PHROT **off** and lean on the multiband processor / leveler / careful
+gain staging instead, reserving PHROT for when punch matters more than
+fidelity. Because it's a single toggle, the honest answer is to A/B it on
+*your* voice and *your* passband — keep it on if it sounds punchier, turn it
+off if it muddies your wide audio.
 
 ### AM Carrier (AM / SAM modulation)
 

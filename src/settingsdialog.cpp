@@ -3330,9 +3330,10 @@ QWidget *SettingsDialog::buildTxTab() {
             "asymmetry of speech waveforms, lowering their peak-to-average "
             "ratio so more average power gets through for the same ALC/peak "
             "ceiling. Helpful on SSB voice.\n\n"
-            "Turn it OFF for digital modes (FT8/FT4/RTTY/etc.) — phase "
-            "rotation distorts those waveforms. Default ON (matches the "
-            "reference posture)."));
+            "Auto-disabled in digital modes (DIGU/DIGL) — phase rotation "
+            "distorts FT8/FT4/RTTY/etc., so this checkbox is your voice-mode "
+            "intent and Lyra switches it off for you in digital. Default ON "
+            "(matches the reference posture)."));
         connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
             if (stream_) stream_->setPhrotEnabled(on);
         });

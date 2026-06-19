@@ -391,8 +391,10 @@ class HL2Stream : public QObject {
     // #109 — PHROT (phase rotator) enable.  WDSP TXA speech processor
     // that symmetrizes asymmetric voice waveforms → lower peak-to-average
     // → more average talk power.  Operator on/off (mirrors the reference
-    // Setup PHROT checkbox).  Default ON = WDSP/reference posture.  Turn
-    // OFF for digital modes (it distorts FT8/RTTY/etc.).
+    // Setup PHROT checkbox).  Default ON = WDSP/reference posture.  The
+    // effective WDSP run is auto-gated OFF in digital modes (DIGU/DIGL —
+    // phase rotation distorts FT8/RTTY/etc.); the toggle is the operator's
+    // voice-mode intent (see applyPhrotRun).
     Q_PROPERTY(bool   phrotEnabled            READ phrotEnabled
                WRITE setPhrotEnabled            NOTIFY phrotEnabledChanged)
 
@@ -1295,6 +1297,10 @@ private:
     // transient step-downs never overwrite the operator's stored drive
     // set point; the operator's drive is restored on the next key-down.
     void applyDriveLevelNoPersist(int level);
+    // #109 — push the EFFECTIVE PHROT run (operator intent AND not-digital)
+    // to the WDSP TX channel.  Called from the operator toggle, every TX
+    // mode change, and channel open.  Auto-OFF in DIGU/DIGL (mode 7/9).
+    void applyPhrotRun();
     // #170a — the Max-TX-drive cap as a raw 0..255 ceiling (100 % → 255).
     // Header-safe integer rounding (no <cmath>/<algorithm> dependency);
     // maxDrivePct_ is already clamped 1..100 by its setter + the ctor.
