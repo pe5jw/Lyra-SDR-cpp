@@ -888,6 +888,44 @@ QWidget *SettingsDialog::buildNetworkTab() {
         });
         sf->addRow(tr("Highlight colour:"), hlColor);
 
+        // #172 — Flash new spots (Thetis "Flash new" parity): a freshly-
+        // arrived spot renders in the flash colour for N seconds, then
+        // settles to its normal cluster colour.
+        auto *flashNew = new QCheckBox(tr("Flash new spots"), sg);
+        flashNew->setChecked(spots_->flashNew());
+        flashNew->setToolTip(tr("Briefly draw a freshly-arrived spot in the "
+                                "flash colour to catch your eye, then settle "
+                                "to its normal cluster colour."));
+        connect(flashNew, &QCheckBox::toggled, spots_,
+                [this](bool on) { spots_->setFlashNew(on); });
+        sf->addRow(QString(), flashNew);
+
+        auto *flashColor = new QPushButton(sg);
+        flashColor->setFixedWidth(64);
+        auto paintFlash = [flashColor](const QString &hex) {
+            flashColor->setStyleSheet(
+                QStringLiteral("background:%1;border:1px solid #5a6573;").arg(hex));
+        };
+        paintFlash(spots_->flashColor());
+        connect(flashColor, &QPushButton::clicked, sg, [this, paintFlash]() {
+            const QColor c = QColorDialog::getColor(
+                QColor(spots_->flashColor()), this, tr("New-spot flash colour"));
+            if (c.isValid()) {
+                const QString hex = c.name();
+                spots_->setFlashColor(hex);
+                paintFlash(hex);
+            }
+        });
+        sf->addRow(tr("Flash colour:"), flashColor);
+
+        auto *flashDur = new QSpinBox(sg);
+        flashDur->setRange(1, 60);
+        flashDur->setSuffix(tr(" s"));
+        flashDur->setValue(spots_->flashSec());
+        connect(flashDur, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int s) { spots_->setFlashSec(s); });
+        sf->addRow(tr("Flash for:"), flashDur);
+
         auto *notify = new QCheckBox(tr("Pop up a notification when I'm spotted"), sg);
         notify->setChecked(spots_->notifyOwn());
         connect(notify, &QCheckBox::toggled, spots_,
@@ -3365,6 +3403,166 @@ QWidget *SettingsDialog::buildTxTab() {
         form->addRow(tr("ATT:"), attSpin);
 
         leftCol->addWidget(grp);   // §15.31 — SAFETY / set-once column
+    }
+
+    // #169 — SWR protection (auto-cut TX on sustained high reflected
+    // power).  Sibling safety control to ATT-on-TX above; same LEFT
+    // (safety / set-once) column.  Stream-side evaluator cuts TX through
+    // the normal keyup chain when reflected power stays above the limit
+    // past the key-down blanking + dwell guards (false-trigger-safe), and
+    // latches until the operator re-keys.  Front-panel TxPanel "PROT"
+    // lamp toggles the same enable + shows the live/tripped state.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("SWR protection  (auto-cut TX)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *enBox = new QCheckBox(
+            tr("Enabled  (cut TX on sustained high SWR)"), grp);
+        enBox->setChecked(stream_->swrProtectEnabled());
+        enBox->setToolTip(tr(
+            "Watches reflected power while transmitting and auto-cuts TX "
+            "(through the normal keyup chain) when the SWR stays above the "
+            "limit below.  Protects the PA / finals against a bad antenna, "
+            "a disconnected feedline, or an ATU that didn't latch.\n\n"
+            "False-trigger-safe: a key-down blanking window skips the T/R "
+            "+ ALC settle, forward/reflected power floors gate out the "
+            "low-power regime, and the over-limit condition must persist "
+            "for a short dwell before it cuts.  The SWR reading is "
+            "calibration-free (it's a power ratio), so it works without "
+            "the PWR-meter calibration.  After a cut, re-key (MOX/TUN) to "
+            "resume — there's no auto-recovery while still keyed.\n\n"
+            "Default ON at 5:1.  The TxPanel \"PROT\" lamp shows the live "
+            "state (green = armed, red = tripped)."));
+        connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setSwrProtectEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::swrProtectEnabledChanged, enBox,
+                [enBox](bool on) {
+                    if (enBox->isChecked() != on) enBox->setChecked(on);
+                });
+        form->addRow(enBox);
+
+        auto *limSpin = new QDoubleSpinBox(grp);
+        limSpin->setRange(lyra::ipc::HL2Stream::kSwrProtectMinLimit,
+                          lyra::ipc::HL2Stream::kSwrProtectMaxLimit);
+        limSpin->setSingleStep(0.5);
+        limSpin->setDecimals(1);
+        limSpin->setSuffix(tr(" : 1"));
+        limSpin->setValue(stream_->swrProtectLimit());
+        limSpin->setToolTip(tr(
+            "SWR ratio at (or above) which TX is cut once sustained past "
+            "the dwell window.  5:1 is a conservative default — most real "
+            "antennas run under 3:1, so 5:1 means something is genuinely "
+            "wrong (open feedline, wrong band, ATU not latched).  Lower it "
+            "if you want tighter protection; range 1.5..10:1."));
+        connect(limSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    if (stream_) stream_->setSwrProtectLimit(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::swrProtectLimitChanged, limSpin,
+                [limSpin](double v) {
+                    if (limSpin->value() != v) limSpin->setValue(v);
+                });
+        form->addRow(tr("Limit:"), limSpin);
+
+        auto *tuneBox = new QCheckBox(
+            tr("Protect during tune (TUN)"), grp);
+        tuneBox->setChecked(stream_->swrProtectDuringTune());
+        tuneBox->setToolTip(tr(
+            "When ON (default), the SWR cut also applies to a deliberate "
+            "ATU tune carrier (TUN).  Turn OFF only if you tune into a "
+            "known-high-SWR load on purpose and don't want the carrier "
+            "cut out from under the ATU."));
+        connect(tuneBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setSwrProtectDuringTune(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::swrProtectDuringTuneChanged,
+                tuneBox, [tuneBox](bool on) {
+                    if (tuneBox->isChecked() != on) tuneBox->setChecked(on);
+                });
+        form->addRow(tuneBox);
+
+        // #169 Phase 1b — action picker: Cut (unkey) vs Fold (step the
+        // drive down x0.5 toward the floor, escalating to Cut only if the
+        // floor can't tame it).
+        auto *actCombo = new QComboBox(grp);
+        actCombo->addItem(tr("Cut TX (unkey)"));        // index 0
+        actCombo->addItem(tr("Fold back power"));       // index 1
+        actCombo->setCurrentIndex(stream_->swrProtectAction());
+        actCombo->setToolTip(tr(
+            "What to do when SWR stays over the limit:\n"
+            "• Cut TX — unkey immediately (safest; the radio stops "
+            "transmitting until you re-key).\n"
+            "• Fold back power — halve TX drive in steps to try to bring "
+            "the SWR down while staying on the air; if it hits the fold "
+            "floor below and SWR is still over the limit, it escalates to "
+            "a hard cut.  Folded drive is restored on your next key-up/"
+            "key-down — it never creeps back up on its own."));
+        connect(actCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int idx) {
+                    if (stream_) stream_->setSwrProtectAction(idx);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::swrProtectActionChanged,
+                actCombo, [actCombo](int idx) {
+                    if (actCombo->currentIndex() != idx)
+                        actCombo->setCurrentIndex(idx);
+                });
+        form->addRow(tr("On high SWR:"), actCombo);
+
+        auto *foldSpin = new QSpinBox(grp);
+        foldSpin->setRange(1, 90);
+        foldSpin->setSuffix(tr(" %"));
+        foldSpin->setValue(stream_->foldMinDrivePct());
+        foldSpin->setToolTip(tr(
+            "Fold floor — the lowest TX drive (% of full) the Fold action "
+            "will step down to before giving up and cutting TX.  Only used "
+            "when the action above is \"Fold back power.\"  Default 10 %."));
+        connect(foldSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    if (stream_) stream_->setFoldMinDrivePct(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::foldMinDrivePctChanged,
+                foldSpin, [foldSpin](int v) {
+                    if (foldSpin->value() != v) foldSpin->setValue(v);
+                });
+        form->addRow(tr("Fold floor:"), foldSpin);
+
+        leftCol->addWidget(grp);   // #169 — SAFETY / set-once column
+    }
+
+    // #170a — Max TX drive cap (the always-safe over-power guard for
+    // low-drive amps).  A hard ceiling on TX drive %; the operator's
+    // drive slider / TUN drive / BandMemory restore can't exceed it.
+    // Pure preventive clamp (never trips).  Same LEFT safety column.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("TX power limit  (drive cap)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *capSpin = new QSpinBox(grp);
+        capSpin->setRange(1, 100);
+        capSpin->setSuffix(tr(" %"));
+        capSpin->setValue(stream_->maxDrivePct());
+        capSpin->setToolTip(tr(
+            "Hard ceiling on TX drive — the operator drive slider, the "
+            "TUN tune drive, a recalled per-band drive, and TCI DRIVE "
+            "commands are all clamped to this.  Protects a low-drive "
+            "amplifier whose input can't take the HL2's full output.\n\n"
+            "It's a pure preventive clamp: it never cuts or trips, it "
+            "just won't let drive exceed the ceiling.  100 % = no cap "
+            "(default).  Lowering it re-clamps the current drive down "
+            "immediately; raising it leaves the current drive where it "
+            "is (drive back up yourself to use the new headroom)."));
+        connect(capSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    if (stream_) stream_->setMaxDrivePct(v);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::maxDrivePctChanged,
+                capSpin, [capSpin](int v) {
+                    if (capSpin->value() != v) capSpin->setValue(v);
+                });
+        form->addRow(tr("Max TX drive:"), capSpin);
+
+        leftCol->addWidget(grp);   // #170a — SAFETY / set-once column
     }
 
     // §15.28 — push groups to top of each column so trailing whitespace

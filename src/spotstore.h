@@ -53,6 +53,9 @@ public:
     QString highlightColor() const { return highlightColor_; }
     bool notifyOwn() const        { return notifyOwn_; }
     int  notifyCooldownMin() const { return notifyCooldownMin_; }
+    bool flashNew() const         { return flashNew_; }
+    QString flashColor() const    { return flashColor_; }
+    int  flashSec() const         { return flashSec_; }
     void setShowSpots(bool on);
     void setMaxSpots(int n);
     void setLifetimeSec(int s);
@@ -60,6 +63,9 @@ public:
     void setHighlightColor(const QString &hex);
     void setNotifyOwn(bool on);
     void setNotifyCooldownMin(int min);
+    void setFlashNew(bool on);
+    void setFlashColor(const QString &hex);
+    void setFlashSec(int s);
 
 signals:
     void changed();   // bank changed → panadapter re-queries
@@ -80,6 +86,8 @@ private:
     int  indexOf(const QString &call) const;
     void enforceCap();
     void onAgeTick();
+    void onFlashTick();              // repaint pulse while a spot is flashing
+    bool anyFlashing(qint64 nowMs) const;
     static QString lyraModeFor(const QString &tciMode, qint64 freqHz);
 
     Prefs                 *prefs_  = nullptr;
@@ -88,6 +96,7 @@ private:
     DxccLookup             dxcc_;
     QVector<Spot>         spots_;
     QTimer               *ageTimer_ = nullptr;
+    QTimer               *flashTimer_ = nullptr;
     qint64                tStart_ = 0;
 
     bool show_        = true;
@@ -98,6 +107,14 @@ private:
     bool    notifyOwn_         = false;   // toast when my call is spotted
     int     notifyCooldownMin_ = 10;      // re-notify no sooner than this
     qint64  lastNotify_        = 0;       // ms epoch of the last toast
+    // #172 — "flash new spots": a freshly-arrived spot renders in
+    // flashColor_ for flashSec_ seconds to draw the eye, then settles to
+    // its normal cluster colour.  flashTimer_ pulses changed() while any
+    // spot is inside the window so the panadapter re-queries and the
+    // flash decays without waiting for the next spot / age event.
+    bool    flashNew_   = false;
+    QString flashColor_ = QStringLiteral("#ffeb3b");   // amber-yellow
+    int     flashSec_   = 8;
 };
 
 } // namespace lyra::ui

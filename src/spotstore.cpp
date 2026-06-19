@@ -24,6 +24,9 @@ constexpr auto kKeyHlOwn = "spots/highlight_own";
 constexpr auto kKeyHlCol = "spots/highlight_color";
 constexpr auto kKeyNotify = "spots/notify_own";
 constexpr auto kKeyCooldown = "spots/notify_cooldown_min";
+constexpr auto kKeyFlashNew = "spots/flash_new";
+constexpr auto kKeyFlashCol = "spots/flash_color";
+constexpr auto kKeyFlashSec = "spots/flash_sec";
 }
 
 SpotStore::SpotStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
@@ -38,12 +41,24 @@ SpotStore::SpotStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                               QStringLiteral("#ff4081")).toString();
     notifyOwn_         = s.value(QString::fromLatin1(kKeyNotify), false).toBool();
     notifyCooldownMin_ = s.value(QString::fromLatin1(kKeyCooldown), 10).toInt();
+    flashNew_   = s.value(QString::fromLatin1(kKeyFlashNew), false).toBool();
+    flashColor_ = s.value(QString::fromLatin1(kKeyFlashCol),
+                          QStringLiteral("#ffeb3b")).toString();
+    flashSec_   = qBound(1, s.value(QString::fromLatin1(kKeyFlashSec), 8).toInt(), 60);
     tStart_ = QDateTime::currentMSecsSinceEpoch();
 
     ageTimer_ = new QTimer(this);
     ageTimer_->setInterval(5000);
     connect(ageTimer_, &QTimer::timeout, this, &SpotStore::onAgeTick);
     if (lifetimeSec_ > 0) ageTimer_->start();
+
+    // Flash repaint pulse — runs only while a spot is inside the flash
+    // window; ~3 Hz is smooth enough for the eye and cheap (spotsInSpan
+    // returns only the handful of in-span spots).  Self-stops once the
+    // window passes (onFlashTick).
+    flashTimer_ = new QTimer(this);
+    flashTimer_->setInterval(330);
+    connect(flashTimer_, &QTimer::timeout, this, &SpotStore::onFlashTick);
 }
 
 int SpotStore::indexOf(const QString &call) const {
@@ -81,6 +96,17 @@ void SpotStore::addSpot(const QString &call, const QString &mode, qint64 freqHz,
             }
         }
     }
+    // #172 — start the flash pulse so the just-added spot decays out of
+    // flashColor_ on its own (idempotent: start() on a running timer is
+    // a no-op).  Skip self-spots — they already have the own-call ★ +
+    // highlight colour, which takes visual priority over a flash.
+    if (flashNew_ && flashTimer_ && !flashTimer_->isActive()) {
+        const QString own = prefs_ ? prefs_->callsign().trimmed().toUpper()
+                                   : QString();
+        if (own.isEmpty() || sp.call.toUpper() != own
+            || !(highlightOwn_))
+            flashTimer_->start();
+    }
     emit changed();
 }
 
@@ -116,6 +142,23 @@ void SpotStore::onAgeTick() {
     for (int i = spots_.size() - 1; i >= 0; --i)
         if (spots_[i].added < cutoff) { spots_.removeAt(i); removed = true; }
     if (removed) emit changed();
+}
+
+bool SpotStore::anyFlashing(qint64 nowMs) const {
+    if (!flashNew_) return false;
+    const qint64 flashMs = qint64(flashSec_) * 1000;
+    for (const Spot &sp : spots_)
+        if (nowMs - sp.added < flashMs) return true;
+    return false;
+}
+
+void SpotStore::onFlashTick() {
+    // Re-query forces the panadapter to re-read each spot's `flash` flag,
+    // so spots whose window just lapsed settle to their normal colour.
+    // Stop pulsing once nothing is flashing (idle = zero cost).
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!anyFlashing(now)) { flashTimer_->stop(); return; }
+    emit changed();
 }
 
 QString SpotStore::lyraModeFor(const QString &tciMode, qint64 freqHz) {
@@ -173,9 +216,14 @@ QVariantList SpotStore::spotsInSpan(double centerHz, double spanHz) const {
     std::sort(hits.begin(), hits.end(),
               [](const Spot *a, const Spot *b) { return a->freqHz < b->freqHz; });
     const QString own = prefs_ ? prefs_->callsign().trimmed().toUpper() : QString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 flashMs = qint64(flashSec_) * 1000;
     for (const Spot *sp : hits) {
         const bool mine = highlightOwn_ && !own.isEmpty()
                           && sp->call.toUpper() == own;
+        // Flash a freshly-arrived spot — but never override the own-call
+        // highlight (mine), which is the stronger signal.
+        const bool flash = flashNew_ && !mine && (nowMs - sp->added) < flashMs;
         QVariantMap m;
         m[QStringLiteral("call")]    = sp->call;          // raw (for activate/echo)
         m[QStringLiteral("country")] = sp->country;       // ISO-2 or ""
@@ -186,6 +234,8 @@ QVariantList SpotStore::spotsInSpan(double centerHz, double spanHz) const {
         m[QStringLiteral("color")]   = mine ? highlightColor_
                                             : QColor::fromRgba(sp->argb).name(QColor::HexArgb);
         m[QStringLiteral("mine")]    = mine;
+        m[QStringLiteral("flash")]   = flash;
+        m[QStringLiteral("flashColor")] = flashColor_;
         m[QStringLiteral("mode")]    = sp->mode;
         m[QStringLiteral("text")]    = sp->text;
         out.append(m);
@@ -238,6 +288,31 @@ void SpotStore::setNotifyCooldownMin(int min) {
     if (notifyCooldownMin_ == min) return;
     notifyCooldownMin_ = min;
     QSettings().setValue(QString::fromLatin1(kKeyCooldown), min);
+}
+void SpotStore::setFlashNew(bool on) {
+    if (flashNew_ == on) return;
+    flashNew_ = on;
+    QSettings().setValue(QString::fromLatin1(kKeyFlashNew), on);
+    // Turning on while recent spots exist → pulse immediately; turning
+    // off → the next onFlashTick sees !flashNew_ via anyFlashing and
+    // stops.  Either way re-query so the change shows at once.
+    if (flashNew_ && flashTimer_ && !flashTimer_->isActive()
+        && anyFlashing(QDateTime::currentMSecsSinceEpoch()))
+        flashTimer_->start();
+    emit changed();
+}
+void SpotStore::setFlashColor(const QString &hex) {
+    if (hex.isEmpty() || flashColor_ == hex) return;
+    flashColor_ = hex;
+    QSettings().setValue(QString::fromLatin1(kKeyFlashCol), hex);
+    emit changed();
+}
+void SpotStore::setFlashSec(int s) {
+    s = qBound(1, s, 60);
+    if (flashSec_ == s) return;
+    flashSec_ = s;
+    QSettings().setValue(QString::fromLatin1(kKeyFlashSec), s);
+    emit changed();
 }
 
 } // namespace lyra::ui

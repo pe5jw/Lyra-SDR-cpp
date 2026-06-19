@@ -1193,17 +1193,25 @@ Item {
                         // different rows instead of stacking on top.
                         readonly property real labelY: 40 + (index % 3) * 13
                         Rectangle {
+                            // #172 — a freshly-arrived spot flashes in the
+                            // operator-set flash colour (own-call highlight
+                            // still wins via `mine`).
                             x: spItem.sx - (spItem.modelData.mine ? 1 : 0.5); y: 38
                             width: spItem.modelData.mine ? 2 : 1; height: 41
-                            color: spItem.modelData.color
-                            opacity: spItem.modelData.mine ? 1.0 : 0.8
+                            color: spItem.modelData.flash
+                                   ? spItem.modelData.flashColor
+                                   : spItem.modelData.color
+                            opacity: (spItem.modelData.mine
+                                      || spItem.modelData.flash) ? 1.0 : 0.8
                         }
                         Text {
                             x: spItem.sx + 3; y: spItem.labelY
                             // "★" marks the operator's own spotted callsign.
                             text: (spItem.modelData.mine ? "★ " : "")
                                   + spItem.modelData.label
-                            color: spItem.modelData.color
+                            color: spItem.modelData.flash
+                                   ? spItem.modelData.flashColor
+                                   : spItem.modelData.color
                             font.pixelSize: spItem.modelData.mine ? 13 : 11
                             font.bold: true
                             style: Text.Outline; styleColor: "#cc000000"

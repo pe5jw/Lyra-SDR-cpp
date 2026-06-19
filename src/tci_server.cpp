@@ -877,6 +877,21 @@ void TciServer::onChronoTick() {
 }
 
 void TciServer::onMoxActiveChanged(bool on) {
+    // #172 — announce the wire TX state to EVERY connected client on
+    // each MOX edge, regardless of source (operator MOX button, hardware
+    // PTT / foot switch, TUN, OR a TCI client).  Without this a logger
+    // watching Lyra over TCI (SDRLogger+, Log4OM, …) never learns the
+    // rig keyed when the operator presses MOX locally — it only ever saw
+    // the direct trx: reply to a TCI-originated key.  Mirrors the working
+    // reference's SyncTciPttToMox (TCIServer.cs:5560-5577), which fires
+    // trx:<rx>,<state> to all listeners from the MOX-change emit sites.
+    // broadcastNow (NOT the rate-limited broadcast): a key edge is a
+    // discrete event that must never be coalesced or dropped.  Idempotent
+    // for a TCI owner that already got its direct trx: reply — it just
+    // re-confirms the now-live wire state.
+    broadcastNow(QStringLiteral("trx:0,%1").arg(
+        on ? QStringLiteral("true") : QStringLiteral("false")));
+
     // Task #33 — SyncTciPttToMox (working reference at TCIServer.cs:
     // 5560-5577, called from the MOX-change emit sites at :6884/6899).
     // If the wire MOX bit dropped externally AND we owned the TX-audio
@@ -1517,12 +1532,43 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
         sendTo(ws, cmd.toLower() + QStringLiteral(":%1,false").arg(idx));
         return;
     }
+    // #172 — DRIVE / TUNE_DRIVE: operator TX-power setters over TCI
+    // (single global 0..100 % value, bidirectional read-back).  Were
+    // silent-accept stubs before #172.  DRIVE maps the percent to the
+    // HL2 drive DAC (raw 0..255) with the SAME round-trip math as the
+    // TxPanel slider — raw=round(pct*255/100), pct=round(raw*100/255) —
+    // so a value set over TCI reads back identically in the UI and the
+    // per-band BandMemory live-save (driven by txDriveLevelChanged)
+    // fires exactly as for an operator slider drag.  TUNE_DRIVE is
+    // already a percent in Prefs (Task #74), set directly.  Last arg is
+    // the value (matches the CW_*_SPEED arg handling above; tolerates a
+    // stray leading rx index a non-conformant client might prepend).
+    if (cmd == QStringLiteral("DRIVE")) {
+        if (!args.isEmpty() && stream_) {
+            bool f = false; const int pct = args.last().toInt(&f);
+            if (f) stream_->setTxDriveLevel(
+                       qRound(qBound(0, pct, 100) * 255.0 / 100.0));
+        } else if (stream_) {
+            sendTo(ws, QStringLiteral("drive:%1")
+                          .arg(qRound(stream_->txDriveLevel() * 100.0 / 255.0)));
+        }
+        return;
+    }
+    if (cmd == QStringLiteral("TUNE_DRIVE")) {
+        if (!args.isEmpty() && prefs_) {
+            bool f = false; const int pct = args.last().toInt(&f);
+            if (f) prefs_->setTuneDrivePct(qBound(0, pct, 100));
+        } else if (prefs_) {
+            sendTo(ws, QStringLiteral("tune_drive:%1").arg(prefs_->tuneDrivePct()));
+        }
+        return;
+    }
+
     // TX-only setters with no read-back of interest — silently accept.
     // (TX_STREAM_AUDIO_BUFFERING moved to commit 3.4's echo path so
     // MSHV / Thetis-client gets confirmation the buffering value
     // applied.)
-    if (cmd == QStringLiteral("DRIVE") || cmd == QStringLiteral("TUNE_DRIVE")
-        || cmd == QStringLiteral("MON_ENABLE") || cmd == QStringLiteral("MON_VOLUME")
+    if (cmd == QStringLiteral("MON_ENABLE") || cmd == QStringLiteral("MON_VOLUME")
         || cmd == QStringLiteral("RIT_OFFSET") || cmd == QStringLiteral("XIT_OFFSET")
         || cmd == QStringLiteral("KEYER")
         || cmd.startsWith(QStringLiteral("CW_MACROS"))

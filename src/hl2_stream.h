@@ -403,6 +403,49 @@ class HL2Stream : public QObject {
                WRITE setAttOnTxEnabled NOTIFY attOnTxEnabledChanged)
     Q_PROPERTY(int  attOnTxDb       READ attOnTxDb
                WRITE setAttOnTxDb       NOTIFY attOnTxDbChanged)
+    // #169 — SWR protection (auto-cut TX on sustained high reflected
+    // power).  A stream-side evaluator (off the GUI loop, beside the
+    // host TX-safety timer + ATT-on-TX) samples fwd/rev power on a 50 ms
+    // tick while keyed; once past key-down blanking AND above the power
+    // floors AND sustained over the limit for the dwell window it CUTS
+    // TX through the requestMox(false) funnel and LATCHES until the next
+    // key-down (manual re-arm).  The SWR ratio is calibration-free
+    // (rho=sqrt(rev/fwd)); the power floors gate out the low-power
+    // regime where the ratio is just noise (the false-trigger guards).
+    // swrProtectTripped / swrProtectReason are read-only lamp state for
+    // the TxPanel "PROT" indicator.  Default ENABLED / 5:1.  Phase 1 =
+    // Cut; Fold action + over-power trip (#170) land later.
+    Q_PROPERTY(bool   swrProtectEnabled    READ swrProtectEnabled
+               WRITE setSwrProtectEnabled    NOTIFY swrProtectEnabledChanged)
+    Q_PROPERTY(double swrProtectLimit      READ swrProtectLimit
+               WRITE setSwrProtectLimit      NOTIFY swrProtectLimitChanged)
+    Q_PROPERTY(bool   swrProtectDuringTune READ swrProtectDuringTune
+               WRITE setSwrProtectDuringTune NOTIFY swrProtectDuringTuneChanged)
+    Q_PROPERTY(bool   swrProtectTripped    READ swrProtectTripped
+               NOTIFY swrProtectTrippedChanged)
+    Q_PROPERTY(QString swrProtectReason    READ swrProtectReason
+               NOTIFY swrProtectReasonChanged)
+    // #169 Phase 1b — action on a sustained over-limit: 0 = Cut (unkey),
+    // 1 = Fold (monotone x0.5 drive step-down toward the floor, then
+    // escalate to Cut if still over at the floor).  foldMinDrivePct is
+    // the fold floor (% of full drive); below it fold escalates to Cut.
+    // Both actions share the same §5 false-trigger guards; Fold reduces
+    // the APPLIED drive without overwriting the operator's stored set
+    // point (no-persist, like Auto-LNA), and the operator's drive is
+    // restored on the next key-down (manual re-arm, never auto-recover).
+    Q_PROPERTY(int    swrProtectAction     READ swrProtectAction
+               WRITE setSwrProtectAction     NOTIFY swrProtectActionChanged)
+    Q_PROPERTY(int    foldMinDrivePct      READ foldMinDrivePct
+               WRITE setFoldMinDrivePct      NOTIFY foldMinDrivePctChanged)
+    // #170a — Max TX drive cap (the primary, always-safe over-power
+    // guard for low-drive amps).  A hard ceiling on TX drive %: every
+    // drive write (operator slider, TUN drive, BandMemory restore, TCI
+    // DRIVE) funnels through setTxDriveLevel, which clamps to this — a
+    // pure preventive clamp with ZERO false-trigger risk (it never trips,
+    // it just won't exceed the ceiling; needs no telemetry, no cal).
+    // 100 % = no cap (the default).
+    Q_PROPERTY(int    maxDrivePct          READ maxDrivePct
+               WRITE setMaxDrivePct          NOTIFY maxDrivePctChanged)
     // #105 CW-1a — CW keyer config (operator surface).  Plumbed into
     // prn->cw (the composer cases 12/13/14 already consume it); INERT
     // until the keying commit sets cw_enable.  Defaults per
@@ -581,6 +624,19 @@ public:
     static constexpr int kTxTimeoutDefaultSec = 600;   // 10 min default
     static constexpr int kTxTimeoutMinSec     = 60;    //  1 min floor
     static constexpr int kTxTimeoutMaxSec     = 1200;  // 20 min ceiling
+    // #169 — SWR-protection defaults + the false-trigger-guard knobs.
+    // The blank/dwell/floor knobs are QSettings-tunable (no UI in Phase
+    // 1) so they can be tuned on the bench without a rebuild.
+    static constexpr double kSwrProtectDefaultLimit = 5.0;   // 5:1 default
+    static constexpr double kSwrProtectMinLimit     = 1.5;   // clamp floor
+    static constexpr double kSwrProtectMaxLimit     = 10.0;  // clamp ceiling
+    static constexpr int    kSwrEvalIntervalMs      = 50;    // 20 Hz tick
+    static constexpr int    kSwrBlankMsDefault      = 200;   // key-down blank
+    static constexpr int    kSwrDwellMsDefault      = 200;   // sustained dwell
+    static constexpr double kSwrFwdFloorWDefault    = 1.0;   // provisional-W
+    static constexpr double kSwrRevFloorWDefault    = 0.3;   // provisional-W
+    static constexpr int    kFoldMinDrivePctDefault = 10;    // fold floor (%)
+    static constexpr int    kMaxDrivePctDefault     = 100;   // no cap default
 
     // P4.b TUN — Thetis tune zero-beat offset (console.cs cw_pitch=600).
     // The tune carrier is the WDSP postgen tone at ±kTuneCwPitchHz AND a
@@ -650,6 +706,15 @@ public:
     // §15.31 — ATT-on-TX operator surface getters.
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     int     attOnTxDb()             const { return attOnTxDb_;             }
+    // #169 — SWR-protection getters.
+    bool    swrProtectEnabled()     const { return swrProtectEnabled_;     }
+    double  swrProtectLimit()       const { return swrProtectLimit_;       }
+    bool    swrProtectDuringTune()  const { return swrProtectDuringTune_;  }
+    bool    swrProtectTripped()     const { return swrProtectTripped_;     }
+    QString swrProtectReason()      const { return swrProtectReason_;      }
+    int     swrProtectAction()      const { return swrProtectAction_;      }
+    int     foldMinDrivePct()       const { return foldMinDrivePct_;       }
+    int     maxDrivePct()           const { return maxDrivePct_;           }
     // #105 CW-1a — CW keyer config getters.
     int     cwKeyerSpeedWpm()       const { return cwKeyerSpeedWpm_;       }
     int     cwKeyerWeight()         const { return cwKeyerWeight_;         }
@@ -913,6 +978,15 @@ public slots:
     // wire live so the operator sees the effect mid-TX.
     void setAttOnTxEnabled(bool on);
     void setAttOnTxDb(int db);
+    // #169 — SWR-protection operator surface.  Each persists under
+    // tx/<key>, emits the changed signal, and (enable/limit) re-arms or
+    // stands down the live evaluator if keyed right now.
+    void setSwrProtectEnabled(bool on);
+    void setSwrProtectLimit(double ratio);
+    void setSwrProtectDuringTune(bool on);
+    void setSwrProtectAction(int action);   // 0 = Cut, 1 = Fold
+    void setFoldMinDrivePct(int pct);        // fold floor, 1..90 %
+    void setMaxDrivePct(int pct);            // #170a drive cap, 1..100 %
     // #105 CW-1a — CW keyer config setters.  Each clamps, stores, persists
     // (tx/cw/*), emits, and (if prn exists) pushes the whole CW block to
     // prn->cw via applyCwConfigToPrn().  INERT on the wire until the keying
@@ -1081,6 +1155,18 @@ signals:
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
     void attOnTxDbChanged(int db);
+    // #169 — SWR protection.
+    void swrProtectEnabledChanged(bool on);
+    void swrProtectLimitChanged(double ratio);
+    void swrProtectDuringTuneChanged(bool on);
+    void swrProtectTrippedChanged(bool tripped);
+    void swrProtectReasonChanged(const QString& reason);
+    void swrProtectActionChanged(int action);
+    void foldMinDrivePctChanged(int pct);
+    void maxDrivePctChanged(int pct);
+    // Fires once per auto-cut (distinct from txTimeoutFired) so the UI
+    // can toast "TX cut: SWR x.x:1".
+    void swrProtectCut(const QString& reason);
     // #105 CW-1a — CW keyer config.
     void cwKeyerSpeedWpmChanged(int wpm);
     void cwKeyerWeightChanged(int weight);
@@ -1177,6 +1263,30 @@ private:
     // requestMox(false) so the standard keyup TR-delay chain runs
     // cleanly (no shortcut on the wire bit).
     void onTxSafetyTimeout();
+    // #169 — SWR-protection evaluator (stream-side, beside the TX-safety
+    // timer).  arm: on key-down clear the latch + reset the tick/dwell
+    // counters + start the 50 ms eval tick.  disarm: on key-up stop the
+    // tick (the trip latch persists so the operator sees WHY TX cut until
+    // they re-key).  eval: the periodic tick implementing the four
+    // guards — key-down blanking, fwd/rev power floors, sustained dwell —
+    // then CUT via requestMox(false) + latch.
+    void armSwrProtect();
+    void disarmSwrProtect();
+    void evalSwrProtect();
+    void tripSwrProtect(double swr);   // Cut action (+ fold-floor escalate)
+    void foldSwrProtect(double swr);   // Fold action — x0.5 drive step-down
+    // #169 Phase 1b — apply a TX drive level to the wire WITHOUT
+    // persisting it (mirrors applyLnaGainNoPersist): used by Fold so its
+    // transient step-downs never overwrite the operator's stored drive
+    // set point; the operator's drive is restored on the next key-down.
+    void applyDriveLevelNoPersist(int level);
+    // #170a — the Max-TX-drive cap as a raw 0..255 ceiling (100 % → 255).
+    // Header-safe integer rounding (no <cmath>/<algorithm> dependency);
+    // maxDrivePct_ is already clamped 1..100 by its setter + the ctor.
+    int  maxDriveRaw() const {
+        const int r = (maxDrivePct_ * 255 + 50) / 100;
+        return r < 1 ? 1 : (r > 255 ? 255 : r);
+    }
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
     // picks the TX-side or RX-side per-band OC table (n2adrOcPattern
@@ -1601,6 +1711,37 @@ private:
     static constexpr bool kDefaultAttOnTxEnabled = true;
     bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
     int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
+    // #169 — SWR-protection state.  Operator surface persisted under
+    // tx/swr*; the advanced blank/dwell/floor knobs are loaded from
+    // QSettings in the ctor (no UI — tunable without a rebuild).  All
+    // touched on this QObject's thread: the Q_PROPERTY setters, the
+    // swrEvalTimer_ tick, and the moxActiveChanged arm/disarm lambda all
+    // run here (same affinity as the TX-safety timer + FSM).
+    static constexpr bool kDefaultSwrProtectEnabled    = true;
+    static constexpr bool kDefaultSwrProtectDuringTune = true;
+    bool    swrProtectEnabled_    = kDefaultSwrProtectEnabled;
+    double  swrProtectLimit_      = kSwrProtectDefaultLimit;
+    bool    swrProtectDuringTune_ = kDefaultSwrProtectDuringTune;
+    bool    swrProtectTripped_    = false;   // latched until next key-down
+    QString swrProtectReason_;               // e.g. "SWR 7.2:1"
+    int     swrBlankMs_   = kSwrBlankMsDefault;   // QSettings tx/swrBlankMs
+    int     swrDwellMs_   = kSwrDwellMsDefault;   // QSettings tx/swrDwellMs
+    double  swrFwdFloorW_ = kSwrFwdFloorWDefault; // QSettings tx/swrFwdFloorW
+    double  swrRevFloorW_ = kSwrRevFloorWDefault; // QSettings tx/swrRevFloorW
+    QTimer* swrEvalTimer_ = nullptr;   // 50 ms eval tick while keyed
+    int     swrTicks_     = 0;         // eval ticks since key-down (blank)
+    int     swrOverTicks_ = 0;         // consecutive over-limit ticks (dwell)
+    // #169 Phase 1b — Fold action state.  swrProtectAction_ 0=Cut/1=Fold.
+    // While folded, swrFoldPreDrive_ holds the operator's drive at the
+    // first fold step so the next key-down (armSwrProtect) restores it.
+    int     swrProtectAction_ = 0;          // 0 = Cut (default), 1 = Fold
+    int     foldMinDrivePct_  = kFoldMinDrivePctDefault;
+    bool    swrFolded_        = false;      // a fold step has been applied
+    int     swrFoldPreDrive_  = 0;          // operator drive at fold start
+    // #170a — Max TX drive cap (1..100 %; 100 = no cap).  Enforced in
+    // setTxDriveLevel (every drive write funnels there) + the open
+    // re-push + applyDriveLevelNoPersist via maxDriveRaw().
+    int     maxDrivePct_      = kMaxDrivePctDefault;
     // #105 CW-1a — CW keyer config (operator surface; cw_tx_design.md §7
     // defaults).  Mirrored into prn->cw via applyCwConfigToPrn(); the
     // composer (cases 12/13/14) reads prn->cw.  INERT until cw_enable is

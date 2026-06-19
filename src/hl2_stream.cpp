@@ -237,6 +237,36 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         kTxTimeoutMinSec, kTxTimeoutMaxSec);
     txTimeoutBypass_ = QSettings().value(
         QStringLiteral("tx/timeoutBypass"), false).toBool();
+    // #169 — SWR-protection state.  Operator surface persisted; the
+    // advanced false-trigger-guard knobs (blank/dwell/floors) are
+    // QSettings-only so the bench can tune them without a rebuild.
+    swrProtectEnabled_ = QSettings().value(
+        QStringLiteral("tx/swrProtectEnabled"),
+        kDefaultSwrProtectEnabled).toBool();
+    swrProtectLimit_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/swrProtectLimit"),
+                          kSwrProtectDefaultLimit).toDouble(),
+        kSwrProtectMinLimit, kSwrProtectMaxLimit);
+    swrProtectDuringTune_ = QSettings().value(
+        QStringLiteral("tx/swrProtectDuringTune"),
+        kDefaultSwrProtectDuringTune).toBool();
+    swrBlankMs_   = std::max(0, QSettings().value(
+        QStringLiteral("tx/swrBlankMs"), kSwrBlankMsDefault).toInt());
+    swrDwellMs_   = std::max(0, QSettings().value(
+        QStringLiteral("tx/swrDwellMs"), kSwrDwellMsDefault).toInt());
+    swrFwdFloorW_ = std::max(0.0, QSettings().value(
+        QStringLiteral("tx/swrFwdFloorW"), kSwrFwdFloorWDefault).toDouble());
+    swrRevFloorW_ = std::max(0.0, QSettings().value(
+        QStringLiteral("tx/swrRevFloorW"), kSwrRevFloorWDefault).toDouble());
+    swrProtectAction_ = std::clamp(QSettings().value(
+        QStringLiteral("tx/swrProtectAction"), 0).toInt(), 0, 1);
+    foldMinDrivePct_ = std::clamp(QSettings().value(
+        QStringLiteral("tx/foldMinDrivePct"), kFoldMinDrivePctDefault).toInt(),
+        1, 90);
+    // #170a — Max TX drive cap (loaded before the drive-level store below
+    // so the startup drive is itself clamped to the ceiling).
+    maxDrivePct_ = std::clamp(QSettings().value(
+        QStringLiteral("tx/maxDrivePct"), kMaxDrivePctDefault).toInt(), 1, 100);
     // PA enable is a PERSISTENT OPERATOR PREFERENCE (operator decision
     // 2026-05-29).  Restored across Lyra launches AND across stream
     // Stop/Start cycles within a session — what the operator last
@@ -267,8 +297,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // Default 0 on first-ever launch (operator must explicitly raise it
     // to emit a carrier).
     txDriveLevel_.store(
-        std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
-                                     0).toInt(), 0, 255),
+        std::min(maxDriveRaw(),
+                 std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
+                                              0).toInt(), 0, 255)),
         std::memory_order_relaxed);
     // TX-1 component 5a — load operator-tuned TR-sequencing + fade
     // durations from QSettings (tx/trSeq/<key>).  Defaults match the
@@ -404,6 +435,18 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         if (!on && tuneEnabled_.load(std::memory_order_relaxed)) {
             setTuneEnabled(false);
         }
+    });
+    // #169 — SWR-protection evaluator: a 50 ms repeating tick armed on
+    // key-down, cancelled on key-up, beside the one-shot TX-safety timer
+    // above.  Same QObject affinity, so requestMox(false) on a trip funnels
+    // through the standard keyup chain with no cross-thread marshalling.
+    swrEvalTimer_ = new QTimer(this);
+    swrEvalTimer_->setSingleShot(false);
+    connect(swrEvalTimer_, &QTimer::timeout,
+            this, &HL2Stream::evalSwrProtect);
+    connect(this, &HL2Stream::moxActiveChanged, this, [this](bool on) {
+        if (on)  armSwrProtect();
+        else     disarmSwrProtect();
     });
 }
 
@@ -877,7 +920,8 @@ void HL2Stream::open(const QString &ip) {
         // means the first keydown finds correct drive/PA/att already on
         // the wire rather than create-time defaults.
         lyra::wire::set_drive_level(            // drive level (case 10 C1)
-            static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed)));
+            std::min(maxDriveRaw(),             // #170a drive cap
+                static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed))));
         lyra::wire::set_pa_on(                   // PA enable (case 10 C2/C3)
             paOn_.load(std::memory_order_relaxed));
         lyra::wire::set_tx_step_attn_db(         // TX step-att (case 4/11)
@@ -1446,7 +1490,12 @@ void HL2Stream::setTxDriveLevel(int level) {
     // enabled and MOX keyed, the operator gets actual RF — this is the
     // slice that takes the first-RF bench from bias-only to real
     // emissions.  Use a dummy load + watt-meter for the first session.
-    const int clamped = std::clamp(level, 0, 255);
+    // #170a drive cap — the single chokepoint: every drive write
+    // (operator slider, TUN drive, BandMemory restore, TCI DRIVE) funnels
+    // here, so clamping to the Max-TX-drive ceiling here covers all of
+    // them.  Pure preventive clamp — it never trips, it just won't exceed
+    // the ceiling.
+    const int clamped = std::min(maxDriveRaw(), std::clamp(level, 0, 255));
     const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
     if (prev == clamped) return;
     // §5 (TX): prn->tx[0].drive_level (compose_case_10 C1).
@@ -1459,6 +1508,21 @@ void HL2Stream::setTxDriveLevel(int level) {
     const int pct = static_cast<int>(std::lround(clamped * 100.0 / 255.0));
     emit logLine(QStringLiteral("TX: drive -> %1 %  (raw %2/255)")
                  .arg(pct).arg(clamped));
+}
+
+void HL2Stream::applyDriveLevelNoPersist(int level) {
+    // #169 Phase 1b — same wire path as setTxDriveLevel (prn drive DAC),
+    // but NO QSettings write + NO log spam: SWR Fold uses this to step the
+    // applied drive down transiently so the operator's stored set point
+    // survives, then restores it on the next key-down.  Emits
+    // txDriveLevelChanged so the TxPanel drive readout tracks the fold
+    // live (operator sees the power backing off).  Also respects the
+    // #170a drive cap (defensive — fold only ever steps down).
+    const int clamped = std::min(maxDriveRaw(), std::clamp(level, 0, 255));
+    const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
+    if (prev == clamped) return;
+    if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
+    emit txDriveLevelChanged(clamped);
 }
 
 void HL2Stream::setTxStepAttnDb(int db) {
@@ -2278,6 +2342,78 @@ void HL2Stream::setAttOnTxDb(int db) {
         setTxStepAttnDb(clamped);
 }
 
+// #169 — SWR-protection operator surface.  Persist + emit; the enable
+// setter also arms / stands down the live evaluator if keyed right now.
+void HL2Stream::setSwrProtectEnabled(bool on) {
+    if (on == swrProtectEnabled_) return;
+    swrProtectEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/swrProtectEnabled"), on);
+    emit swrProtectEnabledChanged(on);
+    if (mox_.load(std::memory_order_relaxed)) {
+        if (on) {                       // armed mid-TX: start a fresh window
+            swrTicks_ = 0;
+            swrOverTicks_ = 0;
+            if (swrEvalTimer_) swrEvalTimer_->start(kSwrEvalIntervalMs);
+        } else if (swrEvalTimer_) {     // disabled mid-TX: stand down
+            swrEvalTimer_->stop();
+        }
+    }
+    safetyLog(QStringLiteral("TX SWR protect -> %1")
+              .arg(on ? QStringLiteral("ON (%1:1)")
+                            .arg(swrProtectLimit_, 0, 'f', 1)
+                      : QStringLiteral("off (no auto-cut on reflected power)")));
+}
+
+void HL2Stream::setSwrProtectLimit(double ratio) {
+    const double clamped =
+        std::clamp(ratio, kSwrProtectMinLimit, kSwrProtectMaxLimit);
+    if (clamped == swrProtectLimit_) return;
+    swrProtectLimit_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/swrProtectLimit"), clamped);
+    emit swrProtectLimitChanged(clamped);
+}
+
+void HL2Stream::setSwrProtectDuringTune(bool on) {
+    if (on == swrProtectDuringTune_) return;
+    swrProtectDuringTune_ = on;
+    QSettings().setValue(QStringLiteral("tx/swrProtectDuringTune"), on);
+    emit swrProtectDuringTuneChanged(on);
+}
+
+void HL2Stream::setSwrProtectAction(int action) {
+    const int clamped = std::clamp(action, 0, 1);   // 0 = Cut, 1 = Fold
+    if (clamped == swrProtectAction_) return;
+    swrProtectAction_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/swrProtectAction"), clamped);
+    emit swrProtectActionChanged(clamped);
+    safetyLog(QStringLiteral("TX SWR protect action -> %1")
+              .arg(clamped == 1 ? QStringLiteral("Fold") : QStringLiteral("Cut")));
+}
+
+void HL2Stream::setFoldMinDrivePct(int pct) {
+    const int clamped = std::clamp(pct, 1, 90);
+    if (clamped == foldMinDrivePct_) return;
+    foldMinDrivePct_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/foldMinDrivePct"), clamped);
+    emit foldMinDrivePctChanged(clamped);
+}
+
+void HL2Stream::setMaxDrivePct(int pct) {
+    const int clamped = std::clamp(pct, 1, 100);   // 100 = no cap
+    if (clamped == maxDrivePct_) return;
+    maxDrivePct_ = clamped;
+    QSettings().setValue(QStringLiteral("tx/maxDrivePct"), clamped);
+    emit maxDrivePctChanged(clamped);
+    // Re-clamp the live drive DOWN to the new ceiling if it now exceeds
+    // it (never raises a drive the operator didn't ask for).  Routes
+    // through setTxDriveLevel so the wire + readout + persistence all
+    // track.  Raising the cap leaves the current drive where it is — the
+    // operator re-drives up to the new headroom themselves.
+    const int cap = maxDriveRaw();
+    if (txDriveLevel_.load(std::memory_order_relaxed) > cap) setTxDriveLevel(cap);
+    safetyLog(QStringLiteral("TX max drive cap -> %1 %%").arg(clamped));
+}
+
 // =========================================================================
 // #105 CW-1a — CW keyer config setters + the prn->cw push.
 //
@@ -2755,6 +2891,142 @@ void HL2Stream::onTxSafetyTimeout() {
         "TX safety: timeout reached after %1 s — auto-releasing")
         .arg(txTimeoutSec_));
     emit txTimeoutFired();
+    requestMox(false);
+}
+
+// #169 — SWR-protection evaluator.  arm/disarm bracket the keyed window;
+// eval runs every kSwrEvalIntervalMs while keyed and implements the four
+// false-trigger guards before cutting.
+void HL2Stream::armSwrProtect() {
+    // Manual re-arm: every fresh key-down clears the prior trip latch so
+    // the operator re-keying is the explicit "I've fixed the antenna,
+    // try again" gesture (no auto-recovery while still keyed).
+    if (swrProtectTripped_) {
+        swrProtectTripped_ = false;
+        emit swrProtectTrippedChanged(false);
+    }
+    if (!swrProtectReason_.isEmpty()) {
+        swrProtectReason_.clear();
+        emit swrProtectReasonChanged(swrProtectReason_);
+    }
+    // Fold restore (manual re-arm / never auto-recover): if a prior
+    // transmission folded the drive down, hand the operator's stored
+    // drive set point back on this fresh key-down.
+    if (swrFolded_) {
+        swrFolded_ = false;
+        applyDriveLevelNoPersist(swrFoldPreDrive_);
+    }
+    swrTicks_ = 0;
+    swrOverTicks_ = 0;
+    if (!swrProtectEnabled_ || !swrEvalTimer_) return;
+    swrEvalTimer_->start(kSwrEvalIntervalMs);
+}
+
+void HL2Stream::disarmSwrProtect() {
+    if (swrEvalTimer_) swrEvalTimer_->stop();
+    // NOTE: the trip latch (swrProtectTripped_/reason) is deliberately
+    // NOT cleared here — it must survive the keyup so the operator sees
+    // WHY TX cut, until the next key-down re-arms (armSwrProtect()).
+}
+
+void HL2Stream::evalSwrProtect() {
+    // Operator opt-out: don't protect a deliberate ATU tune carrier if
+    // they've turned that off (default is to protect during tune).
+    if (tuneEnabled_.load(std::memory_order_relaxed) && !swrProtectDuringTune_)
+        return;
+    // Guard A — key-down blanking: skip the T/R-settle + ALC ramp window
+    // where fwd/rev are still slewing and the ratio is meaningless.
+    ++swrTicks_;
+    if (swrTicks_ * kSwrEvalIntervalMs < swrBlankMs_) return;
+    // Guard B — power floors: below them we're not transmitting enough
+    // for the reflected-power ratio to be anything but noise.  NaN (no
+    // telemetry yet) fails the >= comparisons → treated as below-floor.
+    const double fwd = fwdPowerW();
+    const double rev = revPowerW();
+    if (!(fwd >= swrFwdFloorW_) || !(rev >= swrRevFloorW_)) {
+        swrOverTicks_ = 0;            // reset the dwell on any quiet tick
+        return;
+    }
+    // Calibration-free SWR from the reflection coefficient: rho =
+    // sqrt(Prev/Pfwd), SWR = (1+rho)/(1-rho).  rev>=fwd (impossible
+    // physically, but the uncalibrated formula could glitch) → clamp
+    // rho just under 1 so SWR reads very high and trips.
+    double rho = std::sqrt(rev / fwd);
+    if (rho > 0.999) rho = 0.999;
+    const double swr = (1.0 + rho) / (1.0 - rho);
+    if (swr < swrProtectLimit_) {
+        swrOverTicks_ = 0;
+        return;
+    }
+    // Guard C — dwell: require the over-limit condition to persist so a
+    // single noisy sample can't trip (the reference's consecutive-poll
+    // debounce, expressed in ms).
+    ++swrOverTicks_;
+    if (swrOverTicks_ * kSwrEvalIntervalMs < swrDwellMs_) return;
+    // Sustained over the limit — apply the operator-chosen action.
+    if (swrProtectAction_ == 1) foldSwrProtect(swr);   // Fold
+    else                        tripSwrProtect(swr);   // Cut
+}
+
+void HL2Stream::foldSwrProtect(double swr) {
+    // Fold action — monotone x0.5 drive step-down toward the floor; stay
+    // keyed and keep evaluating, giving each reduced level a fresh dwell
+    // window.  If we're already at the floor and STILL over limit, escalate
+    // to a hard Cut (a fold that can't bring SWR down isn't protecting).
+    // No auto-recovery: the drive stays reduced until the next key-down
+    // restores it (armSwrProtect()).
+    swrOverTicks_ = 0;                       // fresh dwell before next step
+    if (!swrFolded_) {                       // capture operator's set point once
+        swrFolded_ = true;
+        swrFoldPreDrive_ = txDriveLevel_.load(std::memory_order_relaxed);
+    }
+    const int floorLevel =
+        std::clamp((255 * foldMinDrivePct_) / 100, 1, 255);
+    const int cur = txDriveLevel_.load(std::memory_order_relaxed);
+    if (cur <= floorLevel) {
+        // At the fold floor and still over → escalate to Cut.
+        safetyLog(QStringLiteral(
+            "TX SWR protect: fold floor (%1 %) reached, still SWR %2:1 — "
+            "escalating to cut")
+            .arg(foldMinDrivePct_).arg(swr, 0, 'f', 1));
+        tripSwrProtect(swr);                 // stops timer, cuts, sets reason
+        return;
+    }
+    const int next = std::max(floorLevel, cur / 2);
+    applyDriveLevelNoPersist(next);
+    const int pct = static_cast<int>(std::lround(next * 100.0 / 255.0));
+    // Compact latched reason (the triggering ratio) — kept short so the
+    // TxPanel PROT lamp can't overflow its neighbour; the fold level is
+    // already shown live on the TX Drive % readout, and the full detail
+    // (ratio + limit + fold target) lives in the safetyLog line below.
+    swrProtectReason_ = QStringLiteral("SWR %1:1").arg(swr, 0, 'f', 1);
+    swrProtectTripped_ = true;               // lamp red = protection acted
+    emit swrProtectReasonChanged(swrProtectReason_);
+    emit swrProtectTrippedChanged(true);
+    emit swrProtectCut(swrProtectReason_);
+    safetyLog(QStringLiteral(
+        "TX SWR protect: SWR %1:1 >= %2:1 — fold drive -> %3 %% (raw %4/255)")
+        .arg(swr, 0, 'f', 1).arg(swrProtectLimit_, 0, 'f', 1)
+        .arg(pct).arg(next));
+}
+
+void HL2Stream::tripSwrProtect(double swr) {
+    // Guard D — latch + manual re-arm: stop the evaluator, latch the
+    // lamp state, and CUT through the single unkey funnel so the standard
+    // keyup TR-delay chain runs (ATT-on-TX restores, UI red-on-air clears
+    // via moxActiveChanged(false)).  The latch clears only on the next
+    // key-down (armSwrProtect()).
+    swrOverTicks_ = 0;
+    if (swrEvalTimer_) swrEvalTimer_->stop();
+    swrProtectReason_ = QStringLiteral("SWR %1:1").arg(swr, 0, 'f', 1);
+    swrProtectTripped_ = true;
+    emit swrProtectReasonChanged(swrProtectReason_);
+    emit swrProtectTrippedChanged(true);
+    emit swrProtectCut(swrProtectReason_);
+    safetyLog(QStringLiteral(
+        "TX SWR protect: %1 >= %2:1 — auto-cut")
+        .arg(swrProtectReason_)
+        .arg(swrProtectLimit_, 0, 'f', 1));
     requestMox(false);
 }
 

@@ -43,6 +43,7 @@ not programmers — if you can click a menu, you can use this.
 - [Updates](#updates)
 - [Backing up & sharing your settings](#backing-up--sharing-your-settings)
 - [Operating with an external amplifier (hot-switch protection)](#operating-with-an-external-amplifier-hot-switch-protection)
+  - [SWR protection & TX power limiting](#swr-protection--tx-power-limiting)
 - [Settings → Hardware](#settings--hardware)
   - [Operator / Station](#operator--station)
   - [Band plan (Region)](#band-plan-region)
@@ -1772,6 +1773,50 @@ checkbox). The lamp snaps orange → red on key-down — your visible
 confirmation that the front end is protected. (Note: the LNA gain
 *readout* itself keeps showing your RX setpoint — the ATT lamp is the
 TX-state indicator, not the LNA number.)
+
+### SWR protection & TX power limiting
+
+Two operator-set guards that protect your PA / finals and a downstream
+amplifier. Both live in **Settings → TX** (the safety column, next to
+ATT-on-TX); SWR protection also has a front-panel **PROT lamp** on the
+TX panel.
+
+**SWR protection (auto-cut / fold on high reflected power).** While you
+transmit, Lyra watches forward/reflected power and acts if the SWR stays
+above your limit — protection against a bad antenna, a disconnected
+feedline, or an ATU that didn't latch. It's deliberately hard to
+false-trigger: a key-down **blanking** window skips the T/R + ALC settle,
+forward/reflected power **floors** ignore the low-power regime where the
+ratio is just noise, and the over-limit condition must persist for a
+short **dwell** before it acts. The SWR reading is calibration-free (it's
+a power ratio), so it works without the PWR-meter calibration. After it
+acts it **latches** — re-key (MOX or TUN) to resume once you've fixed the
+antenna; it never recovers on its own while keyed.
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **Enabled** | ON | Master SWR protection. |
+| **Limit** | 5 : 1 | SWR at/above which it acts once sustained. 5:1 is conservative — most antennas run under 3:1. Range 1.5..10:1. |
+| **On high SWR** | Cut TX | **Cut TX** unkeys immediately (safest). **Fold back power** halves TX drive in steps to try to bring the SWR down while staying on the air, escalating to a hard cut if it reaches the fold floor and the SWR is still over the limit. |
+| **Fold floor** | 10 % | Lowest TX drive the Fold action steps down to before it gives up and cuts. Used only with the Fold action. |
+| **Protect during tune (TUN)** | ON | Whether the SWR cut also applies to a deliberate ATU tune carrier. |
+
+**Front-panel "PROT" lamp** (TX panel, next to the ATT lamp):
+- **gray `PROT off`** — disabled.
+- **green `PROT`** — enabled + armed (watching reflected power).
+- **red `SWR x.x:1`** — it acted (cut or folded): the latched ratio that
+  tripped it. With Fold, the live TX **Drive %** readout shows the reduced
+  level. Re-key to reset. Click the lamp to toggle enable.
+
+**Max TX drive (drive cap).** A hard ceiling on TX drive % — your drive
+slider, the TUN tune drive, a recalled per-band drive, and TCI DRIVE
+commands are all clamped to it. This is the always-safe way to protect a
+low-drive amplifier whose input can't take the HL2's full output: a pure
+preventive clamp — it never cuts or trips, it just won't let drive exceed
+the ceiling, and it needs no telemetry or calibration. **100 % = no cap**
+(the default). Lowering it re-clamps the current drive down immediately;
+raising it leaves the current drive where it is (drive back up yourself to
+use the new headroom).
 
 ### TR Sequencing + Amplitude Envelope (timing knobs below)
 

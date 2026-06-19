@@ -241,6 +241,67 @@ Rectangle {
             ToolTip.visible: hovered && !pressed
         }
 
+        // ── SWR-protection lamp (#169) ──────────────────────────────
+        // Sibling of the ATT lamp.  Gray = disabled; green = armed
+        // (enabled, watching reflected power on RX/TX); red = TRIPPED
+        // (TX was auto-cut on sustained high SWR — latched until the
+        // operator re-keys).  Click toggles enable (bidirectional with
+        // Settings → TX).  Unlike the ATT lamp (red on every key-down =
+        // normal), PROT is red ONLY on a fault, so red here = "something
+        // is wrong with the antenna / feedline."
+        Button {
+            id: protBtn
+            checkable: true
+            implicitWidth: 96
+            implicitHeight: 30
+            checked: Stream.swrProtectEnabled
+            onToggled: Stream.setSwrProtectEnabled(checked)
+            readonly property bool tripped: Stream.swrProtectTripped
+            text: !Stream.swrProtectEnabled ? qsTr("PROT off")
+                : protBtn.tripped            ? Stream.swrProtectReason
+                                             : qsTr("PROT")
+            font.bold: true
+            font.pixelSize: 13
+            background: Rectangle {
+                radius: 4
+                // tripped = solid red alarm (MOX idiom); armed = calm
+                // green ("protecting, all good"); disabled = gray.
+                color: protBtn.tripped ? root.cMox
+                     : protBtn.checked ? "#13301f"
+                     : "#161e28"
+                border.color: protBtn.tripped ? root.cMoxEdge
+                            : protBtn.checked ? "#2e8b57"
+                            : "#2a3a4a"
+                border.width: 2
+            }
+            contentItem: Text {
+                text: protBtn.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                // Clamp + elide so a long latched reason can NEVER spill
+                // out of the lamp and overlap the ATT lamp to its left.
+                elide: Text.ElideRight
+                clip: true
+                color: protBtn.tripped ? "#ffffff"
+                     : protBtn.checked ? "#3fd07f"
+                     : root.cText
+                font: protBtn.font
+            }
+            ToolTip.text: protBtn.tripped
+                ? qsTr("TX protection acted: %1 (limit %2:1).  Re-key "
+                       + "(MOX/TUN) to reset once the antenna/feedline is "
+                       + "fixed — it won't recover on its own.")
+                      .arg(Stream.swrProtectReason)
+                      .arg(Stream.swrProtectLimit.toFixed(1))
+                : qsTr("SWR protection — on sustained reflected power "
+                       + "above %1:1 it cuts (or folds back) TX.  Limit, "
+                       + "action + enable in Settings → TX.  Green = "
+                       + "armed, red = acted.  Click to toggle.")
+                      .arg(Stream.swrProtectLimit.toFixed(1))
+            ToolTip.delay: 1000
+            ToolTip.visible: hovered && !pressed
+        }
+
         Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
 
         // ── Tune-drive % (Task #74) — inline operator-tuned drive
