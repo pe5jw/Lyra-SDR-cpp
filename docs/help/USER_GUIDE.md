@@ -32,6 +32,8 @@ not programmers — if you can click a menu, you can use this.
 - [Filters panel](#filters-panel)
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
+- [Setting up audio output](#setting-up-audio-output)
+- [Setting up your mic input](#setting-up-your-mic-input)
 - [Display panel](#display-panel)
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
@@ -688,6 +690,215 @@ won't load against a mismatched rate (you'll get a recapture hint).
 Notes: NR-C adds about one FFT window of RX latency (≈21 ms at 4096) *only
 while it's on*; off, the path is unchanged. It's independent of the WDSP
 **NR** denoiser — you can run either, both, or neither.
+
+---
+
+## Setting up audio output
+
+*RX listening — the HL2 jack vs a PC device, plus feeding digital apps.*
+
+Lyra can send received audio out two ways — pick the one that matches how
+your station is wired:
+
+- **HL2 audio jack** — the headphone/speaker jack **on the Hermes Lite 2**
+  itself (its onboard codec, the AK4951 on HL2+). *Recommended for most
+  operators.*
+- **PC sound device** — your computer's speakers, headset, or USB audio
+  interface (or a virtual cable to another program).
+
+You can switch any time; Lyra remembers your choice.
+
+**Which one:**
+
+- Headphones/speakers straight into the HL2 → **HL2 audio jack**.
+- Listen on the PC's speakers / a USB headset → **PC sound device**.
+- Feed RX audio to WSJT-X / FLDigi / a recorder → **PC sound device via
+  VAC**, or **TCI** if the app speaks it (see *Digital modes* below).
+
+The HL2 jack is the easy button: the radio and its codec share one clock,
+so there's no drift to correct — glitch-free audio, lowest latency, zero
+setup. The PC path bridges two clocks (the HL2's and your sound card's),
+which Lyra handles with an adaptive resampler, but it's a little more to
+get right.
+
+### Where the controls are
+
+On the **Audio panel**, top "LEVELS" row: **Out** is the output-device
+quick-switch — click it for a drop-down of every output (the HL2 jack is
+always first; the active one is marked). **Vol** is listening volume,
+**AF** is pre-volume makeup gain (0…+40 dB, for when everything is too
+quiet even at full Vol), **MUTE** silences without touching Vol, and
+**Bal** is left/right balance. **Settings → Audio** has the same chooser
+plus the Virtual Audio Cable (VAC1) options.
+
+### HL2 audio jack (onboard codec / AK4951)
+
+1. Plug headphones or powered speakers into the **PHONES jack on the
+   Hermes Lite 2**.
+2. Click **Out** on the Audio panel and choose **HL2 audio jack** (the
+   first entry). *(Or Settings → Audio → output device.)*
+3. Bring **Vol** up; if it's still quiet, add a few dB on **AF**.
+
+No device matching, no sample-rate fiddling — this is the default and the
+path we recommend unless you specifically need PC audio.
+
+### PC sound device
+
+1. Click **Out** (or open **Settings → Audio**).
+2. Pick your PC output — speakers, USB headset, or interface.
+3. Set **Vol** to taste.
+
+Lyra resamples between the HL2 and your sound card automatically. If your
+device name appears more than once (different Windows audio backends), just
+try one; pick another only if you hit dropouts.
+
+### Digital modes — getting RX audio to another program
+
+A digital program (WSJT-X, JTDX, MSHV, FLDigi…) needs to *hear* the
+receiver. Lyra offers **two routes** — pick the one your program supports:
+
+- **TCI** — if your program speaks TCI (e.g. **MSHV**, **SDRLogger+**), it
+  connects over the network and the RX audio rides that link directly. No
+  virtual audio cable needed, and the same link carries transmit audio back
+  the other way.
+- **VAC** — for programs that expect a **sound-card input** (e.g. WSJT-X,
+  JTDX classic, FLDigi). Lyra plays RX audio into a virtual audio cable and
+  the program records from it.
+
+*Which?* If the app has a "TCI" radio/transport option, use TCI — least
+setup. If it only offers sound-card in/out, use VAC.
+
+**TCI route:** Settings → Network — enable Lyra's **TCI server**, note the
+port. In the program, choose **TCI** and point it at Lyra's address + port.
+RX audio now streams over TCI (transmit goes back the same way — set the
+mic source to **TCI**; see *Setting up your mic input*).
+
+**VAC route:** install a virtual audio cable on Windows first (e.g.
+VB-CABLE) — it appears as both a playback and a recording device.
+
+1. **Settings → Audio → Virtual Audio Cable (VAC1)**.
+2. Tick **Enable VAC1 (RX→PC and PC→TX)**.
+3. **Driver** — the audio backend for the cable (default usually works).
+4. **Output device** — the cable's **input side** (e.g. "CABLE Input"):
+   where Lyra sends RX audio.
+5. Set **RX gain** so the program's level meter sits in its happy range.
+6. In the program, set its **audio input** to the cable's **output side**
+   (e.g. "CABLE Output").
+
+There's an option to auto-enable VAC1 when you switch to a digital mode.
+VAC1 also carries **PC → TX** (covered in *Setting up your mic input*).
+
+### Hearing your own transmit
+
+On the Audio panel, **MON TX** monitors your own processed TX audio (set
+the level with the **Monitor** slider) so you can hear exactly what you're
+sending; it routes to the HL2 jack. For CW, **CW MON** sets the gateware
+sidetone level (separate from MON TX).
+
+### If something's wrong
+
+- **No audio:** check **MUTE** is off and **Vol** is up; confirm the right
+  device under **Out** (the marked entry is active); on the HL2 jack make
+  sure the plug is in the *radio's* jack.
+- **Too quiet at full Vol:** add gain on **AF**.
+- **Clicks/dropouts on a PC device:** that's the two-clock bridge under
+  load — try a different backend of the same device under **Out**, close
+  heavy audio apps, or switch to the HL2 jack (which avoids it entirely).
+- **One side only:** centre the **Bal** slider.
+- **A digital app can't hear the radio:** *TCI* — confirm the TCI server is
+  on and the app is set to TCI on the right port; *VAC* — Lyra's Output
+  device must be the cable's *input* side and the app's input the cable's
+  *output* side (a matched pair); nudge **RX gain**.
+
+---
+
+## Setting up your mic input
+
+*TX audio source — the radio's codec mic, a PC mic, or digital-mode audio.*
+
+Lyra lets you choose what drives the transmit chain, at **Settings → TX →
+Mic source**:
+
+- **Mic In** — a microphone in the **Hermes Lite 2's mic jack** (its
+  onboard codec, AK4951 on HL2+). *The default for voice.*
+- **PC Soundcard (VAC1)** — audio from your **PC** (a USB/headset mic, or a
+  program) via a virtual audio cable.
+- **TCI (digital modes)** — audio streamed from a digital-mode program
+  (MSHV, JTDX, WSJT-X, FLDigi…) over Lyra's TCI link; the mic is bypassed.
+
+*(Line In and VAC2 appear greyed out — planned for a later version.)* Only
+one source is live at a time — whatever's selected goes on the air.
+
+**Which one:**
+
+- Voice with a mic on the radio → **Mic In**.
+- Voice with a PC/USB mic or headset → **PC Soundcard (VAC1)**.
+- FT8 / FT4 / RTTY / digital → **TCI (digital modes)**.
+
+**Watch the ALC meter while setting any source.** A little ALC action on
+peaks is good; ALC slamming hard the whole time means too much input — back
+the gain off.
+
+### Mic In (radio's codec mic, AK4951)
+
+1. Plug your mic into the **MIC jack on the Hermes Lite 2**.
+2. **Settings → TX → Mic source → Mic In**.
+3. Key into a dummy load, speak at your normal level, and raise **Mic
+   Gain** until the **ALC** meter just flicks on voice peaks.
+4. If your mic is genuinely weak, tick **Mic Boost (+20 dB hardware, codec
+   mic only)** — the HL2 codec's analog preamp — then fine-trim with Mic
+   Gain. *(Mic Boost only affects the codec mic; it does nothing for PC or
+   TCI sources.)*
+
+### PC Soundcard (VAC1) — a PC/USB mic
+
+Use this when your microphone is on the computer. It rides the same
+virtual-cable bridge as digital modes (install one, e.g. VB-CABLE, if
+you're routing from another program; for a plain PC/USB mic, point VAC1's
+input straight at the mic).
+
+1. **Settings → TX → Mic source → PC Soundcard (VAC1)**.
+2. **Settings → Audio → Virtual Audio Cable (VAC1)**: tick **Enable**,
+   set **Input device** to your PC mic (or the cable's output side if
+   feeding from another program), and set **TX gain** so the ALC sits
+   right when you talk. **Combine input** mixes a two-channel source to
+   mono if it comes through one-sided.
+3. Key up and check the ALC as above.
+
+### TCI (digital modes)
+
+For FT8/FT4/RTTY/etc., the digital program sends transmit audio to Lyra
+over TCI — no microphone involved.
+
+1. **Settings → TX → Mic source → TCI (digital modes)**.
+2. **Settings → Network** — make sure the TCI server is enabled.
+3. In the program (MSHV / JTDX / WSJT-X / FLDigi…), select **TCI** and
+   point it at Lyra's address + TCI port.
+4. Set levels in the **program** so Lyra's ALC shows only light action —
+   digital wants clean, just-below-ALC drive. If it's hot, Lyra also has a
+   TCI input-gain trim to tame an over-driven client.
+
+### Setting levels (any source)
+
+Aim for voice peaks (or digital drive) to push the **ALC** into a little
+action, not pinned. Too hot (ALC slammed) = distortion/splatter — reduce
+the gain (Mic Gain, VAC1 TX gain, or the digital app's level). Too cold (no
+ALC, low power) = raise it. For voice, start on a **dummy load** and use
+**MON TX** to hear your own processed audio while you dial it in.
+
+### If something's wrong
+
+- **No transmit audio:** confirm **Mic source** matches what you're using
+  (a PC mic won't work if the source is still *Mic In*), you're keyed, and
+  PA + Drive are set for real RF.
+- **Mic In weak even at high Mic Gain:** tick **Mic Boost (+20 dB)**, then
+  trim with Mic Gain.
+- **Distorted, ALC pinned:** back off the gain for the active source.
+- **PC mic silent:** source must be **PC Soundcard (VAC1)** *and* VAC1
+  enabled with the right **Input device**; enable **Combine input** if a
+  stereo source is one-sided.
+- **Digital app keys but nothing goes out:** source must be **TCI**, the
+  app set to TCI on the right port, and the app's output level up.
 
 ---
 
