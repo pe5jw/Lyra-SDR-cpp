@@ -623,8 +623,11 @@ void MainWindow::buildDocks() {
     addQuickDock(QStringLiteral("tuning"), tr("Tuning"),
                  QStringLiteral("TuningPanel.qml"),
                  QStringLiteral("tuning"), Qt::BottomDockWidgetArea);
-    // Mode + Filter — demod mode + RX filter bandwidth (per-mode memory).
-    addQuickDock(QStringLiteral("modefilter"), tr("Mode + Filter"),
+    // Filters — RX/TX filter bandwidth (per-mode memory) + rate + BW lock.
+    // Mode moved to the Tuning dock (under the VFO) in the VFO-cluster
+    // layout; this panel is filters-only now.  Dock id stays "modefilter"
+    // so saved window layouts (QSettings dock state) keep restoring it.
+    addQuickDock(QStringLiteral("modefilter"), tr("Filters"),
                  QStringLiteral("ModeFilterPanel.qml"),
                  QStringLiteral("modes-filters"), Qt::BottomDockWidgetArea);
     addQuickDock(QStringLiteral("audio"), tr("Audio"),

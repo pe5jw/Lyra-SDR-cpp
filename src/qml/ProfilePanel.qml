@@ -35,7 +35,11 @@ Rectangle {
 
         ComboBox {
             id: profCombo
-            Layout.fillWidth: true
+            // Fixed, sensible width — a long profile name elides in the
+            // field but shows in full in the open dropdown list, so we
+            // don't stretch the combo across the whole dock.
+            Layout.fillWidth: false
+            Layout.preferredWidth: 300
             implicitHeight: 26
             font.pixelSize: 12
             model: Profiles.names
@@ -56,6 +60,8 @@ Rectangle {
                 + "delete and set the default in Settings → Profiles.")
             ToolTip.visible: hovered; ToolTip.delay: 400
         }
+
+        Item { Layout.fillWidth: true }   // absorb slack → dot + Save sit right
 
         // ● modified — orange when the live chain differs from the active
         // profile (i.e. there's something to Save).

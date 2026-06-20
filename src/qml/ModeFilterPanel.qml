@@ -1,15 +1,15 @@
-// Lyra — Mode + Filter dock panel.
+// Lyra — Filters dock panel.
 //
-// Mirrors old Lyra's MODE+FILTER panel (RX side): a Mode picker and an
-// RX-bandwidth picker.  Bandwidth presets are per-mode (SSB / CW / AM /
-// FM / DSB / DIG) and the chosen bandwidth is remembered per mode via
-// the shared Prefs object, exactly like old Lyra.  Both controls drive
-// WdspEngine.mode / .bandwidth, which push SetRXAMode + RXASetPassband
-// using the sideband-correct passband convention.
+// RX + TX filter bandwidth (per-mode presets, remembered per mode via the
+// shared Prefs object) + IQ sample Rate + the 🔗 RX↔TX BW lock.  The
+// bandwidth combos drive WdspEngine.bandwidth / Prefs.txBandwidth using
+// the sideband-correct passband convention.
 //
-// SCOPE: RX BW + Mode + Rate ship; TX BW shipped 2026-06 (Component 8c)
-// alongside the 🔗 lock that mirrors RX↔TX BW changes when ON; CW-pitch
-// control deferred (CWU/CWL centre on a 600 Hz default).
+// NOTE: the Mode picker MOVED to the Tuning dock (under the VFO) in the
+// VFO-cluster layout — so this panel is filters-only.  The
+// Prefs.mode → WdspEngine.mode binding moved there with it.  Dock title
+// is "Filters" (set in mainwindow.cpp addQuickDock); the file keeps its
+// ModeFilterPanel.qml name to avoid churning the qml_module + qrc paths.
 
 import QtQuick
 import QtQuick.Controls
@@ -100,9 +100,10 @@ Rectangle {
     // channel opens on Start, so it comes up at the right rate).
     Component.onCompleted: applyRate(Prefs.sampleRate)
 
-    // Both controls are the single source of truth via Prefs; the engine
-    // follows.  (Engine pushes SetRXAMode + RXASetPassband on change.)
-    Binding { target: WdspEngine; property: "mode";      value: Prefs.mode }
+    // RX bandwidth is the single source of truth via Prefs; the engine
+    // follows.  (Engine pushes RXASetPassband on change.)  The
+    // Prefs.mode → WdspEngine.mode binding lives on the Tuning dock now
+    // (it owns the Mode picker).
     Binding { target: WdspEngine; property: "bandwidth"; value: Prefs.rxBandwidth }
     // TX Component 8c — TX BW push lives in C++ main.cpp (a
     // QObject::connect on Prefs::txBandwidthChanged → Stream.setTxBwHz)
@@ -122,22 +123,6 @@ Rectangle {
             model: ["96 k", "192 k", "384 k"]
             currentIndex: root.rateIndex(Prefs.sampleRate)
             onActivated: root.applyRate(root.rateVals[currentIndex])
-        }
-
-        Rectangle {   // divider
-            Layout.preferredWidth: 1
-            Layout.topMargin: 10; Layout.bottomMargin: 10
-            Layout.fillHeight: true
-            color: "#2a4a5a"
-        }
-
-        Label { text: qsTr("Mode"); color: "#cccccc"; font.bold: true }
-        ComboBox {
-            id: modeCombo
-            Layout.preferredWidth: 84
-            model: root.modes
-            currentIndex: Math.max(0, root.modes.indexOf(Prefs.mode))
-            onActivated: Prefs.mode = root.modes[currentIndex]
         }
 
         Rectangle {   // divider

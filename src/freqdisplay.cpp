@@ -21,7 +21,7 @@ const QColor kBg      {4, 4, 6};
 const QColor kAmber   {255, 171, 71};
 const QColor kAmberDim {60, 40, 15};      // unlit-segment ghost
 const QColor kSelect  {0, 229, 255};      // cyan selected-digit
-const QColor kFaint   {120, 140, 160};    // unit labels
+const QColor kFaint   {185, 202, 220};    // unit labels (MHz/kHz/Hz) — bright + readable
 
 int placeStep(int idx) {   // 10^idx, idx in [0, 8]
     int s = 1;
@@ -109,7 +109,7 @@ void FreqDisplay::paint(QPainter *p) {
     font.setFamilies({QStringLiteral("Share Tech Mono"),
                       QStringLiteral("Consolas"),
                       QStringLiteral("Courier New")});
-    font.setPixelSize(std::max(24, static_cast<int>(h * 0.62)));
+    font.setPixelSize(std::max(24, static_cast<int>(h * 0.64)));
     font.setWeight(QFont::Bold);
     p->setFont(font);
     const QFontMetricsF fm(font);
@@ -162,7 +162,7 @@ void FreqDisplay::paint(QPainter *p) {
     // Group unit labels (MHz / kHz / Hz).
     QFont unitFont;
     unitFont.setFamilies({QStringLiteral("Consolas")});
-    unitFont.setPixelSize(std::max(9, static_cast<int>(h * 0.14)));
+    unitFont.setPixelSize(std::max(11, static_cast<int>(h * 0.19)));
     unitFont.setBold(true);
     p->setFont(unitFont);
     const QFontMetricsF ufm(unitFont);

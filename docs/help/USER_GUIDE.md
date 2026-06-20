@@ -29,7 +29,7 @@ not programmers — if you can click a menu, you can use this.
 - [Getting around the window](#getting-around-the-window)
 - [The panadapter (spectrum display)](#the-panadapter-spectrum-display)
 - [Tuning panel](#tuning-panel)
-- [Mode + Filter panel](#mode--filter-panel)
+- [Filters panel](#filters-panel)
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
 - [Display panel](#display-panel)
@@ -158,10 +158,11 @@ after is fast. Let it finish.
 
 ### 5. Tune and listen
 
-- **Tuning panel** — set the **RX1** frequency on the LED readout; see
+- **Tuning panel** — set the **RX1** frequency on the LED readout, and pick
+  the **mode** (USB/LSB/CW/…) and **step** right under the VFO; see
   [Tuning panel](#tuning-panel).
-- **Mode + Filter panel** — pick the **mode** (USB/LSB/CW/…) and **filter
-  bandwidth**; see [Mode + Filter panel](#mode--filter-panel).
+- **Filters panel** — set the **RX/TX filter bandwidth** and sample rate;
+  see [Filters panel](#filters-panel).
 - **Band panel** — jump between bands.
 - **Audio panel** — the **DSP + AUDIO** strip: **Vol / MUTE**, the **AGC**
   cycle, and **Noise Reduction** (NR on/off + Mode 1–4 + AEPF + NPE).
@@ -302,7 +303,7 @@ glowing look that takes advantage of your graphics card.
 
 **The RX filter passband** is shown as a translucent box over the tuned
 signal. **Drag either edge** of the box to widen or narrow the receive
-bandwidth — the **RX BW** readout in the Mode + Filter panel updates to
+bandwidth — the **RX BW** readout in the Filters panel updates to
 match (and is remembered per mode). The orange center line marks your
 tuned carrier (offset into the passband on CW, where the tone sits).
 
@@ -341,27 +342,35 @@ Sets the **RX1 receive frequency** on a big amber **LED-style readout**
 - **Roll the wheel** anywhere on the display to tune by the current
   **Step** (see below).
 - **Double-click** the display to type an exact frequency.
-- **Step** — the tune step for the wheel: **1 Hz / 10 Hz / 100 Hz / 1 kHz
-  / 10 kHz** (default **1 kHz**).
-- **CW Pitch** — only shown in CW modes (CWU/CWL): your preferred sidetone
-  / beat-note pitch, **200–1500 Hz** (default 600). The receive filter
-  centers on this pitch and the tuned-carrier marker offsets to match, so
-  a signal you zero-beat lands at your chosen tone.
+The frequency, **Step**, and **Mode** form one bordered **VFO cluster**.
+The border is **green while receiving** and turns **red on transmit**
+(MOX/TUN); an amber **RX/TX tag** in the top-left corner marks the role
+(it flips RX→TX on key). The Lyra logo sits centred to its right, with
+space reserved for a second VFO when SPLIT / RX2 arrives.
 
-The Lyra logo sits at the left of the panel. To jump between bands, use
-the **Band panel**; to change mode or filter width, the **Mode + Filter**
-panel.
+- **Step** — under the VFO, the wheel tune step: **1 Hz / 10 Hz / 100 Hz
+  / 1 kHz / 5 kHz / 10 kHz** (default **1 kHz**).
+- **Mode** — under the VFO: **LSB, USB, CWL, CWU, DSB, AM, FM, DIGU,
+  DIGL**. (Mode lives with the VFO it applies to — moved here from the
+  old Mode + Filter panel.)
+- **CW Pitch** — on the centred row beneath the VFO, only in CW modes
+  (CWU/CWL): your preferred sidetone / beat-note pitch, **200–1500 Hz**.
+  The receive filter centers on this pitch and the tuned-carrier marker
+  offsets to match, so a signal you zero-beat lands at your chosen tone.
+
+To jump between bands, use the **Band panel**; to change the filter
+width, the **Filters panel**.
 
 ---
 
-## Mode + Filter panel
+## Filters panel
 
-Sets how RX1 demodulates and how wide the receive filter is.
+Sets the sample rate and how wide the RX/TX filters are. (The **mode**
+picker moved to the Tuning panel, under the VFO.)
 
 - **Rate** — the IQ sample rate / panadapter span: **96 k / 192 k /
   384 k**. Higher shows more spectrum at once (wider waterfall) for a bit
   more CPU/network.
-- **Mode** — **LSB, USB, CWL, CWU, DSB, AM, FM, DIGU, DIGL**.
 - **RX BW** — the receive filter bandwidth. The list is **per-mode**
   (sensible presets for SSB, CW, AM, FM, digital, with SSB running up to
   10 kHz and AM up to 12 kHz for ESSB-style wide audio), and Lyra
@@ -447,7 +456,8 @@ frequency, mode, and (optionally) RX filter bandwidth:
   all, and **import/export CSV** (columns: Name, Freq_Hz, Mode, RX_BW_Hz,
   Notes) to back up or share your list.
 
-Pick the mode and filter for the band in the **Mode + Filter** panel.
+Pick the **mode** under the VFO (Tuning panel) and the **filter width**
+in the **Filters** panel.
 
 **Per-band memory.** Lyra remembers each band's settings independently and
 restores them when you move to that band: the **last frequency** (recalled
