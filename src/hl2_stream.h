@@ -122,6 +122,15 @@ class HL2Stream : public QObject {
     // WDSP audioDbFs is the reference-faithful S-meter path).
     // RX1 (DDC0) receive frequency, Hz — tuning from C++ (Step 4)
     Q_PROPERTY(quint32 rx1FreqHz            READ rx1FreqHz            NOTIFY rx1FreqChanged)
+    // SPLIT — TX on VFO B while RX stays on VFO A (same-band cross-freq
+    // TX; also the engine repeater offsets ride on).  PureSignal-SAFE BY
+    // CONSTRUCTION: the split TX freq drives the SINGLE txFreqHz_ ->
+    // set_tx_freq (TX NCO + the DDC2/DDC3 PS-feedback registers), exactly
+    // as the reference derives PS feedback from tx[0].frequency
+    // (networkproto1.c cases 5/6 = tx freq on HL2).  No parallel TX-freq
+    // path — so PS, whenever it lands, samples the split VFO unchanged.
+    Q_PROPERTY(bool    splitEnabled READ splitEnabled WRITE setSplitEnabled NOTIFY splitEnabledChanged)
+    Q_PROPERTY(quint32 vfoBHz       READ vfoBHz       WRITE setVfoBHz       NOTIFY vfoBHzChanged)
     // RX1 LNA gain (AD9866 PGA), dB.  Range −12…+48; sent on the C&C
     // 0x14 register (C4 = 0x40 | ((dB+12)&0x3F)), rotated into the EP2
     // C&C cadence at ~20 Hz.  Persisted.
@@ -638,6 +647,8 @@ public:
     // S-meter, Q6.5 bench instrument no longer needed once
     // Hl2Ep6MicSource ships the live AK4951 mic path).
     quint32 rx1FreqHz()         const { return rx1FreqHz_.load(std::memory_order_relaxed); }
+    bool    splitEnabled()      const { return splitEnabled_.load(std::memory_order_relaxed); }
+    quint32 vfoBHz()            const { return vfoBHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
     bool    autoLna()           const { return autoLnaEnabled_; }
     bool    autoLnaUndo()       const { return autoLnaUndo_; }
@@ -872,6 +883,12 @@ public slots:
     //                         PA-off flag.
     void setMox(bool on);
     void setTxFreqHz(quint32 hz);
+    // SPLIT (PS-safe — drives only txFreqHz_/set_tx_freq; see the
+    // splitEnabled Q_PROPERTY doc).  setSplitEnabled flips the TX-freq
+    // source between VFO A (simplex) and VFO B (split); setVfoBHz tunes
+    // the split TX VFO and re-pushes the TX NCO when split is on.
+    void setSplitEnabled(bool on);
+    void setVfoBHz(quint32 hz);
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
@@ -1126,6 +1143,8 @@ signals:
     void runningChanged();
     void statsChanged();
     void rx1FreqChanged();
+    void splitEnabledChanged();
+    void vfoBHzChanged();
     void lnaGainChanged();
     // Emitted ONLY by the manual setLnaGainDb() path (operator slider /
     // wheel / per-band restore) — NOT by Auto-LNA's roaming.  Lets
@@ -1334,6 +1353,10 @@ private:
     // edge, and channel open.  CTCSS is an FM-only modulator stage (WDSP
     // mode 5); non-FM modes force run=0.
     void applyCtcssRun();
+    // SPLIT — push the EFFECTIVE TX freq to the wire: VFO B when split is
+    // on, else VFO A (rx1).  The SINGLE TX-freq writer for split paths so
+    // PureSignal's feedback DDCs (which read tx[0].frequency) follow it.
+    void pushEffectiveTxFreq();
     // #170a — the Max-TX-drive cap as a raw 0..255 ceiling (100 % → 255).
     // Header-safe integer rounding (no <cmath>/<algorithm> dependency);
     // maxDrivePct_ is already clamped 1..100 by its setter + the ctor.
@@ -1491,6 +1514,11 @@ private:
     // phase wires these into the C&C round-robin under MOX gating.
     std::atomic<bool>    mox_{false};          // C0 bit 0 (RF transmit)
     std::atomic<quint32> txFreqHz_{7074000};   // TX NCO -> 0x02/0x08/0x0a
+    // SPLIT — VFO B (the split TX VFO) + the split-on flag.  txFreqHz_
+    // tracks vfoBHz_ when splitEnabled_, else rx1FreqHz_ (the simplex
+    // mirror in setRx1FreqHz, now gated on !splitEnabled_).
+    std::atomic<bool>    splitEnabled_{false};
+    std::atomic<quint32> vfoBHz_{7074000};
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)

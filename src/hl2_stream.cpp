@@ -228,6 +228,18 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // Single source of truth: every other write to rx1FreqHz_ goes
     // through setRx1FreqHz(), which mirrors there too.
     txFreqHz_.store(persistedRxHz, std::memory_order_relaxed);
+    // SPLIT — restore VFO B + split-on state.  If split was left ON,
+    // txFreqHz_ must come up pointing at VFO B (not the rx1 seed above),
+    // so PS feedback + the TX NCO are correct from the first send.
+    splitEnabled_.store(
+        QSettings().value(QStringLiteral("tx/splitEnabled"), false).toBool(),
+        std::memory_order_relaxed);
+    vfoBHz_.store(
+        QSettings().value(QStringLiteral("tx/vfoBHz"), persistedRxHz).toUInt(),
+        std::memory_order_relaxed);
+    if (splitEnabled_.load(std::memory_order_relaxed))
+        txFreqHz_.store(vfoBHz_.load(std::memory_order_relaxed),
+                        std::memory_order_relaxed);
     // External filter board: restore enable state + seed the OC pattern
     // for the restored band (so the board is correct from the first send).
     filterBoardEnabled_ =
@@ -1438,33 +1450,68 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
                      .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
         // Band may have changed -> re-apply the filter-board OC pattern.
         updateOcPattern();
-        // TX-0c-tune — simplex TX follows RX1.  Until SPLIT mode lands,
-        // TX freq mirrors RX1 freq, so the operator's TUN carrier lands
-        // ~1 kHz above the dial freq instead of the 7,074,000 default
-        // that txFreqHz_ would otherwise sit at forever.  When SPLIT
-        // arrives this auto-mirror gets gated on !split (VFO B drives
-        // TX freq in split mode).  Single source of truth: setRx1FreqHz
-        // is the only operator-facing tuner, so this captures every
-        // dial gesture, band button, memory recall, TCI spot click, etc.
-        txFreqHz_.store(hz, std::memory_order_relaxed);
-
-        // §5 control-plane mapping (RX side): the verbatim
-        // write_main_loop_hl2 tunes the DDCs from prn->rx[].frequency /
-        // prn->tx[0].frequency (NOT rx1FreqHz_ — that was the retired
-        // composeCC's source).  Write the verbatim homes on every dial
-        // change so DDC0 follows the operator.  `if (prn)` guards the
-        // pre-open window (a tune gesture before the wire layer is up
-        // is captured by the at-open seed in open()).
+        // §5 control-plane mapping (RX side): the RX DDCs ALWAYS follow
+        // VFO A — RX stays on VFO A even in SPLIT.  The verbatim
+        // write_main_loop_hl2 tunes the DDCs from prn->rx[].frequency.
+        // `if (prn)` guards the pre-open window (a tune gesture before the
+        // wire layer is up is captured by the at-open seed in open()).
         if (lyra::wire::prn != nullptr) {
             const int hzi = static_cast<int>(hz);
             lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
             lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
-            // TX NCO + DDC2/3 (case 1/5/6).  txDdsHzForTune applies the
-            // ∓cw_pitch TUN offset when tuning (zero-beat) — recomputed
-            // on every dial change so a retune mid-tune stays zero-beat.
-            lyra::wire::set_tx_freq(txDdsHzForTune(hz));
         }
+        // TX-0c-tune — simplex: TX follows VFO A.  In SPLIT, VFO B owns the
+        // TX freq, so an RX1 dial gesture must NOT move TX — gate the
+        // mirror on !split.  pushEffectiveTxFreq() is the SINGLE TX-freq
+        // writer (PS-safe): it stores txFreqHz_ + pushes set_tx_freq
+        // (TX NCO + the DDC2/3 PS-feedback regs).  setRx1FreqHz is the only
+        // operator-facing tuner, so this captures every dial gesture, band
+        // button, memory recall, TCI spot click, etc.
+        if (!splitEnabled_.load(std::memory_order_relaxed))
+            pushEffectiveTxFreq();
     }
+}
+
+void HL2Stream::pushEffectiveTxFreq() {
+    // The ONE TX-freq writer for the split-aware paths.  Effective TX freq
+    // = VFO B when split is on, else VFO A (rx1).  Stores txFreqHz_ and
+    // pushes set_tx_freq, which writes 0x02 (TX NCO) + 0x08/0x0a (DDC2/3 =
+    // the PureSignal feedback DDCs) all to this one freq — so PS samples
+    // the split VFO with no extra work (reference: tx[0].frequency drives
+    // both the NCO and the PS-feedback DDCs, networkproto1.c cases 1/5/6).
+    const quint32 eff = splitEnabled_.load(std::memory_order_relaxed)
+                            ? vfoBHz_.load(std::memory_order_relaxed)
+                            : rx1FreqHz_.load(std::memory_order_relaxed);
+    txFreqHz_.store(eff, std::memory_order_relaxed);
+    if (lyra::wire::prn != nullptr)
+        // txDdsHzForTune applies the CW ∓pitch carrier offset (zero-beat).
+        lyra::wire::set_tx_freq(txDdsHzForTune(eff));
+}
+
+void HL2Stream::setSplitEnabled(bool on) {
+    const bool prev = splitEnabled_.exchange(on, std::memory_order_relaxed);
+    if (prev == on)
+        return;
+    QSettings().setValue(QStringLiteral("tx/splitEnabled"), on);
+    emit splitEnabledChanged();
+    safetyLog(QStringLiteral("TX: SPLIT -> %1 (TX freq source = %2)")
+                  .arg(on ? QStringLiteral("ON") : QStringLiteral("off"))
+                  .arg(on ? QStringLiteral("VFO B") : QStringLiteral("VFO A")));
+    // Re-point the TX NCO (+ PS-feedback DDCs) at the new source.
+    pushEffectiveTxFreq();
+}
+
+void HL2Stream::setVfoBHz(quint32 hz) {
+    const quint32 prev = vfoBHz_.exchange(hz, std::memory_order_relaxed);
+    if (prev == hz)
+        return;
+    QSettings().setValue(QStringLiteral("tx/vfoBHz"), hz);
+    emit vfoBHzChanged();
+    emit logLine(QStringLiteral("VFO B -> %1 Hz (%2 MHz)")
+                     .arg(hz).arg(hz / 1.0e6, 0, 'f', 6));
+    // VFO B only affects the wire while split is on (it IS the TX freq then).
+    if (splitEnabled_.load(std::memory_order_relaxed))
+        pushEffectiveTxFreq();
 }
 
 // ---------------------------------------------------------------
