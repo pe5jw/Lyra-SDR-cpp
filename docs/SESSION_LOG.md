@@ -4,6 +4,59 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-19 — v0.4.1 RELEASED: TX protection (SWR cut + drive cap) + PHROT
+
+Short session: shipped the TX-protection arc, a PHROT parity feature with a
+digital auto-gate, doc updates, then cut + pushed **v0.4.1** (main FF'd,
+tag + GitHub release + installer). All on `main`.
+
+### TX protection — #169 SWR + #170 drive cap (SHIPPED + operator-bench-confirmed)
+- **#169 SWR Cut** (`6c3e8e7`): a 50 ms QTimer (`swrEvalTimer_`) armed on the
+  MOX edge in `HL2Stream` decodes `prn->tx[0].fwd/rev_power` →
+  ρ=√(rev/fwd), SWR=(1+ρ)/(1−ρ) (calibration-free). Trips through the single
+  `requestMox(false)` unkey funnel above a user threshold (default 5:1).
+  Four false-trigger guards: blank window, fwd/rev power floors (NaN-safe),
+  dwell. Latch + reason + **PROT lamp** on TxPanel (gray/green/red, elided so
+  it can't overflow the ATT lamp). Settings → TX group (enable + limit +
+  Cut/Fold + fold-floor + during-tune).
+- **#169 Phase 1b Fold**: optional action — steps drive ×0.5 via
+  `applyDriveLevelNoPersist` (no QSettings write, fold restored next keydown)
+  and escalates to a hard trip at the floor.
+- **#170a drive cap**: `maxDrivePct` (1..100%) clamps every drive write at the
+  one chokepoint `setTxDriveLevel` (`std::min(maxDriveRaw(), …)`) — covers the
+  operator slider, TUN, BandMemory restore, TCI DRIVE alike, + re-clamps live
+  on lowering. Operator bench-confirmed ("ran slider max down, couldn't pull
+  more"). **#170b over-power trip DEFERRED** by operator ("fine as it is").
+- Design doc `docs/architecture/tx_protection_design.md` stamped COMPLETE.
+
+### PHROT — #109 phase rotator toggle + digital auto-off (SHIPPED)
+- WDSP TXA `SetTXAPHROTRun` exposed via the `wire/wdspcalls` X-macro seam +
+  a `TxControl.setPhrotRun` callback (`d99794d`). `phrotEnabled` Q_PROPERTY
+  (Settings → TX checkbox, default ON = WDSP/reference posture). Parity with
+  the reference Setup PHROT control — it is fully exposed there, not a hidden
+  knob (operator asked; verified).
+- **Auto-off in digital** (`165e176`): one chokepoint `applyPhrotRun()`
+  computes `run = phrotEnabled_ && !(txMode==DIGU|DIGL)` (WDSP mode 7/9) and
+  pushes via the callback — called from the operator setter, **every
+  `setTxMode` edge**, and `registerTxControl` (channel open). The checkbox is
+  now the operator's *voice-mode* intent; DIGU/DIGL switch it off on the wire
+  and back on in voice modes (mirrors the native-rack `SetTxRackBypass` gate
+  and the RX EQ #59 mode gate).
+- USER_GUIDE: new Phase Rotator section incl. a **"PHROT and wide / ESSB
+  audio (4–10 kHz)"** note (helps punch on comms-grade wide SSB; all-pass
+  group delay smears hi-fi ESSB → many ops leave it off; A/B on own voice).
+
+### Release
+- v0.4.0 already shipped, so this is **v0.4.1**. Bumped CMakeLists +
+  installer.iss, rebuilt clean, ISCC → `dist/Lyra-Setup-0.4.1.exe` (68.1 MB).
+- Commits `6c3e8e7` (SWR/drive-cap/#172/docs) → `d99794d` (PHROT toggle) →
+  `165e176` (PHROT digital auto-off) → `eff9a5d` (version bump). Pushed
+  `main` (`1c6de15..eff9a5d`), tag `v0.4.1`, GitHub release w/ installer.
+- One snag: LNK1104 (operator had Lyra running) — asked operator to close,
+  relinked clean (the standing don't-force-kill-operator-Lyra rule).
+
+---
+
 ## 2026-06-18 — CW TX ON AIR: paddle + keyboard console + CW-over-TCI (#105)
 
 CW transmit went from "design mapped" to fully on-air this session.

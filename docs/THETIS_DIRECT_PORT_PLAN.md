@@ -236,6 +236,7 @@ Format: per-file or per-component row.  Status tags (ASCII so they render identi
 | `wdsp\wcpagc.c` mode 5 (ALC)     | cffi binding (SetTXAALCMaxGain)                | [DONE]     | cffi present; SetTXAALCThresh does NOT exist (§15.23-class trap — only MaxGain governs ALC ceiling). **TX ALC metering wired Thetis-format at #160 `9594bd5` (v0.3.1)** — addresses the v0.3.0 "UNVERIFIED" flag (shipped in code; #160 bench close-out / tester confirm still IN PROGRESS). |
 | `wdsp\eqp.c` (parametric EQ)     | `src/wdsp/EQ.{h,cpp}` OR cffi binding          | [N/A]     | **Superseded by the native EQ #50** (`edbaa52`/`17a28b7`/`eb92231`) — native RBJ-biquad 8-band parametric EQ (ParamEq engine + EESDR3-style panel), wired pre-WDSP-TXA. No WDSP eqp.c port shipped. |
 | `wdsp\gen.c` (gen0/gen1 generators) | cffi binding (SetTXAPreGen*/SetTXAPostGen*) | [WIP]     | gen1 (postgen) live for TUN tone — wire-LIVE + bench-passed since P4.b 2026-06-13 (Thetis-exact zero-beat). gen0 (pregen) cdefs still deferred per §15.23 (bench-tooling nicety, not on the signal path) — hence row stays [WIP]. |
+| `wdsp\phrotate.c` (PHROT)        | cffi binding (SetTXAPHROTRun) via `wire/wdspcalls` | [DONE]     | **#109 v0.4.1.** WDSP TXA phase rotator (all-pass speech symmetrizer → lower peak-to-average → more average talk power). `SetTXAPHROTRun` added to the `wire/wdspcalls` X-macro seam (`d99794d`); `TxControl.setPhrotRun` callback → `lyra::wire::SetTXAPHROTRun(txch, run)`. `HL2Stream::phrotEnabled` Q_PROPERTY (Settings → TX, default ON = reference posture; parity with Thetis Setup PHROT — fully exposed there, not hidden). **Effective run is mode-gated** in one chokepoint `applyPhrotRun()` = `phrotEnabled_ && !(txMode==DIGU\|DIGL)` (WDSP mode 7/9), pushed from the setter, every `setTxMode` edge, and channel open (`165e176`) — auto-off in digital like the native-rack `SetTxRackBypass` gate. Only `Run` is wired; freq/Nstages stay at WDSP create-time defaults (operator UI need not surfaced). |
 
 ### TX PureSignal (per CLAUDE.md §4.1 v0.3)
 
@@ -356,6 +357,25 @@ unilaterally — surface them when picking up tomorrow:
 
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
+
+### 2026-06-19 — v0.4.1: TX protection (#169/#170) + PHROT (#109)
+
+- **#169 SWR protection** + **#170a drive cap** (`6c3e8e7`) — Lyra-native TX
+  safety on `HL2Stream` (joins the TX-timeout / ATT-on-TX operator surface,
+  not a standalone QObject). 50 ms eval QTimer armed on the MOX edge decodes
+  `prn->tx[0].fwd/rev_power` → calibration-free SWR; trips via the single
+  `requestMox(false)` funnel above the user limit (default 5:1) with 4
+  false-trigger guards + latch + PROT lamp. Optional Fold action (×0.5 drive
+  via `applyDriveLevelNoPersist`, escalates to trip at floor). Drive cap
+  clamps at the one `setTxDriveLevel` chokepoint. #170b over-power trip
+  DEFERRED by operator. Design `docs/architecture/tx_protection_design.md`.
+- **#109 PHROT** (`d99794d` toggle + `165e176` digital auto-off) — WDSP TXA
+  phase rotator via the `wire/wdspcalls` `SetTXAPHROTRun` seam; see the WDSP
+  TX chain registry row. Effective run mode-gated in `applyPhrotRun()`
+  (auto-off DIGU/DIGL). Parity with Thetis Setup PHROT.
+- **Released v0.4.1** — bump (`eff9a5d`), main FF `1c6de15..eff9a5d`, tag
+  `v0.4.1`, GitHub release + `dist/Lyra-Setup-0.4.1.exe` (68.1 MB).
+- Full arc in `SESSION_LOG.md` 2026-06-19.
 
 ### 2026-06-14 -> 2026-06-17 — post-P4: VAC v0.3.0/v0.3.1, native TX DSP rack, Profiles, TX monitor (#90), Out picker
 
@@ -534,7 +554,7 @@ covered in `project_lyra_cpp_tx.md` (memory file).
 4. Read `SESSION_LOG.md` newest entry for arc detail
 
 **Branch posture (RESOLVED 2026-06-17):** `main` is the working trunk again
-— `main` == `origin/main` == `tx-rebuild` == the **v0.4.0** release commit.
+— `main` == `origin/main` == the **v0.4.1** release commit (`eff9a5d`).
 Operator consolidated onto `main` (TX largely done) to stop forgetting to
 fast-forward it. Do future work on `main`; `tx-rebuild` is a legacy ref.
 
@@ -576,7 +596,12 @@ parked #156 (restart-after-hard-kill, intermittent).
 
 ---
 
-*Last updated: 2026-06-18 — **CW TX ON AIR (#105)**: CW-2 paddle (gateware
+*Last updated: 2026-06-19 — **v0.4.1 RELEASED**: TX protection (#169 SWR cut +
+Fold / #170a drive cap) + PHROT (#109, WDSP `SetTXAPHROTRun` w/ digital
+auto-off). Commits `6c3e8e7`/`d99794d`/`165e176`/`eff9a5d`; main FF
+`1c6de15..eff9a5d`; tag `v0.4.1` + GitHub release + installer. #170b
+over-power trip DEFERRED. NEXT major arcs unchanged (CW-5 #173, RX2/Split
+#96–#101, PureSignal). Prior (2026-06-18) — **CW TX ON AIR (#105)**: CW-2 paddle (gateware
 iambic) + CW-3a/3b host software keyer (CWX) & chip→floating CW console
 (`8904749`) + CW-4 CW-over-TCI (`fcfcb6b`, EESDR-spec-verified) + USER_GUIDE
 CW section (`2a09824`), all on `main`/`origin/main`.  NEXT = CW-5 (#173) RX
