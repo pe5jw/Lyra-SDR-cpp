@@ -27,14 +27,23 @@ Item {
     // this QQuickWidget setup (same lesson as the Band panel), which
     // would leave the freq labels stale after a tune.
     property int centerHz: 0
+    // Effective RX-DDC freq = dial + RIT offset (when RIT on).  The DDC is
+    // tuned HERE, so the spectrum + freq scale + click-to-tune all centre on
+    // it.  With RIT engaged the panadapter re-centres on where you're actually
+    // listening (the pale-blue DIAL marker shows where the VFO reads).
+    function effCenterHz() {
+        return Stream.rx1FreqHz
+             + (Stream.ritEnabled ? Stream.ritOffsetHz : 0)
+    }
     Component.onCompleted: {
-        centerHz = Stream.rx1FreqHz
+        centerHz = effCenterHz()
         effMin = pan.effDbMin
         effMax = pan.effDbMax
     }
     Connections {
         target: Stream
-        function onRx1FreqChanged() { root.centerHz = Stream.rx1FreqHz }
+        function onRx1FreqChanged() { root.centerHz = root.effCenterHz() }
+        function onRitChanged()     { root.centerHz = root.effCenterHz() }
     }
 
     // Display panel "Clear" button → flush the peak-hold buffer (the
@@ -443,6 +452,47 @@ Item {
                 y: 0
             }
 
+            // ---- RIT dial marker — where the VFO reads vs where you listen ----
+            // With RIT on, the panadapter re-centres on the listening freq
+            // (DDC = dial + RIT); this pale-blue line marks the operator's
+            // dial so the offset reads at a glance.  rx1FreqHz − centerHz =
+            // −RIT offset.  Off-span → clips off-screen.
+            Rectangle {
+                visible: Stream.ritEnabled && Stream.ritOffsetHz !== 0
+                z: 4
+                width: 1
+                height: spectrumArea.height
+                color: "#7fb0ff"
+                opacity: 0.7
+                x: Math.round(spectrumArea.width
+                              * (0.5 + (Stream.rx1FreqHz - root.centerHz)
+                                       / Math.max(1, WdspEngine.spanHz)))
+                y: 0
+                Text {
+                    text: qsTr("DIAL"); color: "#7fb0ff"
+                    font.pixelSize: 9; font.bold: true
+                    x: 3; y: 2
+                }
+            }
+
+            // ---- XIT TX marker (simplex) — where TX lands with XIT on ----
+            // SPLIT has its own VFO-B TX marker; in simplex with XIT the TX
+            // freq = dial + XIT.  LIME armed / RED on key (locked model).
+            Rectangle {
+                visible: Stream.xitEnabled && !Stream.splitEnabled
+                         && Stream.xitOffsetHz !== 0
+                z: 4
+                width: 2
+                height: spectrumArea.height
+                color: Stream.moxActive ? "#ff4136" : "#a6ff00"
+                opacity: 0.85
+                x: Math.round(spectrumArea.width
+                              * (0.5 + (Stream.rx1FreqHz + Stream.xitOffsetHz
+                                        - root.centerHz)
+                                       / Math.max(1, WdspEngine.spanHz)))
+                y: 0
+            }
+
             // ---- peak dB labels (strongest in-view peaks) ----
             // Numeric readout for the top peaks the panadapter detected
             // (peakLabels = [{frac, db}, …]); only populated when Peak
@@ -605,7 +655,12 @@ Item {
                     else if (Prefs.panScrollStepHz > 1)
                         c = Math.round(c / Prefs.panScrollStepHz)
                               * Prefs.panScrollStepHz
-                    Stream.setRx1FreqHz(Math.round(c - WdspEngine.markerOffsetHz))
+                    // Dial = carrier − CW pitch − RIT offset, so the RX DDC
+                    // (dial + RIT) still lands the carrier in the filter even
+                    // with RIT engaged.
+                    var ritOff = Stream.ritEnabled ? Stream.ritOffsetHz : 0
+                    Stream.setRx1FreqHz(Math.round(
+                        c - WdspEngine.markerOffsetHz - ritOff))
                 }
 
                 cursorShape: dbModeAt(mouseX, mouseY) !== "" ? Qt.SizeVerCursor
@@ -714,6 +769,7 @@ Item {
                         // Wheel = tune by the Panafall step (Display panel).
                         var dir = wheel.angleDelta.y > 0 ? 1 : -1
                         var carrier = Stream.rx1FreqHz + WdspEngine.markerOffsetHz
+                                      + (Stream.ritEnabled ? Stream.ritOffsetHz : 0)
                         tuneCarrier(carrier + dir * Prefs.panScrollStepHz)
                     }
                     wheel.accepted = true

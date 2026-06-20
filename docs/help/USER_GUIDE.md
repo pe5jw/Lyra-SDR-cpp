@@ -387,6 +387,26 @@ offsets use; PureSignal tracks VFO B automatically.)
 To jump between bands, use the **Band panel**; to change the filter
 width, the **Filters panel**.
 
+**RIT / XIT — incremental tuning.** Two lit toggle buttons on the action
+row, each revealing a small **± offset** spin (±9.99 kHz, 10 Hz steps)
+when engaged:
+
+- **RIT** (Receiver Incremental Tuning) shifts **only the receiver** by
+  the offset — chase a station that's drifted or zero-beat a CW signal
+  without moving your VFO. The panadapter re-centres on where you're
+  actually listening, and a pale-blue **DIAL** marker shows where your
+  VFO still reads. Your transmit frequency is unaffected.
+- **XIT** (Transmitter Incremental Tuning) shifts **only the transmit**
+  frequency by the offset — RX stays put. In simplex a lime TX marker
+  (red on key) shows where you'll transmit. PureSignal tracks the
+  shifted TX automatically.
+
+Both persist across sessions. The **± arrows** step 1 Hz, the **wheel**
+steps 10 Hz (Shift = 100 Hz), and the **0** button clears the offset (or
+just toggle off). Tip: RIT/XIT are session-style fine offsets — for a fixed
+transmit split (a repeater, or working a DX pile-up up/down), use
+**SPLIT** (or the FM **RPT** button) instead.
+
 ---
 
 ## Filters panel

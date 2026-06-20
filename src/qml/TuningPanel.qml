@@ -583,6 +583,143 @@ Rectangle {
                 ToolTip.text: qsTr("Swap VFO A ↔ VFO B"); ToolTip.visible: hovered; ToolTip.delay: 600
             }
 
+            // ── RIT / XIT — RX / TX incremental tuning offsets ──────────────
+            // Lit toggle each (cyan when on, the panel accent); the ∓ offset
+            // spin reveals only when engaged so the row stays tight until
+            // used.  RIT shifts only the RX NCO, XIT only the TX NCO — both
+            // PS-safe (XIT folds into the single TX-freq path so PureSignal
+            // tracks the shifted TX automatically).
+            Button {
+                id: ritBtn
+                checkable: true
+                implicitHeight: 26; implicitWidth: 46
+                checked: Stream.ritEnabled
+                onToggled: Stream.setRitEnabled(checked)
+                text: qsTr("RIT")
+                font.bold: true; font.pixelSize: 12
+                background: Rectangle {
+                    radius: 4
+                    color: ritBtn.checked ? "#10323a" : "#161e28"
+                    border.width: 2
+                    border.color: ritBtn.checked ? "#00e5ff" : "#2a3a4a"
+                }
+                contentItem: Text {
+                    text: ritBtn.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: ritBtn.checked ? "#00e5ff" : "#cdd9e5"
+                    font: ritBtn.font
+                }
+                ToolTip.text: qsTr("RIT — Receiver Incremental Tuning.  Shifts "
+                    + "only the RX by the offset; TX stays put.  Chase an "
+                    + "off-frequency station without moving your VFO.")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            SpinBox {
+                id: ritSpin
+                visible: ritBtn.checked
+                Layout.preferredWidth: 104
+                from: -9999; to: 9999; stepSize: 1   // ± arrows = 1 Hz
+                value: Stream.ritOffsetHz
+                textFromValue: function(v, loc) { return (v > 0 ? "+" : "") + v + " Hz" }
+                valueFromText: function(t, loc) { return Math.round(parseFloat(t)) }
+                onValueModified: Stream.setRitOffsetHz(value)
+                // Re-sync from the model after an arrow edit breaks the value
+                // binding, so the "0" reset / persistence / external set still
+                // show (the proven tuneDriveSlider pattern).
+                Connections {
+                    target: Stream
+                    function onRitChanged() {
+                        if (ritSpin.value !== Stream.ritOffsetHz)
+                            ritSpin.value = Stream.ritOffsetHz
+                    }
+                }
+                // Wheel = coarse: 10 Hz (Shift = 100 Hz).  Arrows stay 1 Hz.
+                WheelHandler {
+                    onWheel: (ev) => {
+                        var step = (ev.modifiers & Qt.ShiftModifier) ? 100 : 10
+                        var nv = ritSpin.value + (ev.angleDelta.y > 0 ? step : -step)
+                        Stream.setRitOffsetHz(Math.max(-9999, Math.min(9999, nv)))
+                    }
+                }
+                ToolTip.text: qsTr("RX offset, ±9.99 kHz.  Arrows = 1 Hz, "
+                    + "wheel = 10 Hz (Shift = 100 Hz).  '0' clears it.")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+            }
+            // Quick-zero — a reliable button (double-click on the spin fought
+            // the SpinBox's own input handling and killed the arrows).
+            Button {
+                visible: ritBtn.checked
+                implicitHeight: 26; implicitWidth: 26
+                text: qsTr("0"); font.pixelSize: 12
+                onClicked: Stream.setRitOffsetHz(0)
+                ToolTip.text: qsTr("Zero the RIT offset")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+
+            Button {
+                id: xitBtn
+                checkable: true
+                implicitHeight: 26; implicitWidth: 46
+                checked: Stream.xitEnabled
+                onToggled: Stream.setXitEnabled(checked)
+                text: qsTr("XIT")
+                font.bold: true; font.pixelSize: 12
+                background: Rectangle {
+                    radius: 4
+                    color: xitBtn.checked ? "#10323a" : "#161e28"
+                    border.width: 2
+                    border.color: xitBtn.checked ? "#00e5ff" : "#2a3a4a"
+                }
+                contentItem: Text {
+                    text: xitBtn.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: xitBtn.checked ? "#00e5ff" : "#cdd9e5"
+                    font: xitBtn.font
+                }
+                ToolTip.text: qsTr("XIT — Transmitter Incremental Tuning.  Shifts "
+                    + "only the TX by the offset; RX stays put.  PureSignal "
+                    + "tracks the shifted TX automatically.")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            SpinBox {
+                id: xitSpin
+                visible: xitBtn.checked
+                Layout.preferredWidth: 104
+                from: -9999; to: 9999; stepSize: 1   // ± arrows = 1 Hz
+                value: Stream.xitOffsetHz
+                textFromValue: function(v, loc) { return (v > 0 ? "+" : "") + v + " Hz" }
+                valueFromText: function(t, loc) { return Math.round(parseFloat(t)) }
+                onValueModified: Stream.setXitOffsetHz(value)
+                Connections {
+                    target: Stream
+                    function onXitChanged() {
+                        if (xitSpin.value !== Stream.xitOffsetHz)
+                            xitSpin.value = Stream.xitOffsetHz
+                    }
+                }
+                // Wheel = coarse: 10 Hz (Shift = 100 Hz).  Arrows stay 1 Hz.
+                WheelHandler {
+                    onWheel: (ev) => {
+                        var step = (ev.modifiers & Qt.ShiftModifier) ? 100 : 10
+                        var nv = xitSpin.value + (ev.angleDelta.y > 0 ? step : -step)
+                        Stream.setXitOffsetHz(Math.max(-9999, Math.min(9999, nv)))
+                    }
+                }
+                ToolTip.text: qsTr("TX offset, ±9.99 kHz.  Arrows = 1 Hz, "
+                    + "wheel = 10 Hz (Shift = 100 Hz).  '0' clears it.")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+            }
+            Button {
+                visible: xitBtn.checked
+                implicitHeight: 26; implicitWidth: 26
+                text: qsTr("0"); font.pixelSize: 12
+                onClicked: Stream.setXitOffsetHz(0)
+                ToolTip.text: qsTr("Zero the XIT offset")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+
             Label {
                 text: qsTr("CW Pitch")
                 color: "#cccccc"; font.bold: true

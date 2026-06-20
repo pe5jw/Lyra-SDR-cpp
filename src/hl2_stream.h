@@ -131,6 +131,12 @@ class HL2Stream : public QObject {
     // path — so PS, whenever it lands, samples the split VFO unchanged.
     Q_PROPERTY(bool    splitEnabled READ splitEnabled WRITE setSplitEnabled NOTIFY splitEnabledChanged)
     Q_PROPERTY(quint32 vfoBHz       READ vfoBHz       WRITE setVfoBHz       NOTIFY vfoBHzChanged)
+    // RIT (RX incremental tuning) + XIT (TX incremental tuning) — signed
+    // Hz offsets folded into the RX-NCO / TX-NCO writes respectively.
+    Q_PROPERTY(bool    ritEnabled  READ ritEnabled  WRITE setRitEnabled  NOTIFY ritChanged)
+    Q_PROPERTY(int     ritOffsetHz READ ritOffsetHz WRITE setRitOffsetHz NOTIFY ritChanged)
+    Q_PROPERTY(bool    xitEnabled  READ xitEnabled  WRITE setXitEnabled  NOTIFY xitChanged)
+    Q_PROPERTY(int     xitOffsetHz READ xitOffsetHz WRITE setXitOffsetHz NOTIFY xitChanged)
     // RX1 LNA gain (AD9866 PGA), dB.  Range −12…+48; sent on the C&C
     // 0x14 register (C4 = 0x40 | ((dB+12)&0x3F)), rotated into the EP2
     // C&C cadence at ~20 Hz.  Persisted.
@@ -649,6 +655,10 @@ public:
     quint32 rx1FreqHz()         const { return rx1FreqHz_.load(std::memory_order_relaxed); }
     bool    splitEnabled()      const { return splitEnabled_.load(std::memory_order_relaxed); }
     quint32 vfoBHz()            const { return vfoBHz_.load(std::memory_order_relaxed); }
+    bool    ritEnabled()        const { return ritEnabled_.load(std::memory_order_relaxed); }
+    int     ritOffsetHz()       const { return ritOffsetHz_.load(std::memory_order_relaxed); }
+    bool    xitEnabled()        const { return xitEnabled_.load(std::memory_order_relaxed); }
+    int     xitOffsetHz()       const { return xitOffsetHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
     bool    autoLna()           const { return autoLnaEnabled_; }
     bool    autoLnaUndo()       const { return autoLnaUndo_; }
@@ -889,6 +899,13 @@ public slots:
     // the split TX VFO and re-pushes the TX NCO when split is on.
     void setSplitEnabled(bool on);
     void setVfoBHz(quint32 hz);
+    // RIT/XIT — RIT offsets only the RX DDC NCO (via pushEffectiveRxFreq);
+    // XIT offsets only the TX NCO (via pushEffectiveTxFreq, so PureSignal
+    // tracks the XIT-shifted TX for free).  Both persisted; clamped ±9999 Hz.
+    void setRitEnabled(bool on);
+    void setRitOffsetHz(int hz);
+    void setXitEnabled(bool on);
+    void setXitOffsetHz(int hz);
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
@@ -1145,6 +1162,8 @@ signals:
     void rx1FreqChanged();
     void splitEnabledChanged();
     void vfoBHzChanged();
+    void ritChanged();   // RIT enable and/or offset
+    void xitChanged();   // XIT enable and/or offset
     void lnaGainChanged();
     // Emitted ONLY by the manual setLnaGainDb() path (operator slider /
     // wheel / per-band restore) — NOT by Auto-LNA's roaming.  Lets
@@ -1357,6 +1376,10 @@ private:
     // on, else VFO A (rx1).  The SINGLE TX-freq writer for split paths so
     // PureSignal's feedback DDCs (which read tx[0].frequency) follow it.
     void pushEffectiveTxFreq();
+    // Writes the RX DDC NCOs from rx1FreqHz_ + (ritEnabled ? ritOffsetHz : 0)
+    // — the single RX-NCO writer, mirror of pushEffectiveTxFreq.  Called by
+    // setRx1FreqHz (every dial gesture) and the RIT setters.
+    void pushEffectiveRxFreq();
     // #170a — the Max-TX-drive cap as a raw 0..255 ceiling (100 % → 255).
     // Header-safe integer rounding (no <cmath>/<algorithm> dependency);
     // maxDrivePct_ is already clamped 1..100 by its setter + the ctor.
@@ -1519,6 +1542,13 @@ private:
     // mirror in setRx1FreqHz, now gated on !splitEnabled_).
     std::atomic<bool>    splitEnabled_{false};
     std::atomic<quint32> vfoBHz_{7074000};
+    // RIT/XIT — signed Hz offsets, ±9999 Hz, default disabled / 0.  RIT
+    // folds into the RX DDC NCO (pushEffectiveRxFreq); XIT into the TX NCO
+    // (pushEffectiveTxFreq → set_tx_freq, so PS tracks the XIT-shifted TX).
+    std::atomic<bool>    ritEnabled_{false};
+    std::atomic<qint32>  ritOffsetHz_{0};
+    std::atomic<bool>    xitEnabled_{false};
+    std::atomic<qint32>  xitOffsetHz_{0};
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)

@@ -91,7 +91,19 @@ Rectangle {
         }
 
         // ── TX Drive % — operator tunes between QSOs ────────────────
-        Label { text: qsTr("Drive"); color: root.cMuted }
+        // Help lives on the LABEL, not the slider — a ToolTip popup is
+        // window-clamped, so "above the slider" got shoved back onto the
+        // track when the panel sits high.  Hover the name instead; the
+        // slider stays clear (operator idea 2026-06-20).
+        Label {
+            text: qsTr("Drive"); color: root.cMuted
+            HoverHandler { id: driveLblHov }
+            ToolTip.visible: driveLblHov.hovered
+            ToolTip.delay: 600
+            ToolTip.text: qsTr("How hard the HL2 drives its PA.  0 % = no carrier "
+                + "even with PA + MOX.  Start LOW (5–10 %) on a dummy load; raise "
+                + "gradually while watching the watt-meter.  Wheel adjusts (Shift = 5 %).")
+        }
         Slider {
             id: driveSlider
             Layout.preferredWidth: 130   // operator-shrunk from 200 — gesture room enough; saves panel width for TUN slider + buttons
@@ -106,14 +118,7 @@ Rectangle {
                     Stream.setTxDriveLevel(root.pctToRaw(nv))
                 }
             }
-            ToolTip.text: qsTr("How hard the HL2 drives its PA.  0 % = no carrier "
-                + "even with PA + MOX.  Start LOW (5–10 %) on a dummy load; raise "
-                + "gradually while watching the watt-meter.  Wheel adjusts (Shift = 5 %).")
-            // Long delay so the tip can't intercept an operator click/drag —
-            // hover-with-intent (≥1.5 s) still gets it, but instant flicks +
-            // wheel adjustments aren't fighting a popup that's already up.
-            ToolTip.delay: 1500
-            ToolTip.visible: hovered && !pressed
+            // (Help moved to the "Drive" label above — slider stays clear.)
         }
         Label {
             // Live readback from the wire atomic — so an external
@@ -134,7 +139,19 @@ Rectangle {
         // open; typical ESSB headroom dials up via this slider.  ALC
         // ceiling lives in Settings → TX (operator sets the value;
         // it's a safety knob, not a per-QSO tweak).
-        Label { text: qsTr("Mic"); color: root.cMuted }
+        Label {
+            text: qsTr("Mic"); color: root.cMuted
+            HoverHandler { id: micLblHov }
+            ToolTip.visible: micLblHov.hovered
+            ToolTip.delay: 600
+            ToolTip.text: qsTr("Mic gain into the TX modulator (WDSP TXA "
+                + "PanelGain1).  0 dB = unity.  Raise toward +10 to +20 dB for "
+                + "typical SSB voice — watch the ALC meter (Settings → TX → "
+                + "ALC ceiling) and back off when ALC engages hard.  Wheel "
+                + "adjusts (Shift = 5 dB).  Settings → TX → Mic Gain offers "
+                + "a typed spin-box for the same value — both surfaces tune "
+                + "the same control bidirectionally.")
+        }
         Slider {
             id: micGainSlider
             Layout.preferredWidth: 130   // matches driveSlider — front-panel sliders kept short
@@ -154,15 +171,7 @@ Rectangle {
                     Stream.setMicGainDb(nv)
                 }
             }
-            ToolTip.text: qsTr("Mic gain into the TX modulator (WDSP TXA "
-                + "PanelGain1).  0 dB = unity.  Raise toward +10 to +20 dB for "
-                + "typical SSB voice — watch the ALC meter (Settings → TX → "
-                + "ALC ceiling) and back off when ALC engages hard.  Wheel "
-                + "adjusts (Shift = 5 dB).  Settings → TX → Mic Gain offers "
-                + "a typed spin-box for the same value — both surfaces tune "
-                + "the same control bidirectionally.")
-            ToolTip.delay: 1500
-            ToolTip.visible: hovered && !pressed
+            // (Help moved to the "Mic" label above — slider stays clear.)
         }
         Label {
             // Live readback from the persisted Q_PROPERTY — so an
@@ -314,6 +323,16 @@ Rectangle {
             text: qsTr("Tune")
             color: root.cMuted
             visible: Prefs.useTuneDrive
+            HoverHandler { id: tuneLblHov }
+            ToolTip.visible: tuneLblHov.hovered
+            ToolTip.delay: 600
+            ToolTip.text: qsTr("Drive %% applied while TUN is armed. "
+                + "Per-band remembered (tune-into-amp on 80 m vs tune-"
+                + "into-tuner on 10 m get their own settings).  Lyra "
+                + "swaps to this on tune-arm and restores your main "
+                + "TX Drive %% on tune-release.  Wheel adjusts "
+                + "(Shift = 5 %%); Settings → TX → Tune Drive offers "
+                + "typed entry.")
         }
         // Slider matches the Drive/Mic idiom — drag for fast set,
         // wheel-tunes (Shift = 5 %) for fine, Settings → TX provides
@@ -342,15 +361,7 @@ Rectangle {
                         tuneDriveSlider.value = Prefs.tuneDrivePct
                 }
             }
-            ToolTip.text: qsTr("Drive %% applied while TUN is armed. "
-                + "Per-band remembered (tune-into-amp on 80 m vs tune-"
-                + "into-tuner on 10 m get their own settings).  Lyra "
-                + "swaps to this on tune-arm and restores your main "
-                + "TX Drive %% on tune-release.  Wheel adjusts "
-                + "(Shift = 5 %%); Settings → TX → Tune Drive offers "
-                + "typed entry.")
-            ToolTip.delay: 1500
-            ToolTip.visible: hovered && !pressed
+            // (Help moved to the "Tune" label above — slider stays clear.)
         }
         // Live percent readback next to the slider (matches the
         // Drive/Mic readback idiom).

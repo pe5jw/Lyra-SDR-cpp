@@ -240,6 +240,20 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     if (splitEnabled_.load(std::memory_order_relaxed))
         txFreqHz_.store(vfoBHz_.load(std::memory_order_relaxed),
                         std::memory_order_relaxed);
+    // RIT/XIT offsets (persisted; default disabled / 0).  Restored before
+    // the first send so a persisted offset is applied from come-up.
+    ritEnabled_.store(
+        QSettings().value(QStringLiteral("rx/ritEnabled"), false).toBool(),
+        std::memory_order_relaxed);
+    ritOffsetHz_.store(std::clamp(
+        QSettings().value(QStringLiteral("rx/ritOffsetHz"), 0).toInt(), -9999, 9999),
+        std::memory_order_relaxed);
+    xitEnabled_.store(
+        QSettings().value(QStringLiteral("tx/xitEnabled"), false).toBool(),
+        std::memory_order_relaxed);
+    xitOffsetHz_.store(std::clamp(
+        QSettings().value(QStringLiteral("tx/xitOffsetHz"), 0).toInt(), -9999, 9999),
+        std::memory_order_relaxed);
     // External filter board: restore enable state + seed the OC pattern
     // for the restored band (so the board is correct from the first send).
     filterBoardEnabled_ =
@@ -1451,15 +1465,12 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
         // Band may have changed -> re-apply the filter-board OC pattern.
         updateOcPattern();
         // §5 control-plane mapping (RX side): the RX DDCs ALWAYS follow
-        // VFO A — RX stays on VFO A even in SPLIT.  The verbatim
-        // write_main_loop_hl2 tunes the DDCs from prn->rx[].frequency.
-        // `if (prn)` guards the pre-open window (a tune gesture before the
-        // wire layer is up is captured by the at-open seed in open()).
-        if (lyra::wire::prn != nullptr) {
-            const int hzi = static_cast<int>(hz);
-            lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
-            lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
-        }
+        // VFO A — RX stays on VFO A even in SPLIT.  pushEffectiveRxFreq is
+        // the single RX-NCO writer (RIT-adjusted): it tunes the DDCs from
+        // rx1FreqHz_ + the RIT offset.  It guards the pre-open window
+        // internally (a tune gesture before the wire layer is up is
+        // captured by the at-open seed in open()).
+        pushEffectiveRxFreq();
         // TX-0c-tune — simplex: TX follows VFO A.  In SPLIT, VFO B owns the
         // TX freq, so an RX1 dial gesture must NOT move TX — gate the
         // mirror on !split.  pushEffectiveTxFreq() is the SINGLE TX-freq
@@ -1484,9 +1495,15 @@ void HL2Stream::pushEffectiveTxFreq() {
     // the PureSignal feedback DDCs) all to this one freq — so PS samples
     // the split VFO with no extra work (reference: tx[0].frequency drives
     // both the NCO and the PS-feedback DDCs, networkproto1.c cases 1/5/6).
-    const quint32 eff = splitEnabled_.load(std::memory_order_relaxed)
+    // XIT folds in here: TX = (split ? VFO B : VFO A) + xit offset.  Because
+    // this is the ONE writer of the TX NCO + the DDC2/3 PS-feedback regs,
+    // PureSignal samples the XIT-shifted TX automatically (no extra work).
+    const qint64 base = splitEnabled_.load(std::memory_order_relaxed)
                             ? vfoBHz_.load(std::memory_order_relaxed)
                             : rx1FreqHz_.load(std::memory_order_relaxed);
+    const quint32 eff = static_cast<quint32>(base
+        + (xitEnabled_.load(std::memory_order_relaxed)
+               ? xitOffsetHz_.load(std::memory_order_relaxed) : 0));
     txFreqHz_.store(eff, std::memory_order_relaxed);
     if (lyra::wire::prn != nullptr)
         // txDdsHzForTune applies the CW ∓pitch carrier offset (zero-beat).
@@ -1494,6 +1511,58 @@ void HL2Stream::pushEffectiveTxFreq() {
     // The TX-analyzer crop offset (NCO − RX centre) changed — refresh the
     // panadapter so the TX signal paints at the new VFO-B position.
     emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
+}
+
+void HL2Stream::pushEffectiveRxFreq() {
+    // The ONE RX-NCO writer (mirror of pushEffectiveTxFreq).  RX DDCs =
+    // rx1FreqHz_ + RIT offset.  RIT moves only the receiver — TX is on the
+    // separate pushEffectiveTxFreq path — matching the reference (RIT →
+    // RXOsc only).  `if (prn)` guards the pre-open window.
+    if (lyra::wire::prn == nullptr)
+        return;
+    const qint64 eff =
+        static_cast<qint64>(rx1FreqHz_.load(std::memory_order_relaxed))
+        + (ritEnabled_.load(std::memory_order_relaxed)
+               ? ritOffsetHz_.load(std::memory_order_relaxed) : 0);
+    const int hzi = static_cast<int>(eff);
+    lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
+    lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
+}
+
+void HL2Stream::setRitEnabled(bool on) {
+    if (ritEnabled_.exchange(on, std::memory_order_relaxed) == on)
+        return;
+    QSettings().setValue(QStringLiteral("rx/ritEnabled"), on);
+    emit ritChanged();
+    pushEffectiveRxFreq();   // re-tune RX DDCs with/without the offset
+}
+
+void HL2Stream::setRitOffsetHz(int hz) {
+    hz = std::clamp(hz, -9999, 9999);
+    if (ritOffsetHz_.exchange(hz, std::memory_order_relaxed) == hz)
+        return;
+    QSettings().setValue(QStringLiteral("rx/ritOffsetHz"), hz);
+    emit ritChanged();
+    if (ritEnabled_.load(std::memory_order_relaxed))
+        pushEffectiveRxFreq();
+}
+
+void HL2Stream::setXitEnabled(bool on) {
+    if (xitEnabled_.exchange(on, std::memory_order_relaxed) == on)
+        return;
+    QSettings().setValue(QStringLiteral("tx/xitEnabled"), on);
+    emit xitChanged();
+    pushEffectiveTxFreq();   // re-point the TX NCO (+ PS DDCs)
+}
+
+void HL2Stream::setXitOffsetHz(int hz) {
+    hz = std::clamp(hz, -9999, 9999);
+    if (xitOffsetHz_.exchange(hz, std::memory_order_relaxed) == hz)
+        return;
+    QSettings().setValue(QStringLiteral("tx/xitOffsetHz"), hz);
+    emit xitChanged();
+    if (xitEnabled_.load(std::memory_order_relaxed))
+        pushEffectiveTxFreq();
 }
 
 void HL2Stream::setSplitEnabled(bool on) {
