@@ -44,7 +44,13 @@ Rectangle {
     // VFO B (split TX VFO) mirror — vfoBHz IS the carrier (the TX-NCO
     // offset is applied at push time), so display it directly.
     property int vfoBHz: 0
-    Component.onCompleted: { centerHz = Stream.rx1FreqHz; vfoBHz = Stream.vfoBHz }
+    Component.onCompleted: {
+        centerHz = Stream.rx1FreqHz
+        vfoBHz = Stream.vfoBHz
+        // Seed the RPT dir/offset combo from the restored split (so it
+        // reflects a persisted repeater), else the current band's default.
+        if (Stream.splitEnabled) syncRptFromState(); else applyBandDefault()
+    }
     Connections {
         target: Stream
         function onRx1FreqChanged() {
@@ -91,6 +97,27 @@ Rectangle {
     function rptApply() {
         Stream.setVfoBHz(Stream.rx1FreqHz
             + root.rptDirSign * root.rptOffsetsKHz[rptOffsetCombo.currentIndex] * 1000)
+    }
+    // Per-band standard repeater offset: 6 m → 1 MHz, else (10 m + generic)
+    // → 100 kHz, shift down (−).  Applied when RPT is freshly engaged.
+    function bandDefaultOffsetIdx(hz) {
+        return (hz >= 50000000 && hz < 54000000) ? 3 : 0
+    }
+    function applyBandDefault() {
+        root.rptDirSign = -1
+        rptOffsetCombo.currentIndex = root.bandDefaultOffsetIdx(Stream.rx1FreqHz)
+    }
+    // Reflect the LIVE split offset (restored at launch / memory-recalled /
+    // manual VFO-B) in the RPT dir + offset combo; simplex → band default.
+    function syncRptFromState() {
+        var off = Stream.vfoBHz - Stream.rx1FreqHz
+        if (off === 0) { root.applyBandDefault(); return }
+        root.rptDirSign = off < 0 ? -1 : 1
+        var magK = Math.abs(off) / 1000, best = 0
+        for (var i = 1; i < root.rptOffsetsKHz.length; ++i)
+            if (Math.abs(root.rptOffsetsKHz[i] - magK)
+                    < Math.abs(root.rptOffsetsKHz[best] - magK)) best = i
+        rptOffsetCombo.currentIndex = best
     }
     function nearestCtcssIndex(hz) {
         var best = 0
@@ -437,8 +464,15 @@ Rectangle {
                 text: qsTr("RPT")
                 font.bold: true; font.pixelSize: 12
                 onToggled: {
-                    if (checked) { Stream.setSplitEnabled(true); root.rptApply() }
-                    else { Stream.setSplitEnabled(false); Stream.setCtcssEnabled(false) }
+                    if (checked) {
+                        // Fresh engage → pick this band's standard offset.
+                        root.applyBandDefault()
+                        Stream.setSplitEnabled(true)
+                        root.rptApply()
+                    } else {
+                        Stream.setSplitEnabled(false)
+                        Stream.setCtcssEnabled(false)
+                    }
                 }
                 background: Rectangle {
                     radius: 4
