@@ -1891,6 +1891,49 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(amBox, 5, 0, 1, 2);
         }
 
+        // --- RX-on-unkey delay (queued thud/echo fix) ---
+        // After the keyup MOX-off edge, hold RX audio muted this many ms
+        // so the TX-coupled tail still in the running RX DSP pipeline
+        // drains out as silence + the T/R settles before audio resumes —
+        // kills the unkey "thud" + the quick echo of your own TX.  Sits
+        // under auto-mute since both shape RX audio around the TX window.
+        if (engine_) {
+            auto *rxdWrap = new QWidget(grp);
+            auto *rxdRow  = new QHBoxLayout(rxdWrap);
+            rxdRow->setContentsMargins(0, 0, 0, 0);
+            auto *rxdLbl  = new QLabel(tr("RX resume delay after unkey"), rxdWrap);
+            auto *rxdSpin = new QSpinBox(rxdWrap);
+            rxdSpin->setRange(0, 500);
+            rxdSpin->setSingleStep(10);
+            rxdSpin->setSuffix(tr(" ms"));
+            rxdSpin->setValue(engine_->rxResumeDelayMs());
+            const QString rxdTip = tr(
+                "How long RX audio stays muted AFTER you unkey, so the "
+                "transmit tail still in the receiver's DSP pipeline drains "
+                "out as silence and the T/R relay settles before you hear "
+                "RX again.  Removes the \"thud\" and the quick echo of your "
+                "own voice on unkey.\n\n"
+                "Raise it if you still hear a bump/echo; lower it for "
+                "snappier break-in.  0 = resume instantly (old behaviour). "
+                "Default 50 ms.");
+            rxdLbl->setToolTip(rxdTip);
+            rxdSpin->setToolTip(rxdTip);
+            rxdRow->addWidget(rxdLbl);
+            rxdRow->addStretch(1);
+            rxdRow->addWidget(rxdSpin);
+            connect(rxdSpin, qOverload<int>(&QSpinBox::valueChanged), grp,
+                    [this](int v) { if (engine_) engine_->setRxResumeDelayMs(v); });
+            connect(engine_, &lyra::dsp::WdspEngine::rxResumeDelayMsChanged,
+                    rxdSpin, [this, rxdSpin]() {
+                const int v = engine_->rxResumeDelayMs();
+                if (rxdSpin->value() != v) {
+                    QSignalBlocker b(rxdSpin);
+                    rxdSpin->setValue(v);
+                }
+            });
+            g->addWidget(rxdWrap, 6, 0, 1, 2);
+        }
+
         // --- Task #36: Hardware PTT input forwarder (default OFF) ---
         // Foot switch / hand-mic PTT / mic-button keying.  The HL2's
         // hardware PTT pin state is decoded from every EP6 status frame
@@ -1937,7 +1980,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     hwBox->setChecked(on);
                 }
             });
-            g->addWidget(hwBox, 6, 0, 1, 2);
+            g->addWidget(hwBox, 7, 0, 1, 2);
         }
 
         // --- Task #157: Space-bar PTT enable/disable ---
@@ -1972,7 +2015,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     sbBox->setChecked(on);
                 }
             });
-            g->addWidget(sbBox, 7, 0, 1, 2);
+            g->addWidget(sbBox, 8, 0, 1, 2);
         }
 
         // --- Auto-start on launch (opt-out) ---
@@ -2001,7 +2044,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     asBox->setChecked(on);
                 }
             });
-            g->addWidget(asBox, 8, 0, 1, 2);
+            g->addWidget(asBox, 9, 0, 1, 2);
         }
 
         // Mic source picker + Mic Boost checkbox MOVED to the TX

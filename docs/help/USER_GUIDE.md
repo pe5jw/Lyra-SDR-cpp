@@ -1527,6 +1527,15 @@ you touch between QSOs.
   press doesn't key after enabling, the issue is upstream of Lyra
   (HL2 connector / switch / cable / wiring) — Lyra can't paper
   over a dirty level at rest.
+- **RX resume delay after unkey** (spin box, default **50 ms**, range
+  0 – 500 ms) — how long RX audio stays muted *after* you unkey, so the
+  transmit tail still working through the receiver's DSP pipeline drains
+  out as silence and the T/R relay settles before you hear RX again.
+  Removes the "thud" and the quick echo of your own voice on unkey.
+  Raise it if you still hear a bump or echo; lower it for snappier
+  break-in. **0** resumes RX instantly (the old behaviour). Works with
+  the **Auto-mute RX while transmitting** option above — the auto-mute
+  holds RX silent *during* TX, this delays the *return* to RX after.
 
 > **Why these are in Hardware, not in TX:** Settings → TX is for
 > *timing* knobs you might tune to match an external amp's switching

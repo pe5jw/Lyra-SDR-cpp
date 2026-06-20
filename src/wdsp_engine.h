@@ -111,6 +111,7 @@ class WdspEngine : public QObject {
     // autoMuteOnTx is OFF, txMuted has no effect on the gain.
     Q_PROPERTY(bool   txMuted     READ txMuted     NOTIFY txMutedChanged)
     Q_PROPERTY(bool   autoMuteOnTx READ autoMuteOnTx NOTIFY autoMuteOnTxChanged)
+    Q_PROPERTY(int    rxResumeDelayMs READ rxResumeDelayMs WRITE setRxResumeDelayMs NOTIFY rxResumeDelayMsChanged)
     // AF makeup gain (WDSP RXA panel gain), 0..+40 dB — a pre-volume
     // output trim so you can set a comfortable WDSP level and ride Volume
     // on top.  Default 0 dB (unity).  Stereo BALANCE (−1 left … +1 right)
@@ -282,6 +283,7 @@ public:
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
     bool   txMuted() const { return txMuted_.load(std::memory_order_relaxed); }
     bool   autoMuteOnTx() const { return autoMuteOnTx_.load(std::memory_order_relaxed); }
+    int    rxResumeDelayMs() const { return rxResumeDelayMs_.load(std::memory_order_relaxed); }
     double afGainDb() const { return afGainDb_; }
     double balance()  const { return balance_.load(std::memory_order_relaxed); }
     bool   monEnabled() const { return monEnabled_.load(std::memory_order_relaxed); }
@@ -394,6 +396,10 @@ public:
     // (persisted; default ON).
     Q_INVOKABLE void setTxMuted(bool m);
     Q_INVOKABLE void setAutoMuteOnTx(bool on);
+    // RX-on-unkey delay: ms to hold RX audio muted AFTER the keyup MOX-off
+    // edge, so the TX-coupled tail flushes + the T/R settles before audio
+    // resumes.  Persisted; 0 = resume instantly (old behaviour).
+    Q_INVOKABLE void setRxResumeDelayMs(int ms);
     Q_INVOKABLE void setAfGainDb(double db);   // 0..+40 dB makeup (WDSP panel gain)
     Q_INVOKABLE void setBalance(double b);     // -1 (L) .. +1 (R)
     Q_INVOKABLE void setMonEnabled(bool on);   // #90 TX monitor toggle
@@ -640,6 +646,7 @@ signals:
     void mutedChanged();
     void txMutedChanged();
     void autoMuteOnTxChanged();
+    void rxResumeDelayMsChanged();
     void afGainChanged();
     void balanceChanged();
     void monEnabledChanged();
@@ -870,6 +877,17 @@ private:
     // Gain calc OR's (muted_) with (autoMuteOnTx_ AND txMuted_).
     std::atomic<bool>   txMuted_{false};
     std::atomic<bool>   autoMuteOnTx_{true};
+    // RX-on-unkey delay (queued thud/echo fix).  On the keyup MOX-off edge
+    // (setTxMuted(false)) the un-mute is deferred by rxResumeDelayMs_ via
+    // rxResumeTimer_ (single-shot, main-thread like levelsTimer_) so the
+    // RX DSP pipeline drains the TX-coupled tail as silence + the T/R
+    // settles before audio resumes.  Thetis stops/restarts the RX channel
+    // across TX; Lyra mutes-through, so it needs this flush window.
+    // applyTxMuted_ is the actual store+emit; setTxMuted gates it.  A
+    // keydown (setTxMuted(true)) cancels any pending resume and mutes now.
+    std::atomic<int>    rxResumeDelayMs_{50};   // persisted audio/rxResumeDelayMs
+    QTimer              rxResumeTimer_;
+    void applyTxMuted_(bool m);
     // AF makeup gain (dB, main-thread; pushed to WDSP SetRXAPanelGain1 as
     // a linear gain).  Balance −1..+1 is applied Lyra-side in feedIq, so
     // it's an atomic the RX worker reads.

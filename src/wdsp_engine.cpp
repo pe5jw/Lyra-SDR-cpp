@@ -341,6 +341,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     autoMuteOnTx_.store(
         s.value(QStringLiteral("audio/autoMuteOnTx"), true).toBool(),
         std::memory_order_relaxed);
+    // RX-on-unkey delay: deferred un-mute on the keyup MOX-off edge.
+    rxResumeDelayMs_.store(std::clamp(
+        s.value(QStringLiteral("audio/rxResumeDelayMs"), 50).toInt(), 0, 500),
+        std::memory_order_relaxed);
+    rxResumeTimer_.setSingleShot(true);
+    connect(&rxResumeTimer_, &QTimer::timeout, this,
+            [this]() { applyTxMuted_(false); });
     volume_.store(std::clamp(
         s.value(QStringLiteral("audio/volume"), 0.65).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
@@ -2080,8 +2087,39 @@ void WdspEngine::setTxMuted(bool m)
     // (transient TX state, not an operator preference).  The gain calc
     // gates this through autoMuteOnTx_ so the operator's master switch
     // takes effect immediately if they toggle it mid-TX.
+    //
+    // RX-on-unkey delay: mute IMMEDIATELY on the keydown edge (m=true),
+    // but on the keyup edge (m=false) hold RX muted an extra
+    // rxResumeDelayMs_ so the TX-coupled tail in the still-running RX DSP
+    // pipeline drains out as silence + the T/R settles before audio
+    // resumes (kills the unkey thud + the quick echo of own TX).  A
+    // re-key during that window cancels the pending resume and re-mutes.
+    if (m) {
+        rxResumeTimer_.stop();           // cancel any pending un-mute
+        applyTxMuted_(true);
+        return;
+    }
+    const int d = rxResumeDelayMs_.load(std::memory_order_relaxed);
+    if (d > 0) {
+        rxResumeTimer_.start(d);         // deferred un-mute
+    } else {
+        applyTxMuted_(false);            // delay disabled — resume instantly
+    }
+}
+
+void WdspEngine::applyTxMuted_(bool m)
+{
     const bool prev = txMuted_.exchange(m, std::memory_order_relaxed);
     if (prev != m) emit txMutedChanged();
+}
+
+void WdspEngine::setRxResumeDelayMs(int ms)
+{
+    ms = std::clamp(ms, 0, 500);
+    const int prev = rxResumeDelayMs_.exchange(ms, std::memory_order_relaxed);
+    if (prev == ms) return;
+    QSettings().setValue(QStringLiteral("audio/rxResumeDelayMs"), ms);
+    emit rxResumeDelayMsChanged();
 }
 
 void WdspEngine::setAutoMuteOnTx(bool on)
