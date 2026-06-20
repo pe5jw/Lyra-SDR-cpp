@@ -346,7 +346,7 @@ The frequency, **Step**, and **Mode** form one bordered **VFO cluster**.
 The border is **green while receiving** and turns **red on transmit**
 (MOX/TUN); an amber **RX/TX tag** in the top-left corner marks the role
 (it flips RX→TX on key). The Lyra logo sits centred to its right, with
-space reserved for a second VFO when SPLIT / RX2 arrives.
+**VFO B** to the right of that (it appears when SPLIT is on).
 
 - **Step** — under the VFO, the wheel tune step: **1 Hz / 10 Hz / 100 Hz
   / 1 kHz / 5 kHz / 10 kHz** (default **1 kHz**).
@@ -357,6 +357,21 @@ space reserved for a second VFO when SPLIT / RX2 arrives.
   (CWU/CWL): your preferred sidetone / beat-note pitch, **200–1500 Hz**.
   The receive filter centers on this pitch and the tuned-carrier marker
   offsets to match, so a signal you zero-beat lands at your chosen tone.
+
+**SPLIT — receive on VFO A, transmit on VFO B** (same band). The action
+row beneath the VFOs has:
+
+- **SPLIT** — toggles split on/off. When on, **VFO B** appears (the TX
+  VFO — tune it like VFO A) and transmit moves to it; VFO A keeps
+  receiving. On key, VFO B's border + tag go **red** while VFO A stays
+  **green**. VFO B transmits in the **same mode** as VFO A.
+- **1→2 / 2→1 / ⇄** — copy VFO A → B, copy B → A, or swap them.
+
+On the panadapter (centred on your RX, VFO A) the **RX** carrier is a
+solid orange line at centre and the **TX (VFO B)** freq is a solid
+**lime** line — **red while transmitting** — so you can see exactly where
+you'll transmit before you key. (Split is the same mechanism FM repeater
+offsets use; PureSignal tracks VFO B automatically.)
 
 To jump between bands, use the **Band panel**; to change the filter
 width, the **Filters panel**.

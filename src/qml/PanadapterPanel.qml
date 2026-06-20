@@ -400,32 +400,47 @@ Item {
 
             // ---- VFO marker — RX1 sits at the panadapter centre ----
             // The DDC is tuned to rx1FreqHz, so the spectrum is always
-            // centred on the receive frequency.  Matches old Lyra: a 1px
-            // DASHED orange (#ffaa50) line at centre, NO top tab (the top
-            // strip is reserved for the band-plan / EiBi / spot / NCDXF
-            // overlays that land later).
+            // centred on the receive frequency.  A SOLID 1px orange
+            // (#ffaa50) line at centre, slightly translucent so the trace
+            // shows through (operator pref 2026-06-20 — solid reads cleaner
+            // than the old dashes, esp. alongside the TX marker in split).
             //
-            // Built from plain Rectangles, NOT a QtQuick.Shapes Shape:
+            // Built from a plain Rectangle, NOT a QtQuick.Shapes Shape:
             // a Shape here regressed the shared scene-graph render path
             // and turned the waterfall (lower pane) patchy.  Pure Items
             // keep the scene on the same renderer the waterfall needs.
-            Repeater {
-                model: Math.max(1, Math.ceil(spectrumArea.height / 8))
-                delegate: Rectangle {
-                    required property int index
-                    z: 4
-                    width: 1
-                    height: 4               // 4px dash + 4px gap (8px pitch)
-                    color: "#ffaa50"
-                    opacity: 0.86
-                    // Carrier marker: centre in non-CW; offset by the CW
-                    // pitch (markerOffsetHz) so it sits on the carrier the
-                    // operator hears (which is +pitch above the DDS centre).
-                    x: Math.round(spectrumArea.width
-                                  * (0.5 + WdspEngine.markerOffsetHz
-                                           / Math.max(1, WdspEngine.spanHz)))
-                    y: index * 8
-                }
+            Rectangle {
+                z: 4
+                width: 1
+                height: spectrumArea.height
+                color: "#ffaa50"
+                opacity: 0.7
+                // Carrier marker: centre in non-CW; offset by the CW pitch
+                // (markerOffsetHz) so it sits on the carrier the operator
+                // hears (which is +pitch above the DDS centre).
+                x: Math.round(spectrumArea.width
+                              * (0.5 + WdspEngine.markerOffsetHz
+                                       / Math.max(1, WdspEngine.spanHz)))
+                y: 0
+            }
+
+            // ---- SPLIT TX marker — VFO B (the transmit freq) ----
+            // Shown only in SPLIT: a SOLID vertical line at VFO B's offset
+            // from the RX centre.  LIME while armed (where TX WILL go),
+            // RED on key (the locked indication model — red = on the air).
+            // VFO B is the carrier, so its offset from the RX DDS centre =
+            // (vfoBHz − centerHz).  Off-span → it clips off-screen.
+            Rectangle {
+                visible: Stream.splitEnabled
+                z: 4
+                width: 2
+                height: spectrumArea.height
+                color: Stream.moxActive ? "#ff4136" : "#a6ff00"
+                opacity: 0.85
+                x: Math.round(spectrumArea.width
+                              * (0.5 + (Stream.vfoBHz - root.centerHz)
+                                       / Math.max(1, WdspEngine.spanHz)))
+                y: 0
             }
 
             // ---- peak dB labels (strongest in-view peaks) ----

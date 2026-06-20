@@ -1469,6 +1469,11 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
         // button, memory recall, TCI spot click, etc.
         if (!splitEnabled_.load(std::memory_order_relaxed))
             pushEffectiveTxFreq();
+        else
+            // SPLIT: VFO A (the panadapter centre) moved but the TX freq
+            // (VFO B) didn't — the TX-analyzer crop offset still shifted, so
+            // refresh it (pushEffectiveTxFreq isn't called on this path).
+            emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
     }
 }
 
@@ -1486,6 +1491,9 @@ void HL2Stream::pushEffectiveTxFreq() {
     if (lyra::wire::prn != nullptr)
         // txDdsHzForTune applies the CW ∓pitch carrier offset (zero-beat).
         lyra::wire::set_tx_freq(txDdsHzForTune(eff));
+    // The TX-analyzer crop offset (NCO − RX centre) changed — refresh the
+    // panadapter so the TX signal paints at the new VFO-B position.
+    emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
 }
 
 void HL2Stream::setSplitEnabled(bool on) {
@@ -1724,8 +1732,14 @@ int HL2Stream::txAnalyzerOffsetHz() const {
     // marker (CWL above / CWU below — the operator's bench report).  Computing
     // it as NCO − DDS covers SSB (0), keyed CW, and TUN uniformly, and tracks
     // the live CW pitch (txDdsHzForTune uses cwPitchHz_).
-    const int dds = static_cast<int>(txFreqHz_.load(std::memory_order_relaxed));
-    return txDdsHzForTune(dds) - dds;
+    // The TX-analyzer carrier sits at the TX NCO; the panadapter is centred
+    // on the RX DDC (rx1FreqHz_ = VFO A).  So the paint offset = NCO − RX
+    // centre.  In SIMPLEX txFreqHz_ == rx1, so this reduces to the CW/TUN
+    // pitch offset (unchanged behaviour).  In SPLIT txFreqHz_ = VFO B, so the
+    // TX carrier paints at (VFO B − VFO A) from centre — on the red VFO-B
+    // marker — instead of stuck at centre (the operator-caught split bug).
+    const int nco = txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed));
+    return nco - static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed));
 }
 
 void HL2Stream::setTuneEnabled(bool on) {
