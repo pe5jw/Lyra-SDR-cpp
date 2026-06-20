@@ -1786,6 +1786,39 @@ across sessions.
 > rated for 100 W PEP that's a ~25 W carrier, with the sidebands swinging
 > the envelope toward 100 W on modulation peaks.
 
+### FM (deviation & CTCSS)
+
+FM transmit has two operator knobs in **Settings → TX → FM**. Both affect
+**FM only** — they're inert in SSB / AM / CW, so you can set them and they
+only bite when you key FM. Both persist across sessions.
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Deviation** | 5.0 kHz | Peak FM deviation. The spin box flags the two standard presets — **5.0 kHz — Wide (US)** and **2.5 kHz — Narrow (US/EU)** — and reads plain `kHz` at any other value. Too much deviation splatters into adjacent channels; too little sounds weak and quiet. |
+| **CTCSS sub-tone** | Off | Transmit a sub-audible **CTCSS** tone to open a tone-protected FM repeater. Tick **enable** and pick your repeater's tone from the standard list (67.0–254.1 Hz). Leave it off for simplex. |
+
+**Deviation by region (rule of thumb — match your band plan / the
+repeater):**
+
+| Region / use | Deviation |
+|---|---|
+| **US ham FM** (10 m / 6 m / VHF–UHF, wide) | **5.0 kHz** (≈16 kHz channel) |
+| **US narrowband** | 2.5 kHz |
+| **Much of Europe & elsewhere** | **2.5 kHz** narrow is the common norm (some use 3.0 kHz) |
+
+When in doubt, match what the repeater or local band plan specifies — running
+wide into a narrow channel splatters your neighbours; running narrow where
+everyone else is wide makes you sound quiet and distant.
+
+CTCSS is a *transmit* sub-tone only (Lyra sends the access tone; it doesn't
+decode incoming tones). If you can hear a repeater but can't bring it up,
+the tone is the usual culprit — set it to the repeater's published CTCSS /
+"PL" frequency.
+
+> **HL2 FM is 10 m / 6 m.** On a bare Hermes Lite 2/2+ (no transverter),
+> FM lives on 29.5–29.7 MHz (10 m) and the 6 m FM segment. CTCSS only
+> matters when you're working a tone-protected repeater there.
+
 ### ATT on TX (RX-ADC protection)
 
 While you transmit, your own TX carrier couples back into the receiver.

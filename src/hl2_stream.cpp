@@ -47,6 +47,26 @@ namespace lyra::ipc {
 
 namespace {
 
+// #107 — standard CTCSS sub-audible tone table (EIA/TIA-603, 49 tones,
+// 67.0..254.1 Hz).  snapCtcssTone() maps an arbitrary operator value to
+// the nearest standard tone so the UI combo + persisted value stay valid.
+constexpr double kCtcssTones[] = {
+     67.0,  69.3,  71.9,  74.4,  77.0,  79.7,  82.5,  85.4,  88.5,  91.5,
+     94.8,  97.4, 100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3,
+    131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9,
+    171.3, 173.8, 177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5,
+    203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1};
+
+double snapCtcssTone(double hz) {
+    double best = kCtcssTones[0];
+    double bestErr = 1e9;
+    for (double t : kCtcssTones) {
+        const double e = (t > hz) ? (t - hz) : (hz - t);
+        if (e < bestErr) { bestErr = e; best = t; }
+    }
+    return best;
+}
+
 // 64-byte HPSDR P1 host→radio control packet.  start=true sends
 // 0xEFFE 0x04 0x01 (start IQ); start=false sends 0xEFFE 0x04 0x00
 // (stop everything).
@@ -380,6 +400,15 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // #109 — PHROT enable (default ON = WDSP/reference posture).
     phrotEnabled_ = QSettings().value(QStringLiteral("tx/phrotEnabled"),
                                       kDefaultPhrotEnabled).toBool();
+    // #107 — FM operator knobs (deviation / CTCSS enable + tone).
+    fmDeviationHz_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/fmDeviationHz"),
+                          kDefaultFmDeviationHz).toDouble(), 1000.0, 6000.0);
+    ctcssEnabled_  = QSettings().value(QStringLiteral("tx/ctcssEnabled"),
+                                       false).toBool();
+    ctcssToneHz_   = snapCtcssTone(
+        QSettings().value(QStringLiteral("tx/ctcssToneHz"),
+                          kDefaultCtcssToneHz).toDouble());
     levelerMaxGainLinear_ = std::clamp(
         QSettings().value(QStringLiteral("tx/levelerMaxGainLinear"),
                           kDefaultLevelerMaxGainLinear).toDouble(),
@@ -2345,6 +2374,63 @@ void HL2Stream::setPhrotEnabled(bool on) {
     applyPhrotRun();
 }
 
+// #107 — push the EFFECTIVE CTCSS run (operator enable AND FM mode) to the
+// WDSP TX channel.  CTCSS is an FM-only modulator stage (WDSP mode 5); any
+// other mode forces run=0.  Called from the operator toggle, every
+// setTxMode edge, and channel open (registerTxControl).
+void HL2Stream::applyCtcssRun() {
+    const bool fm  = (txMode_.load(std::memory_order_relaxed) == 5);
+    const bool run = ctcssEnabled_ && fm;
+    std::function<void(bool)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setCtcssRun;
+    }
+    if (fwd) fwd(run);
+}
+
+// #107 — FM peak deviation (Hz).  Persists + emits + forwards to the WDSP
+// TXA fmmod stage (mode-independent to set; only bites in FM).
+void HL2Stream::setFmDeviationHz(double hz) {
+    const double v = std::clamp(hz, 1000.0, 6000.0);
+    if (v == fmDeviationHz_) return;
+    fmDeviationHz_ = v;
+    QSettings().setValue(QStringLiteral("tx/fmDeviationHz"), v);
+    emit fmDeviationHzChanged(v);
+    std::function<void(double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setFmDeviation;
+    }
+    if (fwd) fwd(v);
+}
+
+// #107 — CTCSS sub-tone enable.  Persists + emits + re-derives the effective
+// run (FM-only) via applyCtcssRun().
+void HL2Stream::setCtcssEnabled(bool on) {
+    if (on == ctcssEnabled_) return;
+    ctcssEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/ctcssEnabled"), on);
+    emit ctcssEnabledChanged(on);
+    applyCtcssRun();
+}
+
+// #107 — CTCSS sub-tone frequency (snapped to the standard table).  Persists
+// + emits + forwards the tone to the WDSP TXA fmmod stage.
+void HL2Stream::setCtcssToneHz(double hz) {
+    const double v = snapCtcssTone(hz);
+    if (v == ctcssToneHz_) return;
+    ctcssToneHz_ = v;
+    QSettings().setValue(QStringLiteral("tx/ctcssToneHz"), v);
+    emit ctcssToneHzChanged(v);
+    std::function<void(double)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setCtcssFreq;
+    }
+    if (fwd) fwd(v);
+}
+
 // §15.31 — ATT-on-TX enable.  Persists + emits; if currently keyed,
 // re-applies to the wire live so the operator sees the front-end
 // attenuation engage/disengage mid-TX (the FSM otherwise only sets it
@@ -2735,6 +2821,9 @@ void HL2Stream::setTxMode(int wdspMode) {
     // auto-disables in DIGU/DIGL (digital), re-enables in voice modes if the
     // operator toggle is on.  Must follow the txMode_ store above.
     applyPhrotRun();
+    // #107 — re-derive the CTCSS run state on the mode edge: the FM sub-tone
+    // runs only in FM (WDSP mode 5) and only when the operator enabled it.
+    applyCtcssRun();
     std::function<void(int)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
@@ -2863,10 +2952,16 @@ void HL2Stream::registerTxControl(TxControl ctl) {
     std::function<void(int)>          pushLevelerDecay;
     std::function<void(double)>       pushAmCarrier;
     std::function<void(bool)>         pushPhrot;
+    std::function<void(double)>       pushFmDev;
+    std::function<void(double)>       pushCtcssFreq;
+    std::function<void(bool)>         pushCtcssRun;
     bool   levOn;
     double levTop;
     double amCarLin;
     bool   phrotOn;
+    double fmDev;
+    double ctcssFreq;
+    bool   ctcssOn;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         txControl_ = std::move(ctl);
@@ -2880,6 +2975,9 @@ void HL2Stream::registerTxControl(TxControl ctl) {
         pushLevelerDecay = txControl_.setLevelerDecayMs;
         pushAmCarrier    = txControl_.setAmCarrierLevel;
         pushPhrot        = txControl_.setPhrotRun;
+        pushFmDev        = txControl_.setFmDeviation;
+        pushCtcssFreq    = txControl_.setCtcssFreq;
+        pushCtcssRun     = txControl_.setCtcssRun;
         levOn            = levelerOn_;
         levTop           = levelerMaxGainLinear_;
         amCarLin         = amPctToCarrierLevel(amCarrierPct_);   // % power → c_level
@@ -2887,6 +2985,10 @@ void HL2Stream::registerTxControl(TxControl ctl) {
         // auto-OFF in DIGU/DIGL even when the toggle is on.
         const int m      = txMode_.load(std::memory_order_relaxed);
         phrotOn          = phrotEnabled_ && !(m == 7 || m == 9);
+        // #107 — FM deviation/tone push once; CTCSS run is FM-gated (mode 5).
+        fmDev            = fmDeviationHz_;
+        ctcssFreq        = ctcssToneHz_;
+        ctcssOn          = ctcssEnabled_ && (m == 5);
     }
     if (pushMic)          pushMic(micGainDb_);
     if (pushAlc)          pushAlc(alcMaxGainLinear_);
@@ -2895,6 +2997,9 @@ void HL2Stream::registerTxControl(TxControl ctl) {
     if (pushLevelerDecay) pushLevelerDecay(levelerDecayMs_);
     if (pushAmCarrier)    pushAmCarrier(amCarLin);
     if (pushPhrot)        pushPhrot(phrotOn);
+    if (pushFmDev)        pushFmDev(fmDev);
+    if (pushCtcssFreq)    pushCtcssFreq(ctcssFreq);
+    if (pushCtcssRun)     pushCtcssRun(ctcssOn);
 }
 
 // Source registration — caller-owned lifetime.  The wire writer

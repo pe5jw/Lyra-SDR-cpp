@@ -212,6 +212,12 @@ extern void (*SetTXALevelerTop)(int channel, double maxgain);
 extern void (*SetTXAPHROTRun)(int channel, int run);
 //   fmmod.c:178      void SetTXACTCSSRun (int channel, int run);
 extern void (*SetTXACTCSSRun)(int channel, int run);
+//   #107 FM operator knobs (fmmod.c definition sites; verified present
+//   in the bundled wdsp.dll export table 2026-06-20).
+//   fmmod.c:148      void SetTXAFMDeviation (int channel, double deviation);
+extern void (*SetTXAFMDeviation)(int channel, double deviation);
+//   fmmod.c:167      void SetTXACTCSSFreq (int channel, double freq);
+extern void (*SetTXACTCSSFreq)(int channel, double freq);
 //   ammod.c:103      void SetTXAAMCarrierLevel (int channel, double c_level);
 extern void (*SetTXAAMCarrierLevel)(int channel, double c_level);
 

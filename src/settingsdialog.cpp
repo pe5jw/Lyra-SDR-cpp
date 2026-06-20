@@ -3379,6 +3379,99 @@ QWidget *SettingsDialog::buildTxTab() {
         rightCol->addWidget(grp);   // #93 — AUDIO + GAIN column (AM Carrier)
     }
 
+    // ── FM (deviation + CTCSS) group ─────────────────────────────
+    // #107 — operator FM knobs.  Deviation = peak FM deviation (narrow vs
+    // wide).  CTCSS = sub-audible repeater-access tone (enable + tone from
+    // the standard 67.0..254.1 Hz table).  All bite only in FM.
+    if (stream_) {
+        auto *grp  = new QGroupBox(tr("FM  (deviation / CTCSS)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *devSpin = new QDoubleSpinBox(grp);
+        devSpin->setRange(1.0, 6.0);
+        devSpin->setSingleStep(0.5);
+        devSpin->setDecimals(1);
+        devSpin->setValue(stream_->fmDeviationHz() / 1000.0);
+        // Flag the two standard presets right in the readout so the operator
+        // sees which deviation they're on: 5.0 = Wide (US), 2.5 = Narrow
+        // (US narrowband / much of EU); other values just read " kHz".
+        const QString sfxWide   = tr(" kHz — Wide (US)");
+        const QString sfxNarrow = tr(" kHz — Narrow (US/EU)");
+        const QString sfxPlain  = tr(" kHz");
+        auto applyDevSuffix = [devSpin, sfxWide, sfxNarrow, sfxPlain](double k) {
+            devSpin->setSuffix(k == 5.0 ? sfxWide
+                             : k == 2.5 ? sfxNarrow
+                                        : sfxPlain);
+        };
+        applyDevSuffix(devSpin->value());
+        devSpin->setToolTip(tr(
+            "FM peak deviation.  5.0 kHz = Wide (US ham standard for 10 m / "
+            "6 m repeater + simplex FM); 2.5 kHz = Narrow (US narrowband / the "
+            "norm across much of Europe & elsewhere).  Too much deviation "
+            "splatters into adjacent channels; too little sounds weak/quiet.  "
+            "Match your region / the repeater.  Affects FM only."));
+        connect(devSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, applyDevSuffix](double v) {
+                    applyDevSuffix(v);
+                    if (stream_) stream_->setFmDeviationHz(v * 1000.0);
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::fmDeviationHzChanged, devSpin,
+                [devSpin](double hz) {
+                    const double k = hz / 1000.0;
+                    if (devSpin->value() != k) devSpin->setValue(k);
+                });
+        form->addRow(tr("Deviation:"), devSpin);
+
+        auto *ctcssBox = new QCheckBox(tr("CTCSS sub-tone (repeater access)"), grp);
+        ctcssBox->setChecked(stream_->ctcssEnabled());
+        ctcssBox->setToolTip(tr(
+            "Transmit a sub-audible CTCSS tone to open a tone-protected FM "
+            "repeater.  Enable + pick your repeater's tone.  Off for simplex.  "
+            "Affects FM only."));
+        connect(ctcssBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setCtcssEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::ctcssEnabledChanged, ctcssBox,
+                [ctcssBox](bool on) {
+                    if (ctcssBox->isChecked() != on) ctcssBox->setChecked(on);
+                });
+        form->addRow(ctcssBox);
+
+        auto *toneCombo = new QComboBox(grp);
+        static const double kCtcss[] = {
+             67.0,  69.3,  71.9,  74.4,  77.0,  79.7,  82.5,  85.4,  88.5,  91.5,
+             94.8,  97.4, 100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3,
+            131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9,
+            171.3, 173.8, 177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5,
+            203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1};
+        for (double t : kCtcss)
+            toneCombo->addItem(QStringLiteral("%1 Hz").arg(t, 0, 'f', 1),
+                               QVariant(t));
+        toneCombo->setToolTip(tr("Standard CTCSS sub-audible tone (Hz)."));
+        const double curTone = stream_->ctcssToneHz();
+        for (int i = 0; i < toneCombo->count(); ++i)
+            if (toneCombo->itemData(i).toDouble() == curTone) {
+                toneCombo->setCurrentIndex(i); break;
+            }
+        connect(toneCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this, toneCombo](int) {
+                    if (stream_) stream_->setCtcssToneHz(
+                        toneCombo->currentData().toDouble());
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::ctcssToneHzChanged, toneCombo,
+                [toneCombo](double hz) {
+                    for (int i = 0; i < toneCombo->count(); ++i)
+                        if (toneCombo->itemData(i).toDouble() == hz) {
+                            if (toneCombo->currentIndex() != i)
+                                toneCombo->setCurrentIndex(i);
+                            break;
+                        }
+                });
+        form->addRow(tr("Tone:"), toneCombo);
+
+        rightCol->addWidget(grp);   // #107 — AUDIO + GAIN column (FM)
+    }
+
     // ── ATT on TX (RX-ADC protection) group ──────────────────────
     // §15.31.  Mirrors the reference's Setup → General → Ant/Filters →
     // "ATT on Tx" ✓ + "ATT: 31" spin (HL2/HL2+ working posture).  On

@@ -29,6 +29,11 @@ QJsonObject Profile::toJson() const {
     o["levelerOn"]            = levelerOn;
     o["levelerMaxGainLinear"] = levelerMaxGainLinear;
     o["levelerDecayMs"]       = levelerDecayMs;
+    o["phrotEnabled"]  = phrotEnabled;       // v4 #109
+    o["fmDeviationHz"] = fmDeviationHz;       // v4 #107
+    o["ctcssEnabled"]  = ctcssEnabled;        // v4 #107
+    o["ctcssToneHz"]   = ctcssToneHz;         // v4 #107
+    o["amCarrierPct"]  = amCarrierPct;        // v4 #93
     o["txTimeoutSec"]  = txTimeoutSec;
     o["txTimeoutBypass"] = txTimeoutBypass;
     // Native rack blobs (#49 v3) — omit empties to keep pre-rack profiles
@@ -68,6 +73,11 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("levelerOn"))            p.levelerOn            = o["levelerOn"].toBool(p.levelerOn);
     if (o.contains("levelerMaxGainLinear")) p.levelerMaxGainLinear = o["levelerMaxGainLinear"].toDouble(p.levelerMaxGainLinear);
     if (o.contains("levelerDecayMs"))       p.levelerDecayMs       = o["levelerDecayMs"].toInt(p.levelerDecayMs);
+    if (o.contains("phrotEnabled"))  p.phrotEnabled  = o["phrotEnabled"].toBool(p.phrotEnabled);
+    if (o.contains("fmDeviationHz")) p.fmDeviationHz = o["fmDeviationHz"].toDouble(p.fmDeviationHz);
+    if (o.contains("ctcssEnabled"))  p.ctcssEnabled  = o["ctcssEnabled"].toBool(p.ctcssEnabled);
+    if (o.contains("ctcssToneHz"))   p.ctcssToneHz   = o["ctcssToneHz"].toDouble(p.ctcssToneHz);
+    if (o.contains("amCarrierPct"))  p.amCarrierPct  = o["amCarrierPct"].toDouble(p.amCarrierPct);
     if (o.contains("txTimeoutSec"))  p.txTimeoutSec  = o["txTimeoutSec"].toInt(p.txTimeoutSec);
     if (o.contains("txTimeoutBypass")) p.txTimeoutBypass = o["txTimeoutBypass"].toBool(p.txTimeoutBypass);
     if (o.contains("eq"))         p.eq         = o["eq"].toObject();
@@ -104,6 +114,11 @@ bool Profile::sameValues(const Profile &b) const {
         && levelerOn == b.levelerOn
         && dEq(levelerMaxGainLinear, b.levelerMaxGainLinear)
         && levelerDecayMs == b.levelerDecayMs
+        && phrotEnabled == b.phrotEnabled
+        && dEq(fmDeviationHz, b.fmDeviationHz)
+        && ctcssEnabled == b.ctcssEnabled
+        && dEq(ctcssToneHz, b.ctcssToneHz)
+        && dEq(amCarrierPct, b.amCarrierPct)
         && txTimeoutSec == b.txTimeoutSec
         && txTimeoutBypass == b.txTimeoutBypass
         // Native rack blobs — QJsonObject has value equality, so any EQ /

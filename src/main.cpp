@@ -752,6 +752,14 @@ int main(int argc, char *argv[])
         p.levelerOn            = stream->levelerOn();
         p.levelerMaxGainLinear = stream->levelerMaxGainLinear();
         p.levelerDecayMs       = stream->levelerDecayMs();
+        // v4 (#109/#107/#93): TX modulation knobs — part of "how this setup
+        // sounds", so they ride per-profile (PHROT for SSB/ESSB, FM deviation
+        // + CTCSS for repeater vs simplex, AM carrier per AM profile).
+        p.phrotEnabled    = stream->phrotEnabled();
+        p.fmDeviationHz   = stream->fmDeviationHz();
+        p.ctcssEnabled    = stream->ctcssEnabled();
+        p.ctcssToneHz     = stream->ctcssToneHz();
+        p.amCarrierPct    = stream->amCarrierPct();
         p.txTimeoutSec    = stream->txTimeoutSec();
         p.txTimeoutBypass = stream->txTimeoutBypass();
         // Native TX DSP rack (#49 v3) — capture each stage's full state via
@@ -798,6 +806,14 @@ int main(int argc, char *argv[])
         stream->setLevelerOn(p.levelerOn);
         stream->setLevelerMaxGainLinear(p.levelerMaxGainLinear);
         stream->setLevelerDecayMs(p.levelerDecayMs);
+        // v4 (#109/#107/#93): TX modulation knobs (forward through the
+        // txControl_ seam; CTCSS run stays FM-gated via applyCtcssRun, PHROT
+        // stays digital-gated via applyPhrotRun — safe to push any time).
+        stream->setPhrotEnabled(p.phrotEnabled);
+        stream->setFmDeviationHz(p.fmDeviationHz);
+        stream->setCtcssEnabled(p.ctcssEnabled);
+        stream->setCtcssToneHz(p.ctcssToneHz);
+        stream->setAmCarrierPct(p.amCarrierPct);
         stream->setTxTimeoutSec(p.txTimeoutSec);
         stream->setTxTimeoutBypass(p.txTimeoutBypass);
         // Native TX DSP rack (#49 v3) — apply each stage to its live model.
@@ -1182,10 +1198,11 @@ int main(int argc, char *argv[])
                     }
                     lyra::wire::SetTXABandpassFreqs(txch, lo, hi);  // sign-coded edges FIRST
                     lyra::wire::SetTXAMode(txch, txf->mode);        // then mode (re-runs TXASetupBPFilters)
-                    // FM's TXA modulator defaults CTCSS ON at 100 Hz — silence the
-                    // sub-tone for basic FM (operator CTCSS/deviation control is #107).
-                    if (txf->mode == 5 && lyra::wire::SetTXACTCSSRun)
-                        lyra::wire::SetTXACTCSSRun(txch, 0);
+                    // #107 — CTCSS run/freq is now operator-driven + FM-gated:
+                    // HL2Stream::setTxMode → applyCtcssRun forwards the effective
+                    // run (ctcssEnabled && FM) on every mode edge, so basic FM is
+                    // silent unless the operator enables the sub-tone.  (Was a
+                    // hardcoded SetTXACTCSSRun(txch,0) force here.)
                 };
 
                 stream->registerTxControl(lyra::ipc::HL2Stream::TxControl{
@@ -1273,6 +1290,18 @@ int main(int argc, char *argv[])
                     .setPhrotRun = [txch](bool on) {   // #109 phase rotator
                         if (lyra::wire::SetTXAPHROTRun)
                             lyra::wire::SetTXAPHROTRun(txch, on ? 1 : 0);
+                    },
+                    .setFmDeviation = [txch](double hz) {   // #107 FM deviation
+                        if (lyra::wire::SetTXAFMDeviation)
+                            lyra::wire::SetTXAFMDeviation(txch, hz);
+                    },
+                    .setCtcssFreq = [txch](double hz) {     // #107 CTCSS tone
+                        if (lyra::wire::SetTXACTCSSFreq)
+                            lyra::wire::SetTXACTCSSFreq(txch, hz);
+                    },
+                    .setCtcssRun = [txch](bool on) {        // #107 CTCSS run (FM-gated)
+                        if (lyra::wire::SetTXACTCSSRun)
+                            lyra::wire::SetTXACTCSSRun(txch, on ? 1 : 0);
                     },
                 });
                 // registerTxControl() pushes the persisted mic gain / ALC

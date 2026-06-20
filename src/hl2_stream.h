@@ -485,6 +485,17 @@ class HL2Stream : public QObject {
     // more carrier power / less sideband; 0 → suppressed-carrier (DSB-like).
     Q_PROPERTY(double amCarrierPct READ amCarrierPct
                WRITE setAmCarrierPct NOTIFY amCarrierPctChanged)
+    // #107 — FM operator knobs (bite only in FM; WDSP TXA fmmod stage).
+    // Deviation = FM peak deviation in Hz (default 5000 = WDSP create-time
+    // default = ±5 kHz wide; 2500 = narrow).  CTCSS = sub-audible repeater
+    // access tone: enable + tone Hz from the standard 67.0..254.1 table.
+    // CTCSS run is mode-gated (FM only) via applyCtcssRun().
+    Q_PROPERTY(double fmDeviationHz READ fmDeviationHz
+               WRITE setFmDeviationHz NOTIFY fmDeviationHzChanged)
+    Q_PROPERTY(bool   ctcssEnabled  READ ctcssEnabled
+               WRITE setCtcssEnabled  NOTIFY ctcssEnabledChanged)
+    Q_PROPERTY(double ctcssToneHz   READ ctcssToneHz
+               WRITE setCtcssToneHz   NOTIFY ctcssToneHzChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -592,6 +603,12 @@ public:
         // for the same ALC ceiling).  Operator on/off, mirrors the
         // reference's Setup PHROT-enable checkbox.  Empty = no-op.
         std::function<void(bool)> setPhrotRun;
+        // #107 — FM operator knobs.  setFmDeviation(Hz) → SetTXAFMDeviation;
+        // setCtcssFreq(Hz) → SetTXACTCSSFreq; setCtcssRun(on) →
+        // SetTXACTCSSRun.  Run is mode-gated (FM only) by applyCtcssRun().
+        std::function<void(double)> setFmDeviation;
+        std::function<void(double)> setCtcssFreq;
+        std::function<void(bool)>   setCtcssRun;
     };
 
     bool    isRunning()         const { return running_.load(std::memory_order_acquire); }
@@ -743,6 +760,10 @@ public:
     int     cwSidetoneLevel()       const { return cwSidetoneLevel_;       }
     // #93/#106 — AM/SAM carrier level (percent).
     double  amCarrierPct()          const { return amCarrierPct_;          }
+    // #107 — FM operator knobs.
+    double  fmDeviationHz()         const { return fmDeviationHz_;         }
+    bool    ctcssEnabled()          const { return ctcssEnabled_;          }
+    double  ctcssToneHz()           const { return ctcssToneHz_;           }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -1034,6 +1055,10 @@ public slots:
     // #93/#106 — AM/SAM carrier level (0..100 %); persists, emits, forwards
     // the 0..1 fraction to SetTXAAMCarrierLevel.
     void setAmCarrierPct(double pct);
+    // #107 — FM operator knobs (persist + emit + forward via TxControl).
+    void setFmDeviationHz(double hz);   // clamp 1000..6000
+    void setCtcssEnabled(bool on);      // mode-gated run via applyCtcssRun()
+    void setCtcssToneHz(double hz);     // snapped to the standard tone table
 
     // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
     // to the TX channel via the registered TxControl.setMode callback.
@@ -1197,6 +1222,9 @@ signals:
     void cwSidetoneLevelChanged(int level);
     // #93/#106 — AM/SAM carrier level (percent).
     void amCarrierPctChanged(double pct);
+    void fmDeviationHzChanged(double hz);   // #107
+    void ctcssEnabledChanged(bool on);      // #107
+    void ctcssToneHzChanged(double hz);     // #107
     // Fires once when the safety timeout actually expires and the FSM
     // auto-clears MOX.  Useful for a status-bar toast / log highlight;
     // the actual MOX-off is driven through requestMox(false) regardless.
@@ -1301,6 +1329,11 @@ private:
     // to the WDSP TX channel.  Called from the operator toggle, every TX
     // mode change, and channel open.  Auto-OFF in DIGU/DIGL (mode 7/9).
     void applyPhrotRun();
+    // #107 — push the EFFECTIVE CTCSS run (ctcssEnabled_ && FM mode) to the
+    // WDSP TX channel.  Called from the operator toggle, every setTxMode
+    // edge, and channel open.  CTCSS is an FM-only modulator stage (WDSP
+    // mode 5); non-FM modes force run=0.
+    void applyCtcssRun();
     // #170a — the Max-TX-drive cap as a raw 0..255 ceiling (100 % → 255).
     // Header-safe integer rounding (no <cmath>/<algorithm> dependency);
     // maxDrivePct_ is already clamped 1..100 by its setter + the ctor.
@@ -1817,6 +1850,15 @@ private:
     // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.
     static constexpr double kDefaultAmCarrierPct = 100.0;
     double amCarrierPct_           = kDefaultAmCarrierPct;
+
+    // #107 — FM operator knobs.  Deviation default 5000 Hz = WDSP create-time
+    // default (±5 kHz wide).  CTCSS default OFF / 100.0 Hz; run is mode-gated
+    // (FM only) via applyCtcssRun().  Persisted under tx/fm*.
+    static constexpr double kDefaultFmDeviationHz = 5000.0;
+    static constexpr double kDefaultCtcssToneHz   = 100.0;
+    double fmDeviationHz_          = kDefaultFmDeviationHz;
+    bool   ctcssEnabled_          = false;
+    double ctcssToneHz_           = kDefaultCtcssToneHz;
 
     // §3.9-5 revert (operator-rejected 2026-06-06): the Lyra-native
     // cos² SSB envelope shim (MoxEdgeFade) was deleted per Rule 1

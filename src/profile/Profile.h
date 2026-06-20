@@ -29,9 +29,11 @@ namespace lyra::profile {
 
 struct Profile {
     QString name;
-    int     schemaVersion = 3;   // v2 (#160): ALC max gain + Leveler trio
+    int     schemaVersion = 4;   // v2 (#160): ALC max gain + Leveler trio
                                  // v3 (#49):  + native rack blobs (eq/speech/
                                  //            combinator/plate)
+                                 // v4 (#107/#109/#93): + PHROT, FM deviation,
+                                 //            CTCSS enable/tone, AM carrier %
 
     // --- TX/RX bandwidth ---
     // NOTE: the operating mode is deliberately NOT a profile field.
@@ -92,6 +94,19 @@ struct Profile {
     bool    levelerOn            = false;
     double  levelerMaxGainLinear = 15.0;
     int     levelerDecayMs       = 100;
+
+    // --- TX modulation knobs (v4: #109 / #107 / #93) ---
+    // Part of "how this setup sounds", so they ride per-profile (operator
+    // decision 2026-06-20): PHROT on for SSB punch / off for a clean ESSB
+    // profile; FM deviation + CTCSS differ between a repeater and a simplex
+    // profile; AM carrier % per AM profile.  Defaults mirror HL2Stream
+    // (PHROT on, dev 5 kHz wide, CTCSS off / 100 Hz, AM carrier 100 %) so a
+    // pre-v4 profile tolerate-loads to the current global behaviour.
+    bool    phrotEnabled  = true;
+    double  fmDeviationHz = 5000.0;
+    bool    ctcssEnabled  = false;
+    double  ctcssToneHz   = 100.0;
+    double  amCarrierPct  = 100.0;
 
     // --- TX safety ---
     int     txTimeoutSec    = 600;
