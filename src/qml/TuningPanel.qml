@@ -47,7 +47,12 @@ Rectangle {
     Component.onCompleted: { centerHz = Stream.rx1FreqHz; vfoBHz = Stream.vfoBHz }
     Connections {
         target: Stream
-        function onRx1FreqChanged() { root.centerHz = Stream.rx1FreqHz }
+        function onRx1FreqChanged() {
+            root.centerHz = Stream.rx1FreqHz
+            // Duplex: while RPT is active (FM split), VFO B tracks A ± offset
+            // as you tune across repeater outputs.
+            if (root.fmMode && Stream.splitEnabled) root.rptApply()
+        }
         function onVfoBHzChanged()  { root.vfoBHz   = Stream.vfoBHz }
     }
 
@@ -64,6 +69,36 @@ Rectangle {
     readonly property var modeList: ["LSB", "USB", "CWL", "CWU",
                                      "DSB", "AM", "FM", "DIGU", "DIGL"]
     readonly property bool cwMode: Prefs.mode === "CWU" || Prefs.mode === "CWL"
+    readonly property bool fmMode: Prefs.mode === "FM"
+
+    // RPT (FM repeater) — ad-hoc duplex layered on SPLIT + CTCSS, front-
+    // facing in FM only.  Dir + offset are UI state; applying writes the
+    // engine (setVfoBHz + setSplitEnabled), so it's the same PS-safe path
+    // as manual split / a recalled repeater memory.  In FM, split ⟺ RPT
+    // (the raw SPLIT button hides; RPT is the FM-friendly way to split).
+    property int rptDirSign: -1                    // − (input below output)
+    readonly property var rptOffsetsKHz: [100, 500, 600, 1000, 5000]
+    // Standard CTCSS tones (Hz) for the front combo; the engine snaps to
+    // its canonical table on setCtcssToneHz.
+    readonly property var ctcssTones: [
+        67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8,
+        97.4, 100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3, 131.8,
+        136.5, 141.3, 146.2, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3,
+        173.8, 177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5, 203.5,
+        206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1]
+    // VFO B = VFO A ± offset.  Called on RPT-on, dir/offset change, and (as
+    // a duplex) every VFO-A retune while RPT is active.
+    function rptApply() {
+        Stream.setVfoBHz(Stream.rx1FreqHz
+            + root.rptDirSign * root.rptOffsetsKHz[rptOffsetCombo.currentIndex] * 1000)
+    }
+    function nearestCtcssIndex(hz) {
+        var best = 0
+        for (var i = 1; i < root.ctcssTones.length; ++i)
+            if (Math.abs(root.ctcssTones[i] - hz)
+                    < Math.abs(root.ctcssTones[best] - hz)) best = i
+        return best
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -338,9 +373,11 @@ Rectangle {
 
             Item { Layout.fillWidth: true }   // centre the action controls
 
-            // SPLIT — TX on VFO B, RX on VFO A.  Lit cyan when on.
+            // SPLIT — TX on VFO B, RX on VFO A.  Lit cyan when on.  Hidden
+            // in FM, where the RPT button (below) is the friendlier split.
             Button {
                 id: splitBtn
+                visible: !root.fmMode
                 checkable: true
                 implicitHeight: 26
                 implicitWidth: 64
@@ -365,6 +402,125 @@ Rectangle {
                 ToolTip.text: qsTr("SPLIT — receive on VFO A, transmit on VFO B "
                     + "(same band).  Set VFO B to your TX freq; key and the red "
                     + "TX border + panadapter marker move to B.")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+
+            // ── FM front group: Deviation (always) + RPT → Dir/Offset/CTCSS ──
+            Label {
+                text: qsTr("Dev"); color: "#cccccc"; font.bold: true
+                visible: root.fmMode
+            }
+            SpinBox {
+                id: devSpin
+                visible: root.fmMode
+                Layout.preferredWidth: 94
+                // Integer tenths-of-kHz internally (10..60 = 1.0..6.0 kHz,
+                // 0.5 kHz step) so the display shows decimal kHz.  Two-way
+                // with Stream.fmDeviationHz (Settings → TX → FM stays in sync).
+                from: 10; to: 60; stepSize: 5
+                value: Math.round(Stream.fmDeviationHz / 100)
+                textFromValue: function(v, loc) { return (v / 10).toFixed(1) + " k" }
+                valueFromText: function(t, loc) { return Math.round(parseFloat(t) * 10) }
+                onValueModified: Stream.setFmDeviationHz(value * 100)
+                ToolTip.text: qsTr("FM peak deviation — 5.0 k = Wide (US), 2.5 k = "
+                    + "Narrow.  Same control as Settings → TX → FM.")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+            }
+
+            // RPT — FM repeater duplex.  In FM, split ⟺ RPT.
+            Button {
+                id: rptBtn
+                visible: root.fmMode
+                checkable: true
+                implicitHeight: 26; implicitWidth: 52
+                checked: Stream.splitEnabled
+                text: qsTr("RPT")
+                font.bold: true; font.pixelSize: 12
+                onToggled: {
+                    if (checked) { Stream.setSplitEnabled(true); root.rptApply() }
+                    else { Stream.setSplitEnabled(false); Stream.setCtcssEnabled(false) }
+                }
+                background: Rectangle {
+                    radius: 4
+                    color: rptBtn.checked ? "#10323a" : "#161e28"
+                    border.width: 2
+                    border.color: rptBtn.checked ? "#00e5ff" : "#2a3a4a"
+                }
+                contentItem: Text {
+                    text: rptBtn.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: rptBtn.checked ? "#00e5ff" : "#cdd9e5"
+                    font: rptBtn.font
+                }
+                ToolTip.text: qsTr("Repeater — TX on VFO B = VFO A ± offset, RX on "
+                    + "A.  Pick the shift direction + offset and (if needed) the "
+                    + "CTCSS access tone.  VFO B tracks A as you tune.")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            Label {
+                text: qsTr("Offset"); color: "#cccccc"; font.bold: true
+                visible: root.fmMode && Stream.splitEnabled
+            }
+            // Shift direction (− input below output / + above).
+            Button {
+                visible: root.fmMode && Stream.splitEnabled
+                implicitHeight: 26; implicitWidth: 30; font.pixelSize: 15
+                text: root.rptDirSign < 0 ? "−" : "+"
+                onClicked: { root.rptDirSign = -root.rptDirSign; root.rptApply() }
+                ToolTip.text: qsTr("Repeater shift direction"); ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            // Common repeater offsets.
+            ComboBox {
+                id: rptOffsetCombo
+                visible: root.fmMode && Stream.splitEnabled
+                Layout.preferredWidth: 92
+                model: ["100 kHz", "500 kHz", "600 kHz", "1 MHz", "5 MHz"]
+                currentIndex: 0
+                onActivated: root.rptApply()
+                ToolTip.text: qsTr("Repeater offset (10 m = 100 kHz, 6 m = 1 MHz)")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            // CTCSS access tone — lit toggle button (clearer than a tickbox) +
+            // tone combo, two-way with Settings → TX → FM.  Orange when on.
+            Button {
+                id: ctcssBtn
+                visible: root.fmMode && Stream.splitEnabled
+                checkable: true
+                implicitHeight: 26; implicitWidth: 62
+                checked: Stream.ctcssEnabled
+                onToggled: Stream.setCtcssEnabled(checked)
+                text: qsTr("CTCSS")
+                font.bold: true; font.pixelSize: 12
+                background: Rectangle {
+                    radius: 4
+                    color: ctcssBtn.checked ? "#3a2a14" : "#161e28"
+                    border.width: 2
+                    border.color: ctcssBtn.checked ? "#ff9a3c" : "#2a3a4a"
+                }
+                contentItem: Text {
+                    text: ctcssBtn.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: ctcssBtn.checked ? "#ff9a3c" : "#cdd9e5"
+                    font: ctcssBtn.font
+                }
+                ToolTip.text: qsTr("Send a CTCSS sub-audible access tone — required "
+                    + "by tone-protected repeaters.  Pick the tone at right.")
+                ToolTip.visible: hovered; ToolTip.delay: 600
+            }
+            Label {
+                text: qsTr("Tone"); color: "#cccccc"; font.bold: true
+                visible: root.fmMode && Stream.splitEnabled && ctcssBtn.checked
+            }
+            ComboBox {
+                id: ctcssToneCombo
+                visible: root.fmMode && Stream.splitEnabled && ctcssBtn.checked
+                Layout.preferredWidth: 78
+                model: root.ctcssTones.map(function(t) { return t.toFixed(1) })
+                currentIndex: root.nearestCtcssIndex(Stream.ctcssToneHz)
+                onActivated: Stream.setCtcssToneHz(root.ctcssTones[currentIndex])
+                ToolTip.text: qsTr("CTCSS access tone (Hz)")
                 ToolTip.visible: hovered; ToolTip.delay: 600
             }
 

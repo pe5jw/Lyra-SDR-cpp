@@ -38,6 +38,8 @@ void MemoryStore::load() {
         p.mode  = o.value(QStringLiteral("mode")).toString();
         p.rxBw  = o.value(QStringLiteral("rxBw")).toInt();
         p.notes = o.value(QStringLiteral("notes")).toString().left(kMaxNotes);
+        p.offsetHz    = o.value(QStringLiteral("offsetHz")).toInt();      // 0 if absent
+        p.ctcssToneHz = o.value(QStringLiteral("ctcssToneHz")).toDouble();// 0 if absent
         if (p.freq > 0 && presets_.size() < kMax) presets_.append(p);
     }
 }
@@ -51,6 +53,8 @@ void MemoryStore::save() const {
         o[QStringLiteral("mode")]  = p.mode;
         o[QStringLiteral("rxBw")]  = p.rxBw;
         o[QStringLiteral("notes")] = p.notes;
+        o[QStringLiteral("offsetHz")]    = p.offsetHz;
+        o[QStringLiteral("ctcssToneHz")] = p.ctcssToneHz;
         arr.append(o);
     }
     QSettings().setValue(QString::fromLatin1(kKey),
@@ -67,6 +71,8 @@ QVariantList MemoryStore::list() const {
         m[QStringLiteral("mode")]   = p.mode;
         m[QStringLiteral("rxBw")]   = p.rxBw;
         m[QStringLiteral("notes")]  = p.notes;
+        m[QStringLiteral("offsetHz")]    = p.offsetHz;
+        m[QStringLiteral("ctcssToneHz")] = p.ctcssToneHz;
         out.append(m);
     }
     return out;
@@ -81,6 +87,26 @@ void MemoryStore::recall(int index) {
     if (stream_) stream_->setRx1FreqHz(quint32(p.freq));
     if (prefs_ && !p.mode.isEmpty()) prefs_->setMode(p.mode);
     if (prefs_ && p.rxBw > 0) prefs_->setRxBandwidth(p.rxBw);   // optional BW
+    // Repeater state — each preset fully defines its SPLIT + CTCSS, so a
+    // repeater recall arms split to the input (VFO B = output + offset) and
+    // sets the access tone, and a plain (offset 0 / tone 0) recall CLEARS
+    // both — so recalling simplex after a repeater drops the split + tone.
+    // Drives only the single TX-freq path (setVfoBHz/setSplitEnabled), so
+    // it stays PureSignal-safe like manual split.
+    if (stream_) {
+        if (p.offsetHz != 0) {
+            stream_->setVfoBHz(quint32(qint64(p.freq) + p.offsetHz));
+            stream_->setSplitEnabled(true);
+        } else {
+            stream_->setSplitEnabled(false);
+        }
+        if (p.ctcssToneHz > 0.0) {
+            stream_->setCtcssToneHz(p.ctcssToneHz);
+            stream_->setCtcssEnabled(true);
+        } else {
+            stream_->setCtcssEnabled(false);
+        }
+    }
 }
 
 QString MemoryStore::currentAutoName() const {
@@ -97,6 +123,12 @@ bool MemoryStore::addCurrent(const QString &name) {
     p.freq = stream_->rx1FreqHz();
     p.mode = prefs_ ? prefs_->mode() : QString();
     p.rxBw = 0;
+    // Capture the live repeater state so "Store current" while on a
+    // repeater (split + tone set) saves it as a one-click recall.
+    if (stream_->splitEnabled())
+        p.offsetHz = int(qint64(stream_->vfoBHz()) - qint64(stream_->rx1FreqHz()));
+    if (stream_->ctcssEnabled())
+        p.ctcssToneHz = stream_->ctcssToneHz();
     presets_.append(p);
     save();
     emit changed();
@@ -141,11 +173,16 @@ bool MemoryStore::exportCsv(const QString &path) const {
         return (s.contains(QLatin1Char(',')) || s.contains(QLatin1Char('"')))
             ? QStringLiteral("\"%1\"").arg(s) : s;
     };
-    ts << "Name,Freq_Hz,Mode,RX_BW_Hz,Notes\n";
+    // Offset_Hz/CTCSS_Hz appended AFTER Notes so old 5-column CSVs still
+    // import (the two new fields just default to 0 when absent).
+    ts << "Name,Freq_Hz,Mode,RX_BW_Hz,Notes,Offset_Hz,CTCSS_Hz\n";
     for (const Preset &p : presets_) {
         ts << esc(p.name) << ',' << p.freq << ',' << p.mode << ','
            << (p.rxBw > 0 ? QString::number(p.rxBw) : QString()) << ','
-           << esc(p.notes) << '\n';
+           << esc(p.notes) << ','
+           << p.offsetHz << ','
+           << (p.ctcssToneHz > 0.0 ? QString::number(p.ctcssToneHz, 'f', 1)
+                                   : QString()) << '\n';
     }
     return true;
 }
@@ -184,6 +221,8 @@ MemoryStore::ImportResult MemoryStore::importCsv(const QString &path,
         p.mode  = c[2].trimmed().toUpper();
         p.rxBw  = (c.size() > 3) ? c[3].trimmed().toInt() : 0;
         p.notes = (c.size() > 4) ? c[4].trimmed().left(kMaxNotes) : QString();
+        p.offsetHz    = (c.size() > 5) ? c[5].trimmed().toInt() : 0;
+        p.ctcssToneHz = (c.size() > 6) ? c[6].trimmed().toDouble() : 0.0;
         incoming.append(p);
     }
     if (replace) presets_.clear();

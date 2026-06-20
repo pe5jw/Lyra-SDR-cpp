@@ -367,6 +367,17 @@ row beneath the VFOs has:
   **green**. VFO B transmits in the **same mode** as VFO A.
 - **1→2 / 2→1 / ⇄** — copy VFO A → B, copy B → A, or swap them.
 
+**In FM**, the raw SPLIT button is replaced by a friendlier repeater
+front-end (FM repeaters are the common split case):
+
+- **Dev** — FM deviation, right there in the row (same control as
+  Settings → TX → FM).
+- **RPT** — the FM split toggle. Turn it on, then pick **Offset** direction
+  (**−** / **+**) and amount (100 kHz / 500 kHz / 600 kHz / 1 MHz / 5 MHz)
+  → VFO B = VFO A ± offset, split armed. As you tune VFO A, VFO B **tracks**
+  the offset (duplex). **CTCSS** is a lit button → enable it and pick the
+  **Tone** for tone-protected repeaters.
+
 On the panadapter (centred on your RX, VFO A) the **RX** carrier is a
 solid orange line at centre and the **TX (VFO B)** freq is a solid
 **lime** line — **red while transmitting** — so you can see exactly where
@@ -469,7 +480,14 @@ frequency, mode, and (optionally) RX filter bandwidth:
 - Full editing lives in **Settings → Bands → Memory**: a table where you
   can rename, retype the frequency/mode/bandwidth, add notes, delete, clear
   all, and **import/export CSV** (columns: Name, Freq_Hz, Mode, RX_BW_Hz,
-  Notes) to back up or share your list.
+  Notes, Offset_Hz, CTCSS_Hz) to back up or share your list.
+- **Repeaters:** set **Offset** (the TX shift in kHz — e.g. −100 for 10 m,
+  −1000 = −1 MHz for 6 m) and **CTCSS** (access tone in Hz) on a row, store
+  the **output** frequency in Freq, and Mode = FM. Recall it and Lyra tunes
+  to the output, **arms SPLIT** to the input (output + offset), and sends
+  the tone — one click onto the repeater. Blank Offset/CTCSS = a simplex
+  preset (recall clears any split + tone). "Store current" while you're set
+  up on a repeater captures its offset + tone too.
 
 Pick the **mode** under the VFO (Tuning panel) and the **filter width**
 in the **Filters** panel.

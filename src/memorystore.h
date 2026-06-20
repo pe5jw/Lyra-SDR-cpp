@@ -24,10 +24,14 @@ class MemoryStore : public QObject {
 public:
     struct Preset {
         QString name;
-        qint64  freq = 0;     // Hz
+        qint64  freq = 0;     // Hz (the RX / repeater-OUTPUT frequency)
         QString mode;
         int     rxBw = 0;     // Hz; 0 = leave RX BW at the mode default
         QString notes;
+        // Repeater fields — recall programs SPLIT + CTCSS atop freq/mode:
+        int     offsetHz    = 0;    // signed shift; TX (VFO B) = freq + offset.
+                                    // 0 = simplex (recall turns SPLIT off).
+        double  ctcssToneHz = 0.0;  // FM CTCSS access tone (Hz); 0 = off.
     };
     static constexpr int kMax = 20;
     static constexpr int kMaxName = 30;

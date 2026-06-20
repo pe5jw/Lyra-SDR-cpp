@@ -427,9 +427,10 @@ QWidget *SettingsDialog::buildBandsTab() {
     auto *mem = new QWidget(sub);
     auto *v = new QVBoxLayout(mem);
 
-    auto *table = new QTableWidget(0, 5, mem);
+    auto *table = new QTableWidget(0, 7, mem);
     table->setHorizontalHeaderLabels(
-        {tr("Name"), tr("Freq (MHz)"), tr("Mode"), tr("RX BW (Hz)"), tr("Notes")});
+        {tr("Name"), tr("Freq (MHz)"), tr("Mode"), tr("RX BW (Hz)"),
+         tr("Offset (kHz)"), tr("CTCSS (Hz)"), tr("Notes")});
     table->horizontalHeader()->setStretchLastSection(true);
     table->verticalHeader()->setVisible(false);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -447,7 +448,14 @@ QWidget *SettingsDialog::buildBandsTab() {
             table->setItem(i, 2, new QTableWidgetItem(p.mode));
             table->setItem(i, 3, new QTableWidgetItem(
                 p.rxBw > 0 ? QString::number(p.rxBw) : QString()));
-            table->setItem(i, 4, new QTableWidgetItem(p.notes));
+            // Offset shown in kHz (signed; blank = simplex); CTCSS in Hz.
+            table->setItem(i, 4, new QTableWidgetItem(
+                p.offsetHz != 0 ? QString::number(p.offsetHz / 1000.0)
+                                : QString()));
+            table->setItem(i, 5, new QTableWidgetItem(
+                p.ctcssToneHz > 0.0 ? QString::number(p.ctcssToneHz, 'f', 1)
+                                    : QString()));
+            table->setItem(i, 6, new QTableWidgetItem(p.notes));
         }
         *refreshing = false;
     };
@@ -468,7 +476,11 @@ QWidget *SettingsDialog::buildBandsTab() {
             p.mode  = table->item(i, 2) ? table->item(i, 2)->text().toUpper()
                                         : QString();
             p.rxBw  = table->item(i, 3) ? table->item(i, 3)->text().toInt() : 0;
-            p.notes = table->item(i, 4) ? table->item(i, 4)->text() : QString();
+            p.offsetHz = table->item(i, 4)
+                ? int(qRound(table->item(i, 4)->text().toDouble() * 1000.0)) : 0;
+            p.ctcssToneHz = table->item(i, 5)
+                ? table->item(i, 5)->text().toDouble() : 0.0;
+            p.notes = table->item(i, 6) ? table->item(i, 6)->text() : QString();
             if (p.freq > 0) memory_->setPreset(i, p);
         }
     });
@@ -531,7 +543,11 @@ QWidget *SettingsDialog::buildBandsTab() {
     auto *hint = new QLabel(
         tr("Edit cells directly. Use the “Mem” button on the Band panel to "
            "store the current frequency and recall presets. RX BW blank = "
-           "the mode default. Up to %1 presets.").arg(MemoryStore::kMax), mem);
+           "the mode default. For a REPEATER, set Offset (the TX shift in "
+           "kHz, e.g. −100 for 10 m, −1000 = −1 MHz for 6 m) and CTCSS "
+           "(access tone in Hz); recall arms SPLIT to the input + sends the "
+           "tone. Blank Offset/CTCSS = simplex. Up to %1 presets.")
+            .arg(MemoryStore::kMax), mem);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
     v->addWidget(hint);
