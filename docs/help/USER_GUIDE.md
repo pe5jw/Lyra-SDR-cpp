@@ -410,6 +410,16 @@ just toggle off). Tip: RIT/XIT are session-style fine offsets — for a fixed
 transmit split (a repeater, or working a DX pile-up up/down), use
 **SPLIT** (or the FM **RPT** button) instead.
 
+**CTUN — centre-tune lock.** The **CTUN** chip (top toolbar, in the *RX DSP*
+group next to *RX EQ*) freezes the panadapter / waterfall on its current
+centre so you can tune the VFO **within** the displayed span without the
+waterfall scrolling. Click it (it lights **green**) and the band stays put
+while the dial marker slides to where you're listening — ideal for watching a
+fixed slice of spectrum (a pile-up, a net, an FT8 window) and clicking
+signals across it. Tune past the edge of the span and it re-centres on the
+new dial automatically. Click again to release and return to normal
+scroll-tuning. RX1; works in any receive mode.
+
 ---
 
 ## Filters panel
@@ -827,7 +837,7 @@ Mic source**:
 - **TCI (digital modes)** — audio streamed from a digital-mode program
   (MSHV, JTDX, WSJT-X, FLDigi…) over Lyra's TCI link; the mic is bypassed.
 
-*(Line In and VAC2 appear greyed out — planned for a later version.)* Only
+*(VAC2 appears greyed out — planned for a later version.)* Only
 one source is live at a time — whatever's selected goes on the air.
 
 **Which one:**
@@ -2193,6 +2203,23 @@ checkbox). The lamp snaps orange → red on key-down — your visible
 confirmation that the front end is protected. (Note: the LNA gain
 *readout* itself keeps showing your RX setpoint — the ATT lamp is the
 TX-state indicator, not the LNA number.)
+
+### External TX Inhibit (lock out all transmit)
+
+A hard safety lockout for when sensitive gear — a second receiver / SDR, a
+scope, a spectrum analyser — shares your antenna or bench and you must be
+sure the radio can't key while it's connected. Tick **Settings → TX →
+External TX Inhibit** and the radio **cannot transmit by any means**: MOX,
+foot switch / hand-mic PTT, CW, Tune, and TCI are all blocked at the source.
+Engaging it while you're transmitting drops you straight to receive.
+
+- It lives in **Settings → TX** on purpose — not a one-click front-panel
+  button — so an accidental click can't release it; you must open the dialog
+  to turn it back off.
+- It is **remembered across restarts** (fail-safe): leave it on and it stays
+  on until you consciously clear it.
+- While it's active a red **⛔ TX INHIBIT** badge shows in the top toolbar so
+  you always know why keying is dead.
 
 ### SWR protection & TX power limiting
 
