@@ -137,6 +137,11 @@ class HL2Stream : public QObject {
     Q_PROPERTY(int     ritOffsetHz READ ritOffsetHz WRITE setRitOffsetHz NOTIFY ritChanged)
     Q_PROPERTY(bool    xitEnabled  READ xitEnabled  WRITE setXitEnabled  NOTIFY xitChanged)
     Q_PROPERTY(int     xitOffsetHz READ xitOffsetHz WRITE setXitOffsetHz NOTIFY xitChanged)
+    // #174 CTUNE (center-tune lock).  ctuneCenterHz = the locked DDC centre
+    // when engaged (0 = off); ctuneEnabled is the convenience read (engage
+    // snaps the centre to the current dial).  See docs/architecture/ctune_design.md.
+    Q_PROPERTY(bool    ctuneEnabled  READ ctuneEnabled  NOTIFY ctuneChanged)
+    Q_PROPERTY(quint32 ctuneCenterHz READ ctuneCenterHz NOTIFY ctuneChanged)
     // RX1 LNA gain (AD9866 PGA), dB.  Range −12…+48; sent on the C&C
     // 0x14 register (C4 = 0x40 | ((dB+12)&0x3F)), rotated into the EP2
     // C&C cadence at ~20 Hz.  Persisted.
@@ -659,6 +664,8 @@ public:
     int     ritOffsetHz()       const { return ritOffsetHz_.load(std::memory_order_relaxed); }
     bool    xitEnabled()        const { return xitEnabled_.load(std::memory_order_relaxed); }
     int     xitOffsetHz()       const { return xitOffsetHz_.load(std::memory_order_relaxed); }
+    bool    ctuneEnabled()      const { return ctuneCenterHz_.load(std::memory_order_relaxed) != 0; }
+    quint32 ctuneCenterHz()     const { return ctuneCenterHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
     bool    autoLna()           const { return autoLnaEnabled_; }
     bool    autoLnaUndo()       const { return autoLnaUndo_; }
@@ -906,6 +913,11 @@ public slots:
     void setRitOffsetHz(int hz);
     void setXitEnabled(bool on);
     void setXitOffsetHz(int hz);
+    // #174 CTUNE.  setCtuneEnabled(true) locks the DDC centre at the current
+    // dial; (false) releases it.  setCtuneCenterHz sets an explicit locked
+    // centre (0 = off) — used by the re-centre logic later.
+    Q_INVOKABLE void setCtuneEnabled(bool on);
+    Q_INVOKABLE void setCtuneCenterHz(quint32 hz);
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
@@ -1164,6 +1176,8 @@ signals:
     void vfoBHzChanged();
     void ritChanged();   // RIT enable and/or offset
     void xitChanged();   // XIT enable and/or offset
+    void ctuneChanged();           // #174 CTUNE engage / locked-centre changed
+    void rxShiftHzChanged(double hz);  // #174 WDSP RX demod shift (-> WdspEngine)
     void lnaGainChanged();
     // Emitted ONLY by the manual setLnaGainDb() path (operator slider /
     // wheel / per-band restore) — NOT by Auto-LNA's roaming.  Lets
@@ -1549,6 +1563,7 @@ private:
     std::atomic<qint32>  ritOffsetHz_{0};
     std::atomic<bool>    xitEnabled_{false};
     std::atomic<qint32>  xitOffsetHz_{0};
+    std::atomic<quint32> ctuneCenterHz_{0};   // #174 CTUNE locked DDC centre (0=off)
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)

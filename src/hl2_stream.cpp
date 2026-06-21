@@ -1513,6 +1513,13 @@ void HL2Stream::pushEffectiveTxFreq() {
     emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
 }
 
+// #174 CTUNE — sign of the WDSP RX demod shift vs the HL2 mirrored baseband.
+// BENCH-VERIFY before trusting: with CTUNE engaged, tuning the dial must move
+// the demod the SAME direction as normal tuning (signal stays correctly
+// tuned).  If it tunes BACKWARDS, flip this to -1.  (SetRXAShiftFreq / RXOsc
+// sign vs HL2's mirrored baseband — the §14.2 class of gotcha.)
+static constexpr int kCtuneShiftSign = +1;
+
 void HL2Stream::pushEffectiveRxFreq() {
     // The ONE RX-NCO writer (mirror of pushEffectiveTxFreq).  RX DDCs =
     // rx1FreqHz_ + RIT offset.  RIT moves only the receiver — TX is on the
@@ -1524,9 +1531,44 @@ void HL2Stream::pushEffectiveRxFreq() {
         static_cast<qint64>(rx1FreqHz_.load(std::memory_order_relaxed))
         + (ritEnabled_.load(std::memory_order_relaxed)
                ? ritOffsetHz_.load(std::memory_order_relaxed) : 0);
-    const int hzi = static_cast<int>(eff);
-    lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
-    lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
+    const quint32 center = ctuneCenterHz_.load(std::memory_order_relaxed);
+    if (center != 0) {
+        // #174 CTUNE: the DDC stays LOCKED at the centre; the WDSP RXA
+        // receiver oscillator shifts the demod to the dial WITHIN the
+        // captured IQ span (rxShiftHzChanged -> WdspEngine::setRxShiftHz).
+        const int ci = static_cast<int>(center);
+        lyra::wire::set_rx_freq(0, ci);  // DDC0 locked
+        lyra::wire::set_rx_freq(1, ci);  // DDC1 locked (until RX2)
+        const double shift = kCtuneShiftSign
+            * static_cast<double>(eff - static_cast<qint64>(center));
+        emit rxShiftHzChanged(shift);
+    } else {
+        const int hzi = static_cast<int>(eff);
+        lyra::wire::set_rx_freq(0, hzi);  // DDC0 (case 2/8/9)
+        lyra::wire::set_rx_freq(1, hzi);  // DDC1 (case 3 — until RX2)
+        // CTUNE off: non-CTUNE path stays byte-identical — no shift emit
+        // here.  The one disengage shift-off is emitted from setCtuneCenterHz.
+    }
+}
+
+void HL2Stream::setCtuneEnabled(bool on) {
+    const bool cur = ctuneCenterHz_.load(std::memory_order_relaxed) != 0;
+    if (on == cur)
+        return;   // already in the requested state
+    // Engage snaps the locked centre to the current dial; disengage clears it.
+    setCtuneCenterHz(on ? rx1FreqHz_.load(std::memory_order_relaxed) : 0u);
+}
+
+void HL2Stream::setCtuneCenterHz(quint32 hz) {
+    if (ctuneCenterHz_.exchange(hz, std::memory_order_relaxed) == hz)
+        return;
+    emit ctuneChanged();
+    emit logLine(hz ? QStringLiteral("CTUNE on — DDC locked @ %1 MHz")
+                          .arg(hz / 1.0e6, 0, 'f', 6)
+                    : QStringLiteral("CTUNE off"));
+    pushEffectiveRxFreq();          // re-tune the DDC (+ shift emit when on)
+    if (hz == 0)
+        emit rxShiftHzChanged(0.0); // disengage: turn the WDSP RX shift off
 }
 
 void HL2Stream::setRitEnabled(bool on) {

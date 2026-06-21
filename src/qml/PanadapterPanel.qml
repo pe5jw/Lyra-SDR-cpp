@@ -32,6 +32,11 @@ Item {
     // it.  With RIT engaged the panadapter re-centres on where you're actually
     // listening (the pale-blue DIAL marker shows where the VFO reads).
     function effCenterHz() {
+        // #174 CTUNE: when engaged the DDC is LOCKED at ctuneCenterHz, so the
+        // panadapter centre + freq scale lock there too and the dial marker
+        // (drawn at rx1FreqHz − centre) slides within the frozen span.
+        if (Stream.ctuneEnabled)
+            return Stream.ctuneCenterHz
         return Stream.rx1FreqHz
              + (Stream.ritEnabled ? Stream.ritOffsetHz : 0)
     }
@@ -42,8 +47,22 @@ Item {
     }
     Connections {
         target: Stream
-        function onRx1FreqChanged() { root.centerHz = root.effCenterHz() }
+        function onRx1FreqChanged() {
+            // #174 CTUNE: tuning the dial past the frozen span re-locks the
+            // centre on the new dial (Thetis auto-re-centre — keeps the signal
+            // on-screen); otherwise the marker just slides within the band.
+            if (Stream.ctuneEnabled) {
+                var halfSpan = WdspEngine.spanHz / 2
+                if (halfSpan > 0
+                    && Math.abs(Stream.rx1FreqHz - Stream.ctuneCenterHz) > halfSpan) {
+                    Stream.setCtuneCenterHz(Stream.rx1FreqHz)  // re-fires onCtuneChanged
+                    return
+                }
+            }
+            root.centerHz = root.effCenterHz()
+        }
         function onRitChanged()     { root.centerHz = root.effCenterHz() }
+        function onCtuneChanged()   { root.centerHz = root.effCenterHz() }
     }
 
     // Display panel "Clear" button → flush the peak-hold buffer (the
@@ -383,6 +402,11 @@ Item {
                                   : qsTr("Collapse waterfall")
                 }
             }
+
+            // #174 CTUNE lives as a header chip (next to RX EQ) — see
+            // MainWindow's RX-DSP chip strip.  The panadapter just locks
+            // centerHz to ctuneCenterHz (effCenterHz) + auto-re-centres on
+            // tune-past-edge (the Connections handler above).
 
             // ---- frequency scale at the spectrum/waterfall boundary ----
             // MHz labels at the vertical grid divisions; shared X axis for

@@ -981,6 +981,41 @@ void MainWindow::buildToolbar() {
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
         }
+        // CTUN (#174) — Center-tune lock.  NOT a dock; a state toggle on the
+        // stream (lock the panadapter/DDC centre, tune the VFO within the
+        // captured span — no waterfall scroll).  Same boxed chip as the row
+        // but a GREEN "on" accent so it reads distinctly from the dock chips.
+        // Engage snaps the centre to the current dial; the panadapter handles
+        // marker-slide + tune-past-edge re-centre.
+        if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+            static const char *kCtuneChipQss =
+                "QToolButton{border:1px solid #3a4750;border-radius:4px;"
+                "padding:2px 9px;margin:0 2px;color:#cfd8dc;background:#1c252b;}"
+                "QToolButton:hover{border-color:#5b6b76;background:#243038;}"
+                "QToolButton:checked{background:#2e7d4a;border-color:#7fefa0;"
+                "color:#ffffff;font-weight:600;}"
+                "QToolButton:checked:hover{background:#369055;}";
+            auto *ctun = new QToolButton(tb);
+            ctun->setText(tr("CTUN"));
+            ctun->setCheckable(true);
+            ctun->setChecked(st->ctuneEnabled());
+            ctun->setObjectName(QStringLiteral("txDspChip"));
+            ctun->setStyleSheet(QString::fromLatin1(kCtuneChipQss));
+            ctun->setToolTip(tr("Center-tune lock — freeze the panadapter "
+                                "centre and tune the VFO within the captured "
+                                "span (no waterfall scroll). Click to engage "
+                                "at the current dial."));
+            tb->addWidget(ctun);
+            // chip -> stream (engage snaps the locked centre to the dial)
+            connect(ctun, &QToolButton::toggled, st,
+                    [st](bool on) { st->setCtuneEnabled(on); });
+            // stream -> chip (auto-re-centre / external toggle keeps it synced)
+            connect(st, &lyra::ipc::HL2Stream::ctuneChanged, ctun,
+                    [st, ctun]() {
+                        QSignalBlocker block(ctun);
+                        ctun->setChecked(st->ctuneEnabled());
+                    });
+        }
     }
 
     // ---- Local + UTC clocks (old-Lyra header layout) ----

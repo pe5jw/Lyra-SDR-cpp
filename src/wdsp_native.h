@@ -58,6 +58,15 @@ using fn_RXASetPassband_t      = void (*)(int channel,
                                           double f_low, double f_high);
 using fn_SetRXAAGCMode_t       = void (*)(int channel, int mode);
 using fn_SetRXAPanelBinaural_t = void (*)(int channel, int bin);
+// CTUNE / center-tune lock (#174) — RXA receiver-oscillator shift: the
+// Thetis RXOsc analog.  Demodulate at an Hz offset WITHIN the captured IQ
+// span while the hardware DDC centre stays locked.  Freq sets the baseband
+// shift (Hz); Run gates it on/off.  Both verified present in the bundled
+// wdsp.dll (dumpbin /exports, 2026-06-21: SetRXAShiftFreq #282,
+// SetRXAShiftRun #281).  Sign vs the HL2 mirrored baseband is bench-
+// verified before any caller exists (CTUNE step 2).
+using fn_SetRXAShiftFreq_t     = void (*)(int channel, double fshift);
+using fn_SetRXAShiftRun_t      = void (*)(int channel, int run);
 using fn_WDSPwisdom_t          = int  (*)(char *directory);
 // Step 3e level-cal: AGC threshold/slope + panel gain.  SetRXAAGCThresh
 // computes the AGC max_gain from (thresh, size, rate) + the slope-
@@ -368,6 +377,8 @@ struct WdspApi {
     fn_RXASetPassband_t      RXASetPassband      = nullptr;
     fn_SetRXAAGCMode_t       SetRXAAGCMode       = nullptr;
     fn_SetRXAPanelBinaural_t SetRXAPanelBinaural = nullptr;
+    fn_SetRXAShiftFreq_t     SetRXAShiftFreq     = nullptr;  // #174 CTUNE
+    fn_SetRXAShiftRun_t      SetRXAShiftRun      = nullptr;  // #174 CTUNE
     fn_WDSPwisdom_t          WDSPwisdom          = nullptr;
     fn_SetRXAAGCThresh_t     SetRXAAGCThresh     = nullptr;
     fn_SetRXAAGCSlope_t      SetRXAAGCSlope      = nullptr;

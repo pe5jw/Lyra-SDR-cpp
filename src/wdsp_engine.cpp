@@ -1627,6 +1627,27 @@ void WdspEngine::recomputePassband()
     }
 }
 
+// #174 CTUNE step 1 — RXA receiver-oscillator shift (the Thetis RXOsc
+// analog).  Demodulate `hz` away from the DDC centre so the DDC can stay
+// locked while the VFO moves within the captured IQ span.  hz == 0 turns the
+// shift off; nonzero turns it on at that offset.  No-op when the channel is
+// closed.  INERT in step 1 — nothing calls this yet; the freq-path
+// decomposition wires it in step 2 (sign vs the HL2 mirrored baseband
+// bench-verified there first).  Mirrors applyModeFilter's guard posture
+// (RXA setters are safe alongside fexchange0 — WDSP serializes internally).
+void WdspEngine::setRxShiftHz(double hz)
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    if (!api.SetRXAShiftFreq || !api.SetRXAShiftRun) return;
+    if (hz == 0.0) {
+        api.SetRXAShiftRun(channel_, 0);
+    } else {
+        api.SetRXAShiftFreq(channel_, hz);
+        api.SetRXAShiftRun(channel_, 1);
+    }
+}
+
 void WdspEngine::applyModeFilter()
 {
     if (!opened_) {

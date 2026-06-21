@@ -587,6 +587,12 @@ int main(int argc, char *argv[])
     QObject::connect(stream, &lyra::ipc::HL2Stream::txAnalyzerOffsetChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxAnalyzerOffsetHz);
 
+    // #174 CTUNE — when CTUNE locks the DDC centre, the freq path emits the
+    // RX demod shift (dial − centre); drive the WDSP RXA receiver oscillator
+    // with it.  0 when CTUNE is off (non-CTUNE tuning path unaffected).
+    QObject::connect(stream, &lyra::ipc::HL2Stream::rxShiftHzChanged,
+                     wdspEngine, &lyra::dsp::WdspEngine::setRxShiftHz);
+
     // #105 CW-2 — one CW pitch.  WdspEngine::cwPitchHz (the RX pitch / marker,
     // edited from the Tuning panel + the CW tab) is the single source; feed it
     // to the stream so the keyed CW carrier offset lands on the marker and the

@@ -545,6 +545,14 @@ public:
     // applyModeFilter() — no channel restart needed.
     int  filterLowHz() const { return static_cast<int>(filterLow_ + 0.5); }
     Q_INVOKABLE void setFilterLowHz(int hz);
+    // #174 CTUNE step 1 (INERT — nothing calls this yet).  Apply the RXA
+    // receiver-oscillator shift: demodulate `hz` away from the locked DDC
+    // centre (the in-IQ-span offset that lets the DDC stay put while the VFO
+    // moves).  hz == 0 turns the shift off; nonzero turns it on at that
+    // offset.  No-op when the channel is closed.  The freq-path
+    // decomposition wires this in step 2, where the sign convention vs the
+    // HL2 mirrored baseband is bench-verified before any caller exists.
+    void setRxShiftHz(double hz);
     int  markerOffsetHz() const;     // VFO − DDS (CW carrier convention)
     // Same VFO−DDS offset for an ARBITRARY mode — used when tuning to a CW
     // spot/VFO whose freq is the carrier (DDS = carrier − this).
