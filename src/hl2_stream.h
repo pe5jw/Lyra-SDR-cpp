@@ -432,6 +432,13 @@ class HL2Stream : public QObject {
                WRITE setAttOnTxEnabled NOTIFY attOnTxEnabledChanged)
     Q_PROPERTY(int  attOnTxDb       READ attOnTxDb
                WRITE setAttOnTxDb       NOTIFY attOnTxDbChanged)
+    // #94 — External TX Inhibit.  Operator hard lockout: blocks ALL keying
+    // (MOX / HW-PTT / CW / TUN / TCI / Auto-ID) at the requestMox funnel, to
+    // protect external gear (a 2nd SDR / scope) sharing the setup.  Engaging
+    // it while keyed force-unkeys.  Persisted (fail-safe — stays locked across
+    // restarts until consciously cleared); a visible indicator shows it's on.
+    Q_PROPERTY(bool txInhibit READ txInhibit WRITE setTxInhibit
+               NOTIFY txInhibitChanged)
     // #169 — SWR protection (auto-cut TX on sustained high reflected
     // power).  A stream-side evaluator (off the GUI loop, beside the
     // host TX-safety timer + ATT-on-TX) samples fwd/rev power on a 50 ms
@@ -765,6 +772,7 @@ public:
     bool    phrotEnabled()          const { return phrotEnabled_;          }
     // §15.31 — ATT-on-TX operator surface getters.
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
+    bool    txInhibit()             const { return txInhibit_;             }
     int     attOnTxDb()             const { return attOnTxDb_;             }
     // #169 — SWR-protection getters.
     bool    swrProtectEnabled()     const { return swrProtectEnabled_;     }
@@ -1060,6 +1068,7 @@ public slots:
     // emit the changed signal, and (if keyed right now) re-apply to the
     // wire live so the operator sees the effect mid-TX.
     void setAttOnTxEnabled(bool on);
+    void setTxInhibit(bool on);   // #94 External TX Inhibit (hard keying lockout)
     void setAttOnTxDb(int db);
     // #169 — SWR-protection operator surface.  Each persists under
     // tx/<key>, emits the changed signal, and (enable/limit) re-arms or
@@ -1248,6 +1257,7 @@ signals:
     void phrotEnabledChanged(bool on);   // #109 phase rotator
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
+    void txInhibitChanged(bool on);   // #94
     void attOnTxDbChanged(int db);
     // #169 — SWR protection.
     void swrProtectEnabledChanged(bool on);
@@ -1842,6 +1852,7 @@ private:
     // the same thread (keydown/keyup run via QTimer::singleShot here).
     static constexpr bool kDefaultAttOnTxEnabled = true;
     bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
+    bool   txInhibit_             = false;   // #94 External TX Inhibit (persisted)
     int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
     // #169 — SWR-protection state.  Operator surface persisted under
     // tx/swr*; the advanced blank/dwell/floor knobs are loaded from

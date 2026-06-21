@@ -3688,6 +3688,43 @@ QWidget *SettingsDialog::buildTxTab() {
         leftCol->addWidget(grp);   // §15.31 — SAFETY / set-once column
     }
 
+    // #94 — External TX Inhibit (hard keying lockout).  Lives HERE in
+    // Settings → TX by deliberate design — NOT a one-click panel button — so
+    // it can't be bumped off accidentally and silently re-enable transmit;
+    // releasing it requires opening this dialog.  Blocks ALL keying at the
+    // requestMox funnel; persisted fail-safe; the toolbar ⛔ TX INHIBIT badge
+    // shows the live state.  Same LEFT safety / set-once column.
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("External TX Inhibit  (block all transmit)"),
+                                  page);
+        auto *form = new QFormLayout(grp);
+
+        auto *tiBox = new QCheckBox(
+            tr("Inhibit transmit — lock out ALL keying"), grp);
+        tiBox->setChecked(stream_->txInhibit());
+        tiBox->setToolTip(tr(
+            "Hard safety lockout: when ON the radio CANNOT transmit by any "
+            "means — MOX button, foot switch / hand-mic, CW, Tune, TCI, and "
+            "the waterfall Auto-ID are all blocked.  Use it to protect a "
+            "second receiver / SDR / scope sharing your antenna or bench "
+            "while it's connected.\n\n"
+            "Engaging it while transmitting drops you to receive immediately. "
+            "Remembered across restarts (fail-safe).  It lives here in "
+            "Settings → TX on purpose — so an accidental click can't release "
+            "it; you must open this dialog to turn it off.  A red ⛔ TX "
+            "INHIBIT badge in the toolbar shows when it's active."));
+        connect(tiBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setTxInhibit(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::txInhibitChanged, tiBox,
+                [tiBox](bool on) {
+                    if (tiBox->isChecked() != on) tiBox->setChecked(on);
+                });
+        form->addRow(tiBox);
+
+        leftCol->addWidget(grp);   // #94 — SAFETY / set-once column
+    }
+
     // #169 — SWR protection (auto-cut TX on sustained high reflected
     // power).  Sibling safety control to ATT-on-TX above; same LEFT
     // (safety / set-once) column.  Stream-side evaluator cuts TX through

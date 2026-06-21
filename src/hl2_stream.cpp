@@ -447,6 +447,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // (the verified reference's HL2 working posture); clamped on load.
     attOnTxEnabled_ = QSettings().value(QStringLiteral("tx/attOnTxEnabled"),
                                         kDefaultAttOnTxEnabled).toBool();
+    // #94 External TX Inhibit — persisted, fail-safe (stays locked across
+    // restarts until the operator clears it).
+    txInhibit_ = QSettings().value(QStringLiteral("tx/inhibit"), false).toBool();
     attOnTxDb_ = std::clamp(
         QSettings().value(QStringLiteral("tx/attOnTxDb"), kAttOnTxDb).toInt(),
         0, 31);
@@ -1982,6 +1985,14 @@ void HL2Stream::requestMoxFromTci(bool on) {
 }
 
 void HL2Stream::requestMox(bool on, PttSource source) {
+    // #94 External TX Inhibit — hard lockout at the single keying funnel.
+    // Block EVERY keydown intent (covers Manual / HW-PTT / TCI / CW / TUN /
+    // Auto-ID — they all route through here).  Keyup (on=false) ALWAYS passes
+    // so an in-flight TX can always fall back to RX.
+    if (on && txInhibit_) {
+        safetyLog(QStringLiteral("TX: keying BLOCKED — External TX Inhibit is on"));
+        return;
+    }
     requestedMox_ = on;
     // Task #33 — Thetis-faithful PTT-source tracking (working
     // reference at TCIServer.cs:3537 routes TCI MOX through a
@@ -2620,6 +2631,23 @@ void HL2Stream::setAttOnTxEnabled(bool on) {
     safetyLog(QStringLiteral("TX: ATT-on-TX -> %1")
               .arg(on ? QStringLiteral("ON (%1 dB)").arg(attOnTxDb_)
                       : QStringLiteral("off (RX-ADC unprotected on TX)")));
+}
+
+// #94 External TX Inhibit — hard operator lockout of all keying.  Gated at
+// the requestMox funnel (see above).  Engaging while keyed forces an
+// immediate unkey so the radio drops to RX the instant the operator locks
+// out (e.g. just connected a scope / 2nd SDR).  Persisted (fail-safe).
+void HL2Stream::setTxInhibit(bool on) {
+    if (on == txInhibit_) return;
+    txInhibit_ = on;
+    QSettings().setValue(QStringLiteral("tx/inhibit"), on);
+    emit txInhibitChanged(on);
+    safetyLog(on ? QStringLiteral("TX: External TX Inhibit ENGAGED — keying locked out")
+                 : QStringLiteral("TX: External TX Inhibit cleared"));
+    // If we just locked out while keyed, drop to RX now (keyup always passes
+    // the gate above).
+    if (on && mox_.load(std::memory_order_relaxed))
+        requestMox(false, PttSource::Manual);
 }
 
 // §15.31 — ATT-on-TX dB value (0..31; default 31).  Persists + emits;

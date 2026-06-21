@@ -1018,6 +1018,26 @@ void MainWindow::buildToolbar() {
         }
     }
 
+    // #94 External TX Inhibit — prominent always-visible indicator.  Hidden
+    // unless the lockout is engaged; when on it shows a red "TX INHIBIT" chip
+    // so the operator always knows why keying is dead (Settings → Hardware).
+    if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        auto *txInh = new QLabel(tr("⛔ TX INHIBIT"), tb);
+        txInh->setContentsMargins(8, 0, 8, 0);
+        txInh->setStyleSheet(QStringLiteral(
+            "QLabel{color:#ffffff;background:#b3261e;border:1px solid #ff6b5e;"
+            "border-radius:4px;padding:2px 9px;margin:0 4px;font-weight:700;}"));
+        txInh->setToolTip(tr("Transmit is locked out (Settings → TX → "
+                             "External TX Inhibit). The radio cannot key."));
+        // Toggle the QAction the toolbar wraps the widget in — a hidden child
+        // widget added via addWidget() does NOT reliably re-show on
+        // widget->setVisible(true) inside a QToolBar.
+        QAction *txInhAct = tb->addWidget(txInh);
+        txInhAct->setVisible(st->txInhibit());
+        connect(st, &lyra::ipc::HL2Stream::txInhibitChanged, txInhAct,
+                [txInhAct](bool on) { txInhAct->setVisible(on); });
+    }
+
     // ---- Local + UTC clocks (old-Lyra header layout) ----
     // A flexible spacer pushes the clocks toward the right of the strip,
     // matching old Lyra's "menu/notifications … [Local] [UTC]" placement.
