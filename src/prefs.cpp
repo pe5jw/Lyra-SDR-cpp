@@ -1083,13 +1083,14 @@ void Prefs::setMicSource(const QString &token) {
 }
 
 // The known TX mic-source tokens, in operator-picker order.  Matches
-// the TCI v2 §3.3 TRX source-token enum (mic1 / mic2 / micpc / micpc2
-// / tci) — so when a TCI client sends `trx:0,true,<tok>` the picker
-// can adopt the same string directly.
+// the TCI v2 §3.3 TRX source-token enum (mic1 / micpc / micpc2 / tci) —
+// so when a TCI client sends `trx:0,true,<tok>` the picker can adopt
+// the same string directly.  The enum's `mic2` ("Line In") is omitted:
+// the HL2+ AK4951 board has no separate line-in jack (the single MIC
+// jack is the codec mic input) — see #104 (closed won't-do).
 QStringList Prefs::micSourceTokens() {
     return { QStringLiteral("mic1"),
              QStringLiteral("tci"),
-             QStringLiteral("mic2"),
              QStringLiteral("micpc"),
              QStringLiteral("micpc2") };
 }
@@ -1098,7 +1099,6 @@ QStringList Prefs::micSourceTokens() {
 QString Prefs::micSourceLabel(const QString &token) {
     if (token == QLatin1String("mic1"))   return QStringLiteral("Mic In");
     if (token == QLatin1String("tci"))    return QStringLiteral("TCI (digital modes)");
-    if (token == QLatin1String("mic2"))   return QStringLiteral("Line In");
     if (token == QLatin1String("micpc"))  return QStringLiteral("PC Soundcard (VAC1)");
     if (token == QLatin1String("micpc2")) return QStringLiteral("VAC2");
     return token;
@@ -1112,7 +1112,7 @@ bool Prefs::micSourceEnabled(const QString &token) {
     if (token == QLatin1String("mic1"))  return true;
     if (token == QLatin1String("tci"))   return true;
     if (token == QLatin1String("micpc")) return true;   // #158 Stage 4 — VAC1 in
-    return false;   // mic2 / micpc2 — future v0.2.x
+    return false;   // micpc2 (VAC2) — future v0.2.x
 }
 
 QString Prefs::micSourceTooltip(const QString &token) {
@@ -1124,10 +1124,6 @@ QString Prefs::micSourceTooltip(const QString &token) {
             "(MSHV, JTDX, FlDigi, etc.).  Pick this when running an FT8 / "
             "FT4 / Q65 / MSK144 / WSPR session — Lyra acts as the radio, "
             "the digital app sends audio over TCI, your mic is bypassed.");
-    if (token == QLatin1String("mic2"))
-        return QStringLiteral(
-            "HL2+ codec Line In — pending v0.2.x (requires the HL2 I²C2 "
-            "codec side-channel which Lyra doesn't yet emit).");
     if (token == QLatin1String("micpc"))
         return QStringLiteral(
             "PC audio in via VAC1 — a virtual cable from a digital app "
