@@ -59,7 +59,16 @@ Rectangle {
             // as you tune across repeater outputs.
             if (root.fmMode && Stream.splitEnabled) root.rptApply()
         }
-        function onVfoBHzChanged()  { root.vfoBHz   = Stream.vfoBHz }
+        function onVfoBHzChanged() {
+            root.vfoBHz = Stream.vfoBHz
+            // Keep the RPT dir/offset combo in step with the live VFO B, so a
+            // memory-recalled (or manually-set) repeater shows its real offset
+            // AND the duplex tracker uses THAT offset — not a stale combo value
+            // that would otherwise clobber the recalled split on the next tune.
+            root.syncRptFromState()
+        }
+        // Recall / manual SPLIT toggle: re-derive the RPT offset from state.
+        function onSplitEnabledChanged() { root.syncRptFromState() }
     }
 
     // Mode picker moved here from the Filters dock — keep the engine in
