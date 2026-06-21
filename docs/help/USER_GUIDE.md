@@ -50,6 +50,7 @@ not programmers — if you can click a menu, you can use this.
   - [Operator / Station](#operator--station)
   - [Band plan (Region)](#band-plan-region)
   - [Diagnostics (debug log)](#diagnostics-debug-log)
+  - [Getting help / reporting a bug](#getting-help--reporting-a-bug)
   - [Radio](#radio)
   - [Transmit (PA enable + safety timeout + hardware PTT)](#transmit-pa-enable--safety-timeout--hardware-ptt)
   - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
@@ -1819,8 +1820,42 @@ log** you can read, copy, and send to us.
   (`…/N8SDR/Lyra-cpp/logs/lyra-log.txt`, reachable via **Open log
   folder**), refreshed each launch — so even a crash leaves a trace.
 
-When you report a bug, attach the log (or paste it) along with what you
-were doing and what you expected.
+**To capture a log for a bug report:**
+
+1. Open **Help → Show Log…**.
+2. Tick **Verbose debug logging** (bottom-left of the viewer). Leave the
+   window open.
+3. **Reproduce the problem** — make it happen, and let it run for 30–60
+   seconds so it's well captured.
+4. Click **Save…** (pick a filename like `lyra-log.txt`) — or **Copy all**
+   and paste it into your message.
+5. Send the log with a one-line note of what it was doing and what you
+   expected instead.
+
+### Getting help / reporting a bug
+
+Testers and bug reports are welcome — Lyra is in active development.
+
+- **Discord (preferred for questions & quick help):**
+  [discord.gg/nbJEqvFQ](https://discord.gg/nbJEqvFQ) — questions, feature
+  ideas, and getting unstuck.
+- **Bug reports:** file a
+  [GitHub issue](https://github.com/N8SDR1/Lyra-SDR-cpp/issues) (or post in
+  Discord). Attach the **log as a text file** (use **Save…** in the log
+  viewer — don't worry about the on-disk copy, the saved `.txt` is easiest
+  to attach).
+
+To make a report actionable, please include:
+
+- **The diagnostic log** — saved as a `.txt` and attached (see the capture
+  steps above).
+- **Lyra version** — **Help → About**, or the installer filename.
+- **Windows version** (e.g. Windows 11 23H2) and your **PC basics** (CPU,
+  RAM) if it's a performance or audio-glitch issue.
+- **Your radio** — **HL2 or HL2+**, and your gateware version if you know
+  it.
+- **What you did and what happened** — the steps to reproduce, and what you
+  expected instead.
 
 ---
 
