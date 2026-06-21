@@ -320,12 +320,51 @@ Rectangle {
                     Menu {
                         id: memManageMenu
                         MenuItem {
-                            text: qsTr("Save current frequency")
-                            onTriggered: Memory.addCurrent("")
+                            text: qsTr("Save current…")
+                            onTriggered: {
+                                memNameDialog.suggested = Memory.currentAutoName()
+                                memNameDialog.open()
+                            }
                         }
                         MenuItem {
                             text: qsTr("Manage presets…")
                             onTriggered: Help.openSettings("memory")
+                        }
+                    }
+                }
+
+                // Name-on-save: prompt for an operator name, pre-filled with
+                // the freq auto-name (so it stays optional) — gives saved
+                // memories a real name to recall by instead of the frequency.
+                Dialog {
+                    id: memNameDialog
+                    title: qsTr("Save memory")
+                    modal: true
+                    parent: Overlay.overlay
+                    anchors.centerIn: Overlay.overlay
+                    width: 340
+                    standardButtons: Dialog.Ok | Dialog.Cancel
+                    property string suggested: ""
+                    onAboutToShow: {
+                        nameField.text = memNameDialog.suggested
+                        nameField.selectAll()
+                        nameField.forceActiveFocus()
+                    }
+                    // Empty/whitespace falls back to the freq auto-name in
+                    // MemoryStore::addCurrent, so OK-ing as-is still works.
+                    onAccepted: Memory.addCurrent(nameField.text)
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 8
+                        Label {
+                            text: qsTr("Name this memory (e.g. \"W1AW 2 m\"):")
+                            Layout.fillWidth: true
+                        }
+                        TextField {
+                            id: nameField
+                            Layout.fillWidth: true
+                            selectByMouse: true
+                            onAccepted: memNameDialog.accept()
                         }
                     }
                 }
