@@ -40,12 +40,17 @@ const QVector<Band> &usBands() {
             {3500000, 3600000, "CW",  "CW"},
             {3570000, 3600000, "DIG", "DIG"},
             {3600000, 4000000, "SSB", "SSB"}}},
-        {"60m", 5330500, 5406500, {
-            {5330000, 5331000, "SSB", "CH1"},
-            {5346500, 5347500, "SSB", "CH2"},
-            {5357000, 5358000, "SSB", "CH3"},
-            {5371500, 5372500, "SSB", "CH4"},
-            {5403500, 5404500, "SSB", "CH5"}}},
+        // US 60m: 5 fixed channels, USB only.  Each entry is
+        // [suppressed-carrier dial, dial + 2.8 kHz] so the channel bar
+        // spans the real 2.8 kHz channel and the click QSYs to the dial
+        // (the operator's tuned readout in USB).  FCC centres are
+        // dial + 1.5 kHz (5332.0 / 5348.0 / 5358.5 / 5373.0 / 5405.0).
+        {"60m", 5330500, 5406300, {
+            {5330500, 5333300, "SSB", "CH1"},
+            {5346500, 5349300, "SSB", "CH2"},
+            {5357000, 5359800, "SSB", "CH3"},
+            {5371500, 5374300, "SSB", "CH4"},
+            {5403500, 5406300, "SSB", "CH5"}}},
         {"40m", 7000000, 7300000, {
             {7000000, 7125000, "CW",  "CW"},
             {7040000, 7100000, "DIG", "DIG"},
@@ -90,6 +95,13 @@ const QVector<Band> &r1Bands() {
             {3500000, 3580000, "CW",  "CW"},
             {3580000, 3620000, "DIG", "DIG"},
             {3600000, 3800000, "SSB", "SSB"}}},
+        // 60m: WRC-15 secondary allocation, 5351.5-5366.5 kHz, all-mode
+        // (15 W EIRP).  Contiguous band, NOT channelized like the US.
+        // IARU R1 internal usage: CW/narrow below 5354, all-mode above.
+        // R3 reuses this table (bandsFor), so it inherits the same band.
+        {"60m", 5351500, 5366500, {
+            {5351500, 5354000, "CW",  "CW/DIG"},
+            {5354000, 5366500, "SSB", "SSB"}}},
         {"40m", 7000000, 7200000, {
             {7000000, 7040000, "CW",  "CW"},
             {7040000, 7060000, "DIG", "DIG"},
@@ -151,11 +163,71 @@ const QVector<Mark> &commonLandmarks() {
     return m;
 }
 
-const QVector<Band> &bandsFor(const QString &region) {
+// Region base table (the IARU-region default).
+const QVector<Band> &regionBands(const QString &region) {
     if (region == QLatin1String("IARU_R1") ||
         region == QLatin1String("IARU_R3"))   // R3 reuses R1 on HF
         return r1Bands();
     return usBands();   // US / default
+}
+
+// Country-specific band overrides, layered on top of the region base.
+// Only countries whose allocation deviates from their IARU region need
+// an entry; an override REPLACES the same-named band in the base table.
+// Everyone else (country == "AUTO"/unknown) inherits the region table.
+const QVector<Band> &countryBands(const QString &country) {
+    static const QVector<Band> none;
+    if (country == QLatin1String("UK")) {
+        // UK 5 MHz (Ofcom / RSGB band plan): 11 discrete segments,
+        // USB, 100 W TX / 200 W EIRP, Full licence only.  Contiguous
+        // band it is NOT — these are the only permitted slices.
+        static const QVector<Band> uk = {
+            {"60m", 5258500, 5406500, {
+                {5258500, 5264000, "MIX", ""},
+                {5276000, 5284000, "MIX", ""},
+                {5288500, 5292000, "MIX", ""},
+                {5298000, 5307000, "MIX", ""},
+                {5313000, 5323000, "MIX", ""},
+                {5333000, 5338000, "MIX", ""},
+                {5354000, 5358000, "MIX", ""},
+                {5362000, 5374500, "MIX", ""},
+                {5378000, 5382000, "MIX", ""},
+                {5395000, 5401500, "MIX", ""},
+                {5403500, 5406500, "MIX", ""}}},
+        };
+        return uk;
+    }
+    if (country == QLatin1String("CA")) {
+        // Canada (ISED): the WRC-15 5351.5-5366.5 kHz band, same as
+        // IARU R1 -- NOT the US 5-channel plan, even though Canada is
+        // IARU Region 2 (the "US" base bucket).
+        static const QVector<Band> ca = {
+            {"60m", 5351500, 5366500, {
+                {5351500, 5354000, "CW",  "CW/DIG"},
+                {5354000, 5366500, "SSB", "SSB"}}},
+        };
+        return ca;
+    }
+    return none;
+}
+
+// Region base merged with any country override.  An override replaces a
+// same-named band in place (else appends).  Returned by value: the
+// tables are tiny and this is rebuilt only on an overlay re-query
+// (region/country/center/span change), never per frame.
+QVector<Band> bandsFor(const QString &region, const QString &country) {
+    const QVector<Band> &base = regionBands(region);
+    const QVector<Band> &ov   = countryBands(country);
+    if (ov.isEmpty()) return base;
+    QVector<Band> merged = base;
+    for (const Band &o : ov) {
+        bool replaced = false;
+        for (Band &m : merged) {
+            if (qstrcmp(m.name, o.name) == 0) { m = o; replaced = true; break; }
+        }
+        if (!replaced) merged.append(o);
+    }
+    return merged;
 }
 
 } // namespace
@@ -169,11 +241,18 @@ BandPlan::BandPlan(Prefs *prefs, QObject *parent)
         // regionChanged is the QML re-query trigger, so reuse it.
         connect(prefs_, &Prefs::bandPlanColorsChanged,
                 this, &BandPlan::regionChanged);
+        // A country-override change is the same kind of re-query trigger.
+        connect(prefs_, &Prefs::bandPlanCountryChanged,
+                this, &BandPlan::regionChanged);
     }
 }
 
 QString BandPlan::region() const {
     return prefs_ ? prefs_->bandPlanRegion() : QStringLiteral("US");
+}
+
+QString BandPlan::country() const {
+    return prefs_ ? prefs_->bandPlanCountry() : QStringLiteral("AUTO");
 }
 
 QVariantList BandPlan::segments(double centerHz, double spanHz) const {
@@ -182,16 +261,28 @@ QVariantList BandPlan::segments(double centerHz, double spanHz) const {
     if (spanHz <= 0 || reg == QLatin1String("NONE")) return out;
     const qint64 lo = qint64(centerHz - spanHz / 2);
     const qint64 hi = qint64(centerHz + spanHz / 2);
-    for (const Band &b : bandsFor(reg)) {
+    for (const Band &b : bandsFor(reg, country())) {
         if (b.hi <= lo || b.lo >= hi) continue;
         for (const Seg &s : b.segs) {
             if (s.hi <= lo || s.lo >= hi) continue;
             QVariantMap m;
             const QString kind = QString::fromLatin1(s.kind);
+            const QString label = QString::fromLatin1(s.label);
+            // Channelized sub-bands (US 60m CH1..CH5) are narrow discrete
+            // windows, not wide ranges — flag them so the overlay can draw
+            // a bigger, click-to-QSY label like the watering-hole marks.
+            const bool isChan = label.startsWith(QLatin1String("CH"));
             m["lo"]    = double(qMax<qint64>(s.lo, lo));
             m["hi"]    = double(qMin<qint64>(s.hi, hi));
             m["color"] = prefs_ ? prefs_->bandPlanColor(kind) : kindColor(kind);
-            m["label"] = QString::fromLatin1(s.label);
+            m["label"] = label;
+            m["channel"] = isChan;
+            // QSY target = the channel's suppressed-carrier dial freq =
+            // its low edge (US 60m is USB; the dial reads the bottom of
+            // the passband).  Use the unclamped edge, not the view-clamped
+            // lo above.
+            if (isChan)
+                m["qsy"] = double(s.lo);
             out.append(m);
         }
     }
@@ -204,7 +295,7 @@ QVariantList BandPlan::edges(double centerHz, double spanHz) const {
     if (spanHz <= 0 || reg == QLatin1String("NONE")) return out;
     const qint64 lo = qint64(centerHz - spanHz / 2);
     const qint64 hi = qint64(centerHz + spanHz / 2);
-    for (const Band &b : bandsFor(reg)) {
+    for (const Band &b : bandsFor(reg, country())) {
         if (b.lo > lo && b.lo < hi) {
             QVariantMap m; m["freq"] = double(b.lo);
             m["name"] = QString::fromLatin1(b.name); out.append(m);
@@ -281,7 +372,7 @@ QString BandPlan::bandContaining(double freqHz) const {
     const QString reg = region();
     if (reg == QLatin1String("NONE")) return QString();
     const qint64 f = qint64(freqHz);
-    for (const Band &b : bandsFor(reg))
+    for (const Band &b : bandsFor(reg, country()))
         if (f >= b.lo && f < b.hi) return QString::fromLatin1(b.name);
     return QString();
 }

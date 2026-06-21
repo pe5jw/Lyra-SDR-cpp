@@ -1133,6 +1133,30 @@ QWidget *SettingsDialog::buildHardwareTab() {
         });
         g->addWidget(region, 0, 1);
 
+        // Optional country override, layered on the region for bands whose
+        // allocation deviates from the IARU region (currently 60m for
+        // UK / Canada).  "Auto" = use the region table unchanged.
+        g->addWidget(new QLabel(tr("Country"), grp), 1, 0);
+        auto *country = new QComboBox(grp);
+        country->addItem(tr("Auto (use region)"), QStringLiteral("AUTO"));
+        country->addItem(tr("United Kingdom"),    QStringLiteral("UK"));
+        country->addItem(tr("Canada"),            QStringLiteral("CA"));
+        country->setCurrentIndex(
+            std::max(0, country->findData(prefs_->bandPlanCountry())));
+        country->setToolTip(tr("Refines the band plan for countries whose "
+                               "allocation differs from their IARU region "
+                               "(currently the 60m band for UK / Canada). "
+                               "Leave on Auto to use the region default."));
+        connect(country, &QComboBox::currentIndexChanged, grp,
+                [this, country](int) {
+                    prefs_->setBandPlanCountry(country->currentData().toString());
+                });
+        connect(prefs_, &Prefs::bandPlanCountryChanged, grp, [this, country]() {
+            const int i = country->findData(prefs_->bandPlanCountry());
+            if (i >= 0 && country->currentIndex() != i) country->setCurrentIndex(i);
+        });
+        g->addWidget(country, 1, 1);
+
         // Overlay-layer toggles (the panadapter top strip).  Each mirrors
         // a Prefs bool; Region = None hides everything regardless.
         auto addLayer = [this, g](int row, const QString &text,
@@ -1146,7 +1170,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             g->addWidget(ck, row, 0, 1, 2);
             return ck;
         };
-        auto *segCk = addLayer(1, tr("Sub-band segments"),
+        auto *segCk = addLayer(2, tr("Sub-band segments"),
             tr("Coloured CW / digital / SSB / FM sub-band strip."),
             prefs_->bandPlanSegments(),
             [this](bool v){ prefs_->setBandPlanSegments(v); }, grp);
@@ -1154,7 +1178,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (segCk->isChecked() != prefs_->bandPlanSegments())
                 segCk->setChecked(prefs_->bandPlanSegments());
         });
-        auto *landCk = addLayer(2, tr("Digital landmarks (FT8 / FT4 / WSPR / PSK)"),
+        auto *landCk = addLayer(3, tr("Digital landmarks (FT8 / FT4 / WSPR / PSK)"),
             tr("Markers at the common digital-mode calling frequencies. "
                "Click one to tune there."),
             prefs_->bandPlanLandmarks(),
@@ -1163,7 +1187,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (landCk->isChecked() != prefs_->bandPlanLandmarks())
                 landCk->setChecked(prefs_->bandPlanLandmarks());
         });
-        auto *beaconCk = addLayer(3, tr("NCDXF beacon markers"),
+        auto *beaconCk = addLayer(4, tr("NCDXF beacon markers"),
             tr("The 5 NCDXF International Beacon Project frequencies."),
             prefs_->bandPlanBeacons(),
             [this](bool v){ prefs_->setBandPlanBeacons(v); }, grp);
@@ -1171,7 +1195,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (beaconCk->isChecked() != prefs_->bandPlanBeacons())
                 beaconCk->setChecked(prefs_->bandPlanBeacons());
         });
-        auto *edgeCk = addLayer(4, tr("Band-edge warning lines"),
+        auto *edgeCk = addLayer(5, tr("Band-edge warning lines"),
             tr("Red dashed lines at each band's edges."),
             prefs_->bandPlanEdges(),
             [this](bool v){ prefs_->setBandPlanEdges(v); }, grp);
@@ -1182,7 +1206,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
 
         // Per-mode segment colours — a swatch button per kind (click to
         // recolour; picking the default clears the override).
-        g->addWidget(new QLabel(tr("Segment colors"), grp), 5, 0);
+        g->addWidget(new QLabel(tr("Segment colors"), grp), 6, 0);
         auto *colorRow = new QWidget(grp);
         auto *ch = new QHBoxLayout(colorRow);
         ch->setContentsMargins(0, 0, 0, 0);
@@ -1218,7 +1242,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
         });
         ch->addWidget(resetColors);
         ch->addStretch(1);
-        g->addWidget(colorRow, 5, 1);
+        g->addWidget(colorRow, 6, 1);
 
         form->addRow(grp);
     }
@@ -1718,6 +1742,28 @@ QWidget *SettingsDialog::buildHardwareTab() {
                 if (sixty->isChecked() != on) sixty->setChecked(on);
             });
             form->addRow(QString(), sixty);
+
+            auto *eleven = new QCheckBox(
+                tr("11 m uses the 10 m filter (BCD 9)"), page);
+            eleven->setChecked(bcd_->elevenAsTen());
+            eleven->setToolTip(tr("11 m / CB has no standard BCD code. On = "
+                                  "use the 10 m code so the amp picks its "
+                                  "10 m filter (the appropriate adjacent "
+                                  "filter); off = bypass."));
+            connect(eleven, &QCheckBox::toggled, bcd_, &UsbBcd::setElevenAsTen);
+            connect(bcd_, &UsbBcd::elevenAsTenChanged, eleven, [eleven](bool on) {
+                if (eleven->isChecked() != on) eleven->setChecked(on);
+            });
+            form->addRow(QString(), eleven);
+
+            auto *regNote = new QLabel(
+                tr("⚠ Operate only within the maximum power and band limits "
+                   "permitted by your country / region's regulations."),
+                page);
+            regNote->setWordWrap(true);
+            regNote->setStyleSheet(QStringLiteral(
+                "QLabel{color:#c9a23a;}"));   // amber advisory
+            form->addRow(regNote);
 
             auto *code = new QLabel(page);
             auto setCode = [code](int c) {
@@ -2947,69 +2993,121 @@ QWidget *SettingsDialog::buildTxTab() {
     // linear amps now relies SOLELY on the RF Delay control above —
     // matches the reference's mechanism.
 
-    // ── Tune (separate TUN drive, Task #74) ─────────────────────
-    // Operator-toggled: when on, the TUN button swaps the wire drive
-    // to the Tune Drive % value for the duration of the tune, then
-    // restores the prior TX Drive % on tune-release.  Default OFF —
-    // TUN uses the operator's current TX Drive % (legacy behaviour).
-    // Toggle this on for the "tune at safe-low into the tuner/dummy,
-    // talk at higher drive" workflow.  Live: changing either control
-    // takes effect on the very next TUN arm.
+    // ── Tune (TUN drive mode, Task #74 / #95) ───────────────────
+    // 3-way selector for what drive level the TUN button keys at:
+    //   0 Use TX Drive slider — TUN keys at your live TX Drive %.
+    //   1 Use Tune slider     — TUN keys at the per-band Tune Drive %
+    //                           (live-adjustable; recalled per band).
+    //   2 Use fixed drive     — TUN keys at a single Fixed Drive %,
+    //                           the same regardless of band or slider.
+    // For modes 1/2 the pre-tune drive is restored on tune-release.
+    // Live: changing the active control takes effect immediately while
+    // armed, and otherwise on the next TUN arm.
     if (prefs_) {
         auto *grp = new QGroupBox(tr("Tune  (TUN button)"), page);
         auto *form = new QFormLayout(grp);
 
-        auto *useBox = new QCheckBox(tr("Use separate tune drive"), grp);
-        useBox->setChecked(prefs_->useTuneDrive());
-        useBox->setToolTip(tr(
-            "When ON, the TUN button keys at the Tune Drive %% set "
-            "below — independent of your TX Drive %% slider.  TUN-"
-            "release restores your TX Drive %%.  Use this so you can "
-            "tune at a safe low power (e.g. 25 %%) without giving up "
-            "your voice-TX drive setting between tune sessions.\n\n"
-            "When OFF, TUN keys at your current TX Drive %% (legacy)."));
-        form->addRow(QString(), useBox);
+        auto *modeBox = new QComboBox(grp);
+        modeBox->addItem(tr("Use TX Drive slider"),
+                         int(lyra::ui::Prefs::TuneDriveSlider));
+        modeBox->addItem(tr("Use Tune slider"),
+                         int(lyra::ui::Prefs::TuneDriveTune));
+        modeBox->addItem(tr("Use fixed drive"),
+                         int(lyra::ui::Prefs::TuneDriveFixed));
+        modeBox->setCurrentIndex(
+            std::max(0, modeBox->findData(prefs_->tuneDriveMode())));
+        modeBox->setToolTip(tr(
+            "What power the TUN button transmits at:\n"
+            "• Use TX Drive slider — same as your normal TX Drive %%.\n"
+            "• Use Tune slider — the per-band Tune Drive %% below "
+            "(live-adjustable, remembered per band).\n"
+            "• Use fixed drive — the Fixed Drive %% below, the same on "
+            "every band regardless of either slider.\n\n"
+            "Modes other than 'TX Drive slider' restore your TX Drive %% "
+            "when you un-key TUN."));
+        form->addRow(tr("Tune drive:"), modeBox);
 
-        auto *spin = new QSpinBox(grp);
-        spin->setRange(0, 100);
-        spin->setSuffix(tr(" %"));
-        spin->setValue(prefs_->tuneDrivePct());
-        spin->setEnabled(prefs_->useTuneDrive());
-        spin->setToolTip(tr(
-            "Drive %% applied while TUN is armed.  Bench-safe default "
-            "is 25 %% into a dummy load; raise as you trust the tuner/"
-            "antenna/amp setup.  Only takes effect when 'Use separate "
-            "tune drive' is on."));
-        form->addRow(tr("Tune Drive:"), spin);
+        // TUN can never exceed the Max-TX-drive ceiling (the wire clamps
+        // it in HL2Stream::setTxDriveLevel); cap these spinners to that
+        // ceiling so the UI never shows a level that can't be reached.
+        const int driveCap = stream_ ? stream_->maxDrivePct() : 100;
+        auto *tuneSpin = new QSpinBox(grp);
+        tuneSpin->setRange(0, driveCap);
+        tuneSpin->setSuffix(tr(" %"));
+        tuneSpin->setValue(prefs_->tuneDrivePct());
+        tuneSpin->setToolTip(tr(
+            "Per-band tune slider value, used in 'Use Tune slider' mode. "
+            "Bench-safe 25 %% into a dummy load; raise as you trust the "
+            "tuner / antenna / amp.  Remembered per band."));
+        form->addRow(tr("Tune slider:"), tuneSpin);
 
-        connect(useBox, &QCheckBox::toggled, grp,
-                [this, spin](bool on) {
-            if (prefs_) prefs_->setUseTuneDrive(on);
-            spin->setEnabled(on);
+        auto *fixedSpin = new QSpinBox(grp);
+        fixedSpin->setRange(0, driveCap);
+        fixedSpin->setSuffix(tr(" %"));
+        fixedSpin->setValue(prefs_->fixedTuneDrivePct());
+        fixedSpin->setToolTip(tr(
+            "Fixed tune drive, used in 'Use fixed drive' mode.  Applied "
+            "on every band regardless of the sliders."));
+        form->addRow(tr("Fixed drive:"), fixedSpin);
+
+        // Enable only the spin the current mode actually uses.
+        auto applyEnables = [tuneSpin, fixedSpin](int mode) {
+            tuneSpin->setEnabled(mode == int(lyra::ui::Prefs::TuneDriveTune));
+            fixedSpin->setEnabled(mode == int(lyra::ui::Prefs::TuneDriveFixed));
+        };
+        applyEnables(prefs_->tuneDriveMode());
+
+        connect(modeBox, qOverload<int>(&QComboBox::currentIndexChanged), grp,
+                [this, modeBox, applyEnables](int) {
+            const int m = modeBox->currentData().toInt();
+            if (prefs_) prefs_->setTuneDriveMode(m);
+            applyEnables(m);
         });
-        connect(spin, qOverload<int>(&QSpinBox::valueChanged), grp,
+        connect(tuneSpin, qOverload<int>(&QSpinBox::valueChanged), grp,
                 [this](int v) { if (prefs_) prefs_->setTuneDrivePct(v); });
+        connect(fixedSpin, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { if (prefs_) prefs_->setFixedTuneDrivePct(v); });
 
-        // External-update mirrors so the TxPanel.qml inline stepper
-        // and this spin box stay in lockstep through QSettings reloads
-        // / RestoreDefaults / TX Profile recall (future #49).
-        connect(prefs_, &lyra::ui::Prefs::useTuneDriveChanged,
-                useBox, [this, useBox, spin]() {
-            const bool on = prefs_->useTuneDrive();
-            if (useBox->isChecked() != on) {
-                QSignalBlocker b(useBox);
-                useBox->setChecked(on);
+        // External-update mirrors so this dialog, the TxPanel.qml inline
+        // stepper, and TX Profile recall (future #49) stay in lockstep.
+        connect(prefs_, &lyra::ui::Prefs::tuneDriveModeChanged,
+                modeBox, [this, modeBox, applyEnables]() {
+            const int i = modeBox->findData(prefs_->tuneDriveMode());
+            if (i >= 0 && modeBox->currentIndex() != i) {
+                QSignalBlocker b(modeBox);
+                modeBox->setCurrentIndex(i);
             }
-            spin->setEnabled(on);
+            applyEnables(prefs_->tuneDriveMode());
         });
         connect(prefs_, &lyra::ui::Prefs::tuneDrivePctChanged,
-                spin, [this, spin]() {
+                tuneSpin, [this, tuneSpin]() {
             const int v = prefs_->tuneDrivePct();
-            if (spin->value() != v) {
-                QSignalBlocker b(spin);
-                spin->setValue(v);
+            if (tuneSpin->value() != v) {
+                QSignalBlocker b(tuneSpin);
+                tuneSpin->setValue(v);
             }
         });
+        connect(prefs_, &lyra::ui::Prefs::fixedTuneDrivePctChanged,
+                fixedSpin, [this, fixedSpin]() {
+            const int v = prefs_->fixedTuneDrivePct();
+            if (fixedSpin->value() != v) {
+                QSignalBlocker b(fixedSpin);
+                fixedSpin->setValue(v);
+            }
+        });
+
+        // Track the Max-TX-drive ceiling (#170a) live: capping the
+        // spinners' maximum here keeps them from showing/entering a level
+        // the wire would clamp anyway.  Lowering Max-drive below a tune
+        // value pulls that value down (QSpinBox clamps + the valueChanged
+        // above writes it back); raising it re-opens the headroom.
+        if (stream_) {
+            connect(stream_, &lyra::ipc::HL2Stream::maxDrivePctChanged,
+                    grp, [tuneSpin, fixedSpin](int cap) {
+                tuneSpin->setMaximum(cap);
+                fixedSpin->setMaximum(cap);
+            });
+        }
 
         leftCol->addWidget(grp);   // §15.28 — TIMING column (Tune)
     }

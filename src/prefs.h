@@ -39,19 +39,24 @@ class Prefs : public QObject {
                NOTIFY txDbMinChanged)
     Q_PROPERTY(double txDbMax READ txDbMax WRITE setTxDbMax
                NOTIFY txDbMaxChanged)
-    // Task #74 — TUN separate-drive toggle + value.  When useTuneDrive
-    // is on, the TUN button swaps the wire drive to tuneDrivePct for
-    // the duration of the tune (orchestrated in main.cpp on
-    // Stream::tuneEnabledChanged); the prior drive % is restored on
-    // tune-off.  When useTuneDrive is off, TUN keys at the operator's
-    // current TX Drive % (legacy behaviour, byte-identical to today).
-    // Defaults: useTuneDrive=false, tuneDrivePct=25 — sane "tune at
-    // a quarter power into a dummy load" starting point that the
-    // operator can re-tune once and forget.
-    Q_PROPERTY(bool useTuneDrive READ useTuneDrive WRITE setUseTuneDrive
-               NOTIFY useTuneDriveChanged)
+    // Task #74 / #95 — what drive level the TUN button keys at.
+    // tuneDriveMode selects the source (orchestrated in main.cpp on
+    // Stream::tuneEnabledChanged; the pre-tune drive is restored on
+    // tune-off):
+    //   0 TuneDriveSlider — TUN keys at the operator's live TX Drive %
+    //                       (no swap; legacy behaviour).
+    //   1 TuneDriveTune   — TUN keys at tuneDrivePct, the per-band,
+    //                       live-adjustable tune slider (#74/#78).
+    //   2 TuneDriveFixed  — TUN keys at fixedTuneDrivePct, a single
+    //                       fixed value independent of either slider.
+    // Defaults: tuneDriveMode=0, tuneDrivePct=25, fixedTuneDrivePct=25
+    // — "tune at a quarter power into a dummy load" starting points.
+    Q_PROPERTY(int  tuneDriveMode READ tuneDriveMode WRITE setTuneDriveMode
+               NOTIFY tuneDriveModeChanged)
     Q_PROPERTY(int  tuneDrivePct READ tuneDrivePct WRITE setTuneDrivePct
                NOTIFY tuneDrivePctChanged)
+    Q_PROPERTY(int  fixedTuneDrivePct READ fixedTuneDrivePct
+               WRITE setFixedTuneDrivePct NOTIFY fixedTuneDrivePctChanged)
     // Task #75 — TCI RX-out gain (dB).  Applied in TciServer on the
     // RX audio path before binary-frame emit, so 3rd-party clients
     // (digital-mode skimmers like MSHV / JTDX / WSJT-X) can be
@@ -216,6 +221,11 @@ class Prefs : public QObject {
     // US / IARU_R1 / IARU_R3 / NONE.
     Q_PROPERTY(QString bandPlanRegion READ bandPlanRegion
                WRITE setBandPlanRegion NOTIFY bandPlanRegionChanged)
+    // Optional country override layered on top of the region base table,
+    // for countries whose allocation deviates from their IARU region on
+    // some bands (e.g. UK / Canada 60m).  "AUTO" = region only.
+    Q_PROPERTY(QString bandPlanCountry READ bandPlanCountry
+               WRITE setBandPlanCountry NOTIFY bandPlanCountryChanged)
     // Band-plan panadapter-overlay layer toggles (Settings → Hardware →
     // Band plan).  All default ON; the master Region=NONE hides everything.
     Q_PROPERTY(bool bandPlanSegments READ bandPlanSegments
@@ -324,10 +334,15 @@ public:
     double txDbMax() const { return txDbMax_; }
     void   setTxDbMax(double v);
     bool   moxActive() const { return moxActive_; }
-    bool   useTuneDrive() const { return useTuneDrive_; }
-    void   setUseTuneDrive(bool v);
+    // TUN drive source (see the tuneDriveMode property comment).
+    enum TuneDriveMode { TuneDriveSlider = 0, TuneDriveTune = 1,
+                         TuneDriveFixed = 2 };
+    int    tuneDriveMode() const { return tuneDriveMode_; }
+    void   setTuneDriveMode(int v);
     int    tuneDrivePct() const { return tuneDrivePct_; }
     void   setTuneDrivePct(int v);
+    int    fixedTuneDrivePct() const { return fixedTuneDrivePct_; }
+    void   setFixedTuneDrivePct(int v);
     double tciRxGainDb() const { return tciRxGainDb_; }
     void   setTciRxGainDb(double v);
     double tciTxGainDb() const { return tciTxGainDb_; }
@@ -446,6 +461,8 @@ public:
     bool operatorLocation(double *lat, double *lon) const;
     QString bandPlanRegion() const { return bandPlanRegion_; }
     void    setBandPlanRegion(const QString &r);
+    QString bandPlanCountry() const { return bandPlanCountry_; }
+    void    setBandPlanCountry(const QString &c);
     bool bandPlanSegments() const { return bandPlanSegments_; }
     void setBandPlanSegments(bool v);
     bool bandPlanLandmarks() const { return bandPlanLandmarks_; }
@@ -505,8 +522,9 @@ signals:
     void dbMaxChanged();
     void txDbMinChanged();
     void txDbMaxChanged();
-    void useTuneDriveChanged();
+    void tuneDriveModeChanged();
     void tuneDrivePctChanged();
+    void fixedTuneDrivePctChanged();
     void tciRxGainDbChanged();
     void tciTxGainDbChanged();
     void dbAutoChanged();
@@ -554,6 +572,7 @@ signals:
     void gridSquareChanged();
     void locationChanged();   // effective lat/lon changed (grid or manual)
     void bandPlanRegionChanged();
+    void bandPlanCountryChanged();
     void bandPlanSegmentsChanged();
     void bandPlanLandmarksChanged();
     void bandPlanBeaconsChanged();
@@ -581,8 +600,9 @@ private:
     double  txDbMax_;
     bool    moxActive_ = false;
     // Task #74 — TUN separate-drive state (defaults applied in ctor).
-    bool    useTuneDrive_ = false;
+    int     tuneDriveMode_ = 0;   // 0 slider / 1 tune / 2 fixed
     int     tuneDrivePct_ = 25;
+    int     fixedTuneDrivePct_ = 25;
     // Task #75 — TCI RX-out gain (dB); default 0 = unity.
     double  tciRxGainDb_ = 0.0;
     // Task #108 — symmetric INBOUND TCI gain (MSHV → Lyra TXA).
@@ -649,6 +669,7 @@ private:
     double  manualLat_;   // NaN = unset
     double  manualLon_;   // NaN = unset
     QString bandPlanRegion_;
+    QString bandPlanCountry_;
     bool    bandPlanSegments_  = true;
     bool    bandPlanLandmarks_ = true;
     bool    bandPlanBeacons_   = true;

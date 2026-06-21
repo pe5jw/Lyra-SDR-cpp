@@ -14,7 +14,8 @@ QJsonObject Profile::toJson() const {
     o["micSource"]     = micSource;
     o["micGainDb"]     = micGainDb;
     o["micBoost"]      = micBoost;
-    o["useTuneDrive"]  = useTuneDrive;
+    o["tuneDriveMode"]    = tuneDriveMode;
+    o["fixedTuneDrivePct"] = fixedTuneDrivePct;
     o["tuneDrivePct"]  = tuneDrivePct;
     o["txDriveLevel"]  = txDriveLevel;
     o["tciRxGainDb"]   = tciRxGainDb;
@@ -58,7 +59,10 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("micSource"))     p.micSource     = o["micSource"].toString(p.micSource);
     if (o.contains("micGainDb"))     p.micGainDb     = o["micGainDb"].toDouble(p.micGainDb);
     if (o.contains("micBoost"))      p.micBoost      = o["micBoost"].toBool(p.micBoost);
-    if (o.contains("useTuneDrive"))  p.useTuneDrive  = o["useTuneDrive"].toBool(p.useTuneDrive);
+    if (o.contains("tuneDriveMode")) p.tuneDriveMode = o["tuneDriveMode"].toInt(p.tuneDriveMode);
+    else if (o.contains("useTuneDrive"))   // legacy (#74): true → tune mode
+        p.tuneDriveMode = o["useTuneDrive"].toBool() ? 1 : 0;
+    if (o.contains("fixedTuneDrivePct")) p.fixedTuneDrivePct = o["fixedTuneDrivePct"].toInt(p.fixedTuneDrivePct);
     if (o.contains("tuneDrivePct"))  p.tuneDrivePct  = o["tuneDrivePct"].toInt(p.tuneDrivePct);
     if (o.contains("txDriveLevel"))  p.txDriveLevel  = o["txDriveLevel"].toInt(p.txDriveLevel);
     if (o.contains("tciRxGainDb"))   p.tciRxGainDb   = o["tciRxGainDb"].toDouble(p.tciRxGainDb);
@@ -99,7 +103,8 @@ bool Profile::sameValues(const Profile &b) const {
         && micSource == b.micSource
         && dEq(micGainDb, b.micGainDb)
         && micBoost == b.micBoost
-        && useTuneDrive == b.useTuneDrive
+        && tuneDriveMode == b.tuneDriveMode
+        && fixedTuneDrivePct == b.fixedTuneDrivePct
         // tuneDrivePct / txDriveLevel deliberately excluded — per-band
         // (BandMemory), not profile fields (see Profile.h).
         && dEq(tciRxGainDb, b.tciRxGainDb)

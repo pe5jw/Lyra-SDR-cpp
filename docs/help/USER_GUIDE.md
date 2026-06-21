@@ -1074,7 +1074,10 @@ docks. Layout (left → right):
   AND keys MOX in one click. Click again to release MOX; the carrier
   auto-disarms on the next MOX-off edge for any reason (your click,
   the safety timeout, the FSM unwinding). When armed the button
-  border glows amber. Carrier power scales with TX Drive %.
+  border glows amber. Carrier power follows the **Tune drive mode** you
+  pick in [Settings → TX](#settings--tx-mic--alc-tr-sequencing--cos-fade)
+  (your TX Drive slider, a separate tune slider, or a fixed value — see
+  there), and is always held to your **Max TX drive** ceiling.
 - **MOX button** — the keying button. Funnels through Lyra's TR-
   sequenced FSM (the same one your **space-bar momentary** uses when
   no text widget has focus). Goes **bold red** the instant the wire-
@@ -1631,12 +1634,29 @@ that's the location the weather sources use for "nearby."
 **IARU Region 3**, or **None**). This selects which amateur band-plan the
 panadapter overlay draws. Set it to **None** to turn the whole overlay off.
 
+**Country** — an optional refinement under Region, for the bands where a
+country's allocation differs from its IARU region (today this is **60 m**).
+Leave it on **Auto (use region)** and you get the region default; pick your
+country to override just the bands that differ:
+
+- **Auto** — US gets the five fixed **60 m channels**; IARU R1 / R3 get the
+  contiguous **WRC-15 band (5351.5–5366.5 kHz)**.
+- **United Kingdom** — replaces 60 m with the UK's own set of permitted
+  segments (per the RSGB / Ofcom band plan), which differ from the plain
+  WRC-15 band.
+- **Canada** — uses the WRC-15 60 m band rather than the US channels (Canada
+  is in IARU Region 2 but does not use the US channel plan).
+
 The overlay paints a thin strip across the **top of the panadapter**:
 
 - **Sub-band segments** — a coloured bar showing the mode allocations in
   view: **CW** (blue), **digital** (magenta), **SSB** (green), **FM**
   (orange). The label (CW / DIG / SSB / FM) shows when the segment is wide
   enough on screen.
+- **60 m channel markers** — on the US 60 m band the five channels show as
+  labelled **CH1–CH5** bars. The labels are always visible (the channels are
+  narrow), and you can **click a channel to QSY** straight to its USB dial
+  frequency.
 - **Digital landmarks** — small **▼** markers at the common calling
   frequencies (**FT8 / FT4 / WSPR / PSK**), gold. **Click a marker to tune
   straight to it** (and Lyra switches to the suggested mode).
@@ -1792,8 +1812,17 @@ either way (the pins just drive nothing).
 Drives a Yaesu-style **BCD band code** out an FTDI cable so an external
 linear amp's auto-bandswitch follows Lyra's band. Tick **Enable
 USB-BCD**, choose your **BCD cable**, and the **BCD output** readout shows
-the current code. **60 m** has no standard BCD code — tick **60 m uses the
-40 m filter** to send the 40 m code instead of bypassing.
+the current code. Two bands have no standard BCD code of their own, with an
+option to borrow the adjacent band's filter:
+
+- **60 m uses the 40 m filter (BCD 3)** — sends the 40 m code on 60 m
+  instead of bypassing.
+- **11 m uses the 10 m filter (BCD 9)** — sends the 10 m code on the
+  11 m / CB band (the appropriate adjacent filter) instead of bypassing.
+
+> ⚠ **Operate only within the maximum power and band limits permitted by
+> your country / region's regulations.** This control selects an amp
+> filter; it does not change what you are licensed to transmit.
 
 > ⚠ **Verify before you key.** Confirm the wiring and do a low-power test
 > on each band before transmitting at full power — the wrong code can
@@ -2267,6 +2296,30 @@ want a known-good starting point.
 > new value applies at the next keydown or keyup. So you can A/B
 > values mid-session by changing then re-keying — no MOX cycle,
 > no app restart.
+
+### Tune drive (what the TUN button keys at)
+
+A 3-way **Tune drive** picker decides the power the [TUN
+button](#transmit-row-tx) uses when you key it, plus the two values it
+can draw from:
+
+| Mode | TUN keys at |
+|---|---|
+| **Use TX Drive slider** | your live TX Drive % — same as a normal transmit (the classic behaviour). |
+| **Use Tune slider** | the separate **Tune slider** % below — a per-band, live-adjustable level (remembered per band, and also shown inline on the TX panel while armed). |
+| **Use fixed drive** | the **Fixed drive** % below — one value, the same on every band, ignored sliders. |
+
+In the two non-slider modes Lyra stashes your TX Drive on key-down and
+restores it when you un-key, so tuning at a safe low power never disturbs
+your voice-TX setting. Only the spinner the active mode uses is enabled.
+
+> **TUN can never exceed your Max TX drive.** Both the Tune and Fixed
+> spinners are capped at your **Max TX drive** ceiling (Settings → TX),
+> and the wire enforces the same ceiling on every drive write regardless
+> — so a tune level can never overdrive past the maximum you've set. The
+> typical workflow: set a low tune level (e.g. 25 % into a dummy / tuner)
+> and a higher voice-TX drive, and TUN tunes safe while your QSO drive is
+> untouched.
 
 ---
 

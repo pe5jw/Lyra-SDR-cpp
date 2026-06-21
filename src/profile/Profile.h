@@ -52,7 +52,8 @@ struct Profile {
     QString micSource = QStringLiteral("mic1");  // mic1 / tci (vac1/vac2 reserved)
     double  micGainDb = 0.0;
     bool    micBoost  = false;
-    bool    useTuneDrive = false;
+    int     tuneDriveMode = 0;       // #95: 0 slider / 1 tune / 2 fixed
+    int     fixedTuneDrivePct = 25;  // #95: TUN level in TuneDriveFixed mode
     // RESERVED — present for JSON round-trip but NOT captured / applied /
     // dirty-tracked.  TX drive level (TX power) + tune-drive % are PER-BAND
     // station settings owned by BandMemory (different power per band /

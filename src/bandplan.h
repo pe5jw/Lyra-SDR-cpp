@@ -55,6 +55,9 @@ signals:
     void regionChanged();
 
 private:
+    // Optional country override (Prefs.bandPlanCountry; "AUTO" = none).
+    QString country() const;
+
     Prefs *prefs_ = nullptr;
 };
 

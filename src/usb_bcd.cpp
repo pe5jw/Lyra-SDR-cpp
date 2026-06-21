@@ -79,6 +79,7 @@ UsbBcd::UsbBcd(QObject *parent) : QObject(parent) {
     enabled_      = s.value(QStringLiteral("hw/bcdEnabled"), false).toBool();
     serial_       = s.value(QStringLiteral("hw/bcdSerial"), QString()).toString();
     sixtyAsForty_ = s.value(QStringLiteral("hw/bcd60as40"), true).toBool();
+    elevenAsTen_  = s.value(QStringLiteral("hw/bcd11as10"), true).toBool();
     if (enabled_ && libLoaded_ && !serial_.isEmpty()) {
         openDevice();
     }
@@ -154,13 +155,30 @@ void UsbBcd::setSixtyAsForty(bool on) {
     emit sixtyAsFortyChanged(on);
 }
 
+void UsbBcd::setElevenAsTen(bool on) {
+    if (on == elevenAsTen_) {
+        return;
+    }
+    elevenAsTen_ = on;
+    QSettings().setValue(QStringLiteral("hw/bcd11as10"), on);
+    reapply();
+    emit elevenAsTenChanged(on);
+}
+
 void UsbBcd::applyForFreq(quint32 hz) {
     lastFreqHz_ = hz;
     reapply();
 }
 
 void UsbBcd::reapply() {
-    const int bi   = lyra::bandIndexForFreq(static_cast<int>(lastFreqHz_));
+    const int hz = static_cast<int>(lastFreqHz_);
+    int bi       = lyra::bandIndexForFreq(hz);
+    // 11m / CB isn't in the amateur table (bi == -1).  If the operator
+    // opts in, route it through the 10m filter code (10m's BCD is 9) —
+    // the appropriate adjacent filter, mirroring the 60m->40m option.
+    if (bi < 0 && elevenAsTen_ && lyra::cbBandIndexForFreq(hz) >= 0) {
+        bi = lyra::bandIndexForFreq(28400000);   // 10m amateur index
+    }
     const int code = lyra::bcdForBand(bi, sixtyAsForty_);
     if (code != currentBcd_) {
         currentBcd_ = code;

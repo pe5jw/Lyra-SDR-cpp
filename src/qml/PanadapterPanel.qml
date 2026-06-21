@@ -1047,6 +1047,9 @@ Item {
                         required property var modelData
                         readonly property real x0: bandPlan.xOf(modelData.lo)
                         readonly property real x1: bandPlan.xOf(modelData.hi)
+                        // Channelized sub-bands (60m CH1..CH5) get a bigger,
+                        // always-visible, click-to-QSY label.
+                        readonly property bool chan: modelData.channel === true
                         Rectangle {
                             x: Math.min(segItem.x0, segItem.x1)
                             y: 0
@@ -1056,15 +1059,45 @@ Item {
                             opacity: 0.82
                         }
                         Text {
-                            visible: Math.abs(segItem.x1 - segItem.x0) >= 24
+                            id: segLabel
+                            // Channels always show (they're narrow); other
+                            // sub-bands only when wide enough to read.
+                            visible: segItem.chan
+                                     || Math.abs(segItem.x1 - segItem.x0) >= 24
                             x: Math.min(segItem.x0, segItem.x1) + 3
                             y: 0
                             text: segItem.modelData.label
                             color: "#f0f0f0"
-                            font.pixelSize: 9
+                            font.pixelSize: segItem.chan ? 11 : 9
                             font.bold: true
                             style: Text.Outline
                             styleColor: "#a0000000"
+                        }
+                        // 60m channel click-to-tune (mirrors the watering-hole
+                        // FT8/FT4/PSK markers): QSY to the channel centre + USB.
+                        MouseArea {
+                            visible: segItem.chan
+                            enabled: segItem.chan
+                            x: Math.min(segItem.x0, segItem.x1)
+                            y: 0
+                            width: Math.max(Math.abs(segItem.x1 - segItem.x0),
+                                            segLabel.width + 6)
+                            height: 12
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Prefs.mode = "USB"
+                                Stream.setRx1FreqHz(
+                                    Math.round(segItem.modelData.qsy))
+                                Status.show(qsTr("Tuned to ")
+                                    + (segItem.modelData.qsy / 1.0e6).toFixed(3)
+                                    + " MHz USB · " + segItem.modelData.label,
+                                    2500)
+                            }
+                            ToolTip.visible: containsMouse
+                            ToolTip.text: segItem.modelData.label + " — "
+                                + (segItem.modelData.qsy / 1.0e6).toFixed(3)
+                                + " MHz USB"
                         }
                     }
                 }

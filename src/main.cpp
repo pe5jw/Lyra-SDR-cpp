@@ -734,7 +734,8 @@ int main(int argc, char *argv[])
         p.micSource       = prefs->micSource();
         p.micGainDb       = stream->micGainDb();
         p.micBoost        = stream->micBoost();
-        p.useTuneDrive    = prefs->useTuneDrive();
+        p.tuneDriveMode     = prefs->tuneDriveMode();
+        p.fixedTuneDrivePct = prefs->fixedTuneDrivePct();
         // tuneDrivePct / txDriveLevel intentionally NOT captured — they are
         // per-band (BandMemory), so capturing them made a band change dirty
         // the profile (operator report 2026-06-16; see Profile.h).
@@ -793,7 +794,8 @@ int main(int argc, char *argv[])
         prefs->setMicSource(p.micSource);   // fires the applyTciTxSource gate above
         stream->setMicGainDb(p.micGainDb);
         stream->setMicBoost(p.micBoost);
-        prefs->setUseTuneDrive(p.useTuneDrive);
+        prefs->setTuneDriveMode(p.tuneDriveMode);
+        prefs->setFixedTuneDrivePct(p.fixedTuneDrivePct);
         // tuneDrivePct / txDriveLevel NOT applied — BandMemory owns per-band
         // TX power + tune drive; a profile load leaves them untouched.
         prefs->setTciRxGainDb(p.tciRxGainDb);
@@ -846,7 +848,8 @@ int main(int argc, char *argv[])
                      &lyra::ui::Prefs::bwLockedChanged,
                      &lyra::ui::Prefs::filterLowChanged,
                      &lyra::ui::Prefs::micSourceChanged,
-                     &lyra::ui::Prefs::useTuneDriveChanged,
+                     &lyra::ui::Prefs::tuneDriveModeChanged,
+                     &lyra::ui::Prefs::fixedTuneDrivePctChanged,
                      &lyra::ui::Prefs::tciRxGainDbChanged,
                      &lyra::ui::Prefs::tciTxGainDbChanged})
         QObject::connect(prefs, sig, profiles,
@@ -872,12 +875,13 @@ int main(int argc, char *argv[])
     // land once the window exists.  The non-rack fields apply identically
     // either way (it behaves like loading the default profile at launch).
 
-    // Task #74 / #77 / #78 — TUN separate-drive orchestrator.  When
-    // the operator arms TUN and Prefs.useTuneDrive is on, stash the
-    // current wire drive level and push the tune-drive % (0..100 →
-    // 0..255 wire DAC); on TUN-off, restore the stashed value.  When
-    // useTuneDrive is off this is a no-op — TUN keys at the
-    // operator's TX Drive % (byte-identical to pre-#74 behaviour).
+    // Task #74 / #77 / #78 / #95 — TUN drive-mode orchestrator.  On a
+    // TUN-arm edge, if the active tuneDriveMode wants a drive other than
+    // the operator's live slider (TuneDriveTune → tuneDrivePct;
+    // TuneDriveFixed → fixedTuneDrivePct), stash the current wire drive
+    // and push that % (0..100 → 0..255 wire DAC); on TUN-off restore the
+    // stashed value.  In TuneDriveSlider mode this is a no-op — TUN keys
+    // at the operator's TX Drive % (byte-identical to pre-#74).
     //
     // #77 fix: use std::optional<int> on the heap (shared_ptr-wrapped
     // for lifetime) so we track whether a real TUN-arm edge has
@@ -889,11 +893,12 @@ int main(int argc, char *argv[])
     // 0, blanking the operator's TX Drive on every stream restart.
     // Only an actual arm→release pair restores; spurious offs no-op.
     //
-    // #78 fix: a second connection on Prefs::tuneDrivePctChanged
-    // routes live slider movement to the stream during an active
-    // tune (when stream->tuneEnabled() AND prefs->useTuneDrive()).
-    // Critically does NOT touch `savedDrive` — the stashed pre-tune
-    // value must stay frozen so the tune-release restore is correct.
+    // #78 / #95 fix: connections on Prefs::tuneDrivePctChanged and
+    // ::fixedTuneDrivePctChanged route live control movement to the
+    // stream during an active tune (when stream->tuneEnabled() and the
+    // active mode wants a non-slider drive).  Critically do NOT touch
+    // `savedDrive` — the stashed pre-tune value must stay frozen so the
+    // tune-release restore is correct.
     //
     // Lambdas run on the emitter thread (DirectConnection by default;
     // HL2Stream + prefs both live on the main thread) so a TUN arm's
@@ -902,30 +907,42 @@ int main(int argc, char *argv[])
     // carries the tune-drive level.
     {
         auto savedDrive = std::make_shared<std::optional<int>>();
-        QObject::connect(stream, &lyra::ipc::HL2Stream::tuneEnabledChanged,
-                         prefs, [stream, prefs, savedDrive](bool on) {
-            if (!prefs->useTuneDrive()) {
-                // Toggle is off — never stash, never restore.  Also
-                // clear any orphan stash so a later toggle-on +
-                // arm cycle starts clean.
-                savedDrive->reset();
-                return;
+        // The tune-drive % the active mode wants, or -1 = "no swap"
+        // (TuneDriveSlider — TUN keys at the operator's live TX Drive).
+        auto tunePctFor = [prefs]() -> int {
+            switch (prefs->tuneDriveMode()) {
+                case lyra::ui::Prefs::TuneDriveTune:
+                    return prefs->tuneDrivePct();
+                case lyra::ui::Prefs::TuneDriveFixed:
+                    return prefs->fixedTuneDrivePct();
+                default:
+                    return -1;   // TuneDriveSlider
             }
+        };
+        QObject::connect(stream, &lyra::ipc::HL2Stream::tuneEnabledChanged,
+                         prefs, [stream, tunePctFor, savedDrive](bool on) {
             if (on) {
-                // Real TUN-arm: stash + push tune-drive.  Re-arm
-                // without a release between (defensive) — keep the
-                // earliest pre-tune value, not a tune-drive value.
+                const int pct = tunePctFor();
+                if (pct < 0) {
+                    // Slider mode — never stash; clear any orphan stash
+                    // so a later mode-change + arm cycle starts clean.
+                    savedDrive->reset();
+                    return;
+                }
+                // Real TUN-arm with a non-slider mode: stash + push.
+                // Re-arm without a release between (defensive) — keep
+                // the earliest pre-tune value, not a tune-drive value.
                 if (!savedDrive->has_value()) {
                     *savedDrive = stream->txDriveLevel();
                 }
-                const int raw = std::clamp(int(std::lround(
-                    prefs->tuneDrivePct() * 255.0 / 100.0)), 0, 255);
-                stream->setTxDriveLevel(raw);
+                stream->setTxDriveLevel(std::clamp(int(std::lround(
+                    pct * 255.0 / 100.0)), 0, 255));
             } else {
-                // TUN-release.  Restore ONLY if we have a real
-                // stashed value from a prior arm in this session
-                // (#77 fix: the spurious off-edges at stream
-                // start/stop carry no stash and must no-op).
+                // TUN-release.  Restore whenever a real arm stashed a
+                // value — independent of the current mode, so switching
+                // mode mid-tune still restores correctly.  (#77: the
+                // spurious off-edges at stream start/stop carry no stash
+                // and must no-op.)
                 if (savedDrive->has_value()) {
                     stream->setTxDriveLevel(savedDrive->value());
                     savedDrive->reset();
@@ -933,22 +950,23 @@ int main(int argc, char *argv[])
             }
         });
 
-        // #78 — live tune-drive while TUN is active.  Drag the
-        // TxPanel TUN-drive slider while keyed and the wire DAC
-        // follows immediately.  Skipped when TUN is not armed or
-        // the toggle is off (no spurious wire pushes; the
-        // tuneDrivePct value still persists per-band via #74
-        // recall for the next arm).  Does NOT mutate savedDrive
-        // — restore-on-release must use the pre-tune value, not
-        // the last live-tuned value.
+        // #78 / #95 — live-follow the active tune control while TUN is
+        // armed: drag the TxPanel TUN-drive slider (TuneDriveTune) or
+        // edit the fixed-drive value (TuneDriveFixed) and the wire DAC
+        // follows immediately.  No-op when TUN is not armed or in slider
+        // mode.  Never mutates savedDrive — restore-on-release must use
+        // the pre-tune value, not the last live-tuned value.
+        auto liveFollow = [stream, tunePctFor]() {
+            if (!stream->tuneEnabled()) return;
+            const int pct = tunePctFor();
+            if (pct < 0) return;
+            stream->setTxDriveLevel(std::clamp(int(std::lround(
+                pct * 255.0 / 100.0)), 0, 255));
+        };
         QObject::connect(prefs, &lyra::ui::Prefs::tuneDrivePctChanged,
-                         prefs, [stream, prefs]() {
-            if (!prefs->useTuneDrive()) return;
-            if (!stream->tuneEnabled())  return;
-            const int raw = std::clamp(int(std::lround(
-                prefs->tuneDrivePct() * 255.0 / 100.0)), 0, 255);
-            stream->setTxDriveLevel(raw);
-        });
+                         prefs, liveFollow);
+        QObject::connect(prefs, &lyra::ui::Prefs::fixedTuneDrivePctChanged,
+                         prefs, liveFollow);
     }
     // Weather-alert service — polls the operator's enabled sources and
     // feeds the header badges + toasts.  Reads its location from Prefs,

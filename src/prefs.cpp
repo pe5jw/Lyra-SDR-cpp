@@ -75,6 +75,7 @@ constexpr auto kOpGrid  = "operator/grid";
 constexpr auto kOpLat   = "operator/lat_manual";
 constexpr auto kOpLon   = "operator/lon_manual";
 constexpr auto kBandRegion = "band_plan/region";
+constexpr auto kBandCountry = "band_plan/country";
 constexpr auto kBpSegs     = "band_plan/segments";
 constexpr auto kBpLand     = "band_plan/landmarks";
 constexpr auto kBpBeacons  = "band_plan/beacons";
@@ -92,8 +93,10 @@ constexpr auto kAutoStartOnLaunch  = "hw/autoStartOnLaunch";
 constexpr auto kMicSource    = "tx/mic_source";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
-constexpr auto kUseTuneDrive = "tx/use_tune_drive";
+constexpr auto kUseTuneDrive = "tx/use_tune_drive";   // legacy (#74); migrated
+constexpr auto kTuneDriveMode = "tx/tune_drive_mode";  // #95: 0/1/2
 constexpr auto kTuneDrivePct = "tx/tune_drive_pct";
+constexpr auto kFixedTuneDrive = "tx/fixed_tune_drive_pct";  // #95
 // Task #75 — TCI RX-out gain in dB.  Default 0.0 = unity (byte-
 // identical to pre-#75 behaviour).  Operator-tuned in Settings →
 // TCI server group; clients see the gain change at the next emitted
@@ -114,6 +117,11 @@ const QStringList kRegions = {
     QStringLiteral("US"), QStringLiteral("IARU_R1"),
     QStringLiteral("IARU_R3"), QStringLiteral("NONE"),
 };
+// Optional country override (layered on the region base table for bands
+// that deviate from the IARU region, e.g. 60m).  "AUTO" = region only.
+const QStringList kCountries = {
+    QStringLiteral("AUTO"), QStringLiteral("UK"), QStringLiteral("CA"),
+};
 // Modes whose per-mode bandwidth we persist/restore.
 const QStringList kModes = {
     QStringLiteral("LSB"),  QStringLiteral("USB"),
@@ -132,9 +140,17 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     rxDbMax_      = s.value(kDbMax, -20.0).toDouble();
     txDbMin_    = s.value(kTxDbMin, -80.0).toDouble();
     txDbMax_    = s.value(kTxDbMax, 20.0).toDouble();
-    useTuneDrive_ = s.value(kUseTuneDrive, false).toBool();
+    // #95 TUN drive mode.  Migrate the legacy #74 bool when the new
+    // key is absent: useTuneDrive ON → TuneDriveTune(1), OFF → slider(0).
+    if (s.contains(kTuneDriveMode)) {
+        tuneDriveMode_ = std::clamp(s.value(kTuneDriveMode, 0).toInt(), 0, 2);
+    } else {
+        tuneDriveMode_ = s.value(kUseTuneDrive, false).toBool() ? 1 : 0;
+    }
     tuneDrivePct_ = std::clamp(
         s.value(kTuneDrivePct, 25).toInt(), 0, 100);
+    fixedTuneDrivePct_ = std::clamp(
+        s.value(kFixedTuneDrive, 25).toInt(), 0, 100);
     tciRxGainDb_  = std::clamp(
         s.value(kTciRxGainDb, 0.0).toDouble(), -40.0, 10.0);
     tciTxGainDb_  = std::clamp(
@@ -213,6 +229,9 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     }
     bandPlanRegion_ = s.value(kBandRegion, QStringLiteral("US")).toString();
     if (!kRegions.contains(bandPlanRegion_)) bandPlanRegion_ = QStringLiteral("US");
+    bandPlanCountry_ = s.value(kBandCountry, QStringLiteral("AUTO")).toString();
+    if (!kCountries.contains(bandPlanCountry_))
+        bandPlanCountry_ = QStringLiteral("AUTO");
     bandPlanSegments_  = s.value(kBpSegs, true).toBool();
     bandPlanLandmarks_ = s.value(kBpLand, true).toBool();
     bandPlanBeacons_   = s.value(kBpBeacons, true).toBool();
@@ -355,11 +374,12 @@ void Prefs::setRxDbMax(double v) {
     }
 }
 
-void Prefs::setUseTuneDrive(bool v) {
-    if (v == useTuneDrive_) return;
-    useTuneDrive_ = v;
-    QSettings().setValue(kUseTuneDrive, v);
-    emit useTuneDriveChanged();
+void Prefs::setTuneDriveMode(int v) {
+    v = std::clamp(v, 0, 2);
+    if (v == tuneDriveMode_) return;
+    tuneDriveMode_ = v;
+    QSettings().setValue(kTuneDriveMode, v);
+    emit tuneDriveModeChanged();
 }
 
 void Prefs::setTuneDrivePct(int v) {
@@ -368,6 +388,14 @@ void Prefs::setTuneDrivePct(int v) {
     tuneDrivePct_ = v;
     QSettings().setValue(kTuneDrivePct, v);
     emit tuneDrivePctChanged();
+}
+
+void Prefs::setFixedTuneDrivePct(int v) {
+    v = std::clamp(v, 0, 100);
+    if (v == fixedTuneDrivePct_) return;
+    fixedTuneDrivePct_ = v;
+    QSettings().setValue(kFixedTuneDrive, v);
+    emit fixedTuneDrivePctChanged();
 }
 
 void Prefs::setTciRxGainDb(double v) {
@@ -914,6 +942,15 @@ void Prefs::setBandPlanRegion(const QString &r) {
         bandPlanRegion_ = v;
         QSettings().setValue(kBandRegion, v);
         emit bandPlanRegionChanged();
+    }
+}
+
+void Prefs::setBandPlanCountry(const QString &c) {
+    const QString v = kCountries.contains(c) ? c : QStringLiteral("AUTO");
+    if (v != bandPlanCountry_) {
+        bandPlanCountry_ = v;
+        QSettings().setValue(kBandCountry, v);
+        emit bandPlanCountryChanged();
     }
 }
 

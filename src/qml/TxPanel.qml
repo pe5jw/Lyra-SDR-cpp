@@ -313,16 +313,15 @@ Rectangle {
 
         Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
 
-        // ── Tune-drive % (Task #74) — inline operator-tuned drive
-        //    level applied only while TUN is armed; visible only when
-        //    Settings → TX → "Use separate tune drive" is on so the
-        //    panel stays uncluttered for operators who tune at their
-        //    main TX drive (the legacy behaviour).  Persists to
-        //    QSettings via Prefs.tuneDrivePct.
+        // ── Tune-drive % (Task #74 / #95) — inline operator-tuned drive
+        //    level applied only while TUN is armed; visible only in
+        //    Settings → TX → Tune drive = "Use Tune slider" so the panel
+        //    stays uncluttered for operators who tune at their main TX
+        //    drive or a fixed value.  Persists via Prefs.tuneDrivePct.
         Label {
             text: qsTr("Tune")
             color: root.cMuted
-            visible: Prefs.useTuneDrive
+            visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
             HoverHandler { id: tuneLblHov }
             ToolTip.visible: tuneLblHov.hovered
             ToolTip.delay: 600
@@ -339,7 +338,7 @@ Rectangle {
         // typed entry.  Per-band persistence per #74 follow-up.
         Slider {
             id: tuneDriveSlider
-            visible: Prefs.useTuneDrive
+            visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
             Layout.preferredWidth: 130
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: Prefs.tuneDrivePct
@@ -366,7 +365,7 @@ Rectangle {
         // Live percent readback next to the slider (matches the
         // Drive/Mic readback idiom).
         Label {
-            visible: Prefs.useTuneDrive
+            visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
             text: Prefs.tuneDrivePct + qsTr(" %")
             color: cText
             font.family: "Consolas"

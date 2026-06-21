@@ -33,6 +33,8 @@ class UsbBcd : public QObject {
                NOTIFY serialChanged)
     Q_PROPERTY(bool sixtyAsForty  READ sixtyAsForty  WRITE setSixtyAsForty
                NOTIFY sixtyAsFortyChanged)
+    Q_PROPERTY(bool elevenAsTen   READ elevenAsTen   WRITE setElevenAsTen
+               NOTIFY elevenAsTenChanged)
     // Live BCD code currently asserted (readout).
     Q_PROPERTY(int currentBcd     READ currentBcd    NOTIFY currentBcdChanged)
 
@@ -44,6 +46,7 @@ public:
     bool    enabled()      const { return enabled_; }
     QString serial()       const { return serial_; }
     bool    sixtyAsForty() const { return sixtyAsForty_; }
+    bool    elevenAsTen()  const { return elevenAsTen_; }
     int     currentBcd()   const { return currentBcd_; }
 
     // FTDI device serials currently attached (for the Settings picker).
@@ -52,6 +55,7 @@ public:
     void setEnabled(bool on);
     void setSerial(const QString &serial);
     void setSixtyAsForty(bool on);
+    void setElevenAsTen(bool on);
 
 public slots:
     // Recompute + assert the BCD code for the given RX frequency.  Wired
@@ -62,6 +66,7 @@ signals:
     void enabledChanged(bool on);
     void serialChanged(const QString &serial);
     void sixtyAsFortyChanged(bool on);
+    void elevenAsTenChanged(bool on);
     void currentBcdChanged(int code);
     void statusMessage(const QString &msg);
 
@@ -75,6 +80,7 @@ private:
     bool       enabled_     = false;
     QString    serial_;
     bool       sixtyAsForty_ = true;   // most amps share 40m for 60m
+    bool       elevenAsTen_  = true;   // 11m/CB uses the 10m filter code
     int        currentBcd_  = -1;      // -1 = nothing asserted yet
     int        lastValue_   = -1;      // last byte written (dedup)
     quint32    lastFreqHz_  = 0;
