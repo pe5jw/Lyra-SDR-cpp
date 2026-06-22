@@ -104,6 +104,8 @@ constexpr auto kFixedTuneDrive = "tx/fixed_tune_drive_pct";  // #95
 constexpr auto kTciRxGainDb  = "tci/rx_gain_db";
 // Task #108 — symmetric inbound (MSHV/JTDX/WSJT-X → Lyra TXA) gain.
 constexpr auto kTciTxGainDb  = "tci/tx_gain_db";
+constexpr auto kWfIdLevel       = "tx/wf_id_level";       // #175 (0..0.065)
+constexpr auto kWfIdIntervalMin = "tx/wf_id_interval_min"; // #175 (0..20; enable is non-persist)
 // Segment-kind default colours (mirror band_plan.py SEGMENT_COLORS).
 const QHash<QString, QString> kBpDefaultColors = {
     {QStringLiteral("CW"),  QStringLiteral("#3c5a9c")},
@@ -155,6 +157,11 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         s.value(kTciRxGainDb, 0.0).toDouble(), -40.0, 10.0);
     tciTxGainDb_  = std::clamp(
         s.value(kTciTxGainDb, 0.0).toDouble(), -40.0, 10.0);
+    wfIdLevel_       = std::clamp(
+        s.value(kWfIdLevel, 0.06).toDouble(), 0.0, 0.065);  // #175
+    wfIdIntervalMin_ = std::clamp(
+        s.value(kWfIdIntervalMin, 0).toInt(), 0, 20);       // #175
+    // wfIdEnabled_ is NOT loaded — non-persistent, OFF every session (safety).
     dbAuto_     = s.value(kDbAuto, false).toBool();
     traceMode_  = std::clamp(s.value(kMode, 0).toInt(), 0, 1);
     traceColor_ = s.value(kTrace, QStringLiteral("#5ec8ff")).toString();
@@ -418,6 +425,34 @@ void Prefs::setTciTxGainDb(double v) {
     tciTxGainDb_ = v;
     QSettings().setValue(kTciTxGainDb, v);
     emit tciTxGainDbChanged();
+}
+
+void Prefs::setWfIdLevel(double v) {
+    // #175 — clamped 0..0.065: a waterfall ID is full-duty multitone, so a hot
+    // level = full-power-digital splatter + solid-state-amp stress.  0.065 is
+    // the ceiling (operator bench: 0.08 was still too hot); persisted.
+    v = std::clamp(v, 0.0, 0.065);
+    if (v == wfIdLevel_) return;
+    wfIdLevel_ = v;
+    QSettings().setValue(kWfIdLevel, v);
+    emit wfIdLevelChanged();
+}
+
+void Prefs::setWfIdEnabled(bool on) {
+    // #175 — NON-persistent (no QSettings write): the auto-ID re-arms OFF
+    // every session, so it can never key on a band you haven't tuned up on.
+    if (on == wfIdEnabled_) return;
+    wfIdEnabled_ = on;
+    emit wfIdEnabledChanged();
+}
+
+void Prefs::setWfIdIntervalMin(int m) {
+    // #175 — auto-cadence in minutes (0 = once on arm); persisted.
+    m = std::clamp(m, 0, 20);
+    if (m == wfIdIntervalMin_) return;
+    wfIdIntervalMin_ = m;
+    QSettings().setValue(kWfIdIntervalMin, m);
+    emit wfIdIntervalMinChanged();
 }
 
 void Prefs::setMoxActive(bool on) {

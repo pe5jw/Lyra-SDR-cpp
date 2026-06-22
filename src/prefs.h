@@ -76,6 +76,18 @@ class Prefs : public QObject {
     // per-profile TCI gain ships under #49 + #55.
     Q_PROPERTY(double tciTxGainDb READ tciTxGainDb WRITE setTciTxGainDb
                NOTIFY tciTxGainDbChanged)
+    // #175 — waterfall-ID controls.  wfIdLevel = burst level (0..0.065;
+    // deliberately low — a full-duty multitone ID is effectively full-power
+    // digital into the finals, so a hot level splatters/IMDs and stresses an
+    // SS amp).  wfIdEnabled = auto-ID armed (NON-persistent: OFF every
+    // session for safety).  wfIdIntervalMin = auto-cadence 0..20 min
+    // (0 = once on arm; persisted).
+    Q_PROPERTY(double wfIdLevel READ wfIdLevel WRITE setWfIdLevel
+               NOTIFY wfIdLevelChanged)
+    Q_PROPERTY(bool wfIdEnabled READ wfIdEnabled WRITE setWfIdEnabled
+               NOTIFY wfIdEnabledChanged)
+    Q_PROPERTY(int  wfIdIntervalMin READ wfIdIntervalMin WRITE setWfIdIntervalMin
+               NOTIFY wfIdIntervalMinChanged)
     // Auto-fit the panadapter dB range (ignores dbMin/dbMax).
     Q_PROPERTY(bool dbAuto READ dbAuto WRITE setDbAuto NOTIFY dbAutoChanged)
     Q_PROPERTY(int traceMode READ traceMode WRITE setTraceMode
@@ -346,6 +358,12 @@ public:
     void   setTciRxGainDb(double v);
     double tciTxGainDb() const { return tciTxGainDb_; }
     void   setTciTxGainDb(double v);
+    double wfIdLevel() const { return wfIdLevel_; }       // #175
+    void   setWfIdLevel(double v);                        // #175 (clamps 0..0.065)
+    bool   wfIdEnabled() const { return wfIdEnabled_; }   // #175 (non-persist)
+    void   setWfIdEnabled(bool on);
+    int    wfIdIntervalMin() const { return wfIdIntervalMin_; }  // #175 (0..20)
+    void   setWfIdIntervalMin(int m);
 public slots:
     void   setMoxActive(bool on);
 public:
@@ -526,6 +544,9 @@ signals:
     void fixedTuneDrivePctChanged();
     void tciRxGainDbChanged();
     void tciTxGainDbChanged();
+    void wfIdLevelChanged();   // #175
+    void wfIdEnabledChanged();
+    void wfIdIntervalMinChanged();
     void dbAutoChanged();
     void traceModeChanged();
     void traceColorChanged();
@@ -607,6 +628,9 @@ private:
     // Task #108 — symmetric INBOUND TCI gain (MSHV → Lyra TXA).
     // Default 0 dB = unity = byte-identical to pre-#108 behaviour.
     double  tciTxGainDb_ = 0.0;
+    double  wfIdLevel_       = 0.06;   // #175 — waterfall-ID burst level (0..0.065)
+    bool    wfIdEnabled_     = false;  // #175 — NON-persist; OFF every session
+    int     wfIdIntervalMin_ = 0;      // #175 — auto-cadence 0..20 (0 = once)
     bool    dbAuto_;
     int     traceMode_;
     QString traceColor_;

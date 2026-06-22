@@ -12,6 +12,8 @@
 // the bound state yet (rxWorkerLoop / txWorkerLoop are still the
 // live RX/TX path until later stages).
 #include "tx/CwKeyer.h"         // #105 CW-3a — host CW keyer (CWX) element pump
+#include "dsp/WaterfallId.h"    // #175 — TX waterfall callsign-ID raster generator
+#include "tci/TciTxBridge.h"    // #175 bench — synthetic TX-audio injection seam
 #include "wire/RadioNet.h"      // RadioNet, prn, UpdateRadioProtocolSampleSize, SampleRateIn2Bits
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
@@ -1516,11 +1518,11 @@ void HL2Stream::pushEffectiveTxFreq() {
     emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
 }
 
-// #174 CTUNE — sign of the WDSP RX demod shift vs the HL2 mirrored baseband.
-// BENCH-VERIFY before trusting: with CTUNE engaged, tuning the dial must move
-// the demod the SAME direction as normal tuning (signal stays correctly
-// tuned).  If it tunes BACKWARDS, flip this to -1.  (SetRXAShiftFreq / RXOsc
-// sign vs HL2's mirrored baseband — the §14.2 class of gotcha.)
+// #174 CTUNE — sign of the WDSP RX demod shift.  CONFIRMED +1 correct by the
+// 4-agent Thetis audit (2026-06-22): end-to-end Lyra delivers
+// SetRXAShiftFreq(+(VFO−Centre)), byte-identical to Thetis, which computes
+// rx1_osc=−(VFO−Centre) then SetRXAShiftFreq(−rx1_osc) (console.cs:32135 +
+// radio.cs:1417).  Do NOT flip to −1.
 static constexpr int kCtuneShiftSign = +1;
 
 void HL2Stream::pushEffectiveRxFreq() {
@@ -1534,11 +1536,58 @@ void HL2Stream::pushEffectiveRxFreq() {
         static_cast<qint64>(rx1FreqHz_.load(std::memory_order_relaxed))
         + (ritEnabled_.load(std::memory_order_relaxed)
                ? ritOffsetHz_.load(std::memory_order_relaxed) : 0);
-    const quint32 center = ctuneCenterHz_.load(std::memory_order_relaxed);
+    quint32 center = ctuneCenterHz_.load(std::memory_order_relaxed);
     if (center != 0) {
-        // #174 CTUNE: the DDC stays LOCKED at the centre; the WDSP RXA
-        // receiver oscillator shifts the demod to the dial WITHIN the
-        // captured IQ span (rxShiftHzChanged -> WdspEngine::setRxShiftHz).
+        // #174 CTUNE: the DDC stays LOCKED at the centre; the WDSP RXA receiver
+        // oscillator shifts the demod to the dial WITHIN the captured IQ span.
+        // The whole center/shift/edge decision is computed HERE — the single
+        // C++ RX-NCO writer EVERY tune source funnels through (panadapter, TCI
+        // spot, keypad, memory, band) — so it holds even with the panadapter
+        // dock closed.  Faithful port of Thetis's VFOA-pipeline CTUN block
+        // (console.cs:32122-32248): smooth-scroll the centre at the display
+        // margin, re-center on a far jump, revert to tracking when the passband
+        // can't fit the zoomed view, and clamp to the usable IQ.  The panadapter
+        // is a PURE READER of ctuneCenterHz — we emit ctuneChanged on a move.
+        const double srHz = 48000.0 * static_cast<double>(
+            1u << sampleRateBits_.load(std::memory_order_relaxed));
+        double dispSpan = ctuneDispSpanHz_.load(std::memory_order_relaxed);
+        if (dispSpan <= 0.0) dispSpan = srHz;          // pre-first-span fallback
+        constexpr double kDispMargin = 0.05;           // Thetis dispMargin
+        const int    filtLo = ctuneFiltLoHz_.load(std::memory_order_relaxed);
+        const int    filtHi = ctuneFiltHiHz_.load(std::memory_order_relaxed);
+        const double Lm = std::max(0.0, -static_cast<double>(filtLo));  // Thetis Lmargin
+        const double Hm = std::max(0.0,  static_cast<double>(filtHi));  // Thetis Hmargin
+        const double passbandW = static_cast<double>(filtHi - filtLo);
+        const bool   canFit = passbandW < dispSpan * (1.0 - 2.0 * kDispMargin);
+        const double half  = dispSpan / 2.0;
+        const double Ldisp = -half + dispSpan * kDispMargin;
+        const double Hdisp =  half - dispSpan * kDispMargin;
+        constexpr double kJump = 500000.0;             // Thetis freqJumpThresh
+        const double usable = srHz * 0.92 / 2.0;       // captured-IQ usable half
+
+        qint64 cen = static_cast<qint64>(center);
+        if (!canFit) {
+            cen = eff;                                 // zoom too deep to fit passband → track (Thetis 32233)
+        } else {
+            const double p = static_cast<double>(eff - cen);   // demod display position (Thetis -rx1_osc)
+            if ((p - Lm) < (Ldisp - kJump) || (p + Hm) > (Hdisp + kJump)) {
+                cen = eff;                             // far jump (click/spot/memory) → re-center
+            } else if ((p - Lm) < Ldisp) {
+                cen -= static_cast<qint64>(Ldisp - (p - Lm));   // low margin → smooth-scroll centre
+            } else if ((p + Hm) > Hdisp) {
+                cen += static_cast<qint64>((p + Hm) - Hdisp);   // high margin → smooth-scroll centre
+            }
+            const double p2 = static_cast<double>(eff - cen);
+            if (p2 < -usable + Lm || p2 > usable - Hm)
+                cen = eff;                             // IQ clamp backstop → re-center
+        }
+        if (cen < 0) cen = 0;   // never wrap the quint32 store (defensive — only
+                                // reachable at sub-MHz dial + pathological span)
+        if (static_cast<quint32>(cen) != center) {
+            center = static_cast<quint32>(cen);
+            ctuneCenterHz_.store(center, std::memory_order_relaxed);
+            emit ctuneChanged();                       // panadapter re-reads the centre
+        }
         const int ci = static_cast<int>(center);
         lyra::wire::set_rx_freq(0, ci);  // DDC0 locked
         lyra::wire::set_rx_freq(1, ci);  // DDC1 locked (until RX2)
@@ -1572,6 +1621,26 @@ void HL2Stream::setCtuneCenterHz(quint32 hz) {
     pushEffectiveRxFreq();          // re-tune the DDC (+ shift emit when on)
     if (hz == 0)
         emit rxShiftHzChanged(0.0); // disengage: turn the WDSP RX shift off
+}
+
+void HL2Stream::setCtuneDisplaySpanHz(double hz) {
+    if (hz < 0.0) hz = 0.0;
+    ctuneDispSpanHz_.store(hz, std::memory_order_relaxed);
+    // A zoom change moves the display span → re-evaluate the CTUNE edge model
+    // (a zoom-in that no longer fits the passband must revert to tracking;
+    // Thetis force-centers on zoom-in).  No-op when CTUNE is off.
+    if (ctuneCenterHz_.load(std::memory_order_relaxed) != 0)
+        pushEffectiveRxFreq();
+}
+
+void HL2Stream::setCtuneFilterEdges(int lowHz, int highHz) {
+    ctuneFiltLoHz_.store(lowHz,  std::memory_order_relaxed);
+    ctuneFiltHiHz_.store(highHz, std::memory_order_relaxed);
+    // A mode / bandwidth change alters the passband margins + canFit → re-eval
+    // the CTUNE edge model now (mirror setCtuneDisplaySpanHz) so a fit/no-fit
+    // transition doesn't lag until the next tune.  No-op when CTUNE is off.
+    if (ctuneCenterHz_.load(std::memory_order_relaxed) != 0)
+        pushEffectiveRxFreq();
 }
 
 void HL2Stream::setRitEnabled(bool on) {
@@ -1982,6 +2051,32 @@ void HL2Stream::onHwPttPoll() {
 
 void HL2Stream::requestMoxFromTci(bool on) {
     requestMox(on, PttSource::Tci);
+}
+
+int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level) {
+    // #175 bench (increment 2a).  Render the call → a 48 kHz mono raster
+    // (matches the TXA in-rate, kTxInRate=48000) and inject it as the sole
+    // TX source via the TCI TX-audio bridge — the proven digital-audio seam
+    // (the WDSP cm_main pump drains it I=Q=mono when the source is TCI).
+    // Returns the burst length in ms so the QML trigger can schedule the
+    // keyup; 0 = blank call / nothing rendered → caller does NOT key.
+    lyra::dsp::WaterfallIdParams p;   // 48 kHz; high-res transposed raster
+    p.level = std::clamp(level, 0.0, 0.065);   // operator WF-ID Level (Prefs)
+    const std::vector<float> buf = lyra::dsp::WaterfallId::render(callsign, p);
+    if (buf.empty()) {
+        safetyLog(QStringLiteral("#175 WF-ID: blank/empty render — not keying "
+                                 "(set callsign in Settings -> Hardware)"));
+        return 0;
+    }
+    auto &bridge = lyra::tci::TciTxBridge::instance();
+    bridge.clear();
+    bridge.pushMono(buf);
+    const int ms = static_cast<int>(buf.size() * 1000 /
+                                    static_cast<std::size_t>(p.sampleRate));
+    safetyLog(QStringLiteral("#175 WF-ID bench: queued %1 samples (%2 ms) for '%3' "
+                             "— ensure mic source = TCI + DIGU (flat) for the burst")
+                  .arg(buf.size()).arg(ms).arg(callsign));
+    return ms;
 }
 
 void HL2Stream::requestMox(bool on, PttSource source) {

@@ -27,6 +27,7 @@
 #include "speechmodel.h"      // #88 native TX speech rack — txProcessCb wire hook
 #include "combinatormodel.h"  // #51 native TX combinator — txProcessCb wire hook
 #include "platemodel.h"       // #52 native TX plate reverb — txProcessCb wire hook
+#include "WaterfallIdController.h"  // #175 waterfall-ID arm/cadence orchestrator
 #include "wire/cmsetup.h"   // P0.d direct port — reference cmsetup.h verbatim
 #include "wire/wdspcalls.h" // P0.a — WDSP call-table resolver (the one approved linkage seam)
 
@@ -1376,6 +1377,53 @@ int main(int argc, char *argv[])
                     const QString m0 = wdspEngine->mode();
                     stream->setTxMode(wdspTxModeFor(m0));
                     lyra::wire::SetTxRackBypass(txModeIsDigital(m0) ? 1 : 0);
+                }
+
+                // #175 — waterfall-ID arm/cadence orchestrator.  Owns the
+                // chip-armed "send once + every N min" behaviour: per burst it
+                // flattens TX (TCI source + whole-rack bypass + DIGU/DIGL +
+                // leveler-off) and restores the operator's TX state on the
+                // un-key edge.  All transient/non-persisted (no Prefs/QSettings
+                // touched) so a crash mid-burst can't strand source/mode.
+                // Parented to the stream (session lifetime).
+                new WaterfallIdController(prefs, stream, wdspEngine, stream);
+
+                // #174 CTUNE Stage 2 — feed the C++ edge model its display
+                // context: the live display span (zoom) + the signed RX filter
+                // passband edges (mode-dependent).  pushEffectiveRxFreq uses
+                // these for Thetis's smooth-scroll / bCanFitInView / re-center.
+                {
+                    auto pushCtuneSpan = [stream, wdspEngine]() {
+                        stream->setCtuneDisplaySpanHz(
+                            static_cast<double>(wdspEngine->spanHz()));
+                    };
+                    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::spanChanged,
+                                     stream, pushCtuneSpan);
+                    pushCtuneSpan();
+
+                    auto pushCtuneFilters = [stream, prefs, wdspEngine]() {
+                        const int fl = prefs->filterLow();    // low-cut magnitude (Hz)
+                        const int bw = prefs->rxBandwidth();  // high-cut magnitude (Hz)
+                        const QString m = wdspEngine->mode().toUpper();
+                        int lo, hi;
+                        if (m == QStringLiteral("LSB") || m == QStringLiteral("DIGL")
+                            || m == QStringLiteral("CWL")) {
+                            lo = -bw; hi = -fl;               // lower sideband
+                        } else if (m == QStringLiteral("AM") || m == QStringLiteral("SAM")
+                            || m == QStringLiteral("DSB") || m == QStringLiteral("FM")) {
+                            lo = -bw; hi = bw;                // symmetric (double-sideband)
+                        } else {
+                            lo = fl; hi = bw;                 // USB / DIGU / CWU upper
+                        }
+                        stream->setCtuneFilterEdges(lo, hi);
+                    };
+                    QObject::connect(prefs, &lyra::ui::Prefs::filterLowChanged,
+                                     stream, pushCtuneFilters);
+                    QObject::connect(prefs, &lyra::ui::Prefs::rxBandwidthChanged,
+                                     stream, pushCtuneFilters);
+                    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::modeChanged,
+                                     stream, pushCtuneFilters);
+                    pushCtuneFilters();
                 }
 
                 // TX-1 component 8c + Task #53 — operator TX bandpass.

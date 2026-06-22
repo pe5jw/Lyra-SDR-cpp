@@ -48,17 +48,12 @@ Item {
     Connections {
         target: Stream
         function onRx1FreqChanged() {
-            // #174 CTUNE: tuning the dial past the frozen span re-locks the
-            // centre on the new dial (Thetis auto-re-centre — keeps the signal
-            // on-screen); otherwise the marker just slides within the band.
-            if (Stream.ctuneEnabled) {
-                var halfSpan = WdspEngine.spanHz / 2
-                if (halfSpan > 0
-                    && Math.abs(Stream.rx1FreqHz - Stream.ctuneCenterHz) > halfSpan) {
-                    Stream.setCtuneCenterHz(Stream.rx1FreqHz)  // re-fires onCtuneChanged
-                    return
-                }
-            }
+            // #174 CTUNE Stage 2: the C++ RX-NCO writer (pushEffectiveRxFreq)
+            // now owns ALL re-centering — smooth-scroll at the display margin,
+            // far-jump re-center, zoom revert-to-tracking, and the IQ clamp,
+            // Thetis-faithful — and emits ctuneChanged whenever it moves the
+            // centre.  QML is a pure reader: just track the (possibly re-locked)
+            // centre.  (The old QML hard ±halfSpan snap is gone.)
             root.centerHz = root.effCenterHz()
         }
         function onRitChanged()     { root.centerHz = root.effCenterHz() }

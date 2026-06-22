@@ -926,6 +926,13 @@ public slots:
     // centre (0 = off) — used by the re-centre logic later.
     Q_INVOKABLE void setCtuneEnabled(bool on);
     Q_INVOKABLE void setCtuneCenterHz(quint32 hz);
+    // #174 CTUNE Stage 2 — display-context feeds for the Thetis edge model
+    // (smooth-scroll / far-jump re-center / bCanFitInView / zoom force-center).
+    // Plumbed from main.cpp: span from WdspEngine.spanHz, signed filter edges
+    // from the operator mode + filterLow/rxBandwidth.  setCtuneDisplaySpanHz
+    // re-evaluates the edge model (a zoom-in may no longer fit the passband).
+    void setCtuneDisplaySpanHz(double hz);
+    void setCtuneFilterEdges(int lowHz, int highHz);
     void setTxDriveLevel(int level);
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
@@ -1018,6 +1025,17 @@ public slots:
     // PttSource) — pure source-tagging convenience.
     Q_INVOKABLE void requestMoxFromHwPtt(bool on);
     Q_INVOKABLE void requestMoxFromTci(bool on);
+
+    // #175 bench (increment 2a) — render `callsign` as a waterfall-ID raster
+    // (lyra::dsp::WaterfallId, 48 kHz to match the TXA in-rate), clear + push
+    // it into the TCI TX-audio bridge as the SOLE TX source, and return the
+    // burst length in ms (0 = blank call / empty render).  QML keys via
+    // requestMox(true) then schedules requestMox(false) after the returned
+    // ms + a short tail.  Bench prereqs (operator-set for now): mic source =
+    // TCI + a flat/digital TX path (DIGU).  The full self-keyed / auto-flat /
+    // mic-mute / cadence / 11M-lockout orchestration is increment 2-full;
+    // this is the manual-trigger raster-validation cut.
+    Q_INVOKABLE int pushWaterfallIdAudio(const QString &callsign, double level);
 
     // ---- TX-0c-pa-debug: host-side safety timeout ----------------
     // setTxTimeoutSec clamps to kTxTimeoutMinSec..kTxTimeoutMaxSec
@@ -1574,6 +1592,9 @@ private:
     std::atomic<bool>    xitEnabled_{false};
     std::atomic<qint32>  xitOffsetHz_{0};
     std::atomic<quint32> ctuneCenterHz_{0};   // #174 CTUNE locked DDC centre (0=off)
+    std::atomic<double>  ctuneDispSpanHz_{0.0}; // #174 CTUNE Stage2 — display span (Hz, from WdspEngine.spanHz; 0=unknown→full IQ)
+    std::atomic<int>     ctuneFiltLoHz_{0};   // #174 CTUNE Stage2 — signed RX filter low edge (Hz)
+    std::atomic<int>     ctuneFiltHiHz_{3000};// #174 CTUNE Stage2 — signed RX filter high edge (Hz)
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)

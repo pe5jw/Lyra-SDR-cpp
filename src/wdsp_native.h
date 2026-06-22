@@ -67,6 +67,10 @@ using fn_SetRXAPanelBinaural_t = void (*)(int channel, int bin);
 // verified before any caller exists (CTUNE step 2).
 using fn_SetRXAShiftFreq_t     = void (*)(int channel, double fshift);
 using fn_SetRXAShiftRun_t      = void (*)(int channel, int run);
+// #174 CTUNE — Thetis pairs RXANBPSetShiftFrequency with SetRXAShiftFreq
+// (radio.cs:1417-1418) so the front-of-chain notch bandpass + manual notches
+// track the demod shift.  Export #45 in the bundled wdsp.dll (dumpbin 2026-06-22).
+using fn_RXANBPSetShiftFrequency_t = void (*)(int channel, double fshift);
 using fn_WDSPwisdom_t          = int  (*)(char *directory);
 // Step 3e level-cal: AGC threshold/slope + panel gain.  SetRXAAGCThresh
 // computes the AGC max_gain from (thresh, size, rate) + the slope-
@@ -379,6 +383,7 @@ struct WdspApi {
     fn_SetRXAPanelBinaural_t SetRXAPanelBinaural = nullptr;
     fn_SetRXAShiftFreq_t     SetRXAShiftFreq     = nullptr;  // #174 CTUNE
     fn_SetRXAShiftRun_t      SetRXAShiftRun      = nullptr;  // #174 CTUNE
+    fn_RXANBPSetShiftFrequency_t RXANBPSetShiftFrequency = nullptr;  // #174 CTUNE notch track
     fn_WDSPwisdom_t          WDSPwisdom          = nullptr;
     fn_SetRXAAGCThresh_t     SetRXAAGCThresh     = nullptr;
     fn_SetRXAAGCSlope_t      SetRXAAGCSlope      = nullptr;

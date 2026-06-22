@@ -681,6 +681,8 @@ void MainWindow::buildDocks() {
         d->setFloating(true);
         d->hide();
     }
+    // (#175 Waterfall ID controls live inline on the TX panel under a
+    // "Waterfall ID" section — no separate dock/chip.)
     // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
     // window so the front panel stays clean — the header "TX DSP" chip-strip
     // summons one (it pops as a movable/resizable float), and Save-my-layout
@@ -1014,6 +1016,60 @@ void MainWindow::buildToolbar() {
                     [st, ctun]() {
                         QSignalBlocker block(ctun);
                         ctun->setChecked(st->ctuneEnabled());
+                    });
+        }
+        // Waterfall ID (#175) ARM chip — NOT a dock, NOT a popup; a state
+        // toggle on Prefs.wfIdEnabled.  Armed = the auto-ID is live (fires one
+        // ID now + every N min); the Level / interval / Send controls + the
+        // over-drive notice live inline on the TX panel.  Kept off the TX panel
+        // so a fat-finger can't key it; amber "armed" accent so an armed
+        // station reads at a glance.  Re-arms OFF every session (wfIdEnabled is
+        // non-persistent) so it can never auto-key on a fresh launch.
+        if (prefs_) {
+            static const char *kWfIdChipQss =
+                "QToolButton{border:1px solid #3a4750;border-radius:4px;"
+                "padding:2px 9px;margin:0 2px;color:#cfd8dc;background:#1c252b;}"
+                "QToolButton:hover{border-color:#5b6b76;background:#243038;}"
+                "QToolButton:checked{background:#b07000;border-color:#ffc14d;"
+                "color:#ffffff;font-weight:600;}"
+                "QToolButton:checked:hover{background:#c98300;}";
+            auto *wfid = new QToolButton(tb);
+            wfid->setText(tr("WF-ID"));
+            wfid->setCheckable(true);
+            wfid->setChecked(prefs_->wfIdEnabled());
+            wfid->setObjectName(QStringLiteral("txDspChip"));
+            wfid->setStyleSheet(QString::fromLatin1(kWfIdChipQss));
+            wfid->setToolTip(tr("Arm the waterfall callsign ID.  Armed = sends "
+                                "your call as a waterfall image now + every N "
+                                "min (set interval / Level on the TX panel).  "
+                                "USB/LSB voice only — in digital your call is "
+                                "already in the payload.  Re-arms OFF each "
+                                "session.  Courtesy ID only."));
+            tb->addWidget(wfid);
+            // chip -> Prefs (arm / disarm the auto-ID cadence)
+            connect(wfid, &QToolButton::toggled, prefs_,
+                    [this](bool on) { prefs_->setWfIdEnabled(on); });
+            // Prefs -> chip (panel Send / external change keeps it synced)
+            connect(prefs_, &Prefs::wfIdEnabledChanged, wfid,
+                    [this, wfid]() {
+                        QSignalBlocker block(wfid);
+                        wfid->setChecked(prefs_->wfIdEnabled());
+                    });
+            // SSB-only (#175 operator rule): a waterfall ID only makes sense on
+            // USB/LSB voice.  Disable the chip off-SSB; leaving SSB while armed
+            // also disarms (can't / shouldn't ID in digital — the call is
+            // already in the digital payload there).
+            auto isSsbMode = [this]() {
+                const QString u = prefs_->mode().toUpper();
+                return u == QLatin1String("USB") || u == QLatin1String("LSB");
+            };
+            wfid->setEnabled(isSsbMode());
+            connect(prefs_, &Prefs::modeChanged, wfid,
+                    [this, wfid, isSsbMode]() {
+                        const bool ssb = isSsbMode();
+                        wfid->setEnabled(ssb);
+                        if (!ssb && prefs_->wfIdEnabled())
+                            prefs_->setWfIdEnabled(false);
                     });
         }
     }

@@ -1646,6 +1646,12 @@ void WdspEngine::setRxShiftHz(double hz)
         api.SetRXAShiftFreq(channel_, hz);
         api.SetRXAShiftRun(channel_, 1);
     }
+    // #174 CTUNE — keep the notch bandpass (NBP0 / manual notches) shifted in
+    // step with the demod, the way Thetis drives both from RXOsc
+    // (radio.cs:1417-1418).  Same signed Hz as SetRXAShiftFreq; null-safe (only
+    // shipped wdsp.dll builds that export it get notch-tracking).
+    if (api.RXANBPSetShiftFrequency)
+        api.RXANBPSetShiftFrequency(channel_, hz);
 }
 
 void WdspEngine::applyModeFilter()

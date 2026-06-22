@@ -191,6 +191,7 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.SetRXAPanelBinaural, "SetRXAPanelBinaural");
     resolve(api_.SetRXAShiftFreq,     "SetRXAShiftFreq");   // #174 CTUNE
     resolve(api_.SetRXAShiftRun,      "SetRXAShiftRun");    // #174 CTUNE
+    resolve(api_.RXANBPSetShiftFrequency, "RXANBPSetShiftFrequency");  // #174 CTUNE notch track
     resolve(api_.WDSPwisdom,          "WDSPwisdom");
     resolve(api_.SetRXAAGCThresh,     "SetRXAAGCThresh");
     resolve(api_.SetRXAAGCSlope,      "SetRXAAGCSlope");

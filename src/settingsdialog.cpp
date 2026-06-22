@@ -16,6 +16,8 @@
 
 #include <QCheckBox>
 #include <QGroupBox>
+#include <QScrollArea>
+#include <QScreen>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QInputDialog>
@@ -77,40 +79,69 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       meter_(meter), profiles_(profiles) {
     setWindowTitle(tr("Lyra — Settings"));
-    resize(640, 520);
+    // Open big enough to show a full tab — the widest tabs are 2-column
+    // (Visuals / TX) and were forcing both scrollbars at the old 700×640.
+    // Target a roomy size, capped to ~92% of the screen so it never opens
+    // larger than the display on a small laptop (the scroll areas still cover
+    // any overflow if a tab is taller than even this).
+    {
+        QSize want(1240, 900);
+        if (QScreen *sc = screen()) {
+            const QSize avail = sc->availableGeometry().size() * 0.95;
+            want = QSize(qMin(want.width(),  avail.width()),
+                         qMin(want.height(), avail.height()));
+        }
+        resize(want);
+    }
 
     tabs_ = new QTabWidget(this);
-    tabs_->addTab(buildVisualsTab(), tr("Visuals"));
+
+    // Wrap every tab page in a scroll area so a tab whose content is taller
+    // than the dialog is fully reachable instead of being clipped at the
+    // bottom (operator-reported: long tabs — TX / Network / Weather / etc. —
+    // were cutting off controls for some window sizes).  widgetResizable keeps
+    // the page filling the viewport width (forms/2-col layouts stay full-
+    // width); a vertical scrollbar only appears when the content overflows.
+    auto wrapScroll = [this](QWidget *page) -> QWidget * {
+        auto *sa = new QScrollArea(this);
+        sa->setWidget(page);
+        sa->setWidgetResizable(true);
+        sa->setFrameShape(QFrame::NoFrame);
+        sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        return sa;
+    };
+
+    tabs_->addTab(wrapScroll(buildVisualsTab()), tr("Visuals"));
     if (engine_) {
-        tabs_->addTab(buildAudioTab(), tr("Audio"));
-        tabs_->addTab(buildNoiseTab(), tr("Noise"));
+        tabs_->addTab(wrapScroll(buildAudioTab()), tr("Audio"));
+        tabs_->addTab(wrapScroll(buildNoiseTab()), tr("Noise"));
     }
     if (meter_) {
-        tabs_->addTab(buildMeterTab(), tr("Meter"));
+        tabs_->addTab(wrapScroll(buildMeterTab()), tr("Meter"));
     }
     if (stream_ || discovery_ || bcd_) {
-        tabs_->addTab(buildHardwareTab(), tr("Hardware"));
+        tabs_->addTab(wrapScroll(buildHardwareTab()), tr("Hardware"));
     }
     // TX-1 component 5b — Settings → TX tab.  Only meaningful when
     // the stream is connected (everything here writes through
     // HL2Stream setters).
     if (stream_) {
-        tabs_->addTab(buildTxTab(), tr("TX"));
+        tabs_->addTab(wrapScroll(buildTxTab()), tr("TX"));
         // #105 — CW is its own operating mode (RX pitch + TX keyer);
         // give it a dedicated tab rather than a TX-tab subgroup.
-        tabs_->addTab(buildCwTab(), tr("CW"));
+        tabs_->addTab(wrapScroll(buildCwTab()), tr("CW"));
     }
     if (profiles_) {
-        tabs_->addTab(buildProfilesTab(), tr("Profiles"));
+        tabs_->addTab(wrapScroll(buildProfilesTab()), tr("Profiles"));
     }
     if (memory_ || eibi_) {
-        tabs_->addTab(buildBandsTab(), tr("Bands"));
+        tabs_->addTab(wrapScroll(buildBandsTab()), tr("Bands"));
     }
     if (tci_) {
-        tabs_->addTab(buildNetworkTab(), tr("Network"));
+        tabs_->addTab(wrapScroll(buildNetworkTab()), tr("Network"));
     }
     if (wx_) {
-        tabs_->addTab(buildWeatherTab(), tr("Weather"));
+        tabs_->addTab(wrapScroll(buildWeatherTab()), tr("Weather"));
     }
     // Further tabs (Radio, Audio, DSP, …) are added as those features
     // land — deliberately no empty placeholder tabs.
@@ -3501,6 +3532,80 @@ QWidget *SettingsDialog::buildTxTab() {
         form->addRow(enBox);
 
         rightCol->addWidget(grp);   // §15.28 — AUDIO + GAIN column
+    }
+
+    // ── Waterfall ID (#175) group ────────────────────────────────
+    // Self-keyed callsign raster in the SSB passband.  ARM it from the header
+    // WF-ID chip (USB/LSB only — in digital the call is already in the mode's
+    // payload).  These are the config knobs; the live Send button + armed
+    // indicator live on the TX dock panel.  Your callsign comes from
+    // Settings → Hardware → Operator.  AUDIO + GAIN column.
+    if (prefs_) {
+        auto *grp  = new QGroupBox(
+            tr("Waterfall ID  (USB/LSB callsign raster)"), page);
+        auto *form = new QFormLayout(grp);
+
+        // Burst level — clamped low ON PURPOSE (full-duty multitone).
+        auto *lvlSpin = new QDoubleSpinBox(grp);
+        lvlSpin->setRange(0.0, 0.065);
+        lvlSpin->setSingleStep(0.005);
+        lvlSpin->setDecimals(3);
+        lvlSpin->setValue(prefs_->wfIdLevel());
+        lvlSpin->setToolTip(tr(
+            "Waterfall-ID transmit level.  Held low on purpose: a waterfall ID "
+            "is continuous full-duty multitone, so a hot level splatters (IMD) "
+            "and stresses a solid-state amp like full-power digital.  The 0.065 "
+            "cap ≈ ~¼ digital drive.  Courtesy ID only — does NOT "
+            "replace your legal voice/CW station identification."));
+        connect(lvlSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    if (prefs_) prefs_->setWfIdLevel(v);
+                });
+        connect(prefs_, &Prefs::wfIdLevelChanged, lvlSpin, [this, lvlSpin]() {
+            if (lvlSpin->value() != prefs_->wfIdLevel())
+                lvlSpin->setValue(prefs_->wfIdLevel());
+        });
+        form->addRow(tr("Level:"), lvlSpin);
+
+        // Auto-cadence interval (0 = once on arm; else every N min).
+        auto *ivSpin = new QSpinBox(grp);
+        ivSpin->setRange(0, 20);
+        ivSpin->setValue(prefs_->wfIdIntervalMin());
+        ivSpin->setSuffix(tr(" min"));
+        ivSpin->setSpecialValueText(tr("once on arm"));   // shown at value 0
+        ivSpin->setToolTip(tr(
+            "How often the armed ID repeats.  0 = once when you arm it (no "
+            "repeat); 1–20 = re-send every N minutes while armed.  "
+            "Deferred while you're keyed; USB/LSB voice only."));
+        connect(ivSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) {
+                    if (prefs_) prefs_->setWfIdIntervalMin(v);
+                });
+        connect(prefs_, &Prefs::wfIdIntervalMinChanged, ivSpin, [this, ivSpin]() {
+            if (ivSpin->value() != prefs_->wfIdIntervalMin())
+                ivSpin->setValue(prefs_->wfIdIntervalMin());
+        });
+        form->addRow(tr("Repeat:"), ivSpin);
+
+        auto *warn = new QLabel(
+            tr("⚠ Level is held low ON PURPOSE.  A waterfall ID is continuous "
+               "full-duty multitone — running it hot splatters (IMD) and "
+               "stresses a solid-state amp like full-power digital drive.  The "
+               "0.065 cap ≈ ~¼ digital drive.  Courtesy ID only — it does NOT "
+               "replace your legal voice/CW station identification."), grp);
+        warn->setWordWrap(true);
+        warn->setStyleSheet(QStringLiteral("color:#ff9a3c;"));   // amber caution
+        form->addRow(warn);
+
+        auto *note = new QLabel(
+            tr("Arm from the header WF-ID chip (lights amber; USB/LSB only).  "
+               "On arm it sends your call once, then again every “Repeat” "
+               "minutes — no manual send button.  Re-arms OFF every session.  "
+               "Your callsign comes from Settings → Hardware → Operator."), grp);
+        note->setWordWrap(true);
+        form->addRow(note);
+
+        rightCol->addWidget(grp);   // #175 — AUDIO + GAIN column
     }
 
     // ── AM Carrier (AM / SAM modulation) group ───────────────────

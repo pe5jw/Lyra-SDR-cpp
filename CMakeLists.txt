@@ -200,6 +200,10 @@ qt_add_executable(lyra
     # model/panel/wire stages land.
     src/dsp/Plate.h
     src/dsp/Plate.cpp
+    # #175 — TX Waterfall callsign Auto-ID raster generator (increment 1).
+    # Pure text→audio; wire-inert until the keyed-burst orchestration lands.
+    src/dsp/WaterfallId.h
+    src/dsp/WaterfallId.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -279,6 +283,8 @@ qt_add_executable(lyra
     src/prefs.cpp
     src/settingsdialog.h
     src/settingsdialog.cpp
+    src/WaterfallIdController.h
+    src/WaterfallIdController.cpp
     src/palettes.h
     src/palettes.cpp
     src/bands.h
