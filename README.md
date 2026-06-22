@@ -36,23 +36,30 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.4.0)
+## Features (v0.4.5)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
-SAM / FM) plus digital via TCI, and ships a complete native TX audio
-processing rack.  (Still on the roadmap: CW transmit, dual receiver / RX2,
-and PureSignal — see below.)
+SAM / FM) plus CW and digital via TCI, and ships a complete native TX audio
+processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
+— see below.)
 
 * **Radio** — HPSDR Protocol 1 discovery (multi-NIC) + live RX off the
   HL2/HL2+ on dedicated OS threads; auto-connect to the last radio.
 * **DSP** — WDSP RX chain: USB/LSB/CW/AM/FM/DIG modes, per-mode filters,
-  AGC, NR, auto-notch, manual notches, squelch.  Audio out the HL2 jack
-  (AK4951) or PC sound card.
+  AGC, NR, auto-notch, manual notches, squelch, an 8-band parametric RX EQ,
+  and centre-tune (CTUN) lock.  Audio out the HL2 jack (AK4951) or PC sound
+  card.
 * **Transmit** — every voice mode: SSB, AM, DSB, SAM, FM (proper carrier +
   both sidebands on AM/SAM, suppressed-carrier DSB), plus digital via TCI /
   virtual audio cable.  TX power / drive, separate tune drive, AM carrier
   level, mic gain + boost, always-on ALC + operator Leveler.
+* **CW** — internal iambic keyer (paddle / straight key on the HL2 KEY jack)
+  plus a keyboard send line and a contest-grade **macro bank**: named
+  click / F-key (F1–F12) memories, defaults + a "My macros" group you build
+  out, `{tokens}` (contact + your own personal tokens) with a click-to-insert
+  palette, and a Repeat caller.  QSK / semi / manual break-in, adjustable
+  sidetone.
 * **Native TX DSP rack** — a studio audio chain built into the radio, ahead
   of the modulator: an 8-band parametric EQ with a draggable curve + live
   RTA, a multi-stage Speech section (noise gate, auto-AGC, de-esser), a
@@ -61,7 +68,11 @@ and PureSignal — see below.)
   profiles; multimeter (PO / SWR / MIC / COMP / ALC / PA current); hot-mic
   monitor (HL2 jack, a PC device, or over TCI).
 * **TX safety** — ATT-on-TX RX-front-end protection, TR-sequencing for amp
-  hot-switch safety, and an operator TX time-out.
+  hot-switch safety, an operator TX time-out, and a hard External TX Inhibit
+  lockout (for sharing the antenna/bench with sensitive gear).
+* **Waterfall callsign ID** — an optional courtesy ID that paints your
+  callsign as a readable image in the SSB passband (USB/LSB), armed from the
+  header — a visual hello on the band (not a replacement for legal ID).
 * **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
   glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
   drag/wheel tuning; draggable RX passband; collapsible waterfall.
