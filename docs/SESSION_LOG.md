@@ -4,6 +4,49 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-22 — v0.4.5 RELEASED: CTUNE rebuild + Waterfall ID + CW macros
+
+Branch `feature/ctune-rebuild-wfid`; `main` was at v0.4.4. This is the v0.4.5
+release.
+
+### #174 CTUNE rebuilt (operator: v0.4.4 "built wrong")
+- 4-agent Thetis-vs-Lyra audit. Centre/shift/edge decision relocated from QML
+  into the C++ RX-NCO chokepoint (`HL2Stream::pushEffectiveRxFreq`) so EVERY
+  tune source behaves (dial / click / keypad / band+memory / TCI spot): smooth-
+  scroll at the 5% display margin, far-jump re-centre, zoom force-centre, IQ-
+  Nyquist clamp. `RXANBPSetShiftFrequency` added so notches/NB track the shift.
+- Commit `29acc6d` (design docs `0e0f2f2`).
+
+### #175 Waterfall callsign ID
+- TX courtesy ID: the call rendered as a readable image in the SSB passband.
+  Header arm chip (USB/LSB only), Settings → TX config (level ≤0.065 / repeat /
+  over-drive warning), crash-safe transient flat-TX orchestrator (TCI source +
+  whole-rack bypass + DIGU/DIGL, restore on un-key).
+- **LSB mirror bug fixed** this session: DIGL flips audio↔RF, so the call came
+  out mirrored in LSB (USB was fine). Renderer now pre-mirrors the frequency
+  layout for LSB → reads upright on both sidebands. Commit `79d8d43`.
+
+### #176 CW macros — named click / F-key memories
+- Redesigned floating CW console into a contest-grade macro bank: named click +
+  F-key (F1–F12, global) memories, a "My macros" group the operator builds out,
+  live "sending" state, Repeat, a contact row (His call / Name / RST / #).
+- Tokens: contact `{CALL}/{NAME}/{RST}/{#}` + `{MYCALL}`, plus operator personal
+  tokens (`{ME}/{PWR}/{QTH}/{RIG}/...`), with a click-to-insert palette.
+- New `CwMacroModel` persists macros / tokens / serial to QSettings. F-keys via
+  `MainWindow::keyPressEvent` (QML Shortcuts don't fire in the QQuickWidget
+  docks). Commit `9f0d054`.
+
+### Settings dialog
+- Per-tab scroll-area + larger default size (long tabs were clipping).
+
+### Release
+- Version bumped (`CMakeLists.txt` + `installer/lyra.iss` → 0.4.5), release note
+  `docs/releases/v0.4.5.md`, User Guide CW section updated, annotated tag
+  `v0.4.5`, installer `dist/Lyra-Setup-0.4.5.exe`, pushed to GitHub; `main`
+  fast-forwarded to the release.
+
+---
+
 ## 2026-06-21 — v0.4.3 RELEASED: 60 m band plan + tune-drive modes + BCD polish
 
 Operator quality-of-life batch + release. All on `main` (project commits
