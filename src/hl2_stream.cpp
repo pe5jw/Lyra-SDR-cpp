@@ -2053,7 +2053,8 @@ void HL2Stream::requestMoxFromTci(bool on) {
     requestMox(on, PttSource::Tci);
 }
 
-int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level) {
+int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level,
+                                    bool lsb) {
     // #175 bench (increment 2a).  Render the call → a 48 kHz mono raster
     // (matches the TXA in-rate, kTxInRate=48000) and inject it as the sole
     // TX source via the TCI TX-audio bridge — the proven digital-audio seam
@@ -2062,6 +2063,7 @@ int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level) {
     // keyup; 0 = blank call / nothing rendered → caller does NOT key.
     lyra::dsp::WaterfallIdParams p;   // 48 kHz; high-res transposed raster
     p.level = std::clamp(level, 0.0, 0.065);   // operator WF-ID Level (Prefs)
+    p.reverseFreq = lsb;              // LSB pre-mirror (DIGL flips audio↔RF)
     const std::vector<float> buf = lyra::dsp::WaterfallId::render(callsign, p);
     if (buf.empty()) {
         safetyLog(QStringLiteral("#175 WF-ID: blank/empty render — not keying "

@@ -106,7 +106,9 @@ void WaterfallIdController::fireOnce() {
     if (call.isEmpty()) return;
 
     enterFlat();
-    const int ms = stream_->pushWaterfallIdAudio(call, prefs_->wfIdLevel());
+    // LSB pre-mirrors the raster (enterFlat forced DIGL, which flips audio↔RF).
+    const bool lsb = engine_->mode().toUpper() == QLatin1String("LSB");
+    const int ms = stream_->pushWaterfallIdAudio(call, prefs_->wfIdLevel(), lsb);
     if (ms <= 0) { exitFlat(); return; }    // nothing rendered → undo the flat switch
     burstActive_ = true;
     stream_->requestMox(true);              // key — the TX pump paints the bridge burst

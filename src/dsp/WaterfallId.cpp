@@ -118,10 +118,13 @@ std::vector<float> WaterfallId::render(const QString &text,
     // each read wrong — so this is it.
     std::vector<double> freq(static_cast<size_t>(W));
     for (int x = 0; x < W; ++x) {
-        freq[static_cast<size_t>(x)] = (W == 1)
-            ? 0.5 * (p.bandLowHz + p.bandHighHz)
-            : p.bandLowHz + (p.bandHighHz - p.bandLowHz)
-                                * (static_cast<double>(x) / (W - 1));
+        const double t = (W == 1) ? 0.5
+                                  : static_cast<double>(x) / (W - 1);
+        // LSB pre-mirror: lay the call high→low audio so the DIGL audio↔RF
+        // flip lands it upright on the RX waterfall (USB keeps low→high).
+        const double u = p.reverseFreq ? (1.0 - t) : t;
+        freq[static_cast<size_t>(x)] =
+            p.bandLowHz + (p.bandHighHz - p.bandLowHz) * u;
     }
 
     std::vector<double> phase(static_cast<size_t>(W), 0.0);

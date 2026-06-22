@@ -35,6 +35,11 @@ struct WaterfallIdParams {
     double rampMs     = 1.5;       // per-tone gate slew — anti-click (tighter = crisper edges)
     double level      = 0.06;      // output level (BENCH-TUNED lean — keep power low; ALC limits)
     int    rows       = 48;        // rendered text HEIGHT in px = time resolution (≤64)
+    // LSB inverts the audio→RF mapping vs USB, so the same low→high audio
+    // layout comes out MIRRORED left↔right on the RX waterfall.  Set true for
+    // LSB (the controller forces DIGL) to pre-reverse the frequency layout so
+    // the modulation flip cancels it and the call reads upright on the air.
+    bool   reverseFreq = false;
 };
 
 class WaterfallId {

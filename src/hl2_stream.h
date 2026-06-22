@@ -1035,7 +1035,8 @@ public slots:
     // TCI + a flat/digital TX path (DIGU).  The full self-keyed / auto-flat /
     // mic-mute / cadence / 11M-lockout orchestration is increment 2-full;
     // this is the manual-trigger raster-validation cut.
-    Q_INVOKABLE int pushWaterfallIdAudio(const QString &callsign, double level);
+    Q_INVOKABLE int pushWaterfallIdAudio(const QString &callsign, double level,
+                                         bool lsb = false);
 
     // ---- TX-0c-pa-debug: host-side safety timeout ----------------
     // setTxTimeoutSec clamps to kTxTimeoutMinSec..kTxTimeoutMaxSec
