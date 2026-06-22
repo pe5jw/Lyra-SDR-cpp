@@ -4,6 +4,73 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-21 — v0.4.3 RELEASED: 60 m band plan + tune-drive modes + BCD polish
+
+Operator quality-of-life batch + release. All on `main` (project commits
+releases directly to `main`, tags + GitHub release + installer). Released
+mid-afternoon, then held for the day.
+
+### 60 m band plan (`bandplan.{h,cpp}`, `PanadapterPanel.qml`)
+- **Clickable 60 m channels**: US CH1–CH5 now render as always-visible
+  labelled bars (a touch larger), each a MouseArea that QSYs (`Prefs.mode=
+  "USB"` + `Stream.setRx1FreqHz(qsy)`) to the channel's USB dial — same
+  one-click idiom as the FT8/FT4/PSK watering-hole markers. `segments()`
+  flags `channel`/`qsy` per sub-band; delegate gained `chan` prop +
+  conditional label size/visibility + tooltip.
+- **Region/country-correct 60 m**: precise US channel dial freqs
+  (5330.5/5346.5/5357.0/5371.5/5403.5 kHz); WRC-15 contiguous band
+  (5351.5–5366.5) added to `r1Bands()` (was missing). New **Country**
+  override layer: `regionBands(region)` + `countryBands(country)` +
+  `bandsFor(region, country)` merge (replaces same-named band in place).
+  `BandPlan::country()` + `bandPlanCountryChanged→regionChanged`; all 3
+  `bandsFor` call sites updated. UK = its 11 RSGB/Ofcom segments; Canada =
+  WRC-15. `Prefs.bandPlanCountry` (key `band_plan/country`, default "AUTO",
+  validated vs {AUTO,UK,CA}). Settings → Hardware Country combo added.
+- Verify-don't-guess applied: UK 11-segment list WebFetch-confirmed
+  (rsgb.org); AskUserQuestion before writing international freqs.
+
+### Tune-drive selector — #95 (`prefs`, `main.cpp`, `Profile`, settings, TxPanel)
+- Replaced bool `useTuneDrive` with enum `tuneDriveMode`
+  {Slider=0/Tune=1/Fixed=2} + `fixedTuneDrivePct` (default 25), one-time
+  QSettings migration (legacy bool → 0/1). main.cpp tune orchestrator
+  rewritten to a `tunePctFor()` lambda + mode-aware arm/release (fixes a
+  latent mode-switch-mid-tune restore edge). Profile capture/apply +
+  TxPanel `visible: Prefs.tuneDriveMode === 1` updated.
+- **Max-drive cap is honored**: wire chokepoint `setTxDriveLevel`
+  (`std::min(maxDriveRaw(), …)`) already covers TUN; added cosmetic
+  defense-in-depth — Tune/Fixed spinners `setRange(0, maxDrivePct())` +
+  live follow on `maxDrivePctChanged`. So TUN can't exceed the operator's
+  Max-TX-drive ceiling.
+
+### 11 m → 10 m BCD option (`usb_bcd.{h,cpp}`, settingsdialog)
+- New `elevenAsTen` (key `hw/bcd11as10`, default ON), mirroring the
+  existing `sixtyAsForty`. Substitution lives in `reapply()`: an 11 m/CB
+  freq (`cbBandIndexForFreq`>=0, amateur table returns -1) remaps to the
+  10 m amateur index → emits **BCD 9**. Settings → Hardware checkbox.
+- Plus an amber regulatory advisory under the BCD options: "Operate only
+  within the maximum power and band limits permitted by your country /
+  region's regulations." (Operator-requested — states it plainly at the
+  point of use re: 11 m abuse.) USER_GUIDE BCD section mirrors it.
+
+### Docs + release
+- USER_GUIDE: Band-plan (Region+Country+60 m channels), Settings → TX
+  (Tune-drive subsection + Max-drive cap note), USB-BCD (11 m option +
+  advisory). New `docs/releases/v0.4.3.md` (= GitHub release body).
+- Version 0.4.2 → 0.4.3 (`CMakeLists.txt` + `installer/lyra.iss`); full
+  rebuild (LYRA_VERSION embedded, USER_GUIDE resource recompiled) + ISCC →
+  `dist/Lyra-Setup-0.4.3.exe` (68 MB).
+- `06921f2` Release v0.4.3 (16 files, +598/−158) + the already-on-main
+  help-doc commit `4e62bb9` (log-capture section) rode out together. Tag
+  `v0.4.3`, pushed `main` (`ddd6677..06921f2`) + tag, GitHub release
+  published with installer attached + verified.
+
+### Standing rules in effect
+- NO PATCHING (tune-mode done as a proper enum + migration, not a shim).
+- Commit/push only when asked — operator explicitly requested this release.
+- Verify-don't-guess for regulatory data (60 m freqs, UK segments).
+
+---
+
 ## 2026-06-19 — v0.4.1 RELEASED: TX protection (SWR cut + drive cap) + PHROT
 
 Short session: shipped the TX-protection arc, a PHROT parity feature with a
