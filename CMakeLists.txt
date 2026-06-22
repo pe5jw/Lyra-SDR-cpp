@@ -285,6 +285,8 @@ qt_add_executable(lyra
     src/settingsdialog.cpp
     src/WaterfallIdController.h
     src/WaterfallIdController.cpp
+    src/CwMacroModel.h
+    src/CwMacroModel.cpp
     src/palettes.h
     src/palettes.cpp
     src/bands.h

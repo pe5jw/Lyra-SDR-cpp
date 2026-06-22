@@ -31,6 +31,7 @@
 #include "hl2_stream.h"
 #include "wdsp_engine.h"
 #include "prefs.h"
+#include "CwMacroModel.h"
 #include "settingsdialog.h"
 #include "usb_bcd.h"
 
@@ -230,6 +231,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // #50 TX parametric EQ model (drives EqPanel.qml, "Eq" context property).
     // Routes the TX mic rack through eqModel_->engine() (CMaster TX hook).
     eqModel_ = new EqModel(EqModel::Side::Tx, this);
+
+    // #176 CW macro bank (drives CwConsolePanel.qml, "CwMacros" context
+    // property + the F1-F12 global accelerators in keyPressEvent).  Owns the
+    // macros + the "current contact" row + token expansion + send-via-keyer.
+    cwMacros_ = new CwMacroModel(
+        prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
 
     // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context
     // property).  The RX twin of the TX EQ — same engine, shaped on the
@@ -438,6 +445,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Combinator"), combinatorModel_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Plate"), plateModel_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("CwMacros"), cwMacros_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -1903,6 +1912,22 @@ void MainWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
+        }
+    }
+
+    // #176 — F1..F12 fire the assigned CW macro (global accelerator, like a
+    // real contest keyer: works regardless of which dock has focus).  Gated to
+    // CW modes (the keyer no-ops elsewhere) + not while typing in a field (so
+    // editing a macro's text doesn't trip a send).  The model expands tokens
+    // + drives Stream.sendCw + the live "sending" highlight.
+    if (cwMacros_ && prefs_ && !event->isAutoRepeat()
+        && event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F12) {
+        const QString m = prefs_->mode().toUpper();
+        if ((m == QLatin1String("CWU") || m == QLatin1String("CWL"))
+            && !isEditableFocus(QApplication::focusWidget())) {
+            cwMacros_->sendByFkey(event->key() - Qt::Key_F1 + 1);
+            event->accept();
+            return;
         }
     }
     QMainWindow::keyPressEvent(event);

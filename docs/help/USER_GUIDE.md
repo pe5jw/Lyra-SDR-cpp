@@ -1306,13 +1306,47 @@ on its own — the host stays out of the timing, so it's crisp regardless
 of PC load. Speed, weight, iambic A/B, and reverse are in **Settings →
 CW**.
 
-**2 — Keyboard (the CW console).** Click the **CW** chip on the top
-toolbar to pop open the floating **CW Console** (it floats by default and
-remembers where you put it — only open it when you want it). In CWU/CWL:
-type a line and press **Enter** to send it; **Esc** (or the **Stop**
-button) aborts immediately. The **WPM** slider sets the speed. Outside CW
-the send field dims — switch to CW first. The console is also where the
-**RX CW decoder** will live (coming in a later release).
+**2 — Keyboard + macros (the CW console).** Click the **CW** chip on the
+top toolbar to pop open the floating **CW Console** (it floats by default
+and remembers where you put it — only open it when you want it). It works
+only in CWU/CWL; outside CW the send controls dim, so switch to CW first.
+The **WPM** slider sets the speed; **Esc** or the red **Stop · Esc** button
+aborts whatever is sending. The bottom **type-and-send** line keys a line
+live — type and press **Enter**. The console is also where the **RX CW
+decoder** will live (coming in a later release).
+
+The console's centerpiece is the **macro bank** — named, click-to-send CW
+memories:
+
+- **Send a macro** — click its chip, *or* press its **F-key** (F1–F12).
+  The F-keys work anywhere in Lyra while you're in CW (you don't have to
+  click into the console first), like a contest keyer. The chip lights and
+  shows "sending…" until the keyed text finishes; **Esc**/**Stop** kills it.
+- **Defaults** ship for the common calls (CQ, CQ contest, His call, Reply,
+  Exchange, TU 73, AGN?, QRZ?). Below the **── My macros ──** divider is
+  *your* space: click **+ Add macro** to build your own; they save
+  automatically and survive restarts.
+- **Repeat** (the toggle + seconds box) re-sends the *last* macro you fired
+  every N seconds — handy for calling CQ. Stop also clears Repeat.
+- **Edit** (top-right) flips every chip into editable **name + text**
+  fields with a delete (✕); click **Done** when finished.
+
+**Tokens — fill-in-the-blanks for your macros.** Instead of fixed text, a
+macro can contain tokens in `{BRACES}` that expand when you send:
+
+- **About the contact** (from the console's **contact row** — His call /
+  Name / RST / #): `{CALL}` `{NAME}` `{RST}` `{#}`. Copy the other
+  station's call into **His call**, set RST/serial, and one "Reply" macro
+  works for every QSO. `{MYCALL}` is your own call from Settings → Hardware.
+- **Your personal tokens** — reusable facts about *you* that you set once.
+  In **Edit** mode, under **My tokens**, add a name + value (e.g.
+  `{ME}` = Rick, `{PWR}` = 25 watts, `{QTH}` = Hamilton OH, `{RIG}`,
+  `{ANT}`). Then any macro using `{ME}` / `{PWR}` / `{QTH}` fills in
+  automatically. (The five built-in names above are reserved.)
+- **Click to insert** — the **token palette** sits just above the send
+  line. Click into a macro's text field (in Edit mode) or the send line,
+  then click a token chip to drop it in at the cursor — no need to type the
+  braces. Built-in tokens are amber, your personal ones cyan.
 
 **3 — From a logger over TCI.** A TCI logging/contest program can key CW
 through Lyra — see [CW keying over TCI](#cw-keying-over-tci).

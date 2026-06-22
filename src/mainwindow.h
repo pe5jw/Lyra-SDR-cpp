@@ -31,6 +31,7 @@ namespace lyra::profile { class ProfileManager; }
 namespace lyra::ui {
 
 class ProfileUi;
+class CwMacroModel;
 class EqModel;
 class SpeechModel;
 class CombinatorModel;
@@ -223,6 +224,7 @@ private:
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     EqModel                    *eqModel_ = nullptr;   // #50 TX parametric EQ (EqPanel.qml)
     EqModel                    *rxEqModel_ = nullptr; // #59 RX parametric EQ (RxEqPanel.qml)
+    CwMacroModel               *cwMacros_ = nullptr;  // #176 CW macro bank (CwConsolePanel.qml + F-keys)
     SpeechModel                *speechModel_ = nullptr; // #88 speech rack (SpeechPanel.qml)
     CombinatorModel            *combinatorModel_ = nullptr; // #51 combinator (CombinatorPanel.qml)
     PlateModel                 *plateModel_ = nullptr;     // #52 plate reverb (PlatePanel.qml)
