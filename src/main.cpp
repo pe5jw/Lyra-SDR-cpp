@@ -1482,7 +1482,12 @@ int main(int argc, char *argv[])
         // (historical behaviour).  When the operator unticks it Lyra loads
         // but waits for an explicit Start instead of opening the radio.
         if (!lastIp.isEmpty() && prefs->autoStartOnLaunch()) {
-            stream->open(lastIp);
+            // Resilient connect: probe the remembered IP and open it only
+            // if the radio answers; otherwise scan and self-heal to its
+            // real address.  Prevents a blind open of a stale saved IP
+            // (e.g. the radio's DHCP lease changed) leaving the window
+            // stuck "Connecting…" to a dead host on launch.
+            win->beginConnect(lastIp);
         }
     });
 

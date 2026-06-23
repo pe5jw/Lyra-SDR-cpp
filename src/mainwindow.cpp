@@ -1493,41 +1493,91 @@ void MainWindow::onStartStop() {
         st->close();
         return;
     }
+    // Stopped → connect.  Prefer the remembered radio (probe-verified by
+    // beginConnect, NOT opened blind); if none / not there, scan.
+    QString ip;
+    if (auto *disc = qobject_cast<lyra::ipc::HL2Discovery *>(discovery_))
+        ip = disc->savedRadio().value(QStringLiteral("ip")).toString();
+    beginConnect(ip);
+}
+
+void MainWindow::beginConnect(const QString &preferIp) {
+    auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+    if (!st || st->isRunning()) return;
     // Leaving Disconnected — show the connect attempt in amber (not the
-    // resting red) for the Connecting…/Scanning… messages below; once the
-    // stream is up, updateConnState() flips it green.
+    // resting red); once the stream is up, updateConnState() flips it green.
     if (connStatus_)
         connStatus_->setStyleSheet(
             QStringLiteral("QLabel{color:#f0c040;font-weight:bold;}"));
-    // Stopped → connect.  Prefer the remembered radio; if none, scan and
-    // auto-open the first one found (old-Lyra "Start just connects").
     auto *disc = qobject_cast<lyra::ipc::HL2Discovery *>(discovery_);
-    QString ip;
-    if (disc) {
-        ip = disc->savedRadio().value(QStringLiteral("ip")).toString();
-    }
-    if (!ip.isEmpty()) {
-        if (connStatus_) connStatus_->setText(tr("Connecting to %1…").arg(ip));
-        st->open(ip);
-        return;
-    }
     if (!disc) {
-        if (connStatus_) connStatus_->setText(tr("No saved radio"));
+        // No discovery service — best effort: open the saved IP directly.
+        if (!preferIp.isEmpty()) {
+            if (connStatus_) connStatus_->setText(tr("Connecting to %1…").arg(preferIp));
+            st->open(preferIp);
+        } else if (connStatus_) {
+            connStatus_->setText(tr("No saved radio"));
+        }
         return;
     }
-    // One-shot: open the first radio the sweep reports, then disarm.
+    if (preferIp.isEmpty()) { scanAndOpenFirst(); return; }
+    // Probe the remembered IP first (fast unicast, ~1 s).  Open it only on
+    // a reply; on no reply the radio isn't there (DHCP lease changed, moved
+    // subnets, powered off) → scan and self-heal to its real address instead
+    // of opening a dead IP and sitting frozen on "Connecting…".
+    if (connStatus_) connStatus_->setText(tr("Locating %1…").arg(preferIp));
+    QObject::disconnect(probeConn_);
+    probeConn_ = connect(
+        disc, &lyra::ipc::HL2Discovery::probeFinished, this,
+        [this, st, preferIp](bool found, const QString &ip) {
+            if (ip != preferIp) return;           // a different probe
+            QObject::disconnect(probeConn_);
+            if (st->isRunning()) return;          // raced with another open
+            if (found) {
+                if (connStatus_) connStatus_->setText(tr("Connecting to %1…").arg(preferIp));
+                st->open(preferIp);
+            } else {
+                if (connStatus_)
+                    connStatus_->setText(tr("Saved radio not at %1 — scanning…").arg(preferIp));
+                scanAndOpenFirst();
+            }
+        });
+    disc->probe(preferIp, 1.5);
+}
+
+void MainWindow::scanAndOpenFirst() {
+    auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+    auto *disc = qobject_cast<lyra::ipc::HL2Discovery *>(discovery_);
+    if (!st || !disc) return;
     if (connStatus_) connStatus_->setText(tr("Scanning…"));
     QObject::disconnect(scanConn_);
+    QObject::disconnect(scanDoneConn_);
+    // One-shot: open the first radio the sweep reports, then disarm both.
     scanConn_ = connect(
         disc, &lyra::ipc::HL2Discovery::radioFound, this,
         [this, st, disc](const QString &fip, const QString &mac,
                          const QString &board, int code, int beta,
                          bool busy, int numRxs) {
             QObject::disconnect(scanConn_);
+            QObject::disconnect(scanDoneConn_);
             disc->rememberRadio(fip, mac, board, code, beta, busy, numRxs);
             if (connStatus_)
                 connStatus_->setText(tr("Connecting to %1…").arg(fip));
             st->open(fip);
+        });
+    // No radio found → reset the connecting state so the UI doesn't sit on
+    // "Scanning…" forever (it flips back to the resting red "No radio found").
+    scanDoneConn_ = connect(
+        disc, &lyra::ipc::HL2Discovery::scanFinished, this,
+        [this, st](int count) {
+            if (count > 0 || st->isRunning()) return;  // radioFound handled it
+            QObject::disconnect(scanConn_);
+            QObject::disconnect(scanDoneConn_);
+            if (connStatus_) {
+                connStatus_->setStyleSheet(
+                    QStringLiteral("QLabel{color:#e05050;font-weight:bold;}"));
+                connStatus_->setText(tr("No radio found"));
+            }
         });
     disc->scan(1.5, 2);
 }

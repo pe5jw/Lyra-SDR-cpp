@@ -77,6 +77,14 @@ public:
     // signed Phase 0 architectural mapping (docs/TX_ARCHITECTURAL_MAPPING.md
     // §10.3).  Re-introduced when the new TX path lands.
 
+    // Connect orchestration (also called from the main.cpp startup
+    // auto-connect): probe <preferIp> first and open it ONLY if the
+    // radio actually answers; otherwise fall back to a scan and open
+    // the first radio found.  preferIp empty -> scan directly.  Prevents
+    // the blind open of a stale saved IP that left the UI stuck
+    // "Connecting…" to a radio that moved / changed lease / is off.
+    void beginConnect(const QString &preferIp);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     // Double-clicking a custom dock title bar toggles float/dock (the
@@ -125,6 +133,9 @@ private:
     // Header Start/Stop: connect to the saved radio (or scan + auto-open
     // the first found) when stopped; close the stream when running.
     void onStartStop();
+    // Broadcast-scan and open the first radio reported; resets the
+    // connecting state (no longer sits on "Scanning…") if none found.
+    void scanAndOpenFirst();
     void updateConnState();   // reflect stream running state into the UI
     void updateTciStatus();   // header TCI connected/client-count indicator
     void tickClocks();        // 1 Hz: refresh the header local + UTC clocks
@@ -205,6 +216,8 @@ private:
     QString                     pendingUpdateUrl_;            // release page to open
     bool                        updateCheckManual_ = false;   // manual vs startup check
     QMetaObject::Connection     scanConn_;                    // one-shot scan→open
+    QMetaObject::Connection     scanDoneConn_;                // one-shot scan-finished (no-radio reset)
+    QMetaObject::Connection     probeConn_;                   // one-shot probe→open/scan-fallback
     // Drag-move state for a FLOATING dock via its custom title bar
     // (QDockWidget's built-in title drag is bypassed by the custom bar).
     QDockWidget                *floatDragDock_ = nullptr;

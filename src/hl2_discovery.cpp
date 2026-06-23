@@ -96,7 +96,13 @@ HL2Discovery::HL2Discovery(QObject *parent) : QObject(parent) {
     // caller's manual list entry simply stays (Open still connects).
     probeDeadline_.setSingleShot(true);
     connect(&probeDeadline_, &QTimer::timeout, this,
-            [this]() { probeSock_.reset(); });
+            [this]() {
+                if (!probeResolved_) {
+                    probeResolved_ = true;
+                    emit probeFinished(false, probeIp_);
+                }
+                probeSock_.reset();
+            });
 }
 
 HL2Discovery::~HL2Discovery() = default;
@@ -313,6 +319,8 @@ void HL2Discovery::probe(const QString &ip, double timeoutSeconds) {
     }
     connect(probeSock_.get(), &QUdpSocket::readyRead,
             this, &HL2Discovery::onProbeReadyRead);
+    probeIp_       = ip;
+    probeResolved_ = false;
     const QByteArray pkt = buildDiscoveryPacket();
     probeSock_->writeDatagram(pkt, target, kDiscoveryPort);
     emit logLine(QStringLiteral("probe: unicast discovery to %1:%2")
@@ -345,6 +353,13 @@ void HL2Discovery::onProbeReadyRead() {
         emit radioFound(info.ip, info.mac, info.boardName,
                         info.codeVersion, info.betaVersion,
                         info.isBusy, info.numRxs);
+        // Resolve the probe immediately on the first valid reply (don't
+        // wait out the deadline) so a present radio connects snappily.
+        if (!probeResolved_) {
+            probeResolved_ = true;
+            probeDeadline_.stop();
+            emit probeFinished(true, probeIp_);
+        }
     }
 }
 

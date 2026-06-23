@@ -114,6 +114,12 @@ signals:
     // Emitted when the sweep finishes (timeout reached, all
     // attempts done).  `count` = unique radios found.
     void scanFinished(int count);
+    // Emitted when a unicast probe() resolves: found=true the instant a
+    // reply arrives (also emits radioFound), found=false on timeout.  Lets
+    // the connect logic probe a remembered IP and fall back to a scan when
+    // the radio isn't there (DHCP lease changed, moved subnets, powered
+    // off) instead of blindly opening a dead IP.
+    void probeFinished(bool found, QString ip);
     // Diagnostic log line — fed to the QML view for the operator.
     void logLine(QString line);
 
@@ -153,6 +159,8 @@ private:
     // Unicast probe() state — separate from the broadcast sweep.
     std::unique_ptr<QUdpSocket>         probeSock_;
     QTimer                              probeDeadline_;
+    QString                             probeIp_;            // IP this probe targets
+    bool                                probeResolved_ = false;  // probeFinished emitted?
 
     static constexpr quint16 kDiscoveryPort = 1024;
     static constexpr int     kPacketLen     = 63;
