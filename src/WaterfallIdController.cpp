@@ -5,6 +5,7 @@
 #include "prefs.h"
 #include "hl2_stream.h"
 #include "wdsp_engine.h"
+#include "bands.h"               // cbBandIndexForFreq — 11m/CB lockout
 #include "wire/CMaster.h"        // SetTXTCIAudio / SetTXVacAudio / SetTxRackBypass
 #include "tci/TciTxBridge.h"     // clear() the bridge backlog on restore
 
@@ -101,6 +102,12 @@ void WaterfallIdController::fireOnce() {
     if (burstActive_) return;               // one burst at a time
     if (!prefs_->wfIdEnabled()) return;
     if (!ssbOk()) return;                   // USB/LSB voice only (digital carries the call already)
+    // NO courtesy ID on 11m/CB (operator-locked, legal/public-airwaves): a
+    // waterfall callsign image is a Part-97 courtesy, illegal on the CB band.
+    // Hard guard on the live RX1 freq so NO tune source (panadapter/TCI spot/
+    // keypad/memory/band) can ever fire an ID there, even if the chip is armed.
+    if (lyra::cbBandIndexForFreq(static_cast<int>(stream_->rx1FreqHz())) >= 0)
+        return;
     if (stream_->moxActive()) return;       // defer while the operator is keyed
     const QString call = prefs_->callsign().trimmed();
     if (call.isEmpty()) return;

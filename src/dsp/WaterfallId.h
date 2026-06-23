@@ -31,7 +31,7 @@ struct WaterfallIdParams {
     double sampleRate = 48000.0;   // output rate (match the TX audio in-rate)
     double bandLowHz  = 500.0;     // low edge of the frequency span the call fills
     double bandHighHz = 2500.0;    // high edge (kept inside the TX passband)
-    double stepMs     = 28.0;      // dwell per text ROW = per waterfall time-step
+    double stepMs     = 32.0;      // dwell per text ROW = per waterfall time-step (slowed from 28 for a taller, more legible image)
     double rampMs     = 1.5;       // per-tone gate slew — anti-click (tighter = crisper edges)
     double level      = 0.06;      // output level (BENCH-TUNED lean — keep power low; ALC limits)
     int    rows       = 48;        // rendered text HEIGHT in px = time resolution (≤64)

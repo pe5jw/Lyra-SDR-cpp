@@ -1072,14 +1072,47 @@ void MainWindow::buildToolbar() {
                 const QString u = prefs_->mode().toUpper();
                 return u == QLatin1String("USB") || u == QLatin1String("LSB");
             };
-            wfid->setEnabled(isSsbMode());
+            // SAFE arming (operator-locked): "you want it you must arm it."
+            // ANY band-edge crossing OR mode change DISARMS the auto-ID, so a
+            // courtesy ID can never carry over to a context the operator didn't
+            // deliberately arm.  Also no ID on 11m/CB ever (legal): the chip is
+            // dead on the CB band even in USB/LSB.  The hard fire-time guard
+            // lives in WaterfallIdController; this greys + disarms the chip.
+            auto *wfStream = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+            auto on11m = [wfStream]() {
+                return wfStream && lyra::cbBandIndexForFreq(
+                           static_cast<int>(wfStream->rx1FreqHz())) >= 0;
+            };
+            auto armable = [isSsbMode, on11m]() {
+                return isSsbMode() && !on11m();
+            };
+            auto disarm = [this]() {
+                if (prefs_->wfIdEnabled())
+                    prefs_->setWfIdEnabled(false);
+            };
+            wfid->setEnabled(armable());
+            // mode change → always disarm + re-grey
             connect(prefs_, &Prefs::modeChanged, wfid,
-                    [this, wfid, isSsbMode]() {
-                        const bool ssb = isSsbMode();
-                        wfid->setEnabled(ssb);
-                        if (!ssb && prefs_->wfIdEnabled())
-                            prefs_->setWfIdEnabled(false);
+                    [wfid, armable, disarm]() {
+                        disarm();
+                        wfid->setEnabled(armable());
                     });
+            // freq change → disarm only on a band-edge crossing (not every
+            // in-band nudge), + re-grey.  Last band stashed on the button.
+            wfid->setProperty("wfLastBand",
+                wfStream ? lyra::bandIndexForFreq(
+                               static_cast<int>(wfStream->rx1FreqHz())) : -1);
+            if (wfStream)
+                connect(wfStream, &lyra::ipc::HL2Stream::rx1FreqChanged, wfid,
+                        [wfStream, wfid, armable, disarm]() {
+                            const int b = lyra::bandIndexForFreq(
+                                static_cast<int>(wfStream->rx1FreqHz()));
+                            if (b != wfid->property("wfLastBand").toInt()) {
+                                wfid->setProperty("wfLastBand", b);
+                                disarm();
+                            }
+                            wfid->setEnabled(armable());
+                        });
         }
     }
 

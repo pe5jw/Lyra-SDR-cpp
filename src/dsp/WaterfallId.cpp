@@ -36,7 +36,7 @@ std::vector<std::uint64_t> WaterfallId::rasterColumns(const QString &text,
     QFont font(QStringLiteral("Arial"));
     font.setBold(true);
     font.setStretch(QFont::Condensed);
-    font.setLetterSpacing(QFont::AbsoluteSpacing, 3.0);   // small gap between letters
+    font.setLetterSpacing(QFont::AbsoluteSpacing, 6.0);   // inter-letter gap (operator wanted glyphs further apart)
     font.setStyleStrategy(QFont::NoAntialias);
     // Size the glyphs so the CAPITALS fill the row height (caps ≈ 0.7×em →
     // ~1.4× pixelSize); at rows=48 this is a ~67 px face = smooth curves.
