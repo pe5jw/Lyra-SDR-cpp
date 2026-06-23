@@ -123,6 +123,24 @@ class Prefs : public QObject {
                NOTIFY peakColorChanged)
     Q_PROPERTY(bool peakShowDb READ peakShowDb WRITE setPeakShowDb
                NOTIFY peakShowDbChanged)
+    // #173 CW-5b — CW decoder display prefs (decoded-text colour + font px).
+    Q_PROPERTY(QString cwDecodeColor READ cwDecodeColor WRITE setCwDecodeColor
+               NOTIFY cwDecodeColorChanged)
+    Q_PROPERTY(int cwDecodeFontSize READ cwDecodeFontSize WRITE setCwDecodeFontSize
+               NOTIFY cwDecodeFontSizeChanged)
+    // #173 CW-5b — CW decoder detector knobs (persisted so tuned values recall).
+    Q_PROPERTY(double cwDecodeSquelch READ cwDecodeSquelch WRITE setCwDecodeSquelch
+               NOTIFY cwDecodeSquelchChanged)
+    Q_PROPERTY(int cwDecodeThreshold READ cwDecodeThreshold WRITE setCwDecodeThreshold
+               NOTIFY cwDecodeThresholdChanged)
+    Q_PROPERTY(bool cwDecodeAfc READ cwDecodeAfc WRITE setCwDecodeAfc
+               NOTIFY cwDecodeAfcChanged)
+    Q_PROPERTY(int cwDecodeAfcRange READ cwDecodeAfcRange WRITE setCwDecodeAfcRange
+               NOTIFY cwDecodeAfcRangeChanged)
+    Q_PROPERTY(bool cwDecodeNb READ cwDecodeNb WRITE setCwDecodeNb
+               NOTIFY cwDecodeNbChanged)
+    Q_PROPERTY(bool cwDecodeDsp READ cwDecodeDsp WRITE setCwDecodeDsp
+               NOTIFY cwDecodeDspChanged)
     // Noise-floor reference line on the panadapter (old-Lyra parity):
     // a dashed line at the rolling ~20th-percentile floor + an
     // "NF -NN dBFS" label.  On/off + colour are operator-tunable.
@@ -397,6 +415,22 @@ public:
     void setPeakStyle(int v);
     QString peakColor() const { return peakColor_; }
     void    setPeakColor(const QString &hex);
+    QString cwDecodeColor() const { return cwDecodeColor_; }
+    void    setCwDecodeColor(const QString &hex);
+    int     cwDecodeFontSize() const { return cwDecodeFontSize_; }
+    void    setCwDecodeFontSize(int px);
+    double  cwDecodeSquelch() const { return cwDecodeSquelch_; }
+    void    setCwDecodeSquelch(double v);
+    int     cwDecodeThreshold() const { return cwDecodeThreshold_; }
+    void    setCwDecodeThreshold(int pct);
+    bool    cwDecodeAfc() const { return cwDecodeAfc_; }
+    void    setCwDecodeAfc(bool on);
+    int     cwDecodeAfcRange() const { return cwDecodeAfcRange_; }
+    void    setCwDecodeAfcRange(int hz);
+    bool    cwDecodeNb() const { return cwDecodeNb_; }
+    void    setCwDecodeNb(bool on);
+    bool    cwDecodeDsp() const { return cwDecodeDsp_; }
+    void    setCwDecodeDsp(bool on);
     bool peakShowDb() const { return peakShowDb_; }
     void setPeakShowDb(bool v);
     bool noiseFloorEnabled() const { return noiseFloorEnabled_; }
@@ -563,6 +597,14 @@ signals:
     void peakStyleChanged();
     void peakColorChanged();
     void peakShowDbChanged();
+    void cwDecodeColorChanged();
+    void cwDecodeFontSizeChanged();
+    void cwDecodeSquelchChanged();
+    void cwDecodeThresholdChanged();
+    void cwDecodeAfcChanged();
+    void cwDecodeAfcRangeChanged();
+    void cwDecodeNbChanged();
+    void cwDecodeDspChanged();
     void peakClearRequested();
     void noiseFloorEnabledChanged();
     void noiseFloorColorChanged();
@@ -647,6 +689,14 @@ private:
     int     peakStyle_;
     QString peakColor_;
     bool    peakShowDb_;
+    QString cwDecodeColor_;
+    int     cwDecodeFontSize_;
+    double  cwDecodeSquelch_;
+    int     cwDecodeThreshold_;
+    bool    cwDecodeAfc_;
+    int     cwDecodeAfcRange_;
+    bool    cwDecodeNb_;
+    bool    cwDecodeDsp_;
     bool    noiseFloorEnabled_;
     QString noiseFloorColor_;
     bool    watermark_;

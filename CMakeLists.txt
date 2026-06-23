@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.4.6
+    VERSION 0.4.7
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -204,6 +204,11 @@ qt_add_executable(lyra
     # Pure text→audio; wire-inert until the keyed-burst orchestration lands.
     src/dsp/WaterfallId.h
     src/dsp/WaterfallId.cpp
+    # #173 CW-5a — native real-time CW decoder (IQ + AFC + matched filter +
+    # adaptive floor + Bayesian dit/dah/Farnsworth classifier).  CW-mode-gated
+    # RX tap; Lyra-native DSP, no Qt in the core.
+    src/dsp/CwDecoder.h
+    src/dsp/CwDecoder.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -366,6 +371,7 @@ qt_add_qml_module(lyra
         src/qml/RxEqPanel.qml
         src/qml/SpeechPanel.qml
         src/qml/CwConsolePanel.qml
+        src/qml/CwDecoderPanel.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
         src/qml/ProfilePanel.qml
@@ -655,6 +661,18 @@ add_executable(test_plate EXCLUDE_FROM_ALL
 target_include_directories(test_plate PRIVATE src)
 if(MSVC)
     target_compile_options(test_plate PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #173 CW-5a — native CW decoder unit test (synthetic CW → decode, reset,
+# AFC lock).  EXCLUDE_FROM_ALL; `cmake --build build --target test_cw_decoder`.
+add_executable(test_cw_decoder EXCLUDE_FROM_ALL
+    scratch/test_cw_decoder.cpp
+    src/dsp/CwDecoder.h
+    src/dsp/CwDecoder.cpp
+)
+target_include_directories(test_cw_decoder PRIVATE src)
+if(MSVC)
+    target_compile_options(test_cw_decoder PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #49 Stage 1 — TX DSP rack save/load round-trip (the four model states the

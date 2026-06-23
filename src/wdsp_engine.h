@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "dsp/MonitorRing.h"   // #90 — TX-monitor SPSC ring (value member)
+#include "dsp/CwDecoder.h"     // #173 CW-5a — RX CW decoder (value member)
 
 class QAudioSink;
 
@@ -160,6 +161,12 @@ class WdspEngine : public QObject {
     // tuning layer uses it (VFO = DDS + markerOffset) and the panadapter
     // draws the carrier marker offset by it.
     Q_PROPERTY(int markerOffsetHz READ markerOffsetHz NOTIFY markerOffsetChanged)
+    // #173 CW-5a — RX CW decoder enable.  The decode tap in dispatchAudioFrame
+    // is gated on this AND CW mode (CWU/CWL only); off == zero RX-audio impact.
+    // Decoded text / WPM / AFC-lock surface via the cwDecoded* signals to the
+    // separate CW decoder panel (CW-5b).
+    Q_PROPERTY(bool cwDecodeEnabled READ cwDecodeEnabled WRITE setCwDecodeEnabled
+               NOTIFY cwDecodeEnabledChanged)
     // ── RX DSP operator controls (ported from old Lyra's DSP+AUDIO
     // panel).  Noise reduction = WDSP EMNR.  nrMode 1..4 picks the
     // gain function (Wiener+SPP / Wiener / MMSE-LSA / trained); AEPF is
@@ -538,6 +545,22 @@ public:
     double passbandHighHz() const { return passbandHighHz_; }
     int  cwPitchHz() const { return static_cast<int>(cwPitchHz_ + 0.5); }
     Q_INVOKABLE void setCwPitchHz(int hz);
+
+    // #173 CW-5a — RX CW decoder controls.  Enable gates the dispatchAudioFrame
+    // tap (CW-mode-gated); the knob forwards are plain stores on the decoder
+    // (audio-thread-safe, benign one-block staleness).  Decode outputs arrive
+    // via the cwDecoded* signals.  AFC centre tracks cwPitchHz_ automatically.
+    bool cwDecodeEnabled() const { return cwDecodeOn_.load(std::memory_order_relaxed); }
+    Q_INVOKABLE void setCwDecodeEnabled(bool on);
+    Q_INVOKABLE void setCwDecodeSquelch(double snr)    { cwDecoder_.setSquelch(snr); }
+    Q_INVOKABLE void setCwDecodeThreshold(double f01)  { cwDecoder_.setThreshold(f01); }
+    Q_INVOKABLE void setCwDecodeAfcEnabled(bool on)    { cwDecoder_.setAfcEnabled(on); }
+    Q_INVOKABLE void setCwDecodeAfcRange(int hz)       { cwDecoder_.setAfcRange(hz); }
+    Q_INVOKABLE void setCwDecodeDspFilter(bool on)     { cwDecoder_.setDspFilter(on); }
+    Q_INVOKABLE void setCwDecodeNoiseBlanker(bool on)  { cwDecoder_.setNoiseBlanker(on); }
+    Q_INVOKABLE void setCwDecodeTxWpm(int wpm)         { cwDecoder_.setTxWpm(wpm); }
+    int  cwRxWpm()     const { return cwDecoder_.rxWpm(); }
+    bool cwAfcLocked() const { return cwDecoder_.afcLocked(); }
     // Task #53 — shared RX+TX filter low edge.  Affects only the
     // ASYMMETRIC SSB / DIG modes (USB/LSB/DIGU/DIGL).  CW filter
     // is centred on the pitch (low edge isn't a meaningful axis);
@@ -668,6 +691,12 @@ signals:
     void passbandChanged();
     void cwPitchChanged();
     void markerOffsetChanged();
+    // #173 CW-5a — RX CW decoder outputs (emitted from the audio thread; the
+    // CW-5b panel connects with the default queued connection).
+    void cwDecodeEnabledChanged();
+    void cwDecodedChar(QString ch);          // one char, '?' unknown, ' ' word gap
+    void cwRxWpmChanged(int wpm);            // adaptive RX speed
+    void cwAfcLockChanged(bool locked, double hz);
     void nrChanged();        // NR enable / mode / AEPF / NPE
     void agcModeChanged();
     void anfChanged();
@@ -1072,6 +1101,15 @@ private:
     std::atomic<lyra::dsp::EqAnalyzer *> rxEqAnalyzer_{nullptr};
     std::atomic<bool>                    rxEqModeBypass_{false};
     std::vector<double>                  rxEqBuf_;
+
+    // #173 CW-5a — RX CW decoder.  Fed from the TOP of dispatchAudioFrame
+    // (pre-RX-EQ) so a user's CW-mode EQ curve can't distort the decode.
+    // cwModeActive_ (set in setMode) gates to CWU/CWL; cwDecodeOn_ is the
+    // operator enable.  cwMonoBuf_ holds the de-interleaved mono block.
+    lyra::dsp::CwDecoder                 cwDecoder_;
+    std::atomic<bool>                    cwDecodeOn_{false};
+    std::atomic<bool>                    cwModeActive_{false};
+    std::vector<float>                   cwMonoBuf_;
     bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
     bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
     QString               vac1OutName_;            // PC output device description ("" = none)

@@ -8,7 +8,7 @@
 //     {MYCALL}/{CALL}/{RST}/{NAME}/{#} are filled from the contact row.
 //     Edit mode (pencil) turns the chips into editable name+text fields.
 //   - Keyboard send: type-and-send field (Enter sends, Esc/Stop aborts).
-//   - Decoder pane: reserved for CW-5 (RX decoder).
+// (The RX decoder is a SEPARATE "CW Dec" panel — #173 CW-5b.)
 //
 // Bindings: CwMacros (CwMacroModel) for the bank + contact row + send/stop;
 // Stream for cwKeyerSpeedWpm + sendCw/abortCw; WdspEngine.mode to gate the
@@ -531,20 +531,7 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
         }
-
-        // ── Decoder pane (reserved for CW-5) ────────────────────────────
-        Rectangle {
-            visible: !root.collapsed
-            Layout.fillWidth: true
-            Layout.preferredHeight: 72
-            radius: 4
-            color: "#0b141b"
-            border.color: "#1c2a36"
-            Label {
-                anchors.centerIn: parent
-                text: qsTr("RX decoder — coming with CW-5")
-                color: root.cMuted; font.pixelSize: 12
-            }
-        }
+        // (RX decoder lives in its own "CW Dec" panel — #173 CW-5b — so it can
+        // run independently of this keyer/macro console.)
     }
 }

@@ -38,6 +38,14 @@ constexpr auto kPkHold  = "panadapter/peakHoldSecs";
 constexpr auto kPkDecay = "panadapter/peakDecayDbps";
 constexpr auto kPkStyle = "panadapter/peakStyle";
 constexpr auto kPkColor = "panadapter/peakColor";
+constexpr auto kCwDecColor = "cw/decodeColor";
+constexpr auto kCwDecFont  = "cw/decodeFontSize";
+constexpr auto kCwDecSql   = "cw/decodeSquelch";
+constexpr auto kCwDecThr   = "cw/decodeThreshold";
+constexpr auto kCwDecAfc   = "cw/decodeAfc";
+constexpr auto kCwDecAfcR  = "cw/decodeAfcRange";
+constexpr auto kCwDecNb    = "cw/decodeNb";
+constexpr auto kCwDecDsp   = "cw/decodeDsp";
 constexpr auto kPkShow  = "panadapter/peakShowDb";
 constexpr auto kNfEn    = "panadapter/noiseFloorEnabled";
 constexpr auto kNfColor = "panadapter/noiseFloorColor";
@@ -177,6 +185,14 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     peakDecayDbps_ = std::clamp(s.value(kPkDecay, 10.0).toDouble(), 1.0, 120.0);
     peakStyle_     = std::clamp(s.value(kPkStyle, 1).toInt(), 0, 2);  // 1 dots
     peakColor_     = s.value(kPkColor, QStringLiteral("#ffbe5a")).toString();
+    cwDecodeColor_    = s.value(kCwDecColor, QStringLiteral("#39ff14")).toString();
+    cwDecodeFontSize_ = std::clamp(s.value(kCwDecFont, 15).toInt(), 10, 32);
+    cwDecodeSquelch_  = std::clamp(s.value(kCwDecSql, 1.9).toDouble(), 1.0, 3.0);
+    cwDecodeThreshold_= std::clamp(s.value(kCwDecThr, 75).toInt(), 15, 90);
+    cwDecodeAfc_      = s.value(kCwDecAfc, true).toBool();
+    cwDecodeAfcRange_ = std::clamp(s.value(kCwDecAfcR, 100).toInt(), 50, 200);
+    cwDecodeNb_       = s.value(kCwDecNb, true).toBool();
+    cwDecodeDsp_      = s.value(kCwDecDsp, true).toBool();
     peakShowDb_    = s.value(kPkShow, false).toBool();
     noiseFloorEnabled_ = s.value(kNfEn, true).toBool();
     noiseFloorColor_   = s.value(kNfColor, QStringLiteral("#78c88c")).toString();
@@ -519,6 +535,74 @@ void Prefs::setPalette(int v) {
         palette_ = v;
         QSettings().setValue(kPal, v);
         emit paletteChanged();
+    }
+}
+
+void Prefs::setCwDecodeColor(const QString &hex) {
+    if (hex != cwDecodeColor_ && !hex.isEmpty()) {
+        cwDecodeColor_ = hex;
+        QSettings().setValue(kCwDecColor, hex);
+        emit cwDecodeColorChanged();
+    }
+}
+
+void Prefs::setCwDecodeFontSize(int px) {
+    px = std::clamp(px, 10, 32);
+    if (px != cwDecodeFontSize_) {
+        cwDecodeFontSize_ = px;
+        QSettings().setValue(kCwDecFont, px);
+        emit cwDecodeFontSizeChanged();
+    }
+}
+
+void Prefs::setCwDecodeSquelch(double v) {
+    v = std::clamp(v, 1.0, 3.0);
+    if (v != cwDecodeSquelch_) {
+        cwDecodeSquelch_ = v;
+        QSettings().setValue(kCwDecSql, v);
+        emit cwDecodeSquelchChanged();
+    }
+}
+
+void Prefs::setCwDecodeThreshold(int pct) {
+    pct = std::clamp(pct, 15, 90);
+    if (pct != cwDecodeThreshold_) {
+        cwDecodeThreshold_ = pct;
+        QSettings().setValue(kCwDecThr, pct);
+        emit cwDecodeThresholdChanged();
+    }
+}
+
+void Prefs::setCwDecodeAfc(bool on) {
+    if (on != cwDecodeAfc_) {
+        cwDecodeAfc_ = on;
+        QSettings().setValue(kCwDecAfc, on);
+        emit cwDecodeAfcChanged();
+    }
+}
+
+void Prefs::setCwDecodeAfcRange(int hz) {
+    hz = std::clamp(hz, 50, 200);
+    if (hz != cwDecodeAfcRange_) {
+        cwDecodeAfcRange_ = hz;
+        QSettings().setValue(kCwDecAfcR, hz);
+        emit cwDecodeAfcRangeChanged();
+    }
+}
+
+void Prefs::setCwDecodeNb(bool on) {
+    if (on != cwDecodeNb_) {
+        cwDecodeNb_ = on;
+        QSettings().setValue(kCwDecNb, on);
+        emit cwDecodeNbChanged();
+    }
+}
+
+void Prefs::setCwDecodeDsp(bool on) {
+    if (on != cwDecodeDsp_) {
+        cwDecodeDsp_ = on;
+        QSettings().setValue(kCwDecDsp, on);
+        emit cwDecodeDspChanged();
     }
 }
 

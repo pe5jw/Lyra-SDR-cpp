@@ -98,11 +98,14 @@ private:
     // Wrap a QML panel in a movable/floatable/closable QDockWidget,
     // register it in docks_, and dock it into <area>.  <topic> drives
     // the title-bar "?" badge (Help guide / Settings).
+    // resizable: add a bottom-right QSizeGrip (visible while floating) so the
+    // panel is easy to grab + resize without hunting the thin window border.
     QDockWidget *addQuickDock(const QString &objectName,
                               const QString &title,
                               const QString &qmlFile,
                               const QString &topic,
-                              Qt::DockWidgetArea area);
+                              Qt::DockWidgetArea area,
+                              bool resizable = false);
     // Same as addQuickDock but hosts a plain QtWidgets widget (e.g. the
     // solar PROP strip) instead of a QML surface.
     QDockWidget *addWidgetDock(const QString &objectName,

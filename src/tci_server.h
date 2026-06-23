@@ -124,6 +124,15 @@ private:
     std::vector<float> resampleTxIn(const std::vector<float> &in,
                                     int inRate, int outRate);
     void               destroyTxResampler();
+    // #180 — resample the outbound RX audio from the engine rate (48 kHz)
+    // to the client-negotiated AUDIO_SAMPLERATE (8/12/24/48 kHz) before
+    // packetising, mirroring the reference's resampleRxAudioSamples
+    // (TCIServer.cs:995 — WDSP create_resampleFV / xresampleFV).  Stateful
+    // across calls (polyphase history); lazy-created, recreated on rate
+    // change.  Returns `in` unchanged when inRate==outRate (fast path).
+    std::vector<float> resampleRxOut(const std::vector<float> &in,
+                                     int inRate, int outRate);
+    void               destroyRxResampler();
     void dispatch(QWebSocket *ws, const QString &cmd, const QStringList &args);
     void sendTo(QWebSocket *ws, const QString &line);
     void broadcast(const QString &key, const QString &line); // rate-limited
@@ -183,7 +192,27 @@ private:
     // cadence.
     std::vector<float>     audioPending_;
     int                    audioPendingRate_  = 48000;
-    static constexpr int   kAudioPacketSamples = 2048;
+    static constexpr int   kAudioPacketSamples = 2048;   // 48 kHz default
+
+    // #180 — client-negotiated RX-audio-out parameters (server-wide single
+    // value, last-writer-wins, exactly like the reference's m_audioSampleRate
+    // / m_audioStreamSamples — TCIServer.cs:779/782).  audioOutRate_ is set
+    // from AUDIO_SAMPLERATE (validated to 8/12/24/48 kHz); audioOutSamples_
+    // tracks the per-rate default (defaultAudioStreamSamples) unless the
+    // client explicitly set AUDIO_STREAM_SAMPLES.  The RX-out path resamples
+    // the engine's 48 kHz audio to audioOutRate_ and packetises at
+    // audioOutSamples_, stamping audioOutRate_ in the stream header — the gap
+    // that left JTDX (12 kHz) unable to use the audio while MSHV (48 kHz
+    // default) worked.
+    int                    audioOutRate_           = 48000;
+    int                    audioOutSamples_        = kAudioPacketSamples;
+    bool                   audioOutSamplesExplicit_ = false;
+    // RX-out resampler (WDSP resampleFV) — mirror of txResampler_ for the
+    // inbound TX path.  Owned by the Qt main thread (all WebSocket + engine
+    // tap signals queue here), so no mutex.
+    void                  *rxResampler_        = nullptr;
+    int                    rxResamplerInRate_  = 0;
+    int                    rxResamplerOutRate_ = 0;
 
     // TX-in resampler (Task #68) — lazy-created when an inbound
     // TX_AUDIO_STREAM frame arrives at a rate other than the TXA

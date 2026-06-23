@@ -44,8 +44,12 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDockWidget>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
+#include <QSizeGrip>
+#include <QVBoxLayout>
 #include <QMenu>
 #include <QMenuBar>
 #include <QKeyEvent>
@@ -96,6 +100,51 @@ constexpr QDockWidget::DockWidgetFeatures kUnlockedFeatures =
     QDockWidget::DockWidgetMovable |
     QDockWidget::DockWidgetFloatable |
     QDockWidget::DockWidgetClosable;
+
+// A clearly-visible bottom-right resize handle for floating panels.  The
+// native QSizeGrip paints faint diagonal lines that disappear on the dark
+// theme, so we draw our own cyan corner and resize the top-level window
+// directly on drag (works for a floating QDockWidget = a top-level window).
+class ResizeGrip : public QWidget {
+public:
+    explicit ResizeGrip(QWidget *parent = nullptr) : QWidget(parent) {
+        setFixedSize(20, 20);
+        setCursor(Qt::SizeFDiagCursor);
+        setToolTip(QObject::tr("Drag to resize this panel"));
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(QColor(0x00, 0xe5, 0xff), 2.0));
+        const int w = width(), h = height();
+        for (int i = 0; i < 3; ++i) {
+            const int o = 5 + i * 5;
+            p.drawLine(w - o, h - 3, w - 3, h - o);
+        }
+    }
+    void mousePressEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::LeftButton) {
+            dragging_  = true;
+            startG_    = e->globalPosition().toPoint();
+            startSize_ = window()->size();
+            e->accept();
+        }
+    }
+    void mouseMoveEvent(QMouseEvent *e) override {
+        if (!dragging_) return;
+        const QPoint d = e->globalPosition().toPoint() - startG_;
+        QWidget *top = window();
+        top->resize(qMax(top->minimumWidth(),  startSize_.width()  + d.x()),
+                    qMax(top->minimumHeight(), startSize_.height() + d.y()));
+        e->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent *) override { dragging_ = false; }
+private:
+    bool   dragging_ = false;
+    QPoint startG_;
+    QSize  startSize_;
+};
 } // namespace
 
 MainWindow::MainWindow(QObject *discovery, QObject *stream,
@@ -510,12 +559,42 @@ QDockWidget *MainWindow::addQuickDock(const QString &objectName,
                                       const QString &title,
                                       const QString &qmlFile,
                                       const QString &topic,
-                                      Qt::DockWidgetArea area) {
+                                      Qt::DockWidgetArea area,
+                                      bool resizable) {
     auto *dock = new QDockWidget(title, this);
     dock->setObjectName(objectName);   // load-bearing for saveState/restoreState
     dock->setAllowedAreas(Qt::AllDockWidgetAreas);
     dock->setFeatures(kUnlockedFeatures);
-    dock->setWidget(makeQuick(qmlFile));
+    QWidget *content = makeQuick(qmlFile);
+    if (resizable) {
+        // Wrap the QML surface so a clearly-visible custom resize handle sits
+        // in its OWN thin strip BELOW the QML, not overlapping it.  (The native
+        // QSizeGrip paints faint diagonal lines that vanish on the dark theme
+        // AND a grip overlapping a QQuickWidget is hidden by the QML's
+        // composited surface — so we draw our own cyan corner here.)  The grip
+        // resizes the top-level window, so the strip shows only while the dock
+        // floats (docked, it would resize the main window).
+        auto *wrap = new QWidget(this);
+        auto *vbox = new QVBoxLayout(wrap);
+        vbox->setContentsMargins(0, 0, 0, 0);
+        vbox->setSpacing(0);
+        vbox->addWidget(content, /*stretch*/ 1);
+        auto *gripRow = new QWidget(wrap);
+        gripRow->setStyleSheet(QStringLiteral("background:#0d141b;"));
+        auto *gh = new QHBoxLayout(gripRow);
+        gh->setContentsMargins(0, 0, 2, 2);
+        gh->addStretch(1);
+        auto *grip = new ResizeGrip(gripRow);
+        gh->addWidget(grip, 0, Qt::AlignRight | Qt::AlignBottom);
+        vbox->addWidget(gripRow);
+        // Float by default for these panels, so start visible; the handler
+        // hides the grip strip if the operator docks the panel.
+        gripRow->setVisible(true);
+        connect(dock, &QDockWidget::topLevelChanged, gripRow,
+                [gripRow](bool floating) { gripRow->setVisible(floating); });
+        content = wrap;
+    }
+    dock->setWidget(content);
     // Custom title bar: title (left) + "?" / float / close (right), so
     // the help badge sits in the title row OUTSIDE the panel content.
     dock->setTitleBarWidget(makeDockTitleBar(dock, title, topic));
@@ -656,37 +735,55 @@ void MainWindow::buildDocks() {
     // a "TX DSP" group, or place them side-by-side / float either.
     addQuickDock(QStringLiteral("txspeech"), tr("TX Speech"),
                  QStringLiteral("SpeechPanel.qml"),
-                 QStringLiteral("txspeech"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("txspeech"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     // TX EQ (#50) — 10-band parametric EQ.  Own dock (see TX Speech) — comes
     // after Speech in the chain (mic → Speech → EQ → WDSP TXA).
     addQuickDock(QStringLiteral("txeq"), tr("TX EQ"),
                  QStringLiteral("EqPanel.qml"),
-                 QStringLiteral("txeq"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("txeq"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     // RX EQ (#59) — the RX twin of the TX EQ.  Reuses EqPanel.qml via the thin
     // RxEqPanel.qml wrapper (binds the RxEq model + the RX bandwidth as the
     // graph's band-edge source + the DIGU/DIGL auto-bypass set).  Own dock,
     // chip-summoned like the TX DSP rack (floating + hidden by default below).
     addQuickDock(QStringLiteral("rxeq"), tr("RX EQ"),
                  QStringLiteral("RxEqPanel.qml"),
-                 QStringLiteral("rxeq"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("rxeq"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     // TX Combinator (#51) — 5-band multiband comp + SBC.  Own dock (see TX
     // Speech) — after the EQ in the chain (mic → Speech → EQ → Combinator).
     addQuickDock(QStringLiteral("txcombinator"), tr("TX Combinator"),
                  QStringLiteral("CombinatorPanel.qml"),
-                 QStringLiteral("txcombinator"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("txcombinator"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     // TX Plate (#52) — Schroeder-Moorer reverb.  Own dock — last in the
     // chain (mic → Speech → EQ → Combinator → Plate).
     addQuickDock(QStringLiteral("txplate"), tr("TX Plating"),
                  QStringLiteral("PlatePanel.qml"),
-                 QStringLiteral("txplate"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("txplate"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     // CW Console (#105 CW-3b) — chip-launched floating panel for keyboard
     // CW send (+ the CW-5 decoder pane).  Its OWN dock; floats by default
     // (hidden until its header chip summons it) so the front panel stays
     // clean for the majority who never keyboard-send / decode CW.
     addQuickDock(QStringLiteral("cwconsole"), tr("CW"),
                  QStringLiteral("CwConsolePanel.qml"),
-                 QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea);
+                 QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
     if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
+        d->setFloating(true);
+        d->hide();
+    }
+    // CW Decoder (#173 CW-5b) — separate from the CW console so a user can run
+    // the decoder alone, the keyer alone, or both.  Own floating dock + "CW
+    // Dec" chip; RX-only (decoded text + WPM + AFC-lock + knobs).  Binds the
+    // WdspEngine cwDecode* surface.
+    addQuickDock(QStringLiteral("cwdecoder"), tr("CW Decoder"),
+                 QStringLiteral("CwDecoderPanel.qml"),
+                 QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
+    if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
         d->setFloating(true);
         d->hide();
     }
@@ -969,6 +1066,19 @@ void MainWindow::buildToolbar() {
         if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
             QAction *act = d->toggleViewAction();
             act->setText(tr("CW"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // CW Decoder launcher (#173 CW-5b) — its own chip next to the CW
+        // console; summons the floating CW Decoder panel (RX-only).  Separate
+        // chip so decoder-only / keyer-only / both are each one click.
+        if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("CW Dec"));
             tb->addAction(act);
             if (auto *btn = qobject_cast<QToolButton *>(
                     tb->widgetForAction(act))) {

@@ -45,6 +45,24 @@ double dbToLinear(double db) {
     return std::pow(10.0, db / 20.0);
 }
 
+// #180 — per-rate default RX-audio packet size, verbatim from the
+// reference (TCIServer.cs getDefaultAudioStreamSamples).  Applied when
+// the client sets AUDIO_SAMPLERATE without an explicit AUDIO_STREAM_SAMPLES.
+int defaultAudioStreamSamples(int rate) {
+    switch (rate) {
+        case 8000:  return 256;
+        case 12000: return 512;
+        case 24000: return 1024;
+        case 48000:
+        default:    return 2048;
+    }
+}
+// #180 — the four LF-audio rates the spec/reference accept (TCI
+// Protocol AUDIO_SAMPLERATE: 8/12/24/48 kHz; TCIServer.cs handleAudioSampleRate).
+bool isSupportedAudioRate(int rate) {
+    return rate == 8000 || rate == 12000 || rate == 24000 || rate == 48000;
+}
+
 // TCI v2.0 binary stream (§3.4): a 64-byte little-endian header (16×u32)
 // followed by samples.  Header fields: [0]receiver [1]sample_rate
 // [2]format [3]codec=0 [4]crc=0 [5]length(scalar count) [6]type
@@ -414,6 +432,7 @@ void TciServer::stop() {
     streams_.clear();
     recomputeStreaming();    // turn the engine taps back off
     destroyTxResampler();    // Task #68 — free WDSP resampler if any
+    destroyRxResampler();    // #180 — free RX-out resampler if any
     if (!server_) return;
     for (QWebSocket *ws : std::as_const(clients_)) ws->deleteLater();
     clients_.clear();
@@ -538,6 +557,55 @@ void TciServer::destroyTxResampler() {
     txResamplerOutRate_ = 0;
 }
 
+// #180 — RX-out resampler, mirror of resampleTxIn for the outbound RX
+// audio (engine 48 kHz → client AUDIO_SAMPLERATE).  Mono in / mono out;
+// stateful across calls so the continuous RX stream resamples cleanly.
+std::vector<float> TciServer::resampleRxOut(const std::vector<float> &in,
+                                            int inRate, int outRate) {
+    if (in.empty() || inRate <= 0 || outRate <= 0) return {};
+    if (inRate == outRate) return in;                 // fast path (48k client)
+    if (!engine_ || !engine_->wdspNative()) return {};
+    const lyra::dsp::WdspApi &api = engine_->wdspNative()->api();
+    if (!api.create_resampleFV || !api.xresampleFV || !api.destroy_resampleFV)
+        return {};
+
+    if (!rxResampler_
+        || rxResamplerInRate_  != inRate
+        || rxResamplerOutRate_ != outRate) {
+        if (rxResampler_) {
+            api.destroy_resampleFV(rxResampler_);
+            rxResampler_ = nullptr;
+        }
+        rxResampler_        = api.create_resampleFV(inRate, outRate);
+        rxResamplerInRate_  = inRate;
+        rxResamplerOutRate_ = outRate;
+        if (!rxResampler_) return {};
+    }
+
+    const int inN = int(in.size());
+    const int upperOut =
+        int((qint64(inN) * outRate + inRate - 1) / inRate);
+    const int maxOut = std::max(inN, upperOut) + 64;
+    std::vector<float> out(size_t(maxOut), 0.0f);
+    int outSamps = 0;
+    api.xresampleFV(const_cast<float *>(in.data()),
+                    out.data(), inN, &outSamps, rxResampler_);
+    if (outSamps <= 0) return {};
+    out.resize(size_t(outSamps));
+    return out;
+}
+
+void TciServer::destroyRxResampler() {
+    if (!rxResampler_) return;
+    if (engine_ && engine_->wdspNative()) {
+        const lyra::dsp::WdspApi &api = engine_->wdspNative()->api();
+        if (api.destroy_resampleFV) api.destroy_resampleFV(rxResampler_);
+    }
+    rxResampler_        = nullptr;
+    rxResamplerInRate_  = 0;
+    rxResamplerOutRate_ = 0;
+}
+
 void TciServer::recomputeStreaming() {
     bool anyAudio = false, anyIq = false;
     for (const StreamCfg &c : std::as_const(streams_)) {
@@ -571,7 +639,26 @@ void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
     // into kAudioPacketSamples (= 2048) frames before emitting so
     // the wire matches what we advertise at handshake and what
     // the client's decoder expects.
-    audioPendingRate_ = rateHz;
+    // #180 — resample the engine block (rateHz, typ 48 kHz) to the
+    // client-negotiated AUDIO_SAMPLERATE before accumulating, exactly as
+    // the reference does (TCIServer.cs PublishRxAudioSamples →
+    // resampleRxAudioSamples → stamp targetSampleRate in the header).
+    // 48 kHz clients (MSHV default) take the fast path; 12 kHz clients
+    // (WSJT-X / JTDX) get a real 12 kHz stream + header instead of the
+    // old hardcoded 48 kHz mismatch that left JTDX unable to use the
+    // audio (#180).  inRate==outRate returns the block unchanged.
+    std::vector<float> resampled;
+    const float *src = mono;
+    int srcN = frames;
+    if (audioOutRate_ != rateHz) {
+        resampled = resampleRxOut(std::vector<float>(mono, mono + frames),
+                                  rateHz, audioOutRate_);
+        if (resampled.empty()) return;   // resampler unavailable → drop
+                                         // (better than a wrong-rate frame)
+        src  = resampled.data();
+        srcN = int(resampled.size());
+    }
+    audioPendingRate_ = audioOutRate_;
     // Task #75 — apply the operator's TCI RX-out gain ONCE at
     // ingress.  Unity (1.0) shortcuts the per-sample multiply for
     // the common default-OFF path so a 0 dB operator pays nothing.
@@ -582,12 +669,12 @@ void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
     // overshoot would).
     const double g = rxGainLinear_;
     if (g == 1.0) {
-        audioPending_.insert(audioPending_.end(), mono, mono + frames);
+        audioPending_.insert(audioPending_.end(), src, src + srcN);
     } else {
         const float gf = float(g);
-        audioPending_.reserve(audioPending_.size() + size_t(frames));
-        for (int i = 0; i < frames; ++i)
-            audioPending_.push_back(mono[i] * gf);
+        audioPending_.reserve(audioPending_.size() + size_t(srcN));
+        for (int i = 0; i < srcN; ++i)
+            audioPending_.push_back(src[i] * gf);
     }
 
     // Drop-oldest cap: never let the accumulator grow unbounded
@@ -604,8 +691,11 @@ void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
     // Drain in a loop: a single onTciAudioBlock call might cross
     // the threshold more than once (e.g. a backlog from a paused
     // client returning).  Each iteration emits one fully-formed
-    // kAudioPacketSamples frame per audio-subscribed client.
-    while (int(audioPending_.size()) >= kAudioPacketSamples) {
+    // audioOutSamples_ frame per audio-subscribed client (the
+    // client-negotiated packet size, per-rate default or explicit
+    // AUDIO_STREAM_SAMPLES).
+    const int pkt = audioOutSamples_;
+    while (int(audioPending_.size()) >= pkt) {
         const float *block = audioPending_.data();
         for (auto it = streams_.cbegin(); it != streams_.cend(); ++it) {
             if (!it.value().audio) continue;
@@ -615,13 +705,13 @@ void TciServer::onTciAudioBlock(const QByteArray &monoFloat, int rateHz) {
             const int chans = it.value().chans, fmt = it.value().fmt;
             QByteArray frame = streamHeader(
                 0, quint32(audioPendingRate_), quint32(fmt),
-                quint32(kAudioPacketSamples * chans),
+                quint32(pkt * chans),
                 STREAM_RX_AUDIO, quint32(chans));
-            frame += audioPayload(block, kAudioPacketSamples, fmt, chans);
+            frame += audioPayload(block, pkt, fmt, chans);
             ws->sendBinaryMessage(frame);
         }
         audioPending_.erase(audioPending_.begin(),
-                            audioPending_.begin() + kAudioPacketSamples);
+                            audioPending_.begin() + pkt);
     }
 }
 
@@ -969,11 +1059,11 @@ void TciServer::sendInit(QWebSocket *ws) {
     // chans=2, fmt=3) at the matched packet cadence kAudio
     // PacketSamples = 2048 enforced by onTciAudioBlock.  TX-side
     // buffering hint matches MSHV's ms_settings default 50 ms.
-    sendTo(ws, QStringLiteral("audio_samplerate:48000"));
+    sendTo(ws, QStringLiteral("audio_samplerate:%1").arg(audioOutRate_));
     sendTo(ws, QStringLiteral("audio_stream_sample_type:float32"));
     sendTo(ws, QStringLiteral("audio_stream_channels:2"));
     sendTo(ws, QStringLiteral("audio_stream_samples:%1")
-                   .arg(kAudioPacketSamples));
+                   .arg(audioOutSamples_));
     sendTo(ws, QStringLiteral("tx_stream_audio_buffering:50"));
     sendTo(ws, QStringLiteral("ready"));
 
@@ -1311,11 +1401,38 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
         const QString val = args.isEmpty() ? QStringLiteral("0") : args[0];
         bool okv = false;
         const int n = val.trimmed().toInt(&okv);
+        bool samplesAutoChanged = false;   // #180 — re-echo audio_stream_samples
         if (okv && n > 0) {
             if (cmd == QStringLiteral("AUDIO_SAMPLERATE")) {
-                requestRate_ = n;
+                requestRate_ = n;     // TX-CHRONO (unchanged)
+                // #180 — RX-out: honour the client-chosen LF-audio rate
+                // (8/12/24/48 kHz), mirror of the reference's
+                // handleAudioSampleRate (TCIServer.cs).  On a real change,
+                // recompute the per-rate default packet size (unless the
+                // client pinned one) and clear the accumulator + resampler
+                // (== clearRxAudioStreamState).
+                if (isSupportedAudioRate(n) && n != audioOutRate_) {
+                    audioOutRate_ = n;
+                    if (!audioOutSamplesExplicit_) {
+                        const int def = defaultAudioStreamSamples(n);
+                        if (def != audioOutSamples_) {
+                            audioOutSamples_ = def;
+                            samplesAutoChanged = true;
+                        }
+                    }
+                    audioPending_.clear();
+                    destroyRxResampler();
+                }
             } else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")) {
-                requestSamples_ = n;
+                requestSamples_ = n;  // TX-CHRONO (unchanged)
+                // #180 — RX-out packet size, explicit operator choice.
+                // Spec range 100..2048 (TCI Protocol AUDIO_STREAM_SAMPLES).
+                const int s = std::clamp(n, 100, 2048);
+                audioOutSamplesExplicit_ = true;
+                if (s != audioOutSamples_) {
+                    audioOutSamples_ = s;
+                    audioPending_.clear();   // packet size changed
+                }
             } else if (cmd == QStringLiteral("AUDIO_STREAM_CHANNELS")) {
                 // Reference clamps to {1, 2} (TCIServer.cs:5942-5943).
                 if (n == 1 || n == 2)
@@ -1331,7 +1448,20 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             }
         }
         softSet(cmd, val);
-        sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(val));
+        // Echo the APPLIED value for the RX-out params (reference echoes
+        // m_audioSampleRate / m_audioStreamSamples, not the raw arg), and
+        // re-send audio_stream_samples when a rate change auto-shifted it.
+        if (cmd == QStringLiteral("AUDIO_SAMPLERATE")) {
+            sendTo(ws, QStringLiteral("audio_samplerate:%1").arg(audioOutRate_));
+            if (samplesAutoChanged)
+                sendTo(ws, QStringLiteral("audio_stream_samples:%1")
+                               .arg(audioOutSamples_));
+        } else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLES")) {
+            sendTo(ws, QStringLiteral("audio_stream_samples:%1")
+                           .arg(audioOutSamples_));
+        } else {
+            sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(val));
+        }
         return;
     }
     // TUNE — TCI v1.9/v2 separate TX path for tune-carrier (operator
@@ -1605,14 +1735,27 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
         || cmd.startsWith(QStringLiteral("LINE_OUT_"))) {
         if (!ws) return;
         StreamCfg &cfg = streams_[ws];
+        const int rx = args.isEmpty() ? 0 : args[0].trimmed().toInt();
+        // #180 — ECHO the start/stop ack back to the client, exactly as the
+        // reference does (TCIServer.cs sendAudioStartStop → "audio_start:0;").
+        // JTDX (WSJT-X family) WAITS for this ack to confirm the stream is
+        // live; without it, it abandons the connection and reconnect-loops
+        // (the operator's 3× `audio_start:0` capture).  MSHV tolerated the
+        // missing echo (it just consumes the binary frames), so the gap was
+        // invisible until JTDX.  Echo BEFORE recompute so the client sees the
+        // ack promptly.
         // LINE_OUT is the HL2 codec line-out — alias of the RX audio stream.
         if (cmd == QStringLiteral("AUDIO_START") || cmd == QStringLiteral("LINE_OUT_START")) {
+            sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(rx));
             cfg.audio = true;  recomputeStreaming();
         } else if (cmd == QStringLiteral("AUDIO_STOP") || cmd == QStringLiteral("LINE_OUT_STOP")) {
+            sendTo(ws, cmd.toLower() + QStringLiteral(":%1").arg(rx));
             cfg.audio = false; recomputeStreaming();
         } else if (cmd == QStringLiteral("IQ_START")) {
+            sendTo(ws, QStringLiteral("iq_start:%1").arg(rx));
             cfg.iq = true;     recomputeStreaming();
         } else if (cmd == QStringLiteral("IQ_STOP")) {
+            sendTo(ws, QStringLiteral("iq_stop:%1").arg(rx));
             cfg.iq = false;    recomputeStreaming();
         } else if (cmd == QStringLiteral("AUDIO_STREAM_SAMPLE_TYPE") && !args.isEmpty()) {
             const QString t = args[0].toLower();

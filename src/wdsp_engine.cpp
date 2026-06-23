@@ -301,6 +301,21 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // feedIq's append never reallocates in steady state.
     accum_.reserve(static_cast<size_t>(2 * (cfg_.inSize + 128)));
 
+    // #173 CW-5a — RX CW decoder wiring.  Owned here (the RX-audio + cwPitch
+    // + mode home); the pre-RX-EQ tap in dispatchAudioFrame feeds it CW-mode-
+    // gated 48 kHz mono.  Callbacks fire on the audio thread; the emits cross
+    // to the GUI via the default queued connection (consumed by the separate
+    // CW decoder panel, CW-5b).  AFC centre is seeded from / tracks cwPitchHz_.
+    cwDecoder_.setSampleRate(cfg_.outRate);
+    cwDecoder_.setToneHz(cwPitchHz_);
+    cwDecoder_.onChar = [this](char c) {
+        emit cwDecodedChar(QString(QChar::fromLatin1(c)));
+    };
+    cwDecoder_.onWpm = [this](int w) { emit cwRxWpmChanged(w); };
+    cwDecoder_.onAfc = [this](bool locked, double hz) {
+        emit cwAfcLockChanged(locked, hz);
+    };
+
     // 5 Hz UI poll: emit levelsChanged so the QML audioDbFs binding
     // re-reads the atomic (mirrors HL2Stream's statsTimer cadence).
     levelsTimer_.setInterval(200);
@@ -1709,12 +1724,29 @@ void WdspEngine::setCwPitchHz(int hz)
         return;
     }
     cwPitchHz_ = static_cast<double>(hz);
+    cwDecoder_.setToneHz(cwPitchHz_);   // #173 — bind decoder AFC centre to the pitch
     QSettings().setValue(QStringLiteral("dsp/cwPitchHz"), hz);
     recomputePassband();   // CW filter recentres on the new pitch
     applyModeFilter();
     pushApfState();        // APF peak tracks the CW pitch
     emit cwPitchChanged();
     emit markerOffsetChanged();   // VFO↔DDS offset changed (CW modes)
+}
+
+// #173 CW-5a — RX CW decoder enable.  Resets the decoder on the rising edge
+// (clean floor/peak/timing) and seeds its AFC centre from the current pitch;
+// the dispatchAudioFrame tap then runs while this AND CW mode are both true.
+void WdspEngine::setCwDecodeEnabled(bool on)
+{
+    if (on == cwDecodeOn_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (on) {
+        cwDecoder_.setToneHz(cwPitchHz_);
+        cwDecoder_.reset();
+    }
+    cwDecodeOn_.store(on, std::memory_order_relaxed);
+    emit cwDecodeEnabledChanged();
 }
 
 // Task #53 — shared RX+TX filter low edge.  RX-side application:
@@ -1745,6 +1777,15 @@ void WdspEngine::setMode(const QString &m)
     // avoids reading the mode_ QString from the audio thread).
     rxEqModeBypass_.store(m == QLatin1String("DIGU") || m == QLatin1String("DIGL"),
                           std::memory_order_relaxed);
+    // #173 CW-5a — gate the decoder tap to CW modes (audio-thread atomic, set
+    // here on the UI thread alongside mode_).  Reset the decoder on the rising
+    // edge into CW so it starts from a clean floor/peak/timing state.
+    {
+        const bool cwNow = (m == QLatin1String("CWU") || m == QLatin1String("CWL"));
+        const bool cwWas = cwModeActive_.load(std::memory_order_relaxed);
+        cwModeActive_.store(cwNow, std::memory_order_relaxed);
+        if (cwNow && !cwWas) cwDecoder_.reset();
+    }
     recomputePassband();   // overlay edges (even when closed)
     applyModeFilter();     // SetRXAMode + new passband (no-op if closed)
     pushSquelchState();    // re-route SSQL/FMSQ/AMSQ for the new mode
@@ -3255,6 +3296,19 @@ void WdspEngine::setRxEqEngine(lyra::dsp::ParamEq *eng,
 
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
+    // #173 CW-5a — RX CW decoder tap.  The FIRST consumer of the post-demod
+    // RX audio, taken BEFORE the RX-EQ block below repoints `audio` — so a
+    // user's CW-mode EQ curve can't distort the decode.  Gated to CW mode +
+    // operator enable; when off this is one relaxed bool read (zero impact).
+    if (cwDecodeOn_.load(std::memory_order_relaxed) &&
+        cwModeActive_.load(std::memory_order_relaxed) && nframes > 0) {
+        if (static_cast<int>(cwMonoBuf_.size()) != nframes)
+            cwMonoBuf_.assign(static_cast<size_t>(nframes), 0.0f);
+        for (int f = 0; f < nframes; ++f)
+            cwMonoBuf_[static_cast<size_t>(f)] = static_cast<float>(audio[2 * f]);
+        cwDecoder_.process(cwMonoBuf_.data(), nframes);
+    }
+
     // #59 RX EQ — shape the post-RXA receive audio (mono-dup L==R) BEFORE all
     // tees (jack / PC sink / TCI / VAC), the way the reference EQs inside RXA.
     // `audio` is const + feeds every consumer, so EQ a mutable copy and
