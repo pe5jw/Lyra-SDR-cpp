@@ -37,6 +37,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QHostAddress>
+#include <QColor>
+#include <QFont>
+#include <QBrush>
 #include <QAbstractSocket>
 #include <QMessageBox>
 #include <QPixmap>
@@ -1364,20 +1367,55 @@ QWidget *SettingsDialog::buildHardwareTab() {
 
         auto *list = new QListWidget(radioBox);
         list->setMinimumHeight(96);
-        list->setToolTip(tr("Radios found on the LAN. Select one, then Open."));
+        list->setToolTip(tr("Radios found on the LAN. Select one and click "
+                            "Open — or double-click — to connect."));
 
-        // Append a found radio (de-duped by IP), stashing every field on
-        // the item so Open can remember the full record for auto-connect.
+        // Flag the connected radio (green + bold) so it's obvious at a glance
+        // which one is live in a multi-radio list.  Re-runs on every
+        // connect/disconnect (called from refresh()).  Uses item roles, NOT
+        // setText, so it survives addRadio() re-rendering a row.
+        auto markConnected = [this, list]() {
+            const QString connIp = (stream_ && stream_->isRunning())
+                                       ? stream_->targetIp() : QString();
+            QFont boldFont = list->font();
+            boldFont.setBold(true);
+            for (int i = 0; i < list->count(); ++i) {
+                QListWidgetItem *it = list->item(i);
+                const bool on = !connIp.isEmpty() &&
+                                it->data(Qt::UserRole).toString() == connIp;
+                it->setData(Qt::ForegroundRole,
+                            on ? QBrush(QColor(0x6f, 0xe0, 0x9a)) : QVariant());
+                it->setData(Qt::FontRole, on ? QVariant(boldFont) : QVariant());
+            }
+        };
+
+        // One-line affordance so "how do I pick a radio" is obvious.
+        auto *hint = new QLabel(
+            tr("Select a radio, then Open (or double-click). To switch radios, "
+               "Close the current one first, then Open another."), radioBox);
+        hint->setWordWrap(true);
+        hint->setStyleSheet(QStringLiteral("QLabel{color:#7c8b97;}"));
+
+        // Add-or-UPDATE a radio (keyed by IP), stashing every field on the
+        // item so Open can remember the full record for auto-connect.
+        // Update (not skip) on a repeat IP so a unicast probe() reply can
+        // replace an "Add by IP" placeholder's "manual" line with the real
+        // board/gw/rx info — and a re-Discover refreshes BUSY/rx state.
         auto addRadio = [list](const QString &ip, const QString &mac,
                                const QString &board, int codeVer, int betaVer,
                                bool busy, int numRxs) {
+            QListWidgetItem *it = nullptr;
             for (int i = 0; i < list->count(); ++i)
-                if (list->item(i)->data(Qt::UserRole).toString() == ip)
-                    return;
-            auto *it = new QListWidgetItem(
+                if (list->item(i)->data(Qt::UserRole).toString() == ip) {
+                    it = list->item(i);
+                    break;
+                }
+            if (!it)
+                it = new QListWidgetItem(list);
+            it->setText(
                 tr("%1  —  %2  (gw v%3.%4, %5 rx)%6")
                     .arg(ip, board).arg(codeVer).arg(betaVer).arg(numRxs)
-                    .arg(busy ? tr("  [BUSY]") : QString()), list);
+                    .arg(busy ? tr("  [BUSY]") : QString()));
             it->setData(Qt::UserRole,     ip);
             it->setData(Qt::UserRole + 1, mac);
             it->setData(Qt::UserRole + 2, board);
@@ -1427,11 +1465,12 @@ QWidget *SettingsDialog::buildHardwareTab() {
 
         rv->addWidget(status);
         rv->addWidget(list);
+        rv->addWidget(hint);
         rv->addLayout(manualRow);
         rv->addLayout(btnRow);
 
         auto refresh = [this, scanBtn, openBtn, closeBtn, removeBtn,
-                        list, status]() {
+                        list, status, markConnected]() {
             const bool running = stream_ && stream_->isRunning();
             scanBtn->setEnabled(discovery_ && !running);
             openBtn->setEnabled(stream_ && !running &&
@@ -1440,6 +1479,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             removeBtn->setEnabled(list->currentItem() != nullptr);
             if (running && stream_)
                 status->setText(tr("Connected to %1").arg(stream_->targetIp()));
+            markConnected();
         };
         refresh();
         connect(list, &QListWidget::currentRowChanged, radioBox,
@@ -1466,9 +1506,10 @@ QWidget *SettingsDialog::buildHardwareTab() {
         }
 
         if (stream_) {
-            connect(openBtn, &QPushButton::clicked, radioBox, [this, list]() {
-                auto *it = list->currentItem();
-                if (!it) return;
+            // Open one list item — shared by the Open button AND double-click.
+            // No-op while already connected (Close first to switch radios).
+            auto openItem = [this](QListWidgetItem *it) {
+                if (!it || stream_->isRunning()) return;
                 const QString ip = it->data(Qt::UserRole).toString();
                 if (discovery_) {
                     discovery_->rememberRadio(
@@ -1480,7 +1521,11 @@ QWidget *SettingsDialog::buildHardwareTab() {
                         it->data(Qt::UserRole + 6).toInt());
                 }
                 stream_->open(ip);
-            });
+            };
+            connect(openBtn, &QPushButton::clicked, radioBox,
+                    [openItem, list]() { openItem(list->currentItem()); });
+            connect(list, &QListWidget::itemDoubleClicked, radioBox,
+                    [openItem](QListWidgetItem *it) { openItem(it); });
             connect(closeBtn, &QPushButton::clicked, stream_,
                     [this]() { stream_->close(); });
             connect(stream_, &lyra::ipc::HL2Stream::runningChanged, radioBox,
@@ -1490,9 +1535,13 @@ QWidget *SettingsDialog::buildHardwareTab() {
             closeBtn->setEnabled(false);
         }
 
-        // Manual add — validate an IPv4 address, append it (board shown
-        // as "manual"), and select it so Open is one click away.
-        auto doAdd = [addRadio, manualIp, list, status, refresh]() {
+        // Manual add — validate an IPv4 address, append a placeholder
+        // ("manual"), select it so Open is one click away, then fire a
+        // directed unicast probe.  If the radio answers, the
+        // radioFound→addRadio path replaces "manual" with its real
+        // board/gw/rx info in place; if it doesn't, the placeholder stays
+        // and Open still connects.
+        auto doAdd = [this, addRadio, manualIp, list, status, refresh]() {
             const QString ip = manualIp->text().trimmed();
             QHostAddress addr;
             if (ip.isEmpty() || !addr.setAddress(ip) ||
@@ -1508,8 +1557,10 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     break;
                 }
             manualIp->clear();
+            if (discovery_) discovery_->probe(ip);
             status->setText(
-                tr("Added %1 — select it and click Open to connect.").arg(ip));
+                tr("Added %1 — probing for radio info; select it and click "
+                   "Open to connect.").arg(ip));
             refresh();
         };
         connect(addBtn, &QPushButton::clicked, radioBox, doAdd);

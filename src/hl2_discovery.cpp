@@ -90,6 +90,13 @@ HL2Discovery::HL2Discovery(QObject *parent) : QObject(parent) {
             attemptTimer_.stop();
         }
     });
+
+    // Unicast probe(): close the probe socket when its window ends.  If the
+    // radio replied, onProbeReadyRead already emitted radioFound; if not, the
+    // caller's manual list entry simply stays (Open still connects).
+    probeDeadline_.setSingleShot(true);
+    connect(&probeDeadline_, &QTimer::timeout, this,
+            [this]() { probeSock_.reset(); });
 }
 
 HL2Discovery::~HL2Discovery() = default;
@@ -102,8 +109,8 @@ QByteArray HL2Discovery::buildDiscoveryPacket() {
     return pkt;
 }
 
-QList<QHostAddress> HL2Discovery::localIPv4Interfaces() const {
-    QList<QHostAddress> out;
+QList<HL2Discovery::LocalIf> HL2Discovery::localIPv4Interfaces() const {
+    QList<LocalIf> out;
     for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()) {
         if (!(iface.flags() & QNetworkInterface::IsUp) ||
             !(iface.flags() & QNetworkInterface::IsRunning)) {
@@ -116,7 +123,9 @@ QList<QHostAddress> HL2Discovery::localIPv4Interfaces() const {
             const QString s = addr.toString();
             if (s.startsWith(QStringLiteral("127."))) continue;
             if (s.startsWith(QStringLiteral("169.254."))) continue;
-            out.append(addr);
+            // entry.broadcast() is the subnet-directed broadcast (IP|~mask),
+            // e.g. 10.10.30.255; may be null on some adapters.
+            out.append(LocalIf{addr, entry.broadcast()});
         }
     }
     return out;
@@ -163,9 +172,10 @@ void HL2Discovery::scan(double timeoutSeconds, int attempts) {
     foundMacs_.clear();
     totalFound_ = 0;
     sockets_.clear();
+    socketBroadcast_.clear();
     attemptsRemaining_ = std::max(0, attempts - 1);
 
-    const QList<QHostAddress> ifaces = localIPv4Interfaces();
+    const QList<LocalIf> ifaces = localIPv4Interfaces();
     if (ifaces.isEmpty()) {
         emit logLine(QStringLiteral("ERROR: no usable IPv4 interfaces"));
         emit scanFinished(0);
@@ -174,24 +184,28 @@ void HL2Discovery::scan(double timeoutSeconds, int attempts) {
     emit logLine(QStringLiteral("Scanning %1 local interface(s)...")
                  .arg(ifaces.size()));
 
-    for (const QHostAddress &addr : ifaces) {
+    for (const LocalIf &lif : ifaces) {
         auto sock = std::make_unique<QUdpSocket>(this);
         // SO_REUSEADDR so multiple interface-bound sockets coexist
         // on the same port (the HL2 reply lands on whichever socket
         // its routing table associated with the broadcast).
-        if (!sock->bind(addr, 0,
+        if (!sock->bind(lif.ip, 0,
                         QAbstractSocket::ShareAddress |
                         QAbstractSocket::ReuseAddressHint)) {
             emit logLine(QStringLiteral("  bind FAILED on %1: %2")
-                         .arg(addr.toString(), sock->errorString()));
+                         .arg(lif.ip.toString(), sock->errorString()));
             continue;
         }
         connect(sock.get(), &QUdpSocket::readyRead,
                 this, &HL2Discovery::onReadyRead);
-        emit logLine(QStringLiteral("  socket bound to %1:%2")
-                     .arg(addr.toString())
-                     .arg(sock->localPort()));
+        emit logLine(QStringLiteral("  socket bound to %1:%2  (subnet bcast %3)")
+                     .arg(lif.ip.toString())
+                     .arg(sock->localPort())
+                     .arg(lif.broadcast.isNull()
+                              ? QStringLiteral("n/a")
+                              : lif.broadcast.toString()));
         sockets_.push_back(std::move(sock));
+        socketBroadcast_.push_back(lif.broadcast);   // index-aligned
     }
 
     if (sockets_.empty()) {
@@ -214,14 +228,23 @@ void HL2Discovery::scan(double timeoutSeconds, int attempts) {
 
 void HL2Discovery::sendBroadcastFromAllSockets() {
     const QByteArray pkt = buildDiscoveryPacket();
-    for (const auto &sock : sockets_) {
-        const qint64 sent = sock->writeDatagram(
-            pkt, QHostAddress::Broadcast, kDiscoveryPort);
+    const QHostAddress limited(QHostAddress::Broadcast);   // 255.255.255.255
+    for (std::size_t i = 0; i < sockets_.size(); ++i) {
+        auto &sock = sockets_[i];
+        // (1) Limited broadcast — reaches radios on the attached segment.
+        const qint64 sent = sock->writeDatagram(pkt, limited, kDiscoveryPort);
         if (sent != pkt.size()) {
             emit logLine(QStringLiteral("  send via %1 short/failed: %2")
                          .arg(sock->localAddress().toString(),
                               sock->errorString()));
         }
+        // (2) Subnet-directed broadcast (e.g. 10.10.30.255) — some NICs /
+        // switches / firewall configs drop (1) but pass this (and vice
+        // versa); sending both maximizes the chance the probe arrives.
+        const QHostAddress &b = (i < socketBroadcast_.size())
+                                    ? socketBroadcast_[i] : QHostAddress();
+        if (!b.isNull() && b != limited)
+            sock->writeDatagram(pkt, b, kDiscoveryPort);
     }
 }
 
@@ -264,9 +287,65 @@ void HL2Discovery::onReadyRead() {
 void HL2Discovery::onSweepDeadline() {
     attemptTimer_.stop();
     sockets_.clear();
+    socketBroadcast_.clear();
     emit logLine(QStringLiteral("Discovery complete: %1 radio(s) found")
                  .arg(totalFound_));
     emit scanFinished(totalFound_);
+}
+
+void HL2Discovery::probe(const QString &ip, double timeoutSeconds) {
+    QHostAddress target;
+    if (ip.isEmpty() || !target.setAddress(ip) ||
+        target.protocol() != QAbstractSocket::IPv4Protocol) {
+        emit logLine(QStringLiteral("probe: invalid IPv4 '%1'").arg(ip));
+        return;
+    }
+    // Fresh socket per probe (resetting closes any prior one + drops its
+    // readyRead connection).  Bind AnyIPv4:0 so the OS routes the unicast
+    // out the correct interface (incl. the default gateway for a radio on
+    // another subnet).  The HL2 replies to our source port → lands here.
+    probeSock_ = std::make_unique<QUdpSocket>(this);
+    if (!probeSock_->bind(QHostAddress(QHostAddress::AnyIPv4), 0)) {
+        emit logLine(QStringLiteral("probe: bind failed: %1")
+                     .arg(probeSock_->errorString()));
+        probeSock_.reset();
+        return;
+    }
+    connect(probeSock_.get(), &QUdpSocket::readyRead,
+            this, &HL2Discovery::onProbeReadyRead);
+    const QByteArray pkt = buildDiscoveryPacket();
+    probeSock_->writeDatagram(pkt, target, kDiscoveryPort);
+    emit logLine(QStringLiteral("probe: unicast discovery to %1:%2")
+                 .arg(ip).arg(kDiscoveryPort));
+    probeDeadline_.start(static_cast<int>(timeoutSeconds * 1000.0));
+}
+
+void HL2Discovery::onProbeReadyRead() {
+    if (!probeSock_) return;
+    while (probeSock_->hasPendingDatagrams()) {
+        QByteArray buf;
+        buf.resize(static_cast<int>(probeSock_->pendingDatagramSize()));
+        QHostAddress sender;
+        quint16 port = 0;
+        const qint64 n = probeSock_->readDatagram(buf.data(), buf.size(),
+                                                  &sender, &port);
+        if (n < 0) continue;
+        buf.resize(static_cast<int>(n));
+
+        RadioInfo info;
+        if (!parseReply(buf, sender, info)) continue;
+        // No foundMacs_ dedup here (that's sweep bookkeeping) — the UI
+        // de-dupes/updates by IP, so re-emitting is harmless.
+        emit logLine(QStringLiteral(
+            "  PROBE FOUND: %1  %2  %3  gw=v%4.%5  busy=%6  rxs=%7")
+            .arg(info.ip, info.mac, info.boardName)
+            .arg(info.codeVersion).arg(info.betaVersion)
+            .arg(info.isBusy ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(info.numRxs));
+        emit radioFound(info.ip, info.mac, info.boardName,
+                        info.codeVersion, info.betaVersion,
+                        info.isBusy, info.numRxs);
+    }
 }
 
 } // namespace lyra::ipc

@@ -97,6 +97,15 @@ public slots:
     // sweep opens its own sockets, broadcasts, listens, closes.
     void scan(double timeoutSeconds = 1.5, int attempts = 2);
 
+    // Directed UNICAST discovery probe to ONE radio IP — for a fixed-IP /
+    // different-subnet / broadcast-blocked radio the sweep can't reach.
+    // Sends the same 0xEFFE 0x02 packet to <ip>:1024; on a reply, emits
+    // radioFound with the real board/gw/rx info (so an "Add by IP" entry
+    // shows real details instead of "manual").  No reply within the
+    // timeout → silent (the caller's manual entry stays; Open still works).
+    // Independent of scan() — its own socket, its own deadline.
+    void probe(const QString &ip, double timeoutSeconds = 1.0);
+
 signals:
     // Emitted once per UNIQUE radio found (de-duped by MAC).
     void radioFound(QString ip, QString mac, QString boardName,
@@ -111,9 +120,18 @@ signals:
 private slots:
     void onReadyRead();
     void onSweepDeadline();
+    void onProbeReadyRead();   // reply to a unicast probe() (own socket)
 
 private:
-    QList<QHostAddress> localIPv4Interfaces() const;
+    // A usable local IPv4 interface: its address + the subnet-directed
+    // broadcast (e.g. 10.10.30.255) Qt computes from IP+netmask.  We
+    // broadcast to BOTH this and the limited 255.255.255.255 because some
+    // NICs / managed switches / firewall configs pass one but not the other.
+    struct LocalIf {
+        QHostAddress ip;
+        QHostAddress broadcast;   // may be null if the OS didn't supply one
+    };
+    QList<LocalIf> localIPv4Interfaces() const;
     static QByteArray buildDiscoveryPacket();
     bool parseReply(const QByteArray &data,
                     const QHostAddress &sender,
@@ -124,11 +142,17 @@ private:
     // (implicitly shared / copy-on-write) and unique_ptr is
     // move-only — QList tries to copy elements internally.
     std::vector<std::unique_ptr<QUdpSocket>> sockets_;
+    // Per-socket subnet-directed broadcast, index-aligned with sockets_.
+    std::vector<QHostAddress>           socketBroadcast_;
     QSet<QString>                       foundMacs_;
     QTimer                              deadline_;
     QTimer                              attemptTimer_;
     int                                 attemptsRemaining_ = 0;
     int                                 totalFound_       = 0;
+
+    // Unicast probe() state — separate from the broadcast sweep.
+    std::unique_ptr<QUdpSocket>         probeSock_;
+    QTimer                              probeDeadline_;
 
     static constexpr quint16 kDiscoveryPort = 1024;
     static constexpr int     kPacketLen     = 63;

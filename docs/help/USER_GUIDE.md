@@ -188,8 +188,16 @@ The strip across the top, between the menu bar and the panels:
 
 - **▶ Start / ■ Stop** — connect to the radio and start streaming, or stop
   it. On Start, Lyra connects to your saved radio (or scans and opens the
-  first one found).
-- **Connection status** — "Disconnected" / "Connected to …".
+  first one found). The button is **green when stopped** (a click starts you)
+  and **red when running** (a click stops you).
+- **Connection status** — **green "Connected to …"** while streaming, **red
+  "Disconnected"** when not, and **amber "Connecting…/Scanning…"** during a
+  connect attempt.
+- **DSP / CW / Options chips** — labelled groups of toggle chips: **TX DSP:**
+  (the mic-rack panels — EQ / Speech / Combinator / Plating), **CW** (the CW
+  console), **RX DSP:** (RX EQ), and **Options:** — **CTUN** (centre-tune
+  lock) and **WF-ID** (arm the waterfall callsign ID). A lit chip means that
+  panel is open, or that toggle is on.
 - **● TCI** — the TCI-server indicator, just after the connection status.
   Green **● TCI: N** when one or more programs (logger, cluster, etc.) are
   connected, showing the client count; amber **● TCI** when the server is
@@ -1772,9 +1780,25 @@ Turn it on in **Settings → Bands → SW Database**:
 ### Radio
 
 Find and connect to your HL2 / HL2+. **Discover** scans the LAN, **Open**
-connects to the selected radio, **Close** disconnects, and the status line
-shows what you're connected to. Lyra remembers the last radio and shows it
-here on launch. (The toolbar **▶ Start / ■ Stop** does the same thing.)
+connects to the selected radio (or just **double-click** it), **Close**
+disconnects, and the status line shows what you're connected to. The
+**connected radio is shown green and bold** in the list, so with several
+radios it's obvious which one is live. Lyra remembers the last radio and
+shows it here on launch. (The toolbar **▶ Start / ■ Stop** does the same
+thing.)
+
+**Multiple radios.** Keep as many radios in the list as you like and switch
+between them: select one (or double-click) → **Open**; to change radios,
+**Close** the current one first, then Open another. Lyra connects to one
+radio at a time.
+
+- **Add by IP** — type a radio's address (e.g. `192.168.1.50`) and click
+  **Add** for a radio **Discover** can't reach: a fixed-IP HL2, one on a
+  different subnet, or a network where broadcast is blocked. Lyra sends a
+  direct probe to that address and fills in the real board / gateware / RX
+  count if it answers; either way the entry is added so you can **Open** it.
+- **Discover** now broadcasts two ways (the limited and the subnet-directed
+  broadcast), so it finds radios on networks where one form is blocked.
 
 - **Auto-start radio on launch** (checkbox, default **ON**) — when on,
   Lyra connects to the last radio automatically at startup (the historical

@@ -890,6 +890,10 @@ void MainWindow::buildToolbar() {
         tr("Connect to the radio and start streaming (and stop it)."));
     connect(startStopAction_, &QAction::triggered,
             this, &MainWindow::onStartStop);
+    // Grab the backing toolbar button so updateConnState() can tint it
+    // green (Start / stopped) vs red (Stop / running).
+    startStopBtn_ = qobject_cast<QToolButton *>(
+        tb->widgetForAction(startStopAction_));
 
     // Update-available indicator — hidden until a newer release is found.
     updateAction_ = tb->addAction(tr("⬆  Update"));
@@ -992,6 +996,16 @@ void MainWindow::buildToolbar() {
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
         }
+        // Operating toggles that are NOT part of a DSP rack — CTUN (a
+        // tuning/display lock) and WF-ID (a TX courtesy ID).  Their own
+        // labelled group with a leading separator so they don't read as
+        // "RX DSP" functions sitting under that label.
+        tb->addSeparator();
+        auto *optsLabel = new QLabel(tr("Options:"), tb);
+        optsLabel->setContentsMargins(8, 0, 4, 0);
+        optsLabel->setToolTip(tr("Operating toggles — center-tune lock (CTUN) "
+                                 "and the waterfall callsign ID (WF-ID)."));
+        tb->addWidget(optsLabel);
         // CTUN (#174) — Center-tune lock.  NOT a dock; a state toggle on the
         // stream (lock the panadapter/DDC centre, tune the VFO within the
         // captured span — no waterfall scroll).  Same boxed chip as the row
@@ -1369,6 +1383,12 @@ void MainWindow::onStartStop() {
         st->close();
         return;
     }
+    // Leaving Disconnected — show the connect attempt in amber (not the
+    // resting red) for the Connecting…/Scanning… messages below; once the
+    // stream is up, updateConnState() flips it green.
+    if (connStatus_)
+        connStatus_->setStyleSheet(
+            QStringLiteral("QLabel{color:#f0c040;font-weight:bold;}"));
     // Stopped → connect.  Prefer the remembered radio; if none, scan and
     // auto-open the first one found (old-Lyra "Start just connects").
     auto *disc = qobject_cast<lyra::ipc::HL2Discovery *>(discovery_);
@@ -1409,10 +1429,23 @@ void MainWindow::updateConnState() {
         startStopAction_->setText(running ? tr("■  Stop")
                                           : tr("▶  Start"));
     }
+    if (startStopBtn_) {
+        // Green when stopped (the button says "Start"); red when running
+        // (it says "Stop") — the colour signals the ACTION the click does.
+        startStopBtn_->setStyleSheet(
+            running
+                ? QStringLiteral("QToolButton{color:#e53935;font-weight:bold;}")
+                : QStringLiteral("QToolButton{color:#4caf50;font-weight:bold;}"));
+    }
     if (connStatus_) {
         connStatus_->setText(running && st
                                  ? tr("Connected to %1").arg(st->targetIp())
                                  : tr("Disconnected"));
+        // Green = connected, red = disconnected.
+        connStatus_->setStyleSheet(
+            running
+                ? QStringLiteral("QLabel{color:#4caf50;font-weight:bold;}")
+                : QStringLiteral("QLabel{color:#e53935;font-weight:bold;}"));
     }
 }
 

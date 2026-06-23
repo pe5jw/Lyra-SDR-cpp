@@ -12,7 +12,7 @@
 ; Keep AppVersion in sync with CMake project(VERSION) / LYRA_VERSION.
 
 #define AppName     "Lyra"
-#define AppVersion  "0.4.5"
+#define AppVersion  "0.4.6"
 #define AppPublisher "Rick Langford (N8SDR)"
 #define AppURL      "https://github.com/N8SDR1/Lyra-SDR-cpp"
 #define AppExe      "lyra.exe"
@@ -50,6 +50,21 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+Name: "netthrottle"; Description: "Disable Windows network throttling (recommended for glitch-free SDR audio; takes effect after reboot)"; GroupDescription: "Performance:"; Flags: unchecked
+
+[Registry]
+; Windows multimedia network-throttle "gaming fix".  NetworkThrottlingIndex =
+; 0xffffffff disables the ~10 packet/ms MMCSS throttle that Windows applies
+; while a Pro-Audio app is running -- that throttle can starve the HL2 EP6/EP2
+; UDP cadence and contribute to audio glitches.  OPT-IN (the "netthrottle"
+; Task, default unchecked) because it is a machine-wide, persistent change.
+; Idempotent: rewriting the same value is a no-op; takes effect after reboot.
+; Deliberately NOT flagged uninsdeletevalue -- left in place on uninstall, as
+; the operator or another HPSDR app (Thetis et al.) may rely on it.  The
+; SystemProfile key always exists on Windows, so no key-create needed.
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"; \
+    ValueType: dword; ValueName: "NetworkThrottlingIndex"; ValueData: "$ffffffff"; \
+    Tasks: netthrottle
 
 [Files]
 ; The whole deployed build tree, minus CMake/Ninja build artifacts.
@@ -62,4 +77,33 @@ Name: "{group}\Uninstall Lyra"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Lyra"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+; Windows Firewall inbound allow-rules for lyra.exe.  Without these a
+; non-elevated launch can't see the radio's discovery reply (unsolicited
+; inbound UDP) and the operator is forced to "run as administrator" to
+; connect.  Two protocols:
+;   UDP -- the HL2 discovery reply + EP6 RX stream (HPSDR Protocol 1).
+;          This is the one that fixes the "needs admin" connection problem.
+;   TCP -- the TCI/CAT server, so a logger/client on ANOTHER LAN machine
+;          can reach Lyra (a same-machine client uses loopback, which is
+;          never firewalled, but this future-proofs networked TCI).
+; Both rules share the name "Lyra SDR", so the single delete-then-add below
+; is a harmless idempotent overwrite: one delete clears BOTH protocol rules,
+; then both are re-added -- a reinstall/upgrade refreshes in place instead of
+; stacking duplicates.  Installer is already elevated, so netsh succeeds.
+Filename: "{sys}\netsh.exe"; \
+    Parameters: "advfirewall firewall delete rule name=""Lyra SDR"""; \
+    Flags: runhidden; StatusMsg: "Configuring Windows Firewall..."
+Filename: "{sys}\netsh.exe"; \
+    Parameters: "advfirewall firewall add rule name=""Lyra SDR"" dir=in action=allow program=""{app}\{#AppExe}"" protocol=udp enable=yes profile=any"; \
+    Flags: runhidden; StatusMsg: "Configuring Windows Firewall..."
+Filename: "{sys}\netsh.exe"; \
+    Parameters: "advfirewall firewall add rule name=""Lyra SDR"" dir=in action=allow program=""{app}\{#AppExe}"" protocol=tcp enable=yes profile=any"; \
+    Flags: runhidden; StatusMsg: "Configuring Windows Firewall..."
+
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,Lyra}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Remove the firewall rule when Lyra is uninstalled.
+Filename: "{sys}\netsh.exe"; \
+    Parameters: "advfirewall firewall delete rule name=""Lyra SDR"""; \
+    Flags: runhidden; RunOnceId: "DelLyraFwRule"

@@ -36,7 +36,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.4.5)
+## Features (v0.4.6)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -44,8 +44,12 @@ SAM / FM) plus CW and digital via TCI, and ships a complete native TX audio
 processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
 — see below.)
 
-* **Radio** — HPSDR Protocol 1 discovery (multi-NIC) + live RX off the
-  HL2/HL2+ on dedicated OS threads; auto-connect to the last radio.
+* **Radio** — HPSDR Protocol 1 discovery (multi-NIC, dual limited +
+  subnet-directed broadcast) + **Add by IP** unicast probe for fixed-IP /
+  cross-subnet radios; live RX off the HL2/HL2+ on dedicated OS threads;
+  multi-radio list (double-click to Open, connected radio marked);
+  auto-connect to the last radio.  The installer adds the firewall rules so
+  it connects without admin rights.
 * **DSP** — WDSP RX chain: USB/LSB/CW/AM/FM/DIG modes, per-mode filters,
   AGC, NR, auto-notch, manual notches, squelch, an 8-band parametric RX EQ,
   and centre-tune (CTUN) lock.  Audio out the HL2 jack (AK4951) or PC sound

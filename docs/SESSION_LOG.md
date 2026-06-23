@@ -4,6 +4,48 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-23 — v0.4.6 RELEASED: connectivity + multi-radio + front-panel polish
+
+Working directly on `main` (last release v0.4.5 `4a106d5`). Connectivity/
+polish release — no wire/TX/audio-path changes; all UI / discovery / installer.
+
+### Installer (lyra.iss)
+- Auto Windows Firewall **inbound** rules for `lyra.exe`: UDP (HL2 discovery
+  reply + EP6 RX stream) + TCP (TCI server, future networked clients). Named
+  "Lyra SDR", delete-then-add (idempotent), removed on uninstall. **Fixes the
+  "needs admin to connect" report** — the unsolicited inbound discovery reply
+  was being dropped for a non-elevated launch. Matches Thetis's WiX
+  FirewallException approach.
+- Opt-in **`NetworkThrottlingIndex=0xffffffff`** task (default UNticked) — the
+  classic multimedia network-throttle "gaming" tweak; `[Registry]`, left in
+  place on uninstall. Mirrors Thetis `NetworkThrottle.cs`.
+
+### Discovery (hl2_discovery.{h,cpp})
+- **Dual broadcast**: `sendBroadcastFromAllSockets` now sends to both
+  `255.255.255.255` AND each NIC's subnet-directed broadcast (`entry.broadcast()`).
+- **`probe(ip)`** — directed unicast discovery for Add-by-IP (own socket +
+  1 s deadline, reuses parseReply→radioFound). Independent of the sweep.
+
+### Settings → Hardware radio panel (settingsdialog.cpp)
+- **Add by IP** fires `probe()` → the placeholder upgrades in place to the real
+  board/gw/rx (addRadio changed skip-on-dup → update-in-place).
+- **Double-click a row → Open**; **connected radio shown green + bold**
+  (item roles, survives re-render); one-line helper.
+
+### Front panel (mainwindow.{h,cpp})
+- **Start green / Stop red** (backing QToolButton), **Connected green /
+  Disconnected red / Connecting-Scanning amber** (connStatus_).
+- Header chip strip: new **Options:** separator+label so **CTUN** / **WF-ID**
+  no longer read as RX-DSP functions.
+
+### Release
+- Version bump CMakeLists `0.4.5→0.4.6` + lyra.iss AppVersion. Release note
+  `docs/releases/v0.4.6.md`; USER_GUIDE header + Radio sections; README
+  Features (v0.4.6). Tag `v0.4.6`, installer rebuilt, pushed to origin/main +
+  GitHub release.
+
+---
+
 ## 2026-06-22 — v0.4.5 RELEASED: CTUNE rebuild + Waterfall ID + CW macros
 
 Branch `feature/ctune-rebuild-wfid`; `main` was at v0.4.4. This is the v0.4.5
