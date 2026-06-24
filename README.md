@@ -36,7 +36,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.4.8)
+## Features (v0.4.9)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
