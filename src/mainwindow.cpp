@@ -508,6 +508,9 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // dock title bar (makeDockTitleBar), so it MUST exist before buildDocks().
     // A committed drag persists the layout immediately (save-on-commit).
     dragController_ = new DockDragController(this, &docks_, this);
+    // Chip-summoned tool windows (TX/RX DSP racks, CW console, CW decoder) are
+    // float-only: the controller must free-move them and NEVER dock them.
+    dragController_->setFloatOnlyPredicate(&isChipSummonedPanel);
     connect(dragController_, &DockDragController::layoutChanged,
             this, &MainWindow::saveLayout);
 
@@ -1765,16 +1768,16 @@ void MainWindow::applyPanelLock(bool locked) {
     const QDockWidget::DockWidgetFeatures f =
         locked ? QDockWidget::NoDockWidgetFeatures : kUnlockedFeatures;
     for (auto *dock : std::as_const(docks_)) {
-        // The TX DSP rack panels (Speech / EQ / Combinator / Plating) are
-        // floating tool windows summoned by the header chip-strip — they are
-        // NOT part of the lockable main layout.  Locking them removed their
-        // features AND froze their size, so the chips could no longer open
-        // them.  Always keep them fully featured + unfrozen, regardless of
-        // the lock, so the launchers keep working.
+        // The chip-summoned tool windows (TX DSP rack: Speech / EQ /
+        // Combinator / Plating, RX EQ, CW console, CW decoder) are floating
+        // tool windows reached from the header chip-strip — they are NOT part
+        // of the lockable main layout.  Locking them removed their features
+        // (so the CW console + decoder became unreachable) AND froze their
+        // size, so the chips could no longer open them.  Always keep them
+        // fully featured + unfrozen, regardless of the lock, so the launchers
+        // keep working.  Mirrors DockDragController's float-only predicate.
         const QString on = dock->objectName();
-        if (on == QLatin1String("txspeech") || on == QLatin1String("txeq") ||
-            on == QLatin1String("txcombinator") || on == QLatin1String("txplate") ||
-            on == QLatin1String("rxeq")) {
+        if (isChipSummonedPanel(on)) {
             dock->setFeatures(kUnlockedFeatures);
             if (QWidget *tb = dock->titleBarWidget()) {
                 tb->setCursor(moveCursor());   // rack docks always draggable

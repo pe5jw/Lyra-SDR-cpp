@@ -70,6 +70,10 @@ QDockWidget *DockDragController::dockOf(QWidget *w) const {
     return nullptr;
 }
 
+bool DockDragController::isFloatOnly(QDockWidget *d) const {
+    return d && floatOnly_ && floatOnly_(d->objectName());
+}
+
 QRect DockDragController::dockRegionLocal() const {
     QRect r = win_->rect();   // client area, win_-local
     int top = 0, bottom = 0;
@@ -238,16 +242,34 @@ bool DockDragController::eventFilter(QObject *obj, QEvent *event) {
         if (state_ == State::Idle || !dragDock_) break;
         auto *me = static_cast<QMouseEvent *>(event);
         const QPoint g = me->globalPosition().toPoint();
+        const bool floatOnly = isFloatOnly(dragDock_);
         if (state_ == State::Armed) {
             if ((g - pressGlobal_).manhattanLength()
                 < QApplication::startDragDistance())
                 return true;   // not past threshold yet
             state_ = State::Dragging;
-            if (!overlay_) overlay_ = new DropOverlay(win_);
-            overlay_->setGeometry(QRect(QPoint(0, 0), win_->size()));
-            overlay_->clearHighlight();
-            overlay_->show();
-            overlay_->raise();
+            if (floatOnly) {
+                // Chip-summoned tool window (TX/RX DSP racks, CW console,
+                // CW decoder): a pure free-move that NEVER docks — no drop
+                // overlay, no hit-testing.  Self-heal one a prior build may
+                // have left docked so it can be dragged out again.
+                if (!dragDock_->isFloating()) {
+                    dragDock_->setFloating(true);
+                    dragWasFloating_ = true;
+                    floatGrabOffset_ = QPoint(40, 10);
+                }
+            } else {
+                if (!overlay_) overlay_ = new DropOverlay(win_);
+                overlay_->setGeometry(QRect(QPoint(0, 0), win_->size()));
+                overlay_->clearHighlight();
+                overlay_->show();
+                overlay_->raise();
+            }
+        }
+        if (floatOnly) {
+            // Free-follow the cursor only — no drop zones, no dock commit.
+            dragDock_->move(g - floatGrabOffset_);
+            return true;
         }
         // An already-floating dock free-follows the cursor (preserves the old
         // floating-drag feel); a docked one stays put and only the overlay
@@ -267,6 +289,16 @@ bool DockDragController::eventFilter(QObject *obj, QEvent *event) {
         }
         if (state_ != State::Dragging) break;
         auto *me = static_cast<QMouseEvent *>(event);
+        if (isFloatOnly(dragDock_)) {
+            // Float-only tool window: leave it floating where dropped, never
+            // dock.  (endDrag hides the overlay if a previous non-float drag
+            // created it.)
+            dragDock_->raise();
+            dragDock_->activateWindow();
+            emit layoutChanged();   // persist the new floating position
+            endDrag();
+            return true;
+        }
         commit(hitTest(me->globalPosition().toPoint()));
         endDrag();
         return true;

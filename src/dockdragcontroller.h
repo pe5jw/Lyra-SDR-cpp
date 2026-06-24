@@ -27,6 +27,8 @@
 #include <QPoint>
 #include <QRect>
 
+#include <functional>
+
 class QMainWindow;
 class QDockWidget;
 class QWidget;
@@ -45,6 +47,14 @@ public:
                        const QHash<QString, QDockWidget *> *docks,
                        QObject *parent = nullptr);
     ~DockDragController() override;
+
+    // Float-only panels (the header-chip-summoned TX/RX DSP + CW tool windows)
+    // must NEVER dock: dragging them is a pure free-move with no drop zones and
+    // no commit-to-dock on release.  MainWindow sets this to its
+    // isChipSummonedPanel() test so the two stay in lockstep.
+    void setFloatOnlyPredicate(std::function<bool(const QString &)> pred) {
+        floatOnly_ = std::move(pred);
+    }
 
 signals:
     // A drag committed a new dock placement (or float) — persist the layout.
@@ -66,6 +76,7 @@ private:
     };
 
     QDockWidget *dockOf(QWidget *w) const;
+    bool         isFloatOnly(QDockWidget *d) const;   // chip-summoned tool window?
     QRect        dockRegionLocal() const;     // win_-local content rect
     Zone         hitTest(const QPoint &globalPos) const;
     void         commit(const Zone &z);
@@ -74,6 +85,7 @@ private:
     QMainWindow                         *win_     = nullptr;
     const QHash<QString, QDockWidget *> *docks_   = nullptr;
     DropOverlay                         *overlay_ = nullptr;
+    std::function<bool(const QString &)> floatOnly_;   // chip-summoned → float-only
 
     State        state_           = State::Idle;
     QDockWidget *dragDock_        = nullptr;
