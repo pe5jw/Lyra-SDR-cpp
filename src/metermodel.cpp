@@ -178,7 +178,8 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     // false at construction time (the stream isn't open yet), so this
     // boils down to rxSource_ in practice — but the conditional keeps
     // the derivation rule explicit.
-    source_ = (stream_ && stream_->moxActive()) ? txSource_ : rxSource_;
+    source_ = (stream_ && (stream_->moxActive() || stream_->cwKeyingActive()))
+                  ? txSource_ : rxSource_;
     pwrCalScale_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPwrCal), 1.0).toDouble(), 0.05, 20.0);
     pwrRatedMaxW_ = std::clamp(
@@ -218,34 +219,45 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     // operator's PREFS persist (rxSource/txSource), the CURRENT
     // displayed source is derived from them + the MOX state.
     if (stream_) {
+        // The displayed source follows the keyed state: the wire MOX bit
+        // (SSB/AM/FM/digital) OR the CW message-level keyed state.  QSK CW
+        // keys the PA at the gateware and leaves the wire MOX low, so MOX
+        // never rises — but the operator still expects the meter to flip to
+        // TX and show forward power.  cwKeyingActive supplies that edge.
         connect(stream_, &lyra::ipc::HL2Stream::moxActiveChanged, this,
-                [this](bool on) {
-                    const Source target = on ? txSource_ : rxSource_;
-                    if (target == source_) return;
-                    // Swap WITHOUT touching meter/source persistence —
-                    // that key is no longer used (rxSource/txSource
-                    // are the canonical prefs).  Reuse the body of
-                    // setSource minus the QSettings write.
-                    source_ = target;
-                    level_ = 0.0;
-                    peak_  = 0.0;
-                    maxPeak_ = 0.0;
-                    glow_  = 0.0;
-                    holdCtr_ = 0;
-                    maxHoldCtr_ = 0;
-                    dispDbm_ = -140.0;
-                    noiseFloorDbm_ = -140.0;
-                    noiseLevel_ = 0.0;
-                    snrText_ = QStringLiteral("—");
-                    secondary2Text_.clear();
-                    text_ = QStringLiteral("—");
-                    dbmText_ = QStringLiteral("—");
-                    std::fill(hist_.begin(), hist_.end(), 0.0);
-                    for (int i = 0; i < kHistory; ++i) history_[i] = 0.0;
-                    emit sourceChanged();
-                    emit updated();
-                });
+                [this](bool) { applyKeyStateSource(); });
+        connect(stream_, &lyra::ipc::HL2Stream::cwKeyingActiveChanged, this,
+                [this](bool) { applyKeyStateSource(); });
     }
+}
+
+void MeterModel::applyKeyStateSource() {
+    if (!stream_) return;
+    const bool keyed = stream_->moxActive() || stream_->cwKeyingActive();
+    const Source target = keyed ? txSource_ : rxSource_;
+    if (target == source_) return;
+    // Swap WITHOUT touching meter/source persistence — rxSource/txSource
+    // are the canonical prefs; the CURRENT source is derived from them +
+    // the keyed state.  Reset per-source peak/hold/history so a stale RX
+    // peak doesn't render as a bogus TX peak across the edge.
+    source_ = target;
+    level_ = 0.0;
+    peak_  = 0.0;
+    maxPeak_ = 0.0;
+    glow_  = 0.0;
+    holdCtr_ = 0;
+    maxHoldCtr_ = 0;
+    dispDbm_ = -140.0;
+    noiseFloorDbm_ = -140.0;
+    noiseLevel_ = 0.0;
+    snrText_ = QStringLiteral("—");
+    secondary2Text_.clear();
+    text_ = QStringLiteral("—");
+    dbmText_ = QStringLiteral("—");
+    std::fill(hist_.begin(), hist_.end(), 0.0);
+    for (int i = 0; i < kHistory; ++i) history_[i] = 0.0;
+    emit sourceChanged();
+    emit updated();
 }
 
 void MeterModel::updateScale() {
@@ -880,7 +892,10 @@ void MeterModel::buildLadderRows() {
     if (!stream_) return;
     // Operative source list per MOX state.  Hard-coded sensible defaults
     // for first ship; per-row operator picker is a follow-on task.
-    const bool tx = stream_->moxActive();
+    // TX telemetry stack also applies during CW (gateware-keyed, host
+    // stays RX on the wire) — follow the same keyed-state OR the single
+    // meter uses, so the Ladder flips to the TX rows when sending CW.
+    const bool tx = stream_->moxActive() || stream_->cwKeyingActive();
     QList<int> srcs;
     QStringList labels;
     if (tx) {

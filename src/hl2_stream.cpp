@@ -1097,6 +1097,10 @@ void HL2Stream::close() {
     // element-pump thread stops touching tx[0].cwx/cwx_ptt (the setters
     // guard prn-null, but abort() ends any in-flight message first).
     if (cwKeyer_) cwKeyer_->abort();
+    // #105 — clear the UI CW keyed state directly (the keyer's onState
+    // marshals via a queued invoke that may not run during teardown), so
+    // the meter never sticks in TX after a Stop mid-CW-message.
+    setCwKeyingActive(false);
     // Record the force-release-all (below) so a captured stderr log
     // shows "session N ended RX, MOX/tune dropped before the workers
     // were joined."  PA enable is preserved (operator preference) and
@@ -2904,13 +2908,22 @@ void HL2Stream::ensureCwKeyer() {
     cwKeyer_ = std::make_unique<lyra::tx::CwKeyer>(
         [this](bool down) { setCwxKey(down); },
         [this](bool on)   { setCwxPtt(on);   },
-        [this](bool /*tx*/) {
-            // Break-in policy hook.  QSK (default): the gateware keys the
-            // carrier autonomously from cwx/cwx_ptt while the host stays
-            // RX — no host MOX, exactly like the paddle (CW-2).  Semi /
-            // Manual host-MOX integration (mirroring onHwPttPoll's gate)
-            // is a CW-3 follow-on; left a no-op here so the default path
-            // behaves like the operator-validated paddle QSK.
+        [this](bool tx) {
+            // Break-in policy hook (message-level: true before the first
+            // element, false after the cwx_ptt drop).  QSK (default): the
+            // gateware keys the carrier autonomously from cwx/cwx_ptt while
+            // the host stays RX on the wire — no host MOX, exactly like the
+            // paddle (CW-2).  We deliberately do NOT assert wire MOX here.
+            // What we DO is reflect the keyed state to the UI via
+            // cwKeyingActive so the meter flips to TX and shows forward
+            // power (operator bench: the meter stayed on the RX S-meter
+            // during CW while the external watt-meter showed output).  The
+            // keyer calls us from its own pump thread; marshal onto this
+            // QObject's thread so the state change + signal match the
+            // moxActive_ threading contract.  Semi / Manual host-MOX
+            // integration (actual wire keying) is still a CW-3 follow-on.
+            QMetaObject::invokeMethod(this, [this, tx]{ setCwKeyingActive(tx); },
+                                      Qt::QueuedConnection);
         });
 }
 
@@ -2924,6 +2937,15 @@ void HL2Stream::setCwxPtt(bool on) {
     auto* p = lyra::wire::prn;
     if (!p) return;
     p->tx[0].cwx_ptt = on ? 1 : 0;
+}
+
+// #105 — UI-facing CW keyed state (drives the meter RX↔TX flip).  Dedups
+// and emits on this QObject's thread; never touches the wire MOX bit (QSK
+// keeps the host RX on the wire — the gateware keys the PA itself).
+void HL2Stream::setCwKeyingActive(bool on) {
+    if (cwKeyingActive_ == on) return;
+    cwKeyingActive_ = on;
+    emit cwKeyingActiveChanged(on);
 }
 
 void HL2Stream::sendCw(const QString& text) {

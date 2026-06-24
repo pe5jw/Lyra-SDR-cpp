@@ -726,6 +726,13 @@ public:
     // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
     // settle, pre-keyup-clear).  Read by the UI red-on-air indicator.
     bool    moxActive()  const { return moxActive_; }
+    // #105 — CW message-level keyed state for UI consumers (the meter
+    // flip).  QSK CW keys the PA at the gateware and deliberately leaves
+    // the wire MOX bit (moxActive_) low, so the UI needs a separate signal
+    // to reflect "the radio is transmitting CW right now".  True from just
+    // before the first element of a CWX message until after the cwx_ptt
+    // drop.  Does NOT track per-element keying; does NOT assert wire MOX.
+    bool    cwKeyingActive() const { return cwKeyingActive_; }
     // TX-0c-pa-debug — operator-tunable safety timeout (seconds) +
     // bypass.  Setters clamp + persist + emit changes; the FSM-side
     // keydown/keyup hooks arm/cancel the QTimer.
@@ -1221,6 +1228,8 @@ signals:
     // transition completes (true at end of keydown rf_delay; false at end
     // of keyup ptt_out_delay).  Does NOT fire on mid-transition states.
     void moxActiveChanged(bool on);
+    // #105 — CW message-level keyed state changed (see cwKeyingActive()).
+    void cwKeyingActiveChanged(bool on);
     // Fires ONCE per requestMox(true) call (MOX button click, TUN arm,
     // space-bar press — any path that signals operator intent to key).
     // Lets the TX panel paint a short "press-intent" indicator (orange
@@ -1682,6 +1691,11 @@ private:
     // the UI red-on-air indicator (NOT the toggle button's checked
     // state).  Touched only on this thread.
     bool                 moxActive_    = false;
+    // #105 — CW message-level keyed state for the UI meter flip (parallel
+    // to moxActive_; QSK CW never raises the wire MOX).  Touched only on
+    // this QObject's thread via setCwKeyingActive() (the CwKeyer's onState
+    // callback marshals to here with a queued invoke).
+    bool                 cwKeyingActive_ = false;
     // TX-0c-pa-debug — host-side safety timeout state.  Both ints/
     // bools are single-thread (this QObject's thread) — set by the
     // operator via the Settings UI, read by the FSM keydown hook to
@@ -1949,6 +1963,10 @@ private:
     // builds it on first use; close() aborts it before prn teardown.
     void   setCwxKey(bool down);   // → tx[0].cwx     (per-element key)
     void   setCwxPtt(bool on);     // → tx[0].cwx_ptt (message-level hold)
+    // #105 — set the UI-facing CW keyed state (cwKeyingActive_) + emit the
+    // change.  Call on this QObject's thread only (the CwKeyer onState hook
+    // marshals via QueuedConnection).  Dedups; does NOT touch wire MOX.
+    void   setCwKeyingActive(bool on);
     void   ensureCwKeyer();
     std::unique_ptr<lyra::tx::CwKeyer> cwKeyer_;
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER

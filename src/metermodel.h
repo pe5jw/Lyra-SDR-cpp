@@ -323,6 +323,12 @@ signals:
 
 private:
     void tick();
+    // Swap the displayed source to the RX or TX preference based on the
+    // current keyed state (wire MOX OR CW message-level keying), resetting
+    // the per-source peak/hold/history so a stale RX peak doesn't render as
+    // a bogus TX peak across the edge.  Wired to BOTH
+    // HL2Stream::moxActiveChanged and ::cwKeyingActiveChanged.
+    void applyKeyStateSource();
     // Per-source tick computations.  Each fills the model's Q_PROPERTY
     // fields (level_/peak_/maxPeak_/glow_/text_/dbmText_/snrText_/
     // history_/noiseLevel_/floorDbm_/ceilDbm_/s9Dbm_) appropriately for
