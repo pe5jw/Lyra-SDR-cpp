@@ -188,6 +188,12 @@ class HL2Stream : public QObject {
     // off this, NOT off the toggle button's checked state, so the LED
     // tracks the actual radio state through the TR-delay window.
     Q_PROPERTY(bool moxActive READ moxActive NOTIFY moxActiveChanged)
+    // #105 — "transmitting for UI purposes" = wire MOX OR CW keying.  QSK CW
+    // keys the PA at the gateware without raising wire MOX, so display
+    // consumers (panadapter rescale + analyzer swap, red-on-air) bind this
+    // instead of moxActive so they flip during CW too.  NOT a wire signal.
+    Q_PROPERTY(bool txDisplayActive READ txDisplayActive
+               NOTIFY txDisplayActiveChanged)
     // TX-0c-pa-debug — host-side TX safety timeout.  Auto-clears MOX
     // (via requestMox(false)) if the radio stays keyed continuously
     // past txTimeoutSec seconds.  Persisted (tx/timeoutSeconds in
@@ -733,6 +739,10 @@ public:
     // before the first element of a CWX message until after the cwx_ptt
     // drop.  Does NOT track per-element keying; does NOT assert wire MOX.
     bool    cwKeyingActive() const { return cwKeyingActive_; }
+    // #105 — moxActive() || cwKeyingActive() (cached).  The UI display-state
+    // truth: red-on-air + panadapter TX rescale follow this so they flip for
+    // QSK CW; the wire MOX bit (moxActive) is unchanged.
+    bool    txDisplayActive() const { return txDisplayActive_; }
     // TX-0c-pa-debug — operator-tunable safety timeout (seconds) +
     // bypass.  Setters clamp + persist + emit changes; the FSM-side
     // keydown/keyup hooks arm/cancel the QTimer.
@@ -1230,6 +1240,8 @@ signals:
     void moxActiveChanged(bool on);
     // #105 — CW message-level keyed state changed (see cwKeyingActive()).
     void cwKeyingActiveChanged(bool on);
+    // #105 — display TX-state (moxActive || cwKeyingActive) changed.
+    void txDisplayActiveChanged(bool on);
     // Fires ONCE per requestMox(true) call (MOX button click, TUN arm,
     // space-bar press — any path that signals operator intent to key).
     // Lets the TX panel paint a short "press-intent" indicator (orange
@@ -1696,6 +1708,13 @@ private:
     // this QObject's thread via setCwKeyingActive() (the CwKeyer's onState
     // callback marshals to here with a queued invoke).
     bool                 cwKeyingActive_ = false;
+    // #105 — cached moxActive_ || cwKeyingActive_ for the UI display state
+    // (recomputed by updateTxDisplayActive on either edge).
+    bool                 txDisplayActive_ = false;
+    // #105 — paddle/straight-key CW detect: hang countdown (in onHwPttPoll
+    // ~50 ms ticks) holding cwKeyingActive after forward power drops, so the
+    // meter doesn't chatter between keyed elements.  0 = not holding.
+    int                  cwKeyHangTicks_  = 0;
     // TX-0c-pa-debug — host-side safety timeout state.  Both ints/
     // bools are single-thread (this QObject's thread) — set by the
     // operator via the Settings UI, read by the FSM keydown hook to
@@ -1967,6 +1986,10 @@ private:
     // change.  Call on this QObject's thread only (the CwKeyer onState hook
     // marshals via QueuedConnection).  Dedups; does NOT touch wire MOX.
     void   setCwKeyingActive(bool on);
+    // #105 — recompute txDisplayActive_ from moxActive_ || cwKeyingActive_
+    // and emit txDisplayActiveChanged on change.  Wired to both
+    // moxActiveChanged and cwKeyingActiveChanged in the ctor.
+    void   updateTxDisplayActive();
     void   ensureCwKeyer();
     std::unique_ptr<lyra::tx::CwKeyer> cwKeyer_;
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER

@@ -463,7 +463,7 @@ Item {
                 z: 4
                 width: 2
                 height: spectrumArea.height
-                color: Stream.moxActive ? "#ff4136" : "#a6ff00"
+                color: Stream.txDisplayActive ? "#ff4136" : "#a6ff00"
                 opacity: 0.85
                 x: Math.round(spectrumArea.width
                               * (0.5 + (Stream.vfoBHz - root.centerHz)
@@ -503,7 +503,7 @@ Item {
                 z: 4
                 width: 2
                 height: spectrumArea.height
-                color: Stream.moxActive ? "#ff4136" : "#a6ff00"
+                color: Stream.txDisplayActive ? "#ff4136" : "#a6ff00"
                 opacity: 0.85
                 x: Math.round(spectrumArea.width
                               * (0.5 + (Stream.rx1FreqHz + Stream.xitOffsetHz

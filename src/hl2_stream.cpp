@@ -511,6 +511,14 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         if (on)  armSwrProtect();
         else     disarmSwrProtect();
     });
+    // #105 — keep the UI display-state (txDisplayActive_) in sync with both
+    // the wire MOX bit and the CW keyed state.  Registered here (before the
+    // main.cpp display-consumer connects) so the cached value is current
+    // when those slots read txDisplayActive().
+    connect(this, &HL2Stream::moxActiveChanged,
+            this, &HL2Stream::updateTxDisplayActive);
+    connect(this, &HL2Stream::cwKeyingActiveChanged,
+            this, &HL2Stream::updateTxDisplayActive);
 }
 
 void HL2Stream::setLnaGainDb(int db)
@@ -2019,6 +2027,39 @@ void HL2Stream::requestMoxFromHwPtt(bool on) {
 // in after a per-unit bench check).
 void HL2Stream::onHwPttPoll() {
     if (lyra::wire::prn == nullptr) return;          // stream torn down
+
+    // #105 follow-up — paddle / straight-key / external-keyer CW meter flip.
+    // Console CW (CWX) drives cwKeyingActive precisely via the keyer's onState
+    // hook.  A hardware key into the radio jack has NO host-side signal, and
+    // on this HL2+ the EP6 ptt_in line reads non-zero at RX rest (§10 Q#1), so
+    // it can't be trusted for keyed detection.  Forward power IS clean (~0 at
+    // rest, spikes on every keyed element) and covers paddle / straight-key /
+    // external keyers uniformly.  In CW mode, when a CWX message isn't already
+    // driving the state, latch cwKeyingActive on forward power above a small
+    // floor and hold it for a hang so the meter doesn't chatter between
+    // elements.  Display-only — never asserts the wire MOX bit (QSK keying
+    // unchanged).  fwd>=floor is false for NaN, so a missing telemetry frame
+    // reads as "not keyed" (no spurious flip).
+    {
+        constexpr double kCwKeyDetectW   = 0.5;  // W — clearly keyed RF
+        constexpr int    kCwKeyHangTicks = 10;   // × ~50 ms ≈ 500 ms hold
+        const int  tmCw    = txMode_.load(std::memory_order_relaxed);
+        const bool cwMode  = (tmCw == 3 || tmCw == 4);
+        const bool cwxBusy = cwKeyer_ && cwKeyer_->busy();
+        if (cwMode && !cwxBusy) {
+            const bool rf = (fwdPowerW() >= kCwKeyDetectW);
+            if (rf) {
+                cwKeyHangTicks_ = kCwKeyHangTicks;          // (re)arm the hang
+                if (!cwKeyingActive_) setCwKeyingActive(true);
+            } else if (cwKeyingActive_ && cwKeyHangTicks_ > 0
+                       && --cwKeyHangTicks_ == 0) {
+                setCwKeyingActive(false);                   // hang expired → RX
+            }
+        } else if (!cwMode && cwKeyingActive_ && !cwxBusy) {
+            cwKeyHangTicks_ = 0;        // left CW mode mid-hold → drop now
+            setCwKeyingActive(false);
+        }
+    }
     // #105 CW (Thetis QSK / firmware keyer) — the HL2's internal CW keyer
     // raises the SAME EP6 PTT/key line on every keyed element
     // (`ptt_resp = cw_on | ext_ptt`, hl2_rtl_radio.v:456).  In CW with the
@@ -2946,6 +2987,16 @@ void HL2Stream::setCwKeyingActive(bool on) {
     if (cwKeyingActive_ == on) return;
     cwKeyingActive_ = on;
     emit cwKeyingActiveChanged(on);
+}
+
+// #105 — recompute the UI display TX-state = wire MOX OR CW keyed.  Drives
+// the red-on-air QML binding (Stream.txDisplayActive) and the CW panadapter
+// rescale/analyzer swap wired in main.cpp.  Never touches the wire MOX bit.
+void HL2Stream::updateTxDisplayActive() {
+    const bool v = moxActive_ || cwKeyingActive_;
+    if (v == txDisplayActive_) return;
+    txDisplayActive_ = v;
+    emit txDisplayActiveChanged(v);
 }
 
 void HL2Stream::sendCw(const QString& text) {

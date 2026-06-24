@@ -167,7 +167,7 @@ Rectangle {
                 // VFO A is the RX.  Red only when transmitting on A —
                 // i.e. keyed AND not split (in SPLIT, A stays the receiver
                 // and VFO B carries the red TX border).
-                border.color: (Stream.moxActive && !Stream.splitEnabled)
+                border.color: (Stream.txDisplayActive && !Stream.splitEnabled)
                               ? root.cTx : root.cRx
 
                 // Amber role tag, upper-left — flips RX→TX on key (simplex).
@@ -176,7 +176,7 @@ Rectangle {
                     anchors.top: parent.top
                     anchors.leftMargin: 8
                     anchors.topMargin: 4
-                    text: (Stream.moxActive && !Stream.splitEnabled)
+                    text: (Stream.txDisplayActive && !Stream.splitEnabled)
                           ? qsTr("TX") : qsTr("RX")
                     color: root.cRole
                     font.bold: true
@@ -309,7 +309,8 @@ Rectangle {
                     radius: 6
                     border.width: 2
                     // Armed (gray) until keyed, then red (B is the TX VFO).
-                    border.color: Stream.moxActive ? root.cTx : root.cArm
+                    // txDisplayActive so CW (QSK, no wire MOX) reds it too.
+                    border.color: Stream.txDisplayActive ? root.cTx : root.cArm
 
                     Label {
                         anchors.left: parent.left

@@ -578,6 +578,14 @@ int main(int argc, char *argv[])
     // reason, route both through a single combined slot instead.
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxOwnsAnalyzer);
+    // #105 — the analyzer source swap stays on wire MOX ONLY, NOT the CW
+    // keyed state.  Gateware QSK CW generates the carrier from the cwx bits
+    // and NEVER feeds the WDSP TX analyzer, so swapping to the TX-owned
+    // analyzer during CW shows an EMPTY panadapter/waterfall.  Leaving the
+    // panadapter RX-owned during CW keeps the actual keyed carrier visible
+    // (the RX path receives it) — what the operator wants to see on the air.
+    // (Red-on-air + the meter still follow CW via txDisplayActive / the
+    // meter's keyed OR; only the spectrum SOURCE stays RX.)
 
     // P4.b TUN display-honesty — feed the panadapter the TX-analyzer
     // NCO−dial offset so its TX-state crop renders the TUN carrier at its
@@ -686,6 +694,11 @@ int main(int argc, char *argv[])
     // setMoxActive — no panadapter wiring needed.
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      prefs,  &lyra::ui::Prefs::setMoxActive);
+    // #105 — dB-range swap stays on wire MOX ONLY (NOT CW), for the same
+    // reason as the analyzer swap above: during CW the panadapter stays
+    // RX-owned showing the received keyed carrier, so it must keep the RX
+    // dB range to render that signal correctly.  Red-on-air + meter still
+    // follow CW; only the spectrum source + scale stay RX.
     prefs->setMoxActive(stream->moxActive());   // seed initial state
 
     // TCI TX-audio source gate (re-home): when the operator selects "tci"
