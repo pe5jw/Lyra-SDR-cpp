@@ -4,6 +4,78 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-24 — v0.4.8 RELEASED: panel docking overhaul + CW transmit metering (+ wiki, CW-decoder review)
+
+Working on `main` (last tag `v0.4.7` = `ff6c9c9`). Tester feedback (Randy
+W7CPA / Jim / a 3rd) said the main panels "all float, nothing docks,
+drop-against-an-edge does nothing," and resizing was a fight. Big UI arc +
+a CW metering arc, shipped as **v0.4.8**.
+
+### Panel docking overhaul (#184) — `dockdragcontroller.{h,cpp}` (NEW) + `mainwindow.{h,cpp}`
+- Root cause: the custom dock title bar (`makeDockTitleBar`) replaces
+  QDockWidget's built-in drag, killing Qt's drag->drop-indicator->snap-to-edge.
+- New `DockDragController` (public QMainWindow API only): press->threshold->
+  drag->drop FSM on each title bar, translucent **cyan drop-zone overlay** —
+  snap-to-edge (`addDockWidget`), neighbor split L/R/T/B thirds
+  (`splitDockWidget`, "before"=double-split), center tabify
+  (`tabifyDockWidget`), off-region float (`setFloating`). Save-on-commit.
+- Resize: dock separators widened 6px + cyan-on-hover; tab bar styled.
+  Compact custom move cursor (arrow while locked). One-time status-bar hint.
+- **Lock = move + resize**: disables move/float/close via features AND blocks
+  the dock-separator resize press in `event()` (split-cursor detect). The
+  earlier `setFixedSize`-on-lock froze panels and collapsed the layout on a
+  locked restart — REMOVED; event-interception locks resize cleanly and
+  always restores. (Two intermediate restart-collapse symptoms chased + fixed.)
+- View -> Layouts: **4 named slots + Lyra default** (recall no longer
+  force-shows the chip-summoned TX/RX/CW rack panels).
+
+### Factory default fixed — `default_layout.h` + `applyDefaultLayout`
+- Prior embedded default was base64 of the raw registry REG_BINARY -> carried
+  the QSettings `@ByteArray(...)` UTF-16 wrapper -> `restoreState()` rejected
+  it (the "screwed up default"). Re-embedded from operator's **N8SDR** slot,
+  de-wrapped to the real saveState bytes, + `defaultPanadapterSplit()`.
+
+### CW transmit metering (#105) — `hl2_stream.{h,cpp}`, `metermodel.{h,cpp}`, `main.cpp`, QML
+- Bug: QSK CW keys the PA at the gateware and deliberately leaves wire MOX
+  low, so the meter (gated on `moxActive`) never flipped to TX during CW
+  (external watt-meter showed power). Other modes flip because they assert MOX.
+- `cwKeyingActive` (message-level, from the CwKeyer `onState` hook, marshalled
+  to the stream thread) drives the meter RX<->TX swap + the Ladder source set.
+  Reads `fwdPowerW()` (already valid during gateware CW). Does NOT assert wire
+  MOX — QSK keying unchanged.
+- `txDisplayActive` (= `moxActive || cwKeyingActive`) drives the **red-on-air**
+  QML (VFO border + RX/TX tag in TuningPanel, split/XIT TX markers in
+  PanadapterPanel).
+- **Paddle/key** detection: `onHwPttPoll` (~50 ms) latches `cwKeyingActive`
+  from **forward power** (>=0.5 W, ~500 ms hang), gated to CW mode, skipped
+  while CWX drives it — this HL2+ reads non-zero `ptt_in` at rest (§10 Q#1),
+  so forward power is the clean signal.
+- The panadapter spectrum **stays RX** during CW (gateware CW never feeds the
+  WDSP TX analyzer -> swapping shows an empty pan; RX shows the keyed
+  carrier). Operator-confirmed regression + fix.
+
+### Release / docs / wiki
+- Version 0.4.7->0.4.8 (CMake `project(VERSION)` + `installer/lyra.iss`).
+  `docs/releases/v0.4.8.md`; USER_GUIDE "Getting around the window" rewritten
+  + Meter CW note; README Features->v0.4.8. ISCC -> `dist/Lyra-Setup-0.4.8.exe`
+  (69 MB). Tag `v0.4.8`, pushed main+tag, GitHub Release published w/ installer.
+- **GitHub Wiki initialized + built**: Home, User Guide (mirror of
+  USER_GUIDE.md), Installing-and-first-connection, FAQ-and-Troubleshooting,
+  _Sidebar. Sources version-controlled in `docs/wiki/` (User Guide generated
+  from USER_GUIDE.md at publish). NB: the first wiki page must be created once
+  in the web UI (no API, no push-init) — operator did it; rest pushed via
+  `…wiki.git`.
+
+### CW decoder accuracy review (analysis only — NOTHING changed)
+- Recovered the 4-reviewer + code-cross-checked review (was transcript-only)
+  and committed it: **`docs/CW_DECODER_REVIEW.md`** (Tiers A–D). Target =
+  `src/dsp/CwDecoder.cpp/.h` (field-tuned constants).
+- Operator chose the safe **A-slice = A1+A2+A3+A5** to do next (nearest-code
+  `?` rescue / AFC center-bias / per-char confidence / crash-proof peak-snap
+  — none touch the tuned constants; rule: never corrupt a correct decode).
+  Then **B1** (independent dah-length + the √3-vs-1.565 boundary
+  discontinuity). NOT STARTED. See [[project-lyra-cpp-cw-decoder-accuracy]].
+
 ## 2026-06-23 — v0.4.6 RELEASED: connectivity + multi-radio + front-panel polish
 
 Working directly on `main` (last release v0.4.5 `4a106d5`). Connectivity/

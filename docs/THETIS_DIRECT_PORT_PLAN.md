@@ -358,6 +358,28 @@ unilaterally — surface them when picking up tomorrow:
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
 
+### 2026-06-24 — v0.4.8: CW transmit metering (#105) [TX-relevant slice]
+
+- **CW meter RX↔TX flip + forward power** (`8347ce9`, `6cc90e0`). The
+  TX-metering divergence from Thetis, reconciled: Thetis flips the
+  multimeter on the wire MOX edge; on HL2 **QSK CW keys the PA at the
+  gateware and leaves the wire MOX bit low**, so `moxActive` never rises and
+  the meter stayed on the RX S-meter while the radio transmitted. Lyra-native
+  fix: a UI-only `cwKeyingActive` (message-level, from the `CwKeyer::onState`
+  hook) + `txDisplayActive = moxActive || cwKeyingActive`. The meter/Ladder
+  swap to the TX set (PWR reads `fwdPowerW()`, valid during gateware CW) and
+  red-on-air follows it; **wire MOX is never asserted** so the §15.25/§15.26
+  keydown/keyup ordering is untouched. Paddle/straight-key/external covered by
+  a forward-power detector in `onHwPttPoll` (≥0.5 W, ~500 ms hang) — not the
+  EP6 `ptt_in` line (non-zero at rest on this HL2+, §10 Q#1).
+- The panadapter spectrum **stays RX** during CW: gateware CW does NOT feed
+  the WDSP TX analyzer (the carrier is generated from the cwx bits), so the
+  Thetis-style analyzer-source swap was reverted for CW — only the meter +
+  red-on-air follow; the RX analyzer keeps showing the keyed carrier.
+- The rest of v0.4.8 (panel docking overhaul #184, named layouts, factory
+  default, wiki, the CW-decoder accuracy review) is non-TX-port — see
+  SESSION_LOG 2026-06-24.
+
 ### 2026-06-19 — v0.4.1: TX protection (#169/#170) + PHROT (#109)
 
 - **#169 SWR protection** + **#170a drive cap** (`6c3e8e7`) — Lyra-native TX
