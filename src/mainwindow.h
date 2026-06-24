@@ -21,6 +21,7 @@
 class QAction;
 class QDockWidget;
 class QLabel;
+class QMenu;
 class QToolButton;
 class QQuickWidget;
 class QTimer;
@@ -59,6 +60,7 @@ class UsbBcd;
 class UpdateChecker;
 class WxIndicator;
 class NcdxfFollow;
+class DockDragController;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -87,9 +89,15 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
-    // Double-clicking a custom dock title bar toggles float/dock (the
-    // standard QDockWidget gesture, lost when we set a custom title bar).
-    bool eventFilter(QObject *obj, QEvent *event) override;
+    // While panels are locked, swallow dock-separator resize presses so the
+    // layout can't be re-proportioned by accident (the point of Lock).  Done
+    // by event interception — NOT by clamping dock sizes (that fought the
+    // window layout and collapsed panels on a locked restart).
+    bool event(QEvent *event) override;
+    // Custom dock title bars (makeDockTitleBar) replace QDockWidget's built-in
+    // title bar — and with it Qt's native drag-to-dock.  DockDragController
+    // (installed as the title bars' event filter) restores drag/float/dock/
+    // snap/tabify; double-click float-toggle lives there too.
     // TX-0c-fsm — space-bar PTT momentary.  Press routes to
     // stream.requestMox(true), release routes to requestMox(false).
     // Suppressed when a text-entry widget has focus so typing into
@@ -156,6 +164,13 @@ private:
     void saveUserLayout();             // snapshot current as "my default"
     void restoreUserLayout();          // jump back to the saved default
     void applyDefaultLayout();         // factory arrangement (built-in)
+    // Four operator-designed, named layout slots (+ the Lyra factory default
+    // = 5 recallable arrangements).  Save snapshots the current dock state
+    // into slot 1-4 under a chosen name; recall restores it.  Persisted under
+    // QSettings "layouts/<slot>/{name,geometry,windowState,panadapterSplit}".
+    void saveNamedLayout(int slot);
+    void recallNamedLayout(int slot);
+    void refreshLayoutMenus();         // refresh slot labels on menu open
     // Export/import the full settings profile (layout + all prefs) to a
     // portable .lyra file — backup, transfer to another machine, or
     // instant recovery after layout tinkering.  Machine-specific keys
@@ -202,6 +217,9 @@ private:
 
     QHash<QString, QDockWidget *> docks_;
     QAction                    *lockAction_ = nullptr;
+    bool                        panelsLocked_ = false;   // gates event() separator block
+    QAction                    *layoutRecallActs_[4]{};   // named-layout recall slots
+    QAction                    *layoutSaveActs_[4]{};      // named-layout save slots
     QAction                    *startStopAction_ = nullptr;   // header Start/Stop
     QToolButton                *startStopBtn_ = nullptr;      // its backing button (green/red)
     QLabel                     *connStatus_ = nullptr;        // header conn status
@@ -218,10 +236,10 @@ private:
     QMetaObject::Connection     scanConn_;                    // one-shot scan→open
     QMetaObject::Connection     scanDoneConn_;                // one-shot scan-finished (no-radio reset)
     QMetaObject::Connection     probeConn_;                   // one-shot probe→open/scan-fallback
-    // Drag-move state for a FLOATING dock via its custom title bar
-    // (QDockWidget's built-in title drag is bypassed by the custom bar).
-    QDockWidget                *floatDragDock_ = nullptr;
-    QPoint                      floatDragOffset_;
+    // Drives drag-to-dock for the custom title bars (see makeDockTitleBar);
+    // restores tear-out / move / snap-to-edge re-dock / tabify that the
+    // replaced title bar removed.  Installed as each title bar's event filter.
+    DockDragController         *dragController_ = nullptr;
 
     SettingsDialog             *settingsDlg_ = nullptr;
     Help                       *help_    = nullptr;   // QML→C++ help bridge

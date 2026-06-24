@@ -33,6 +33,7 @@
 #include "prefs.h"
 #include "CwMacroModel.h"
 #include "settingsdialog.h"
+#include "dockdragcontroller.h"
 #include "usb_bcd.h"
 
 #include <QAction>
@@ -59,6 +60,9 @@
 #include <QSpinBox>
 #include <QTextEdit>
 #include <QMessageBox>
+#include <QInputDialog>
+#include <QCursor>
+#include <QPixmap>
 #include <QQmlContext>
 #include <QQuickWidget>
 #include <QQuickItem>
@@ -145,6 +149,54 @@ private:
     QPoint startG_;
     QSize  startSize_;
 };
+
+// Compact "move" cursor for the draggable dock title bars.  The stock
+// Qt::SizeAllCursor uses the OS scheme's full-size four-arrow (chunky); we
+// paint our own ~20 px glyph (white core + dark halo so it reads on any
+// background) so it's a touch smaller and on-theme.  Built once, shared.
+inline const QCursor &moveCursor() {
+    static const QCursor c = [] {
+        constexpr int s = 20;
+        QPixmap pm(s, s);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        const int cx = s / 2, cy = s / 2, a = 7, h = 3;
+        auto glyph = [&](const QColor &col, double w) {
+            p.setPen(QPen(col, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawLine(cx, cy - a, cx, cy + a);          // vertical
+            p.drawLine(cx - a, cy, cx + a, cy);          // horizontal
+            p.drawLine(cx, cy - a, cx - h, cy - a + h);  // up arrowhead
+            p.drawLine(cx, cy - a, cx + h, cy - a + h);
+            p.drawLine(cx, cy + a, cx - h, cy + a - h);  // down
+            p.drawLine(cx, cy + a, cx + h, cy + a - h);
+            p.drawLine(cx - a, cy, cx - a + h, cy - h);  // left
+            p.drawLine(cx - a, cy, cx - a + h, cy + h);
+            p.drawLine(cx + a, cy, cx + a - h, cy - h);  // right
+            p.drawLine(cx + a, cy, cx + a - h, cy + h);
+        };
+        glyph(QColor(10, 16, 22), 3.4);   // dark halo
+        glyph(Qt::white, 1.5);            // white core
+        p.end();
+        return QCursor(pm, cx, cy);
+    }();
+    return c;
+}
+
+// Panels that are hidden-by-default floating tool windows summoned by the
+// header chip-strip (TX DSP rack + RX EQ + CW console/decoder) — NOT part of
+// the always-visible main layout.  A layout recall / reset must NOT force
+// these visible; their saved (usually hidden) state from restoreState()
+// governs, so the operator's closed rack panels stay closed.
+inline bool isChipSummonedPanel(const QString &objectName) {
+    return objectName == QLatin1String("txspeech")
+        || objectName == QLatin1String("txeq")
+        || objectName == QLatin1String("txcombinator")
+        || objectName == QLatin1String("txplate")
+        || objectName == QLatin1String("rxeq")
+        || objectName == QLatin1String("cwconsole")
+        || objectName == QLatin1String("cwdecoder");
+}
 } // namespace
 
 MainWindow::MainWindow(QObject *discovery, QObject *stream,
@@ -167,6 +219,20 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                    QMainWindow::AllowNestedDocks |
                    QMainWindow::AllowTabbedDocks |
                    QMainWindow::GroupedDragging);
+
+    // Make the resize affordances grabbable on the dark theme.  The default
+    // QMainWindow dock separators are ~3 px and unstyled (invisible here), so
+    // operators were "hunting an invisible line" to resize docked panels —
+    // widen them to 6 px with a cyan hover.  Scoped sub-control selectors
+    // only (separator + the tabified-dock tab bar); nothing else is themed by
+    // QSS so the palette-based look is untouched.
+    setStyleSheet(QStringLiteral(
+        "QMainWindow::separator{background:#0d141b;width:6px;height:6px;}"
+        "QMainWindow::separator:hover{background:#00e5ff;}"
+        "QTabBar::tab{background:#0d141b;color:#9fb3c8;"
+        "padding:3px 12px;border:1px solid #1b2a36;border-bottom:none;}"
+        "QTabBar::tab:selected{color:#00e5ff;border-color:#00e5ff;}"
+        "QTabBar::tab:hover{color:#7ff7ff;}"));
 
     // Help bridge — exposed to every QML panel's "?" badge.  Created
     // before any makeQuick() so it can be set as a context property.
@@ -438,10 +504,31 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     if (profiles_)
         profileUi_ = new ProfileUi(profiles_, prefs_, this);
 
+    // Drag-to-dock controller — installed as the event filter on every custom
+    // dock title bar (makeDockTitleBar), so it MUST exist before buildDocks().
+    // A committed drag persists the layout immediately (save-on-commit).
+    dragController_ = new DockDragController(this, &docks_, this);
+    connect(dragController_, &DockDragController::layoutChanged,
+            this, &MainWindow::saveLayout);
+
     buildDocks();      // populate docks_ (so the View menu can list them)
     buildMenus();      // File / View (dock toggles + Lock) / Help
     buildToolbar();
     restoreLayout();   // geometry + dock state + lock state
+
+    // One-time gentle hint at the panel-arranging UX (answers tester
+    // "what is an edge?" confusion).  Shown once ever, then the QSettings
+    // flag suppresses it; the View menu's layout actions remain the
+    // permanent discovery path.
+    if (!QSettings().value(QStringLiteral("ui/dockHintShown"), false).toBool()) {
+        statusBar()->showMessage(
+            tr("Tip: drag a panel's title bar to move or re-dock it (a cyan "
+               "guide shows where it will land) • double-click the title to "
+               "float it • drag the bar between panels to resize • "
+               "View ▸ Reset to default layout if things get messy"),
+            16000);
+        QSettings().setValue(QStringLiteral("ui/dockHintShown"), true);
+    }
 }
 
 QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
@@ -624,9 +711,15 @@ QWidget *MainWindow::makeDockTitleBar(QDockWidget *dock,
                                       const QString &topic) {
     auto *bar = new QWidget(dock);
     bar->setObjectName(QStringLiteral("dockTitleBar"));
-    // Restore double-click-to-float (default QDockWidget gesture, lost
-    // when we replace the title bar with a custom widget).
-    bar->installEventFilter(this);
+    // Move cursor over the title strip → signals "drag me to move/dock"
+    // (the gesture was previously undiscoverable).  The ?/float/close buttons
+    // set their own pointing-hand cursor, so only the bar's empty area + the
+    // title label (which inherits the bar's cursor) show the move cursor.
+    // applyPanelLock swaps this to a plain arrow while panels are locked.
+    bar->setCursor(moveCursor());
+    // DockDragController restores the drag/double-click-float gestures the
+    // custom title bar removes (drag-to-dock, snap-to-edge, tabify, tear-out).
+    bar->installEventFilter(dragController_);
     auto *row = new QHBoxLayout(bar);
     row->setContentsMargins(8, 2, 4, 2);
     row->setSpacing(2);
@@ -857,17 +950,35 @@ void MainWindow::buildMenus() {
         QSettings().setValue(QStringLiteral("ui/panelsLocked"), on);
     });
 
-    // Layout management (mirrors old Lyra): snapshot the current
-    // arrangement as a personal default, jump back to it, or reset to
-    // the built-in factory arrangement.  The polished N8SDR-style
-    // factory default lands once the remaining panels exist.
+    // Layout management: four operator-designed, named layout slots plus the
+    // built-in Lyra factory default = five recallable arrangements.  Save
+    // snapshots the current dock arrangement into a slot under a chosen name;
+    // recall restores it.  Slot labels refresh (names / empty state) each time
+    // the menu opens.
     viewMenu->addSeparator();
-    viewMenu->addAction(tr("&Save current layout as my default"),
-                        this, &MainWindow::saveUserLayout);
-    viewMenu->addAction(tr("&Restore my saved layout"),
-                        this, &MainWindow::restoreUserLayout);
-    viewMenu->addAction(tr("Reset to &default layout"),
-                        this, &MainWindow::applyDefaultLayout);
+    QMenu *layoutsMenu = viewMenu->addMenu(tr("&Layouts"));
+
+    QMenu *recallMenu = layoutsMenu->addMenu(tr("&Recall layout"));
+    for (int i = 0; i < 4; ++i) {
+        const int slot = i + 1;
+        layoutRecallActs_[i] = recallMenu->addAction(
+            tr("Slot %1").arg(slot), this,
+            [this, slot]() { recallNamedLayout(slot); });
+    }
+    recallMenu->addSeparator();
+    recallMenu->addAction(tr("Lyra &default (factory)"),
+                          this, &MainWindow::applyDefaultLayout);
+
+    QMenu *saveMenu = layoutsMenu->addMenu(tr("&Save current layout to"));
+    for (int i = 0; i < 4; ++i) {
+        const int slot = i + 1;
+        layoutSaveActs_[i] = saveMenu->addAction(
+            tr("Slot %1").arg(slot), this,
+            [this, slot]() { saveNamedLayout(slot); });
+    }
+    // Refresh slot labels (names + empty/enabled state) whenever the menu opens.
+    connect(layoutsMenu, &QMenu::aboutToShow,
+            this, &MainWindow::refreshLayoutMenus);
 
     // Help — User Guide + About.
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -1629,78 +1740,28 @@ void MainWindow::updateTciStatus() {
     }
 }
 
-bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
-    auto *w = qobject_cast<QWidget *>(obj);
-    const bool isTitle =
-        w && w->objectName() == QStringLiteral("dockTitleBar");
-    if (!isTitle) {
-        return QMainWindow::eventFilter(obj, event);
-    }
-    auto dockOf = [](QWidget *x) -> QDockWidget * {
-        for (QWidget *p = x->parentWidget(); p; p = p->parentWidget())
-            if (auto *d = qobject_cast<QDockWidget *>(p)) return d;
-        return nullptr;
-    };
-
-    switch (event->type()) {
-    case QEvent::MouseButtonDblClick: {
-        // Double-click toggles float/dock (standard QDockWidget gesture).
-        if (auto *dock = dockOf(w)) {
-            if (dock->features() & QDockWidget::DockWidgetFloatable)
-                dock->setFloating(!dock->isFloating());
-            return true;
+bool MainWindow::event(QEvent *e) {
+    // Block dock-separator resizing while panels are locked.  QMainWindow sets
+    // a split cursor on the main window when the pointer is over a draggable
+    // dock separator (its own hit-test); if a press lands there while locked,
+    // swallow it so the separator-drag never starts.  This locks resizing
+    // WITHOUT clamping dock sizes (which fought the layout on a locked
+    // restart).  Narrow guard — only a locked left-press on a split cursor.
+    if (panelsLocked_ && e->type() == QEvent::MouseButtonPress) {
+        const Qt::CursorShape cs = cursor().shape();
+        if (cs == Qt::SplitHCursor || cs == Qt::SplitVCursor) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::LeftButton) return true;   // eat it
         }
-        break;
     }
-    case QEvent::MouseButtonPress: {
-        auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::LeftButton) {
-            QDockWidget *dock = dockOf(w);
-            // Only take over the drag for a FLOATING dock — then we move
-            // it as a free window (no re-dock/snap).  A DOCKED panel
-            // falls through to QDockWidget's own drag (move / re-dock).
-            // Honour the panel lock: a locked dock carries
-            // NoDockWidgetFeatures (Movable cleared), so refuse the custom
-            // float-drag too — without this the lock only stopped DOCKED
-            // panels (native drag) + the double-click toggle, and a
-            // floating panel still dragged free.  Same feature gate the
-            // double-click handler above uses.
-            if (dock && dock->isFloating()
-                && (dock->features() & QDockWidget::DockWidgetMovable)) {
-                floatDragDock_   = dock;
-                floatDragOffset_ = me->globalPosition().toPoint()
-                                   - dock->frameGeometry().topLeft();
-                return true;
-            }
-        }
-        break;
-    }
-    case QEvent::MouseMove: {
-        if (floatDragDock_) {
-            auto *me = static_cast<QMouseEvent *>(event);
-            floatDragDock_->move(me->globalPosition().toPoint()
-                                 - floatDragOffset_);
-            return true;
-        }
-        break;
-    }
-    case QEvent::MouseButtonRelease: {
-        if (floatDragDock_) {
-            floatDragDock_ = nullptr;
-            return true;
-        }
-        break;
-    }
-    default:
-        break;
-    }
-    return QMainWindow::eventFilter(obj, event);
+    return QMainWindow::event(e);
 }
 
 void MainWindow::applyPanelLock(bool locked) {
     // Locked = panels can't be dragged / floated / closed (no title-bar
-    // grip).  Unlocked = full feature set.  Mirrors the Python-Lyra
-    // "Lock panels" behaviour.
+    // grip) AND can't be resized via the dock separators (see event()).
+    // Unlocked = full feature set.  Mirrors the Python-Lyra "Lock panels".
+    panelsLocked_ = locked;   // gates the separator-resize block in event()
     const QDockWidget::DockWidgetFeatures f =
         locked ? QDockWidget::NoDockWidgetFeatures : kUnlockedFeatures;
     for (auto *dock : std::as_const(docks_)) {
@@ -1716,16 +1777,11 @@ void MainWindow::applyPanelLock(bool locked) {
             on == QLatin1String("rxeq")) {
             dock->setFeatures(kUnlockedFeatures);
             if (QWidget *tb = dock->titleBarWidget()) {
+                tb->setCursor(moveCursor());   // rack docks always draggable
                 if (auto *fb = tb->findChild<QToolButton *>(QStringLiteral("dockFloat")))
                     fb->setVisible(true);
                 if (auto *cb = tb->findChild<QToolButton *>(QStringLiteral("dockClose")))
                     cb->setVisible(true);
-            }
-            if (dock->property("lyraUnlockedMin").isValid()) {
-                dock->setMinimumSize(dock->property("lyraUnlockedMin").toSize());
-                dock->setMaximumSize(dock->property("lyraUnlockedMax").toSize());
-                dock->setProperty("lyraUnlockedMin", QVariant());
-                dock->setProperty("lyraUnlockedMax", QVariant());
             }
             continue;
         }
@@ -1734,6 +1790,8 @@ void MainWindow::applyPanelLock(bool locked) {
         // the dock feature flags, so toggle them by hand to match the
         // locked state.  The "?" help badge stays available either way.
         if (QWidget *tb = dock->titleBarWidget()) {
+            // Locked → plain arrow (not draggable); unlocked → move cursor.
+            tb->setCursor(locked ? QCursor(Qt::ArrowCursor) : moveCursor());
             if (auto *fb = tb->findChild<QToolButton *>(
                     QStringLiteral("dockFloat")))
                 fb->setVisible(!locked);
@@ -1741,24 +1799,14 @@ void MainWindow::applyPanelLock(bool locked) {
                     QStringLiteral("dockClose")))
                 cb->setVisible(!locked);
         }
-        // NoDockWidgetFeatures stops move/float/close but NOT resize (the
-        // dock-area separators when docked, the window frame when floating).
-        // Freeze each dock's size while locked: stash its natural min/max
-        // once, clamp to the current size, and restore on unlock.  (The
-        // stashed properties are not persisted — restoreLayout re-locks
-        // after restoreState, re-capturing the natural constraints first.)
-        if (locked) {
-            if (!dock->property("lyraUnlockedMin").isValid()) {
-                dock->setProperty("lyraUnlockedMin", dock->minimumSize());
-                dock->setProperty("lyraUnlockedMax", dock->maximumSize());
-            }
-            dock->setFixedSize(dock->size());
-        } else if (dock->property("lyraUnlockedMin").isValid()) {
-            dock->setMinimumSize(dock->property("lyraUnlockedMin").toSize());
-            dock->setMaximumSize(dock->property("lyraUnlockedMax").toSize());
-            dock->setProperty("lyraUnlockedMin", QVariant());
-            dock->setProperty("lyraUnlockedMax", QVariant());
-        }
+        // Lock disables move / float / close (and the drag-to-dock gesture via
+        // DockWidgetMovable) — it deliberately does NOT clamp dock sizes.  An
+        // earlier setFixedSize()-on-lock froze each dock and, on a locked
+        // restart, fought the maximize/layout — collapsing the window to title
+        // strips, or stranding the panels at a sub-window size with a big void.
+        // Resizing via the (now clearly visible) dock separators stays allowed
+        // while locked; that's a fair trade for a layout that always restores
+        // correctly.
     }
 }
 
@@ -1968,13 +2016,99 @@ void MainWindow::importSettings() {
     }
 }
 
+void MainWindow::refreshLayoutMenus() {
+    // Refresh each slot's menu label to its saved name (or "(empty)"), and
+    // disable recall for an empty slot.  Called on Layouts-menu aboutToShow.
+    QSettings s;
+    for (int i = 0; i < 4; ++i) {
+        const int slot = i + 1;
+        const QString base = QStringLiteral("layouts/%1/").arg(slot);
+        QString name = s.value(base + QStringLiteral("name")).toString();
+        const bool empty =
+            s.value(base + QStringLiteral("windowState")).toByteArray().isEmpty();
+        if (name.isEmpty()) name = tr("Layout %1").arg(slot);
+        if (layoutSaveActs_[i]) {
+            layoutSaveActs_[i]->setText(
+                empty ? tr("Slot %1  —  (empty)").arg(slot)
+                      : tr("Slot %1  —  %2").arg(slot).arg(name));
+        }
+        if (layoutRecallActs_[i]) {
+            layoutRecallActs_[i]->setText(
+                empty ? tr("Slot %1  —  (empty)").arg(slot)
+                      : tr("%1  (slot %2)").arg(name).arg(slot));
+            layoutRecallActs_[i]->setEnabled(!empty);
+        }
+    }
+}
+
+void MainWindow::saveNamedLayout(int slot) {
+    QSettings s;
+    const QString base = QStringLiteral("layouts/%1/").arg(slot);
+    QString cur = s.value(base + QStringLiteral("name")).toString();
+    if (cur.isEmpty()) cur = tr("Layout %1").arg(slot);
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this, tr("Save layout — slot %1").arg(slot),
+        tr("Name this layout:"), QLineEdit::Normal, cur, &ok).trimmed();
+    if (!ok) return;
+    if (name.isEmpty()) name = tr("Layout %1").arg(slot);
+    s.setValue(base + QStringLiteral("name"), name);
+    s.setValue(base + QStringLiteral("geometry"), saveGeometry());
+    s.setValue(base + QStringLiteral("windowState"), saveState());
+    // The panadapter/waterfall divider is a QML SplitView inside the dock —
+    // not part of saveState() — so snapshot it alongside.
+    if (prefs_)
+        s.setValue(base + QStringLiteral("panadapterSplit"),
+                   prefs_->panadapterSplit());
+    statusBar()->showMessage(
+        tr("Saved layout \"%1\" to slot %2.").arg(name).arg(slot), 4000);
+}
+
+void MainWindow::recallNamedLayout(int slot) {
+    QSettings s;
+    const QString base = QStringLiteral("layouts/%1/").arg(slot);
+    const QByteArray st =
+        s.value(base + QStringLiteral("windowState")).toByteArray();
+    if (st.isEmpty()) {
+        QMessageBox::information(
+            this, tr("Empty layout slot"),
+            tr("Slot %1 is empty.\n\nArrange the panels how you like, then "
+               "View → Layouts → \"Save current layout to\" → slot %1.")
+                .arg(slot));
+        return;
+    }
+    const QByteArray geo =
+        s.value(base + QStringLiteral("geometry")).toByteArray();
+    if (!geo.isEmpty()) restoreGeometry(geo);
+    restoreState(st);
+    // restoreState() already set each dock's saved visibility; only ensure the
+    // always-on main panels are shown.  Do NOT force-show the chip-summoned
+    // rack/CW panels — leave them at their saved (usually hidden) state so a
+    // recall doesn't pop every TX/RX DSP window open.
+    for (auto *dock : std::as_const(docks_))
+        if (!isChipSummonedPanel(dock->objectName())) dock->show();
+    if (prefs_) {
+        const QVariant sp = s.value(base + QStringLiteral("panadapterSplit"));
+        if (sp.isValid()) prefs_->setPanadapterSplit(sp);
+    }
+    // Re-apply the current lock state to the freshly-restored arrangement
+    // (restoreState resets dock features the same way restoreLayout handles).
+    applyPanelLock(
+        QSettings().value(QStringLiteral("ui/panelsLocked"), false).toBool());
+    statusBar()->showMessage(tr("Recalled layout slot %1.").arg(slot), 4000);
+}
+
 void MainWindow::applyDefaultLayout() {
     // Built-in (factory) arrangement: panadapter on top, the control
     // panels in a row beneath.  Re-adding a dock to an area repositions
     // it, so this is a clean reset regardless of where the operator
     // dragged things.  Mirrors buildDocks()'s placement.
     static const char *kBottom[] = {"tuning", "audio", "display", "band"};
+    // Clean slate for the always-on main panels only.  Chip-summoned rack/CW
+    // panels are left untouched here — the embedded factory state governs
+    // their (hidden) visibility, so reset doesn't pop them all open.
     for (auto *dock : std::as_const(docks_)) {
+        if (isChipSummonedPanel(dock->objectName())) continue;
         dock->setFloating(false);
         dock->show();
     }
@@ -1983,7 +2117,7 @@ void MainWindow::applyDefaultLayout() {
     // apply (e.g. a future build whose dock object names changed).
     if (restoreState(defaultWindowState())) {
         for (auto *dock : std::as_const(docks_)) {
-            dock->show();
+            if (!isChipSummonedPanel(dock->objectName())) dock->show();
         }
         if (prefs_) {
             prefs_->setPanadapterSplit(QVariant());   // QML 60/40 default
