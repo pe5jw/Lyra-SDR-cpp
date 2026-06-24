@@ -2120,7 +2120,8 @@ void MainWindow::applyDefaultLayout() {
             if (!isChipSummonedPanel(dock->objectName())) dock->show();
         }
         if (prefs_) {
-            prefs_->setPanadapterSplit(QVariant());   // QML 60/40 default
+            // Ship the curated panadapter/waterfall split with the layout.
+            prefs_->setPanadapterSplit(defaultPanadapterSplit());
         }
         return;
     }
