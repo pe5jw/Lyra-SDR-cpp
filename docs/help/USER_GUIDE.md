@@ -266,27 +266,44 @@ arrange to taste. Lyra opens **full screen (maximized)** by default — the
 way it's meant to be run — in a curated default layout (panadapter on top,
 control panels in a row beneath).
 
-- **Move a panel:** drag it by its title bar. Drop it against an edge to
-  re-dock, or out on its own to float.
-- **Resize the spectrum vs. waterfall:** drag the divider between the
-  panadapter and the waterfall — the drag is smooth and the waterfall stays
-  clean even when squashed into a thin strip. Its position is remembered
-  with your layout.
+- **Move a panel — drag it by its title bar.** As you drag, a **cyan
+  highlight** previews where it will land:
+  - against an **edge** of the window → docks along that edge;
+  - over the **left/right/top/bottom third of another panel** → splits
+    that panel and shares the space;
+  - over the **centre of another panel** → stacks as a **tab** behind it;
+  - **out on its own** (away from any panel) → floats as a free window.
+  Drop when the highlight shows the spot you want. Double-click a title
+  bar to toggle floating.
+- **Resize panels:** drag the **separators** between them — they're the
+  thin bars that brighten **cyan** when you hover. Drag the divider
+  between the **panadapter and waterfall** the same way; the waterfall
+  stays clean even squashed into a thin strip, and its position is
+  remembered with your layout.
 - **Show / hide panels:** the **View** menu lists every panel; tick or
   untick to show or hide it.
 - **Lock the layout:** **View → Lock panels** (or **Ctrl+L**) freezes
-  everything so you can't nudge a panel by accident during operating.
+  everything — panels can't be moved, floated, closed, **or resized** —
+  so you can't disturb your arrangement by accident during operating.
+  The move cursor disappears on locked title bars as a reminder.
 
-**Saving a layout you like.** Once arranged the way you want:
+**Named layouts.** **View → Layouts** gives you **four save-able slots**
+plus the built-in **Lyra default** — five arrangements you can recall in
+one click:
 
-- **View → Save current layout as my default** — snapshots the current
-  arrangement (panels *and* the spectrum/waterfall divider).
-- **View → Restore my saved layout** — snaps back to that snapshot.
-- **View → Reset to default layout** — returns to Lyra's built-in
-  arrangement. (Use this if a layout ever gets scrambled.)
+- **Save to a slot** — snapshots the current arrangement (panels *and*
+  the spectrum/waterfall divider) into that slot; name it whatever you
+  like.
+- **Recall a slot** — snaps the window back to that arrangement.
+- **Lyra default** — returns to the built-in factory arrangement. (Use
+  this if a layout ever gets scrambled.)
+
+Recalling a layout restores only your main panels — it won't pop open the
+TX/RX DSP-rack or CW tool windows you reach from the header chips.
 
 Your window size, layout, and divider position are remembered between
-sessions. To move a layout to another PC or keep a backup, see
+sessions (and survive a lock + restart). To move a layout to another PC
+or keep a backup, see
 [Backing up & sharing your settings](#backing-up--sharing-your-settings).
 
 **Opening Settings:** **File → Settings…**, or press **Ctrl+,**.
@@ -1043,6 +1060,13 @@ receiving (press **▶ Start** first; it rests at S0 when idle).
 > in **[Meter panel](#meter-panel)**. The panel auto-swaps from
 > your RX source to your TX source on every MOX edge and back, so
 > you can watch what you need without manual switching.
+>
+> **On CW** the meter swaps to your TX set and shows forward power
+> too — for keyboard/macro (console) sending and for a paddle,
+> straight key, or external keyer into the radio. CW keys the PA
+> at the radio's gateware (so the wire doesn't go through the
+> normal MOX path), but Lyra still flips the meter for the duration
+> of the over, then back to the S-meter when you stop.
 >
 > **Tip for dialing in the chain:** pick **MIC** as primary +
 > **ALC G** as secondary, key the mic, and adjust Mic Gain until

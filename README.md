@@ -36,7 +36,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.4.6)
+## Features (v0.4.8)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -63,7 +63,8 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   click / F-key (F1–F12) memories, defaults + a "My macros" group you build
   out, `{tokens}` (contact + your own personal tokens) with a click-to-insert
   palette, and a Repeat caller.  QSK / semi / manual break-in, adjustable
-  sidetone.
+  sidetone.  The meter shows forward power and the VFO goes red on-air
+  while you send CW — console keyer *and* a paddle / key into the radio.
 * **Native TX DSP rack** — a studio audio chain built into the radio, ahead
   of the modulator: an 8-band parametric EQ with a draggable curve + live
   RTA, a multi-stage Speech section (noise gate, auto-AGC, de-esser), a
@@ -80,9 +81,11 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
 * **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
   glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
   drag/wheel tuning; draggable RX passband; collapsible waterfall.
-* **Dockable UI** — movable/floatable/tabbed panels (panadapter, tuning,
-  mode+filter, audio, display, band, solar) with save/restore layout +
-  export/import of the full settings profile.
+* **Dockable UI** — drag a panel by its title bar and a cyan zone previews
+  where it lands: snap to an edge, split a neighbour, tab behind it, or
+  float it free.  Cyan-on-hover resize separators; **four named layout
+  slots** + a factory default; **Lock panels** freezes move *and* resize
+  and survives a restart; export/import of the full settings profile.
 * **Band switching + per-band memory** — three rows (Ham / BC / Gen),
   returns to each band's last frequency, mode, and panadapter/waterfall dB
   ranges; optional 11m/CB band with all-40-channel panadapter markers.
