@@ -54,6 +54,40 @@ constexpr int    BAYES_MIN  = 5;     // marks before the Gaussian model engages
 constexpr double BAYES_ALPHA= 0.15;  // EMA weight per confirmed observation
 constexpr double MARK_BOUNDARY = 1.565;  // bootstrap dit/dah split (× dit)
 
+// ── A-slice accuracy additions (NOT field-tuned timing constants; these are
+//    additive guards / advisory-output scales and touch none of the above) ──
+constexpr int    PEAK_SNAP_PERSIST = 3;    // A5: windows an elevated level must hold
+constexpr double AFC_CENTER_BIAS   = 0.5;  // A2: an edge peak needs ~1.5× to win
+constexpr double CONF_BOUNDARY_SPAN= 0.5;  // A3: bootstrap margin → full confidence
+constexpr double CONF_MARGIN_SCALE = 2.0;  // A3: log-likelihood margin half-confidence
+constexpr double CONF_SNR_SPAN     = 4.0;  // A3: (snr/squelch − 1) span to full conf
+constexpr double CONF_W_MARGIN     = 0.6;  // A3: margin weight in the blend
+constexpr double CONF_W_SNR        = 0.4;  // A3: SNR weight in the blend (sum = 1)
+constexpr double CONF_RESCUED_SCALE= 0.5;  // A1/A3: rescued char confidence penalty
+
+// edit distance == 1 over the dot/dash alphabet (substitution / one insert /
+// one delete).  a ≠ b is guaranteed by the caller (a is a table miss, b a key),
+// so distance ≥ 1; this returns true iff it is exactly 1.
+bool isOneEdit(const std::string& a, const std::string& b) {
+    const int la = static_cast<int>(a.size()), lb = static_cast<int>(b.size());
+    if (std::abs(la - lb) > 1) return false;
+    if (la == lb) {
+        int diff = 0;
+        for (int i = 0; i < la; ++i)
+            if (a[i] != b[i] && ++diff > 1) return false;
+        return diff == 1;
+    }
+    const std::string& s = (la < lb) ? a : b;   // shorter
+    const std::string& t = (la < lb) ? b : a;   // longer (one char extra)
+    int i = 0, j = 0, skips = 0;
+    while (i < static_cast<int>(s.size()) && j < static_cast<int>(t.size())) {
+        if (s[i] == t[j]) { ++i; ++j; }
+        else if (++skips > 1) return false;
+        else ++j;
+    }
+    return true;   // any unmatched tail of t is the single insertion
+}
+
 const std::unordered_map<std::string, char>& morseTable() {
     static const std::unordered_map<std::string, char> t = {
         {".-",'A'},{"-...",'B'},{"-.-.",'C'},{"-..",'D'},{".",'E'},
@@ -103,7 +137,8 @@ void CwDecoder::reset() {
     lastEdge_ = 0.0; lastLevel_ = false;
     bufWasMark_.reset(); bufDur_ = 0.0;
     sampleTimeMs_ = 0.0;
-    noiseFloor_ = 0.0; peakPower_ = 0.0;
+    noiseFloor_ = 0.0; peakPower_ = 0.0; peakSnapHold_ = 0;
+    charConfSum_ = 0.0; charSnrSum_ = 0.0; charConfN_ = 0;
     envVal_ = 0.0;
     iqI_ = iqQ_ = 0.0; iqCount_ = 0; iqPhaseAcc_ = 0.0;
     mfBuf_.fill(0.0); mfPos_ = 0; mfSum_ = 0.0; mfWinLast_ = 0;
@@ -141,14 +176,20 @@ void CwDecoder::updateAfcState(bool locked, double hz) {
 // locked — AFC_LOCK_MIN consecutive scans agreeing on a far new frequency
 // before it will jump (multi-signal rejection).  Smooths 0.7 old / 0.3 new.
 void CwDecoder::runAfc(const float* s, int n, double centerHz) {
-    double bestHz = centerHz, bestPow = -1.0, totalPow = 0.0;
+    double bestHz = centerHz, bestScore = -1.0, bestPow = 0.0, totalPow = 0.0;
     int scanCount = 0;
+    const double range2 = static_cast<double>(afcRange_) * afcRange_ + 1.0;
     for (int df = -afcRange_; df <= afcRange_; df += AFC_STEP) {
         const double hz = centerHz + df;
         if (hz < 200.0 || hz > 2000.0) continue;
         const double p = goertzel(s, n, hz);
-        if (p > bestPow) { bestPow = p; bestHz = hz; }
-        totalPow += p; ++scanCount;
+        // A2: bias the pick toward the operator's tuned pitch (centerHz) so a
+        // louder adjacent station can't steal the lock.  The weight decays with
+        // distance²; an edge peak must be ~(1+AFC_CENTER_BIAS)× stronger to win.
+        const double w     = 1.0 / (1.0 + AFC_CENTER_BIAS * (df * df) / range2);
+        const double score = p * w;
+        if (score > bestScore) { bestScore = score; bestHz = hz; bestPow = p; }
+        totalPow += p; ++scanCount;   // lock threshold uses RAW power (unbiased)
     }
 
     if (scanCount == 0 || bestPow < (totalPow / scanCount) * 3.0) {
@@ -231,6 +272,58 @@ void CwDecoder::bayesLearnMark(double ms, bool isDit) {
     }
 }
 
+// ── A1: nearest-code rescue ──
+// Runs ONLY on a Morse-table miss (a correct character never reaches it).
+// Accept the unique table entry at edit-distance 1 (the dominant '?' cause on
+// weak signals is one dropped/inserted element); reject ties / distance ≥2 so
+// honest unknowns stay '?'.  Returns the rescued char, or '\0' for no rescue.
+char CwDecoder::rescueNearest(const std::string& code) const {
+    char found = '\0';
+    int  count = 0;
+    for (const auto& [k, ch] : morseTable()) {
+        if (isOneEdit(code, k)) {
+            if (++count > 1) return '\0';   // ambiguous — leave it '?'
+            found = ch;
+        }
+    }
+    return count == 1 ? found : '\0';
+}
+
+// ── A3: per-character confidence (advisory; never alters the decode) ──
+// Dit/dah decision margin for one mark, mapped to 0..1.  Once the Gaussian
+// model engages it is the (otherwise discarded) |LL_dit − LL_dah| separation;
+// while bootstrapping it is the normalised distance from the dit/dah boundary.
+double CwDecoder::markConfidence(double ms) const {
+    if (bMarkN_ < BAYES_MIN) {
+        const double bnd = bDitMu_ * MARK_BOUNDARY;
+        const double d   = std::fabs(ms - bnd) / std::max(bnd, 1.0);
+        return std::clamp(d / CONF_BOUNDARY_SPAN, 0.0, 1.0);
+    }
+    const double dahMu  = bDitMu_ * 3.0;
+    const double dahVar = bDitVar_ * 3.0;
+    const double margin = std::fabs(logGaussian(ms, bDitMu_, bDitVar_)
+                                    - logGaussian(ms, dahMu, dahVar));
+    return margin / (margin + CONF_MARGIN_SCALE);
+}
+
+// Decode-time SNR (peak/floor) mapped to 0..1 about the operator's squelch.
+double CwDecoder::snrConfidence() const {
+    if (noiseFloor_ <= 0.0) return 0.0;
+    const double snr = peakPower_ / noiseFloor_;
+    return std::clamp((snr / std::max(squelch_, 1.0) - 1.0) / CONF_SNR_SPAN, 0.0, 1.0);
+}
+
+// Blend the per-mark margin and SNR averages over the character; a nearest-code
+// rescue (A1) is penalised so the UI can flag it as a guess.
+double CwDecoder::charConfidence(bool rescued) const {
+    if (charConfN_ <= 0) return 0.0;
+    const double m = charConfSum_ / charConfN_;
+    const double s = charSnrSum_  / charConfN_;
+    double c = CONF_W_MARGIN * m + CONF_W_SNR * s;
+    if (rescued) c *= CONF_RESCUED_SCALE;
+    return std::clamp(c, 0.0, 1.0);
+}
+
 // ── one-edge lookback buffer (noise-blip / flicker merge) ──
 void CwDecoder::submitEdge(bool wasMark, double durationMs) {
     const double minMarkMs  = std::max(10.0, bDitMu_ * 0.20);
@@ -253,11 +346,15 @@ void CwDecoder::processEdge(bool wasMarkBefore, double durationMs) {
     if (wasMarkBefore) {
         if (durationMs > bDitMu_ * 8.0) return;   // implausibly long — discard
         const bool isDit = bayesClassifyMark(durationMs);
+        // A3: accumulate the dit/dah decision margin + decode SNR for this mark.
+        charConfSum_ += markConfidence(durationMs);
+        charSnrSum_  += snrConfidence();
+        ++charConfN_;
         currentChar_ += isDit ? '.' : '-';
         bayesLearnMark(durationMs, isDit);
     } else {
         const Space sp = bayesClassifySpace(durationMs);
-        if      (sp == Space::Word) { flushChar(); appendDecoded(' '); }
+        if      (sp == Space::Word) { flushChar(); appendDecoded(' ', 1.0); }
         else if (sp == Space::Char) { flushChar(); }
         if (bMarkN_ >= BAYES_MIN) {
             const double spAlpha = BAYES_ALPHA * 0.5;
@@ -279,14 +376,27 @@ void CwDecoder::processEdge(bool wasMarkBefore, double durationMs) {
 
 void CwDecoder::flushChar() {
     if (currentChar_.empty()) return;
+    char   out;
+    double conf;
     auto it = morseTable().find(currentChar_);
-    appendDecoded(it != morseTable().end() ? it->second : '?');
+    if (it != morseTable().end()) {                 // direct hit
+        out  = it->second;
+        conf = charConfidence(/*rescued=*/false);
+    } else if (char r = rescueNearest(currentChar_)) {  // A1: unique dist-1 rescue
+        out  = r;
+        conf = charConfidence(/*rescued=*/true);
+    } else {                                        // honest unknown
+        out  = '?';
+        conf = 0.0;
+    }
+    appendDecoded(out, conf);
     currentChar_.clear();
+    charConfSum_ = 0.0; charSnrSum_ = 0.0; charConfN_ = 0;
 }
 
-void CwDecoder::appendDecoded(char ch) {
+void CwDecoder::appendDecoded(char ch, double confidence) {
     lastEmitted_ = ch;
-    if (onChar) onChar(ch);
+    if (onChar) onChar(ch, confidence);
 }
 
 // ── hot path ──────────────────────────────────────────────────────────────
@@ -370,18 +480,35 @@ void CwDecoder::process(const float* mono, int nframes) {
             noiseFloor_ = noiseFloor_ * (1.0 - FLOOR_FALL) + mfVal * FLOOR_FALL;
         }
 
-        // peak tracker with QSB / word-gap instant snap
+        // peak tracker with QSB / word-gap snap.  A5: during a no-signal gap a
+        // single static crash / key-click must NOT hijack the AGC reference.
+        // Gate the upward snap on the RAW per-window magnitude (which falls back
+        // to noise the window after an impulse) staying above squelch for a few
+        // consecutive windows — a real signal re-emerging satisfies this in
+        // ~2 ms, a lone impulse cannot (the slow-decay envelope alone would, so
+        // gating on it is wrong).  Steady-state (mid-character) is the else path
+        // below and is unchanged.
         if (envVal_ > peakPower_) {
             const bool longSpace = !lastLevel_ && (sampleTimeMs_ - lastEdge_) > dotEstMs_ * 5.0;
-            if ((qsbFadeFlag_ || longSpace) && envVal_ > noiseFloor_ * squelch_) {
-                peakPower_ = envVal_;
-                qsbFadeFlag_ = false;
+            if (qsbFadeFlag_ || longSpace) {
+                if (mag > noiseFloor_ * squelch_) {
+                    if (++peakSnapHold_ >= PEAK_SNAP_PERSIST) {
+                        peakPower_   = envVal_;
+                        qsbFadeFlag_ = false;
+                        peakSnapHold_= 0;
+                    }
+                    // else: hold this window's spike, keep the established peak.
+                } else {
+                    peakSnapHold_ = 0;   // impulse: raw magnitude already gone
+                }
             } else {
-                peakPower_ = envVal_;
+                peakPower_   = envVal_;   // normal fast-attack on a mark
+                peakSnapHold_= 0;
             }
         } else {
             peakPower_ = std::max(noiseFloor_, peakPower_ * (1.0 - PEAK_FALL));
             if (peakPower_ < noiseFloor_ * 2.0) qsbFadeFlag_ = true;
+            peakSnapHold_ = 0;
         }
 
         // normalise + SNR gate
@@ -415,7 +542,7 @@ void CwDecoder::process(const float* mono, int nframes) {
                 if (!currentChar_.empty()) flushChar();
             }
             if (sp > dotEstMs_ * 7.5 && lastEmitted_ != '\0' && lastEmitted_ != ' ')
-                appendDecoded(' ');
+                appendDecoded(' ', 1.0);
         }
     }
 

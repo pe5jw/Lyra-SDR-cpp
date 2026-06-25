@@ -27,11 +27,38 @@ Rectangle {
     readonly property color cMuted:  "#8a9aac"
 
     property bool   collapsed: false
-    property string decodedText: ""
+    // Decoded stream as per-character HTML fragments (A3): low-confidence chars
+    // are wrapped in a muted span so the pane dims uncertain copy.  Runs are
+    // kept as an array so truncation / Clear can never split a markup tag.
+    property var    runs: []
+    property string decodedHtml: ""
+    readonly property string dimColor: "#8a9aac"      // uncertain-char colour (= cMuted)
+    readonly property real   dimThreshold: 0.45       // conf below this → dimmed
     property int    rxWpm: 0
     property bool   afcLocked: false
     property real   afcHz: 0
     property bool   matchTxSpeed: false
+
+    function htmlEscape(c) {
+        if (c === "&") return "&amp;"
+        if (c === "<") return "&lt;"
+        if (c === ">") return "&gt;"
+        return c   // single spaces / quotes render fine in Qt rich text
+    }
+    function appendDecoded(ch, conf) {
+        var frag = (conf < root.dimThreshold)
+            ? '<span style="color:' + root.dimColor + '">' + htmlEscape(ch) + '</span>'
+            : htmlEscape(ch)
+        var r = root.runs
+        r.push(frag)
+        if (r.length > 4000) r = r.slice(-3000)
+        root.runs = r
+        root.decodedHtml = r.join("")
+    }
+    function clearDecoded() {
+        root.runs = []
+        root.decodedHtml = ""
+    }
 
     // Detector knob state mirrored here (the engine has no getters for these).
     // Persisted via Prefs so the operator's tuned values recall on launch;
@@ -68,10 +95,8 @@ Rectangle {
 
     Connections {
         target: WdspEngine
-        function onCwDecodedChar(ch) {
-            root.decodedText += ch
-            if (root.decodedText.length > 4000)
-                root.decodedText = root.decodedText.slice(-3000)
+        function onCwDecodedChar(ch, conf) {
+            root.appendDecoded(ch, conf)
         }
         function onCwRxWpmChanged(w) {
             root.rxWpm = w
@@ -177,7 +202,7 @@ Rectangle {
             Item { Layout.fillWidth: true }
             ChipButton {
                 label: qsTr("Clear")
-                onClicked: root.decodedText = ""
+                onClicked: root.clearDecoded()
             }
         }
 
@@ -198,8 +223,12 @@ Rectangle {
                     readOnly: true
                     selectByMouse: true
                     wrapMode: TextArea.WrapAnywhere
-                    text: root.decodedText
-                    color: Prefs.cwDecodeColor
+                    // Rich text so per-character confidence dimming (A3) renders;
+                    // selectedText / selectWord still return plain text, so the
+                    // call-grab feature below is unaffected.
+                    textFormat: TextArea.RichText
+                    text: root.decodedHtml
+                    color: Prefs.cwDecodeColor      // colour of confident (un-dimmed) chars
                     font.family: "Consolas"
                     font.pixelSize: Prefs.cwDecodeFontSize
                     background: null

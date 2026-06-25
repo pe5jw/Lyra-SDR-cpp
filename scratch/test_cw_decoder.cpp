@@ -85,7 +85,7 @@ std::vector<float> synth(const std::string& text, double wpm, double tone,
 
 std::string decode(CwDecoder& d, const std::vector<float>& sig, int block) {
     std::string got;
-    d.onChar = [&](char c) { got.push_back(c); };
+    d.onChar = [&](char c, double /*conf*/) { got.push_back(c); };
     for (size_t i = 0; i < sig.size(); i += block) {
         const int n = static_cast<int>(std::min<size_t>(block, sig.size() - i));
         d.process(sig.data() + i, n);

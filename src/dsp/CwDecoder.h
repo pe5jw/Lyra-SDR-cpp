@@ -59,10 +59,12 @@ public:
 
     // ── output callbacks (fire from process()) ──────────────────────────────
     // onChar: one decoded character; '?' for an unrecognised element string;
-    //         ' ' for a word gap.
+    //         ' ' for a word gap.  confidence is an advisory 0..1 (1 = certain;
+    //         word gaps are 1; '?' is 0; nearest-code rescues and weak/ambiguous
+    //         decodes read low) — purely additive, the decode itself is unchanged.
     // onWpm:  adaptive receive speed changed (1200 / dit-ms).
     // onAfc:  AFC lock state and/or locked frequency changed.
-    std::function<void(char ch)>                onChar;
+    std::function<void(char ch, double confidence)> onChar;
     std::function<void(int wpm)>                onWpm;
     std::function<void(bool locked, double hz)> onAfc;
 
@@ -87,8 +89,14 @@ private:
     void   submitEdge(bool wasMark, double durationMs);
     void   processEdge(bool wasMarkBefore, double durationMs);
     void   flushChar();
-    void   appendDecoded(char ch);
+    void   appendDecoded(char ch, double confidence);
     void   seedTiming();   // (re)init dotEst / dit model / element-space from txWpm
+
+    // ── A-slice accuracy helpers (additive — never alter the element string) ──
+    char   rescueNearest(const std::string& code) const;  // A1: unique dist-1 char or '\0'
+    double markConfidence(double ms) const;               // A3: dit/dah decision margin → 0..1
+    double snrConfidence() const;                          // A3: decode-time SNR → 0..1
+    double charConfidence(bool rescued) const;             // A3: blended per-character 0..1
 
     // ── configuration ──
     double sampleRate_  = 48000.0;
@@ -134,6 +142,7 @@ private:
 
     // ── noise floor / peak ──
     double noiseFloor_ = 0.0, peakPower_ = 0.0;
+    int    peakSnapHold_ = 0;   // A5: windows the elevated level has persisted
 
     // ── timing / decode state ──
     double dotEstMs_  = 60.0;
@@ -149,6 +158,11 @@ private:
     double bDitVar_ = 0.0;
     int    bMarkN_  = 0;
     double bElemSpaceMu_ = 0.0;
+
+    // ── per-character confidence accumulators (A3) ──
+    double charConfSum_ = 0.0;   // Σ dit/dah decision margins over the char
+    double charSnrSum_  = 0.0;   // Σ decode-time SNR samples over the char
+    int    charConfN_   = 0;     // mark count contributing to the two sums
 
     // ── output bookkeeping ──
     char   lastEmitted_ = '\0';

@@ -694,7 +694,7 @@ signals:
     // #173 CW-5a — RX CW decoder outputs (emitted from the audio thread; the
     // CW-5b panel connects with the default queued connection).
     void cwDecodeEnabledChanged();
-    void cwDecodedChar(QString ch);          // one char, '?' unknown, ' ' word gap
+    void cwDecodedChar(QString ch, double confidence);  // char; conf 0..1 (advisory)
     void cwRxWpmChanged(int wpm);            // adaptive RX speed
     void cwAfcLockChanged(bool locked, double hz);
     void nrChanged();        // NR enable / mode / AEPF / NPE

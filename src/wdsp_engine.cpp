@@ -308,8 +308,8 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // CW decoder panel, CW-5b).  AFC centre is seeded from / tracks cwPitchHz_.
     cwDecoder_.setSampleRate(cfg_.outRate);
     cwDecoder_.setToneHz(cwPitchHz_);
-    cwDecoder_.onChar = [this](char c) {
-        emit cwDecodedChar(QString(QChar::fromLatin1(c)));
+    cwDecoder_.onChar = [this](char c, double conf) {
+        emit cwDecodedChar(QString(QChar::fromLatin1(c)), conf);
     };
     cwDecoder_.onWpm = [this](int w) { emit cwRxWpmChanged(w); };
     cwDecoder_.onAfc = [this](bool locked, double hz) {
