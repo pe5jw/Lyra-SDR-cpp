@@ -39,6 +39,7 @@ not programmers — if you can click a menu, you can use this.
 - [TX panel](#tx-panel)
 - [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
 - [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
+  - [Reading CW — the RX decoder](#reading-cw--the-rx-decoder)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -1344,8 +1345,10 @@ and remembers where you put it — only open it when you want it). It works
 only in CWU/CWL; outside CW the send controls dim, so switch to CW first.
 The **WPM** slider sets the speed; **Esc** or the red **Stop · Esc** button
 aborts whatever is sending. The bottom **type-and-send** line keys a line
-live — type and press **Enter**. The console is also where the **RX CW
-decoder** will live (coming in a later release).
+live — type and press **Enter**. Lyra also has a separate **RX CW
+decoder** panel (the **CW Dec** toolbar chip) that reads the other station
+and can drop their call straight into your macros — see
+[Reading CW — the RX decoder](#reading-cw--the-rx-decoder).
 
 The console's centerpiece is the **macro bank** — named, click-to-send CW
 memories:
@@ -1368,8 +1371,10 @@ macro can contain tokens in `{BRACES}` that expand when you send:
 
 - **About the contact** (from the console's **contact row** — His call /
   Name / RST / #): `{CALL}` `{NAME}` `{RST}` `{#}`. Copy the other
-  station's call into **His call**, set RST/serial, and one "Reply" macro
-  works for every QSO. `{MYCALL}` is your own call from Settings → Hardware.
+  station's call into **His call** — type it, or grab it straight from the
+  [CW decoder](#reading-cw--the-rx-decoder) — set RST/serial, and one
+  "Reply" macro works for every QSO. `{MYCALL}` is your own call from
+  Settings → Hardware.
 - **Your personal tokens** — reusable facts about *you* that you set once.
   In **Edit** mode, under **My tokens**, add a name + value (e.g.
   `{ME}` = Rick, `{PWR}` = 25 watts, `{QTH}` = Hamilton OH, `{RIG}`,
@@ -1399,6 +1404,62 @@ through Lyra — see [CW keying over TCI](#cw-keying-over-tci).
 appears only in CW) sets how loud you hear your own keying. It's the
 hardware-generated CW sidetone and is independent of the **MON** monitor
 used for SSB.
+
+### Reading CW — the RX decoder
+
+Lyra has a built-in CW reader. Click the **CW Dec** chip on the top toolbar
+to pop open the floating **CW Decoder** (it floats and remembers where you
+put it). It reads **only in CWU/CWL** — outside CW the detector controls
+dim and a "switch to CW to decode" note shows.
+
+**Tune the signal onto your CW pitch.** The decoder listens at the same
+single **CW Pitch** the rest of the radio uses, so just put the signal's
+beat note where you normally hear it and the decoder is on it. From there
+it **AFC-tracks drift** on its own — you don't set a separate tone.
+
+**The text pane.** Decoded characters scroll live. The **WPM** readout (top
+right) shows the speed it's tracking; the **AFC** chip turns cyan and shows
+the locked pitch in Hz while it's holding a signal. Characters the decoder
+is *unsure* of are **dimmed grey** instead of hidden — so a shaky copy
+*looks* shaky at a glance rather than reading as solid text. **Decoding**
+toggles the reader; **Clear** wipes the pane. Under **Display** you can set
+the **font size** and pick a **text colour**.
+
+**Grab a call or name into your macros.** Worked a station you want to
+answer? Pull their call straight out of the decoded text:
+
+- **Double-click a word** → it goes to **His call**.
+- **Right-click a word** → a menu offers **→ His Call** or **→ Name**.
+- Or drag-select and click the **→ His Call** / **→ Name** chips.
+
+That fills the CW console's **contact row**, so a "Reply" macro built from
+`{CALL}` / `{NAME}` instantly addresses that station — no typing.
+
+**Match TX speed to RX WPM** (under **Keyer**) — turn this on and your
+keyer's send speed follows the speed you're *copying*, so you answer at the
+other operator's pace automatically. The current keyer speed shows beside
+it.
+
+**The detector knobs.** Sensible defaults ship (Squelch ≈ ×1.9, Threshold
+≈ 75 %, AFC + NB + DSP filter on) — reach for these only when copy is
+rough:
+
+- **AFC** + range (**±50 / 100 / 150 / 200 Hz**) — how far the decoder will
+  chase a drifting or slightly off-pitch signal. Wider catches more drift
+  but is likelier to wander onto a louder neighbour; narrower stays glued
+  to your pitch.
+- **NB** — the decoder's own **impulse blanker**: it clamps static crashes,
+  key-clicks and lightning ticks before they can be read as a dit. This is
+  *separate* from the main RX Noise Blanker on the Audio panel — it cleans
+  up only what the decoder sees, not the audio you hear.
+- **DSP filter** — tightens the decoder's matched filter. **On** (default)
+  gives cleaner element timing and better copy in QRM; turn it **off** to
+  chase a very weak or very fast signal where the tighter filter costs you
+  a little sensitivity.
+- **Squelch** (× over the noise floor) and **Threshold** (the mark/space
+  slicing point, in %) — the two gates that decide "signal vs noise." If
+  you're getting garbage out of the noise, raise them; if a real signal
+  isn't being read, lower them.
 
 ---
 

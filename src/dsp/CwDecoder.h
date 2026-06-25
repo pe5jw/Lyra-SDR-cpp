@@ -123,6 +123,7 @@ private:
     // ── floor holdoff / QSB ──
     bool   qsbFadeFlag_   = false;
     double floorHoldoffEnd_ = 0.0;
+    bool   snrGateOpen_   = false;   // A6: hysteretic SNR-gate latch
 
     // ── Farnsworth (independent space centres) ──
     double bCharSpaceMu_ = 0.0;

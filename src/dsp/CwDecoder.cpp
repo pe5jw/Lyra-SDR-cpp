@@ -64,6 +64,7 @@ constexpr double CONF_SNR_SPAN     = 4.0;  // A3: (snr/squelch − 1) span to fu
 constexpr double CONF_W_MARGIN     = 0.6;  // A3: margin weight in the blend
 constexpr double CONF_W_SNR        = 0.4;  // A3: SNR weight in the blend (sum = 1)
 constexpr double CONF_RESCUED_SCALE= 0.5;  // A1/A3: rescued char confidence penalty
+constexpr double SNR_HYST          = 0.8;  // A6: gate holds open down to 0.8× squelch
 
 // edit distance == 1 over the dot/dash alphabet (substitution / one insert /
 // one delete).  a ≠ b is guaranteed by the caller (a is a table miss, b a key),
@@ -102,6 +103,10 @@ const std::unordered_map<std::string, char>& morseTable() {
         {"-.-.--",'!'},{"-..-.",'/'},{"-.--.",'('},{"-.--.-",')'},
         {"-...-",'='},{".-.-.",'+'},{"-....-",'-'},{".-..-.",'"'},{".--.-.",'@'},
         {"---...",':'},{"-.-.-.",';'},
+        // A8: non-colliding punctuation.  Prosigns (AR/KN/SK …) deliberately
+        // omitted — they alias '+' / '(' / etc., so faithful prosign rendering
+        // needs char-level context (Tier B); silently aliasing would be wrong.
+        {"..--.-",'_'},{"...-..-",'$'},
     };
     return t;
 }
@@ -144,7 +149,7 @@ void CwDecoder::reset() {
     mfBuf_.fill(0.0); mfPos_ = 0; mfSum_ = 0.0; mfWinLast_ = 0;
     afcHz_.reset(); afcBuf_.clear(); afcCount_ = 0;
     afcLocked_ = false; afcPrevHz_.reset(); afcLockCount_ = 0;
-    qsbFadeFlag_ = false; floorHoldoffEnd_ = 0.0;
+    qsbFadeFlag_ = false; floorHoldoffEnd_ = 0.0; snrGateOpen_ = false;
     nbRunAvg_ = 0.0;
     lastEmitted_ = '\0';
     rxWpm_ = 0;
@@ -190,6 +195,21 @@ void CwDecoder::runAfc(const float* s, int n, double centerHz) {
         const double score = p * w;
         if (score > bestScore) { bestScore = score; bestHz = hz; bestPow = p; }
         totalPow += p; ++scanCount;   // lock threshold uses RAW power (unbiased)
+    }
+
+    // A4: the 20 Hz scan step is below the ~23 Hz Goertzel bin, so the integer
+    // pick is coarse.  Refine bestHz to sub-bin precision with a 3-point
+    // parabolic interpolation on the RAW power across the winning bin and its
+    // two neighbours.  Only nudges bestHz (≤ ½ step); touches no slicer/timing
+    // constant, and the lock threshold above already used the unbiased bestPow.
+    if (scanCount > 0 && bestHz - AFC_STEP >= 200.0 && bestHz + AFC_STEP <= 2000.0) {
+        const double pm = goertzel(s, n, bestHz - AFC_STEP);
+        const double pp = goertzel(s, n, bestHz + AFC_STEP);
+        const double denom = pm - 2.0 * bestPow + pp;
+        if (denom < 0.0) {   // concave → a real peak; interpolate its vertex
+            const double delta = std::clamp(0.5 * (pm - pp) / denom, -0.5, 0.5);
+            bestHz += delta * AFC_STEP;
+        }
     }
 
     if (scanCount == 0 || bestPow < (totalPow / scanCount) * 3.0) {
@@ -354,7 +374,16 @@ void CwDecoder::processEdge(bool wasMarkBefore, double durationMs) {
         bayesLearnMark(durationMs, isDit);
     } else {
         const Space sp = bayesClassifySpace(durationMs);
-        if      (sp == Space::Word) { flushChar(); appendDecoded(' ', 1.0); }
+        if (sp == Space::Word) {
+            flushChar();
+            // A7: unify the two word-gap emitters.  The process() long-gap
+            // timeout (sp > 7.5× dit) already emits the space for a real word
+            // gap before the next mark arrives here; guard with the SAME
+            // lastEmitted_ test so this edge path can't append a duplicate.
+            // The bWordSpaceMu_ training below still runs once per gap.
+            if (lastEmitted_ != '\0' && lastEmitted_ != ' ')
+                appendDecoded(' ', 1.0);
+        }
         else if (sp == Space::Char) { flushChar(); }
         if (bMarkN_ >= BAYES_MIN) {
             const double spAlpha = BAYES_ALPHA * 0.5;
@@ -511,9 +540,21 @@ void CwDecoder::process(const float* mono, int nframes) {
             peakSnapHold_ = 0;
         }
 
-        // normalise + SNR gate
+        // normalise + SNR gate.  A6: hysteresis — open at squelch× floor, hold
+        // open until the peak fades to SNR_HYST× that (≈1.2× floor at the 1.5
+        // default) so a QSB dip mid-character doesn't chop the mark.  The
+        // slicer below still requires mfVal to clear threshold within
+        // [floor,peak], so an open gate over noise stays a space (norm≈0) — no
+        // false marks.  Inert on clean signal (peak ≫ floor latches it open).
         const double range = peakPower_ - noiseFloor_;
-        const bool   snrOk = noiseFloor_ > 0.0 && peakPower_ >= noiseFloor_ * squelch_;
+        if (noiseFloor_ > 0.0) {
+            snrGateOpen_ = snrGateOpen_
+                ? peakPower_ >= noiseFloor_ * squelch_ * SNR_HYST
+                : peakPower_ >= noiseFloor_ * squelch_;
+        } else {
+            snrGateOpen_ = false;
+        }
+        const bool   snrOk = snrGateOpen_;
         const double norm  = (snrOk && range > 0.0)
             ? std::clamp((mfVal - noiseFloor_) / range, 0.0, 1.0) : 0.0;
 

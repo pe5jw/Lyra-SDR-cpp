@@ -27,6 +27,13 @@ Item {
     // this QQuickWidget setup (same lesson as the Band panel), which
     // would leave the freq labels stale after a tune.
     property int centerHz: 0
+    // #174 CTUN: the dial's offset from the LOCKED display centre.  Under
+    // CTUN the spectrum is frozen at ctuneCenterHz, so the carrier marker +
+    // filter passband must slide to (rx1FreqHz − centre) for the operator to
+    // drag the marker onto signals.  0 when CTUN is off (centre == dial) →
+    // all non-CTUN rendering stays byte-identical.
+    readonly property real ctunDialOffHz:
+        Stream.ctuneEnabled ? (Stream.rx1FreqHz - centerHz) : 0
     // Effective RX-DDC freq = dial + RIT offset (when RIT on).  The DDC is
     // tuned HERE, so the spectrum + freq scale + click-to-tune all centre on
     // it.  With RIT engaged the panadapter re-centres on where you're actually
@@ -447,7 +454,8 @@ Item {
                 // (markerOffsetHz) so it sits on the carrier the operator
                 // hears (which is +pitch above the DDS centre).
                 x: Math.round(spectrumArea.width
-                              * (0.5 + WdspEngine.markerOffsetHz
+                              * (0.5 + (WdspEngine.markerOffsetHz
+                                        + root.ctunDialOffHz)
                                        / Math.max(1, WdspEngine.spanHz)))
                 y: 0
             }
@@ -637,6 +645,13 @@ Item {
                 property real startX: 0
                 property int  startCenter: 0
                 property real lastEmitMs: 0
+                // #174 CTUN gesture state (Thetis console.cs:50318-50368).
+                //   ""     → CTUN off, body-drag pans the spectrum
+                //   "grab" → CTUN on, body-drag grabs the VFO marker
+                //   "lopan"→ CTUN on, top-15px-strip drag pans the LO
+                property string ctunGesture: ""
+                property bool   pressInPassband: false
+                property real   lastDragX: 0
                 // live cursor freq for the hover readout
                 readonly property real cursorHz: freqAtX(mouseX)
                 // Full-Hz, dot-grouped like the VFO readout: 14.234.723.
@@ -659,6 +674,20 @@ Item {
                 function freqAtX(mx) {
                     return root.centerHz
                            + (mx / Math.max(1, width) - 0.5) * WdspEngine.spanHz
+                }
+                // #174 is pixel x inside the RX filter passband?  A CTUN
+                // click here must NOT jump the 0-beat to the cursor (Thetis
+                // m_bCTUNputsZeroOnMouse=false, console.cs:50382).
+                function inPassband(mx) {
+                    // offset of the cursor from the DIAL (subtract the CTUN
+                    // dial offset so the test rides with the passband box).
+                    var off = (mx / Math.max(1, width) - 0.5) * WdspEngine.spanHz
+                              - root.ctunDialOffHz
+                    var lo = Math.min(WdspEngine.passbandLowHz,
+                                      WdspEngine.passbandHighHz)
+                    var hi = Math.max(WdspEngine.passbandLowHz,
+                                      WdspEngine.passbandHighHz)
+                    return off > lo && off < hi
                 }
                 // Tune to an operator-facing CARRIER freq, snapped to a grid:
                 //   • "100 Hz" toggle → round to the 100 Hz grid (override).
@@ -712,6 +741,20 @@ Item {
                         startX = mouse.x
                         startCenter = root.centerHz
                         lastEmitMs = 0
+                        // #174 CTUN gesture pick (Thetis console.cs:50318-
+                        // 50368): top 15 px = LO/display pan (rx1_spectrum_
+                        // tune_drag); body = grab the VFO marker (rx1_click_
+                        // tune_drag, relative).  An inside-passband press
+                        // suppresses the click-retune in onReleased.  CTUN
+                        // off → unchanged spectrum-pan.
+                        lastDragX = mouse.x
+                        if (Stream.ctuneEnabled) {
+                            ctunGesture = (mouse.y < 15) ? "lopan" : "grab"
+                            pressInPassband = inPassband(mouse.x)
+                        } else {
+                            ctunGesture = ""
+                            pressInPassband = false
+                        }
                     }
                 }
                 onReleased: (mouse) => {
@@ -728,12 +771,17 @@ Item {
                     if (dbMode === "" && tuning && !dragged) {
                         // plain click → tune the CARRIER to the clicked RF
                         // point (round-to-100 + CW pitch offset handled in
-                        // tuneCarrier).
-                        tuneCarrier(freqAtX(startX))
+                        // tuneCarrier).  Under CTUN, a click INSIDE the
+                        // passband does NOT jump the 0-beat to the cursor
+                        // (Thetis m_bCTUNputsZeroOnMouse=false, 50382).
+                        if (!(Stream.ctuneEnabled && pressInPassband))
+                            tuneCarrier(freqAtX(startX))
                     }
                     dbMode = ""
                     tuning = false
                     dragged = false
+                    ctunGesture = ""
+                    pressInPassband = false
                 }
                 onPositionChanged: (mouse) => {
                     if (rightPress) {
@@ -770,14 +818,36 @@ Item {
                         if (Math.abs(dx) < dragThreshPx) return
                         dragged = true
                     }
-                    // cursor right → spectrum follows finger → centre down
-                    var hzPerPx = WdspEngine.spanHz / Math.max(1, width)
-                    var newCenter = startCenter - dx * hzPerPx
                     // throttle ~30 Hz so the render pipeline keeps up
                     var nowMs = Date.now()
                     if (nowMs - lastEmitMs < 33) return
                     lastEmitMs = nowMs
-                    tuneCarrier(newCenter + WdspEngine.markerOffsetHz)
+                    if (ctunGesture === "lopan") {
+                        // #174 top-strip → pan the LOCKED display centre
+                        // (Thetis rx1_spectrum_tune_drag → CentreFrequency
+                        // -= delta).  The dial/VFO stays put; the C++ RX-NCO
+                        // keeps the demod on the signal as the spectrum slides.
+                        var dLo = freqAtX(mouse.x) - freqAtX(lastDragX)
+                        lastDragX = mouse.x
+                        Stream.setCtuneCenterHz(
+                            Math.round(Math.max(0, Stream.ctuneCenterHz - dLo)))
+                    } else if (ctunGesture === "grab") {
+                        // #174 body → grab the VFO marker; it FOLLOWS the
+                        // cursor 1:1 (Thetis rx1_click_tune_drag → VFOA +=
+                        // end-start, relative — preserves the grab offset).
+                        // Apply the raw Hz delta to the dial: markerOffset/RIT
+                        // are constant across the drag so they cancel.
+                        var dG = freqAtX(mouse.x) - freqAtX(lastDragX)
+                        lastDragX = mouse.x
+                        Stream.setRx1FreqHz(
+                            Math.round(Math.max(0, Stream.rx1FreqHz + dG)))
+                    } else {
+                        // CTUN off — spectrum-pan (Thetis rx1_spectrum_drag):
+                        // cursor right → spectrum follows finger → centre down.
+                        var hzPerPx = WdspEngine.spanHz / Math.max(1, width)
+                        var newCenter = startCenter - dx * hzPerPx
+                        tuneCarrier(newCenter + WdspEngine.markerOffsetHz)
+                    }
                 }
                 onWheel: (wheel) => {
                     if (wheel.modifiers & Qt.ControlModifier) {
@@ -903,7 +973,10 @@ Item {
                 z: 4
                 readonly property real spanHz: Math.max(1, WdspEngine.spanHz)
                 function xOf(offHz) {
-                    return spectrumArea.width * (0.5 + offHz / spanHz)
+                    // #174 under CTUN the passband rides the dial marker
+                    // (offset from the frozen centre), not the centre.
+                    return spectrumArea.width
+                           * (0.5 + (offHz + root.ctunDialOffHz) / spanHz)
                 }
                 readonly property real loX: xOf(WdspEngine.passbandLowHz)
                 readonly property real hiX: xOf(WdspEngine.passbandHighHz)
@@ -965,8 +1038,12 @@ Item {
                                 if (nowMs - lastMs < 33) return
                                 lastMs = nowMs
                                 var px = mapToItem(spectrumArea, m.x, m.y).x
+                                // #174 the passband rides the dial under CTUN
+                                // → subtract that offset to recover the true
+                                // filter offset before writing the BW knobs.
                                 var off = (px / Math.max(1, spectrumArea.width)
                                            - 0.5) * passband.spanHz
+                                          - root.ctunDialOffHz
                                 var mode = Prefs.mode
                                 var isSsbOrDig = (mode === "USB" || mode === "LSB"
                                                || mode === "DIGU" || mode === "DIGL")
