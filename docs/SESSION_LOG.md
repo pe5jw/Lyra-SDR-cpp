@@ -4,6 +4,70 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-25 — v0.4.10 RELEASED: CTUN drag-the-marker (4th look, FIXED) + CW decoder A-series + CW-decoder docs
+
+Working on `main`. Two releases since v0.4.8: **v0.4.9** (fast patch —
+floating tool panels are float-only, Lock no longer disables the CW
+console/decoder; `162906f`) and today's **v0.4.10** (`ebb3c67`).
+
+### CTUN #174 — 4th look, the pass that actually fixed it (`PanadapterPanel.qml`)
+- Operator (Thetis Help open as ground truth) said CTUN still wasn't Thetis
+  after the v0.4.4/v0.4.5 "parity" rebuilds: you should drag the FREQ MARKER
+  onto signals with the display LOCKED; a click INSIDE the filter must NOT
+  jump the 0-beat.
+- Read the real Thetis mouse handlers FIRST (console.cs 50230-50433 press +
+  51887-51960 drag). The DSP core (locked-LO + WDSP NCO shift) was already
+  right; the whole gap was the MOUSE + MARKER layer.
+- ROOT CAUSE the 3 prior passes all missed: Lyra's carrier marker is
+  hard-pinned to the locked display centre (`markerOffsetHz` = CW pitch
+  only), so under CTUN there was NO marker tracking the dial — nothing to
+  drag. First bench report: "marker does not move."
+- Fix (CTUN-gated, non-CTUN byte-identical): new `ctunDialOffHz` slides the
+  carrier marker + filter passband to (rx1FreqHz − centre); body-drag =
+  relative 1:1 marker-grab (`setRx1FreqHz`); top-15px strip = LO pan
+  (`setCtuneCenterHz`); inside-passband click suppresses the retune; the
+  edge-drag + inPassband math subtract the dial offset.
+- Operator-bench-CONFIRMED "Do as Thetis does state." #174 DONE.
+
+### CW decoder — rest of the safe Tier-A A-series (A4/A6/A7/A8) (`CwDecoder.cpp/.h`)
+- A-slice A1/A2/A3/A5 was committed last session (`eb4c89d`). v0.4.10 adds:
+  - A4 sub-bin AFC: 3-pt parabolic interp on the winning Goertzel bin
+    (refines bestHz only).
+  - A6 hysteretic SNR gate: open at squelch×floor, hold to 0.8× that
+    (≈1.2× floor); inert on clean signal.
+  - A7 unify the two word-gap emitters: guard the processEdge Word emit with
+    `lastEmitted_ != ' '` so a word gap can't double-emit.
+  - A8 add `_` / `$` punctuation; prosigns deliberately omitted (alias +/( ).
+- All additive — correct decodes unchanged, ~35 tuned constants untouched.
+  Unit test ALL PASS (VVV TEST CQ / CQ PARIS / CQ TEST; AFC lock 749).
+
+### CW decoder docs (`USER_GUIDE.md`)
+- Operator couldn't recall what the decoder NB / DSP-filter did → realised
+  none of the decoder was documented (+ a stale "decoder coming in a later
+  release" line). Added "Reading CW — the RX decoder" section + TOC entry:
+  panel, confidence dimming, decoded-call/name grab → His Call / Name (feeds
+  {CALL}/{NAME}), Match-TX-to-RX-WPM, and every detector knob. Console
+  His-call cross-linked to the decoder grab.
+
+### B1 anchor (NEXT CW work — NOT started)
+- Benched a live **W1AW** run; it announces its own speed ("END OF 30WPM
+  TEXT", "NOW 25 WPM") = labeled truth. Sent 30→25 wpm, decoder read **35**
+  → over-reads ~15-20%, dit estimate runs short. Copy still readable;
+  residual errors (WILL→WIRL, ONCE→JNCE) are valid-letter swaps A1 can't
+  touch by design. W1AW = the labeled bench to tune B1 (independent
+  dah-length + warm-up/Gaussian boundary fix).
+
+### Release mechanics + standing
+- 0.4.9 → 0.4.10 (CMakeLists / lyra.iss / README); notes
+  `docs/releases/v0.4.10.md`. Commit `ebb3c67`, tag `v0.4.10`, pushed main +
+  tag, GitHub release + `dist/Lyra-Setup-0.4.10.exe` published.
+- Daily backup task ("Lyra-cpp Daily Backup", 22:30 → `_backups/` + mirror
+  `Z:\LyraBU\`) confirmed ACTIVE + healthy (last run 6/24 OK, 0x0).
+- Open: CW B1 (with the W1AW bench). CTUN done. Bigger arcs still open —
+  RX2 #96-101, CW macro chips #176, grab-spot-as-call #182, PureSignal.
+
+---
+
 ## 2026-06-24 — v0.4.8 RELEASED: panel docking overhaul + CW transmit metering (+ wiki, CW-decoder review)
 
 Working on `main` (last tag `v0.4.7` = `ff6c9c9`). Tester feedback (Randy
