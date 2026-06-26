@@ -112,12 +112,17 @@ Byte layouts verified at `networkproto1.c` HL2 case-builder:
 - **case 12 / addr 0x0b / C0 0x16** (`:1112-1122`): `C2[6] = rev_paddle`;
   `C3[5:0] = keyer_speed (WPM)`, `C3[7:6] = mode` (00 straight / 01 iambic-A
   / 10 iambic-B); `C4[6:0] = keyer_weight`, `C4[7] = strict_spacing`.
-  (Consumed by the internal keyer module — Path A config.) **NOTE:** addr
-  0x0b is the same register family Lyra already uses for the MOX-gated
-  step-attenuator (ATT-on-TX, §15.31). Verify the C3/C4 fields don't collide
-  — reference uses 0x0b C3 for keyer_speed AND elsewhere for step-att; this
-  needs a careful read of which case owns 0x0b on the HL2 path before
-  composing (do NOT clobber the ATT-on-TX bytes).
+  (Consumed by the internal keyer module — Path A config.) **NO COLLISION —
+  RESOLVED, see §2 (verified in `src/wire/FrameComposer.cpp`):** addr 0x0b /
+  case-12 carries the RX ADC1/ADC2 `rx_step_attn` in **C1/C2** and the CW
+  keyer config in **C3/C4** — different bytes, same register. The shipped
+  ATT-on-TX step-attenuator (§15.31) is on **entirely different** registers
+  (case-4 / addr 0x1c **C3** + case-11 / addr 0x14 **C4**), so there is no
+  byte overlap with the CW keyer C3/C4 here. The earlier "verify before
+  composing / do not clobber" caution is superseded — the cases are already
+  ported verbatim from Thetis and dispatched. (Naming note: addr 0x0b =
+  C0 byte 0x16 = Thetis case-12 are three names for ONE register — that
+  three-way notation is what made this look like a conflict.)
 - **addr 0x00 C2 bit0 = eer** (`:950`) — already in the frame-0 composer;
   CW doesn't need to change it.
 
