@@ -292,6 +292,8 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // store (Task #44 v2.2 amendment A.6).
     inRateAtomic_.store(cfg_.inRate, std::memory_order_relaxed);
 
+    loadDspFilterTypes();   // #159 — per-family filter-type prefs (default Linear)
+
     // fexchange0 output buffer: 2 * outSize_ doubles (interleaved L/R).
     outBuf_.assign(static_cast<size_t>(2 * outSize_), 0.0);
     // int16 stereo scratch for the audio-ring push (Step 3e).
@@ -787,7 +789,7 @@ bool WdspEngine::openRx1()
                     cfg_.tDelayDown, cfg_.tSlewDown,
                     cfg_.block);
     opened_ = true;
-
+    applyDspFilterTypes();   // #159 — apply per-family filter type on open
     // Binaural OFF (arg 0) => WDSP panel.copy=1 => I copied to Q at the
     // panel output => mono on BOTH L/R regardless of any upstream stage
     // that zeroed Q (e.g. EMNR).  This is the verified-correct default
@@ -1685,6 +1687,80 @@ void WdspEngine::applyModeFilter()
     }
 }
 
+// ── #159 slim DSP — per-mode-family filter type (Linear / Low Latency) ─────
+WdspEngine::DspFamily WdspEngine::dspFamilyForMode(const QString &m)
+{
+    if (m == QLatin1String("FM"))                                return DspFamily::FM;
+    if (m == QLatin1String("CWU") || m == QLatin1String("CWL"))  return DspFamily::CW;
+    if (m == QLatin1String("DIGU") || m == QLatin1String("DIGL")
+        || m == QLatin1String("DRM"))                            return DspFamily::Dig;
+    return DspFamily::Phone;   // USB/LSB/AM/SAM/DSB/SPEC
+}
+
+static const char *dspFamKey(WdspEngine::DspFamily f)
+{
+    switch (f) {
+        case WdspEngine::DspFamily::FM:  return "fm";
+        case WdspEngine::DspFamily::CW:  return "cw";
+        case WdspEngine::DspFamily::Dig: return "dig";
+        default:                         return "phone";
+    }
+}
+
+void WdspEngine::loadDspFilterTypes()
+{
+    QSettings s;
+    for (int f = 0; f < 4; ++f) {
+        const auto fam = static_cast<DspFamily>(f);
+        dspFiltMp_[f][0] = s.value(QStringLiteral("dsp/%1_rx_mp")
+                                       .arg(QLatin1String(dspFamKey(fam))),
+                                   false).toBool();
+        // CW has no TX filter combo — leave its TX slot at the default.
+        if (fam != DspFamily::CW)
+            dspFiltMp_[f][1] = s.value(QStringLiteral("dsp/%1_tx_mp")
+                                           .arg(QLatin1String(dspFamKey(fam))),
+                                       false).toBool();
+    }
+}
+
+bool WdspEngine::dspFilterMinPhase(DspFamily fam, bool tx) const
+{
+    return dspFiltMp_[static_cast<int>(fam)][tx ? 1 : 0];
+}
+
+void WdspEngine::setDspFilterMinPhase(DspFamily fam, bool tx, bool minPhase)
+{
+    const int fi = static_cast<int>(fam);
+    if (dspFiltMp_[fi][tx ? 1 : 0] == minPhase) return;
+    dspFiltMp_[fi][tx ? 1 : 0] = minPhase;
+    QSettings().setValue(QStringLiteral("dsp/%1_%2_mp")
+                             .arg(QLatin1String(dspFamKey(fam)),
+                                  tx ? QStringLiteral("tx") : QStringLiteral("rx")),
+                         minPhase);
+    applyDspFilterTypes();   // re-push if this family is the active mode
+}
+
+void WdspEngine::applyDspFilterTypes()
+{
+    if (!opened_) return;   // re-applied on the next openRx1()
+    const WdspApi &api = wdsp_->api();
+    const DspFamily fam = dspFamilyForMode(mode_);
+    const int fi = static_cast<int>(fam);
+    if (api.RXASetMP)
+        api.RXASetMP(channel_, dspFiltMp_[fi][0] ? 1 : 0);
+    // CW TX is keyer/firmware — no TXA filter to set (reference parity).
+    // The TXA channel (chid 1) is created lazily by create_xmtr() at
+    // stream-connect; calling TXASetMP before that = AV on a null txa[1].
+    if (api.TXASetMP && fam != DspFamily::CW && txaChannelOpen_.load())
+        api.TXASetMP(/*chid(1,0)=*/1, dspFiltMp_[fi][1] ? 1 : 0);
+}
+
+void WdspEngine::setTxaChannelOpen(bool open)
+{
+    txaChannelOpen_.store(open);
+    if (open) applyDspFilterTypes();   // push the TX filter type now txa[1] exists
+}
+
 int WdspEngine::bandwidthForEdge(double edgeOffsetHz) const
 {
     const double a = std::abs(edgeOffsetHz);
@@ -1788,6 +1864,7 @@ void WdspEngine::setMode(const QString &m)
     }
     recomputePassband();   // overlay edges (even when closed)
     applyModeFilter();     // SetRXAMode + new passband (no-op if closed)
+    applyDspFilterTypes(); // #159 — push the new family's RX/TX filter type
     pushSquelchState();    // re-route SSQL/FMSQ/AMSQ for the new mode
     pushApfState();        // APF engages only in CW — re-gate on mode change
     // VAC1 auto-enable: follow the new mode (live in DIGU/DIGL, off else).

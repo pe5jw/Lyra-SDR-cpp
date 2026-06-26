@@ -124,6 +124,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     if (engine_) {
         tabs_->addTab(wrapScroll(buildAudioTab()), tr("Audio"));
         tabs_->addTab(wrapScroll(buildNoiseTab()), tr("Noise"));
+        tabs_->addTab(wrapScroll(buildDspTab()), tr("DSP"));  // #159 filter type
     }
     if (meter_) {
         tabs_->addTab(wrapScroll(buildMeterTab()), tr("Meter"));
@@ -5368,6 +5369,94 @@ QWidget *SettingsDialog::buildNoiseTab() {
     path->setWordWrap(true);
     path->setStyleSheet(QStringLiteral("color:#8a9aac; font-size:11px;"));
     outer->addWidget(path);
+    outer->addStretch(1);
+    return page;
+}
+
+// ── #159 slim DSP — per-mode-family filter type (Linear Phase / Low
+// Latency).  OPT-IN: every cell defaults to Linear Phase (the legacy
+// behaviour), so an upgrade changes nothing until the operator opts a
+// family into Low Latency.  Buffer size stays at the engine default
+// (4096) — this surface is filter-TYPE only (group-delay latency lever),
+// not buffer/taps.  Writes go straight to WdspEngine, which persists them
+// in QSettings (dsp/<fam>_<dir>_mp) and re-applies on mode change / open.
+QWidget *SettingsDialog::buildDspTab() {
+    using DspFamily = lyra::dsp::WdspEngine::DspFamily;
+    QWidget *page = new QWidget;
+    QVBoxLayout *outer = new QVBoxLayout(page);
+
+    QLabel *intro = new QLabel(
+        tr("Filter type per mode family.  <b>Linear Phase</b> (default) is "
+           "the cleanest, symmetric response.  <b>Low Latency</b> uses a "
+           "minimum-phase filter that trims group delay — useful for digital "
+           "round-trip (VarAC / WSJT-X) and CW monitoring, at the cost of a "
+           "little phase asymmetry.  Buffer size is unchanged."));
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    QGroupBox *box = new QGroupBox(tr("Mode-family filter type"));
+    QGridLayout *grid = new QGridLayout(box);
+    grid->addWidget(new QLabel(tr("<b>Family</b>")), 0, 0);
+    grid->addWidget(new QLabel(tr("<b>RX</b>")),     0, 1);
+    grid->addWidget(new QLabel(tr("<b>TX</b>")),     0, 2);
+
+    struct Row { const char *label; DspFamily fam; bool hasTx; };
+    const Row rows[] = {
+        { "Phone (SSB / AM / SAM / DSB)", DspFamily::Phone, true  },
+        { "FM",                          DspFamily::FM,    true  },
+        { "CW",                          DspFamily::CW,    false },  // RX-only
+        { "Digital (DIGU / DIGL / DRM)", DspFamily::Dig,   true  },
+    };
+
+    auto makeCombo = [this](DspFamily fam, bool tx) {
+        QComboBox *c = new QComboBox;
+        c->addItem(tr("Linear Phase"));   // index 0 -> mp = false
+        c->addItem(tr("Low Latency"));    // index 1 -> mp = true
+        c->setCurrentIndex(engine_->dspFilterMinPhase(fam, tx) ? 1 : 0);
+        connect(c, &QComboBox::activated, engine_, [this, fam, tx](int idx) {
+            engine_->setDspFilterMinPhase(fam, tx, idx == 1);
+        });
+        return c;
+    };
+
+    int r = 1;
+    for (const Row &row : rows) {
+        grid->addWidget(new QLabel(tr(row.label)), r, 0);
+        grid->addWidget(makeCombo(row.fam, /*tx=*/false), r, 1);
+        if (row.hasTx) {
+            grid->addWidget(makeCombo(row.fam, /*tx=*/true), r, 2);
+        } else {
+            QLabel *na = new QLabel(tr("—"));
+            na->setToolTip(tr("CW transmit is handled by the keyer, not a "
+                              "TXA filter, so there is no CW-TX filter type."));
+            grid->addWidget(na, r, 2);
+        }
+        ++r;
+    }
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(2, 1);
+    outer->addWidget(box);
+
+    // Why Lyra's DSP page is so much smaller than Thetis's "DSP → Options"
+    // (heads off the "where are my buffer / filter-size / latency knobs?"
+    // questions).
+    QLabel *why = new QLabel(
+        tr("<b>Why only this one control?</b><br>"
+           "Thetis exposes buffer size, filter (tap) size and FFT options "
+           "because it was built for the PCs of its era, where those were "
+           "real CPU-vs-latency trade-offs you had to tune by hand.<br><br>"
+           "Lyra targets <b>modern hardware</b> — multi-core CPUs, plenty of "
+           "RAM and a Vulkan GPU pipeline — and is a native <b>Qt 6 / C++23</b> "
+           "build. It simply runs the DSP at a high-quality fixed buffer all "
+           "the time, so there is nothing to trade off: you get the low "
+           "latency and the sharp filters at once. The only knob that still "
+           "changes the <i>sound/feel</i> on fast machines is filter "
+           "<i>type</i> (group delay), which is what this page exposes. "
+           "Everything else Thetis made you tune is handled automatically."));
+    why->setWordWrap(true);
+    why->setStyleSheet("color: palette(mid);");
+    outer->addWidget(why);
+
     outer->addStretch(1);
     return page;
 }

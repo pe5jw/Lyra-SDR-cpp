@@ -536,9 +536,10 @@ int main(int argc, char *argv[])
     // not run against unresolved seam pointers / a never-opened
     // channel.
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     [&xmtrCreated]() {
+                     [&xmtrCreated, wdspEngine]() {
         qWarning("[shutdown] handler-1.5 ENTRY (destroy_xmtr)");
         if (xmtrCreated) {
+            wdspEngine->setTxaChannelOpen(false);   // #159 — txa[1] gone
             lyra::wire::destroy_xmtr();
             xmtrCreated = false;
         }
@@ -1113,6 +1114,9 @@ int main(int argc, char *argv[])
             // Sem_BuffReady, so xcmaster(1) never fires.
             lyra::wire::create_xmtr();
             xmtrCreated = true;
+            // #159 — txa[1] now exists; let the DSP engine apply the
+            // TX filter type (TXASetMP would AV before this point).
+            wdspEngine->setTxaChannelOpen(true);
             qInfo("[tx] P0.d direct port: create_xmtr() — WDSP TXA "
                   "channel chid(1,0)=1 opened (64, 4096, 48000, "
                   "96000, 48000, type=1, state=0), TX analyzer "

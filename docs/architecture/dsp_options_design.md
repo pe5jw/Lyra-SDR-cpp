@@ -215,3 +215,29 @@ Live-apply on change (mode-resolved push), persisted immediately.
   v1 deliverable. Confirm OK, or pull the cache port into v1.
 - This surface is **independent** of RX2 (#96–#101) and TX Profile
   (#49) — per-mode DSP tuning is global, not per-profile.
+
+## SHIPPED (2026-06-26) — slim v1 + PureSignal forward-compat
+
+Slim v1 shipped: filter-TYPE only (Linear Phase / Low Latency =
+minimum-phase via `RXASetMP`/`TXASetMP`), buffer fixed at 4096,
+opt-in (default all Linear = legacy-identical). `WdspEngine::
+applyDspFilterTypes()` is the single funnel; the TXA push is gated by
+`txaChannelOpen_` (flipped by `main()` around `create_xmtr`/
+`destroy_xmtr` — the TXA channel chid(1,0) is created lazily at
+stream-connect, so an ungated `TXASetMP(1,…)` AV'd inside wdsp.dll
+at startup).
+
+**⚠ PureSignal prerequisites (wire these when PS is built — verify
+Thetis behavior first):**
+1. **Lock PS out in digital modes (DIGU/DIGL/DRM).** Digital apps
+   recommend against PS — on near-constant-envelope digital it can
+   raise IMD. Mirror the `setMode` digital-bypass idiom (RX-EQ #59 /
+   TX-rack / PHROT #109). Also makes the minimum-phase+PS combo
+   impossible in digital (where Low Latency is the recommended pick).
+2. **Force Linear Phase on the TX path while PS is armed** (Phone/
+   AM/FM, where PS is allowed), restore on PS-off. Minimum-phase
+   shifts TXA group delay; PS feedback alignment is delay-sensitive.
+   ~2-line gate at the single `applyDspFilterTypes()` funnel.
+
+At default (all Linear) #159 is a wire no-op, so this is forward-
+compat, not a present bug. Full rationale: memory `project-lyra-cpp-tx`.

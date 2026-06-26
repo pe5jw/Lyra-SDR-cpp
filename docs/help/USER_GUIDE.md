@@ -58,6 +58,7 @@ not programmers — if you can click a menu, you can use this.
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
+- [Settings → DSP (filter type)](#settings--dsp-filter-type)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [CW keying over TCI](#cw-keying-over-tci)
@@ -2131,6 +2132,51 @@ controls here are:
 > section walks the whole setup, including the no-power fix.
 
 ---
+
+## Settings → DSP (filter type)
+
+This tab sets the DSP **filter type** per mode family — and it is
+deliberately the only DSP knob here. If you've used Thetis you'll
+remember its **DSP → Options** page full of buffer-size, filter-size
+(taps) and FFT-mode controls; Lyra does not copy that, on purpose.
+
+### What the control does
+
+For each mode family — **Phone** (SSB / AM / SAM / DSB), **FM**,
+**CW** (RX only), and **Digital** (DIGU / DIGL / DRM) — you pick the
+filter type for RX and (where applicable) TX:
+
+- **Linear Phase** *(default)* — the cleanest, perfectly symmetric
+  filter response. This is what every install ships with, and what
+  Lyra has always used.
+- **Low Latency** — a *minimum-phase* filter that trims the filter's
+  group delay (the built-in delay every sharp filter adds). Useful
+  where round-trip timing matters: digital modes (VarAC / WSJT-X
+  acking faster) and CW monitoring. The trade-off is a little phase
+  asymmetry — most operators won't hear it on SSB.
+
+It's **opt-in**: out of the box every cell is Linear Phase, so an
+upgrade changes nothing. Flip a family to Low Latency only if you
+want it. The choice applies automatically when you change mode and is
+remembered across sessions. **CW transmit** has no entry — CW keying
+is handled by the keyer, not a TX filter.
+
+### Why Lyra doesn't have Thetis's buffer / taps / FFT options
+
+Thetis exposes buffer size, filter (tap) size and FFT options because
+it was built for the PCs of its era, where those were genuine
+CPU-versus-latency trade-offs you had to balance by hand on slower
+machines.
+
+Lyra is a native **Qt 6 / C++23** application built for **modern
+hardware** — multi-core CPUs, plenty of RAM, and a **Vulkan** GPU
+rendering pipeline. It simply runs the DSP at a high-quality fixed
+buffer all the time, so there is no trade-off left to make: you get
+low latency *and* sharp filters at once, with no tuning required. The
+one setting that still changes the *feel* on a fast machine is filter
+*type* (group delay) — which is exactly what this tab exposes.
+Everything Thetis made you tune for performance, Lyra handles
+automatically.
 
 ## Settings → TX (Mic + ALC + Leveler, TR sequencing + cos² fade)
 

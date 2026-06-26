@@ -534,6 +534,22 @@ public:
     // running.
     QString mode() const { return mode_; }
     Q_INVOKABLE void setMode(const QString &m);
+
+    // #159 slim DSP — per-mode-family filter type (Linear Phase vs Low
+    // Latency / minimum phase).  Opt-in: defaults all Linear Phase
+    // (mp=false) = byte-identical to legacy behaviour.  Auto-applied on
+    // mode change + channel open; persisted to QSettings dsp/<fam>_<dir>_mp.
+    // CW family is RX-only (no CW-TX filter — keyer/firmware handles CW TX).
+    enum class DspFamily { Phone = 0, FM = 1, CW = 2, Dig = 3 };
+    bool dspFilterMinPhase(DspFamily fam, bool tx) const;
+    void setDspFilterMinPhase(DspFamily fam, bool tx, bool minPhase);
+    // #159 — the TXA channel (chid 1) is created lazily by the wire
+    // layer's create_xmtr() at stream-connect, NOT at startup.  main()
+    // flips this around create_xmtr()/destroy_xmtr() so applyDspFilterTypes
+    // never calls TXASetMP() on a non-existent txa[1] (would AV inside
+    // wdsp.dll).  Setting it true re-applies the TX filter type.
+    void setTxaChannelOpen(bool open);
+
     int  bandwidth() const { return bw_; }
     Q_INVOKABLE void setBandwidth(int hz);
     // IQ sample rate (Hz).  Switching reopens the WDSP channel +
@@ -930,6 +946,16 @@ private:
     // it's an atomic the RX worker reads.
     double              afGainDb_ = 0.0;
     std::atomic<double> balance_{0.0};
+
+    // #159 slim DSP — per-family [RX=0, TX=1] minimum-phase flag (false =
+    // Linear Phase default).  Loaded from QSettings in the ctor; applied to
+    // RXASetMP(channel_) / TXASetMP(chid 1) for the active mode's family.
+    bool dspFiltMp_[4][2] = {{false, false}, {false, false},
+                             {false, false}, {false, false}};
+    std::atomic<bool> txaChannelOpen_{false};  // #159 — txa[1] live? (set by main)
+    void              loadDspFilterTypes();          // QSettings -> dspFiltMp_
+    void              applyDspFilterTypes();          // push for the active mode
+    static DspFamily  dspFamilyForMode(const QString &mode);
     // #90 TX monitor (Stage 1: persisted + UI; consumed in Stage 3).
     std::atomic<bool>   monEnabled_{false};
     std::atomic<double> monVolume_{0.5};

@@ -55,6 +55,7 @@ private:
     QWidget *buildHardwareTab();
     QWidget *buildAudioTab();    // RX audio output device chooser
     QWidget *buildNoiseTab();    // captured-profile manager (list/rename/delete)
+    QWidget *buildDspTab();      // #159 per-mode-family filter type (Linear/Low Latency)
     QWidget *buildWeatherTab();  // weather-alert sources + thresholds + keys
     QWidget *buildBandsTab();    // Memory bank (+ Time Stations / SW DB later)
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
