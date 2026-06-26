@@ -16,6 +16,7 @@
 
 #include <QHash>
 #include <QMainWindow>
+#include <QList>
 #include <QPoint>
 
 class QAction;
@@ -30,6 +31,7 @@ class QSystemTrayIcon;
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
 namespace lyra::profile { class ProfileManager; }
+namespace lyra::cat { class SerialPtt; class CatServer; }
 namespace lyra::ui {
 
 class ProfileUi;
@@ -257,6 +259,8 @@ private:
     EibiStore                  *eibi_  = nullptr;     // EiBi shortwave overlay
     SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
+    lyra::cat::SerialPtt       *serialPtt_ = nullptr; // serial PTT input (WSJT-X/VarAC keys Lyra)
+    QList<lyra::cat::CatServer *> catServers_;        // Kenwood CAT serial servers (cat1..catN)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     EqModel                    *eqModel_ = nullptr;   // #50 TX parametric EQ (EqPanel.qml)
     EqModel                    *rxEqModel_ = nullptr; // #59 RX parametric EQ (RxEqPanel.qml)

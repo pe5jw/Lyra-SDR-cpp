@@ -1019,6 +1019,9 @@ public:
         Manual = 0,   // operator MOX button, CAT, TX-timeout, FSM cancel
         HwPtt  = 1,   // EP6 ptt_in foot-switch / hand-mic / mic button
         Tci    = 2,   // TCI client (MSHV TX_AUDIO_STREAM workflow)
+        Serial = 3,   // serial PTT line — a digital app (WSJT-X / VarAC /
+                      // fldigi) asserts RTS/DTR on a (virtual) COM port,
+                      // polled via QSerialPort (lyra::cat::SerialPtt).
         // Forward-compat: Cw / Vox land with their respective
         // subsystems and follow the same pattern.
     };
@@ -1042,6 +1045,7 @@ public slots:
     // PttSource) — pure source-tagging convenience.
     Q_INVOKABLE void requestMoxFromHwPtt(bool on);
     Q_INVOKABLE void requestMoxFromTci(bool on);
+    Q_INVOKABLE void requestMoxFromSerialPtt(bool on);   // serial PTT input
 
     // #175 bench (increment 2a) — render `callsign` as a waterfall-ID raster
     // (lyra::dsp::WaterfallId, 48 kHz to match the TXA in-rate), clear + push

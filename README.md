@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.4.10)
+## Features (v0.4.11)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -119,6 +119,12 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   drive frequency / mode / filter / volume from SDRLogger+, Log4OM,
   N1MM, etc.; a header indicator shows connected-client count; optional
   audio + IQ binary streaming and Thetis-style emulation/option toggles.
+* **Kenwood CAT + serial PTT** — control Lyra from any logger / digital app
+  that speaks **Kenwood TS-480 / TS-2000 CAT** (frequency / mode / PTT), over
+  a **COM port** *or* **TCP** (no com0com needed for TCP); two independent,
+  labelled CAT instances run side-by-side.  Plus a **serial-PTT input** so a
+  digital app (WSJT-X, VarAC, fldigi) keys Lyra over an RTS/DTR line.  All
+  under **Settings → CAT / Serial**.
 * **DX-cluster spots** — TCI cluster spots painted on the panadapter
   (country-tagged, CW-pitch-aware placement), with show/max/lifetime
   controls, own-callsign highlight + color, a toast when you're spotted

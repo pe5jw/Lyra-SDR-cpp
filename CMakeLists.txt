@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.4.10
+    VERSION 0.4.11
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -34,7 +34,7 @@ set(CMAKE_AUTOMOC ON)
 # layout, matching the proven Python-Lyra UX), and the Vulkan
 # panadapter/waterfall scene-graph content is embedded INSIDE docks via
 # QQuickWidget.  All native C++ — no Python, no GIL anywhere.
-find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widgets QuickWidgets ShaderTools WebSockets)
+find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widgets QuickWidgets ShaderTools WebSockets SerialPort)
 
 # Vulkan SDK -- optional at compile time (Qt RHI dynamically loads
 # the Vulkan runtime via the loader at app launch), but having the
@@ -243,6 +243,12 @@ qt_add_executable(lyra
     src/tci/TciTxBridge.h
     src/tci/TciTxBridge.cpp
     src/tci/TciTxStereoMode.h
+    # COM-port features (#171-adjacent) — serial PTT input + Kenwood CAT
+    # serial server.  See docs/architecture/com_port_design.md.
+    src/cat/SerialPtt.h
+    src/cat/SerialPtt.cpp
+    src/cat/CatServer.h
+    src/cat/CatServer.cpp
     # TX/RX operator Profiles (Stage 0 — model/store/manager; UI wires
     # in next).  See docs/architecture/PROFILE_MODEL_STAGE0_DESIGN.md.
     src/profile/Profile.h
@@ -430,6 +436,7 @@ target_link_libraries(lyra PRIVATE
     Qt6::Widgets
     Qt6::QuickWidgets
     Qt6::WebSockets
+    Qt6::SerialPort
     # #158 DL-0 — vendored static PortAudio (full-duplex IVAC device
     # layer).  Carries its own PUBLIC include dir (portaudio.h) + the
     # Windows host-API system libs (winmm/ole32/uuid/setupapi) as

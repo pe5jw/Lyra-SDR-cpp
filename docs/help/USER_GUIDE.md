@@ -61,6 +61,7 @@ not programmers — if you can click a menu, you can use this.
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [CW keying over TCI](#cw-keying-over-tci)
+- [Settings → CAT / Serial (rig control over COM / TCP)](#settings--cat--serial-rig-control-over-com--tcp)
   - [Digital modes over TCI](#digital-modes-over-tci-ft8--ft4--msk144--q65--etc)
   - [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)
   - [DX-cluster spots](#dx-cluster-spots)
@@ -2711,6 +2712,77 @@ not zero-beat. **Click a spot** to jump there. Controls live in the same
   your callsign, so you're not spammed (set to *every time* to disable the
   cooldown).
 - **Clear spots now** — wipe the current spot list.
+
+---
+
+## Settings → CAT / Serial (rig control over COM / TCP)
+
+This tab lets a **logger or digital-mode app control Lyra over a serial port
+or a TCP socket**, using the Kenwood CAT protocol — the same way you'd
+connect software to a real Kenwood rig.  It's separate from the TCI server
+(previous section): TCI is for TCI-aware apps like SDRLogger+; CAT is for the
+huge world of apps that speak **Kenwood CAT** (WSJT-X, VarAC, fldigi, N1MM,
+Log4OM, Hamlib, and most loggers).  So between the two tabs you have **three
+ways** for software to talk to Lyra: TCI, CAT-over-COM, and CAT-over-TCP.
+
+### How apps connect to Lyra
+
+Lyra is the *rig*; your app is the *client*.  On Windows, a serial connection
+between two programs on the same PC needs a **virtual COM-port pair** —
+install **com0com** (free), which creates a linked pair like COM10 ↔ COM11.
+Point your app at one end and Lyra at the other.  **TCP needs none of that** —
+the app just connects to Lyra's host/port directly, which is why it's the
+simpler choice if your app supports it.
+
+### Serial PTT input
+
+A digital-mode app keys Lyra over a serial PTT line (its "PTT method = RTS"
+or "DTR").  The app asserts the line; Lyra goes to transmit, which keys your
+HL2 / ANAN / Brick rig exactly as the on-screen MOX button does.
+
+- **Enable** — turn it on (off by default).
+- **COM port** — the port Lyra watches (the *other* end of your com0com pair
+  from the app's PTT port).  **Rescan ports** refreshes the list.
+- **PTT line** — **CTS** (if the app uses RTS) or **DSR** (if it uses DTR).
+  On a com0com pair the app's RTS crosses to Lyra's CTS and DTR to DSR.  If
+  PTT seems stuck or backwards, try the other line or **Invert**.
+- **Invert** — key on the line going *low* instead of high.
+
+The status line shows *Watching for PTT* / *PTT ASSERTED — transmitting* /
+*Disabled*.
+
+### Kenwood CAT server (two instances)
+
+Each **Kenwood CAT** group is an independent server, so you can run (say) a
+logger on one and a digital app on another, each on its own port:
+
+- **Label** — a free-text note for what the port's for (e.g. *N1MM*, *VarAC*,
+  *FLDIGI*) — purely for your own reference.
+- **Transport** — **COM Port** or **TCP**.  Choosing one grays out the
+  other's fields:
+  - *COM Port:* pick the **COM port** (Lyra's end of the com0com pair) +
+    **Baud / Data bits / Parity / Stop bits** to match the app (most apps
+    are **115200, 8-N-1**).
+  - *TCP:* set **TCP host** (usually `127.0.0.1`) and **TCP port** (e.g.
+    `60000`) — no com0com needed.  Multiple apps can connect to one TCP
+    instance at once.
+- **Rig model** — **TS-480** (reports ID 020) or **TS-2000** (ID 019).
+  Match this to the rig model selected in *your app*.  Thetis-flavoured
+  profiles (e.g. VarAC's "Anan Thetis") expect **TS-2000**.
+- **CAT server running** — start / stop the instance.  Watch the bottom
+  status bar: it confirms *listening on …* / *on COM… @ …*, or tells you
+  *cannot listen / cannot open* with the reason.
+
+The app can then read and set **VFO frequency** and **mode**, and key TX
+(`RX;` / `TX;`).  Data modes map the standard way: **USB-D → DIGU (MD9)**,
+**LSB-D → DIGL (MD6)**.
+
+> **Tip — fastest digital turnaround.** For modes like VarAC/VARA that flip
+> RX↔TX rapidly, keying via **CAT** (set the app's PTT method to *CAT*) is
+> event-driven and snappier than a polled RTS/DTR line.  The bigger lever for
+> turnaround is **Settings → TX → TR Sequencing** (RF delay etc.) — safe to
+> shorten into a dummy load / barefoot; mind the hot-switch note if a linear
+> is in line.
 
 ---
 

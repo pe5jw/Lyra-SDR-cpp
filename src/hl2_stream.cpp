@@ -2098,6 +2098,10 @@ void HL2Stream::requestMoxFromTci(bool on) {
     requestMox(on, PttSource::Tci);
 }
 
+void HL2Stream::requestMoxFromSerialPtt(bool on) {
+    requestMox(on, PttSource::Serial);
+}
+
 int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level,
                                     bool lsb) {
     // #175 bench (increment 2a).  Render the call → a 48 kHz mono raster

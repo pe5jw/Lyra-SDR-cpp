@@ -16,6 +16,8 @@
 // is being ripped along with the rest of the TX DSP subsystem and
 // rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 #include "tci_server.h"
+#include "cat/SerialPtt.h"
+#include "cat/CatServer.h"
 #include "metermodel.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
 #include "eqmodel.h"                  // complete type for new EqModel + context property
@@ -433,6 +435,36 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     tci_ = new TciServer(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                          qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                          spots_, this);
+    // Serial PTT input — a digital app (WSJT-X / VarAC / fldigi) asserts
+    // RTS/DTR on a (virtual) COM port → crosses to our CTS/DSR → keys Lyra
+    // (which keys the rig downstream).  Default-OFF; configured in
+    // Settings → CAT / Serial.  See docs/architecture/com_port_design.md.
+    serialPtt_ = new lyra::cat::SerialPtt(
+        qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+    connect(serialPtt_, &lyra::cat::SerialPtt::statusMessage, this,
+            [this](const QString &msg) { statusBar()->showMessage(msg, 4000); });
+
+    // Kenwood CAT serial servers (logger / digital-mode rig control over
+    // virtual COM ports).  Several independent instances so different apps
+    // each get their own CAT port to Lyra.  PS1/PS0 drive the connect flow
+    // like TciServer.
+    for (int i = 1; i <= 2; ++i) {
+        auto *cat = new lyra::cat::CatServer(
+            QStringLiteral("cat%1").arg(i), prefs_,
+            qobject_cast<lyra::ipc::HL2Stream *>(stream_),
+            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
+        connect(cat, &lyra::cat::CatServer::statusMessage, this,
+                [this](const QString &msg) { statusBar()->showMessage(msg, 4000); });
+        connect(cat, &lyra::cat::CatServer::startRequested, this, [this]() {
+            auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+            if (st && !st->isRunning()) onStartStop();
+        });
+        connect(cat, &lyra::cat::CatServer::stopRequested, this, [this]() {
+            auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+            if (st && st->isRunning()) onStartStop();
+        });
+        catServers_.append(cat);
+    }
     connect(tci_, &TciServer::startRequested, this, [this]() {
         auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
         if (st && !st->isRunning()) onStartStop();
@@ -1067,7 +1099,8 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, tci_, spots_, meter_, profiles_, this);
+            wx_, memory_, eibi_, tci_, spots_, meter_, profiles_,
+            serialPtt_, catServers_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();

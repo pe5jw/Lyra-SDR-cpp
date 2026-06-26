@@ -9,6 +9,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QList>
 
 class QTabWidget;
 
@@ -16,6 +17,7 @@ namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
 namespace lyra::wx  { class WxService; }
 namespace lyra::profile { class ProfileManager; }
+namespace lyra::cat { class SerialPtt; class CatServer; }
 
 namespace lyra::ui {
 
@@ -41,6 +43,8 @@ public:
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
                    MeterModel *meter,
                    lyra::profile::ProfileManager *profiles,
+                   lyra::cat::SerialPtt *serialPtt,
+                   const QList<lyra::cat::CatServer *> &catServers,
                    QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
@@ -54,6 +58,7 @@ private:
     QWidget *buildWeatherTab();  // weather-alert sources + thresholds + keys
     QWidget *buildBandsTab();    // Memory bank (+ Time Stations / SW DB later)
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
+    QWidget *buildCatSerialTab();// serial PTT input + Kenwood CAT (COM-port)
     QWidget *buildMeterTab();    // S-meter calibration trim
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
                                  // + cos² amplitude envelope (amp
@@ -76,6 +81,8 @@ private:
     SpotStore              *spots_     = nullptr;
     MeterModel             *meter_     = nullptr;
     lyra::profile::ProfileManager *profiles_ = nullptr;
+    lyra::cat::SerialPtt   *serialPtt_ = nullptr;
+    QList<lyra::cat::CatServer *> catServers_;
     QTabWidget             *tabs_      = nullptr;
 };
 
