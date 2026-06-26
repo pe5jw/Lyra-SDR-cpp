@@ -131,6 +131,7 @@ void CwDecoder::seedTiming() {
     dotEstMs_     = initDit;
     bDitMu_       = initDit;
     bDitVar_      = std::pow(initDit * 0.30, 2.0);   // 30% CV prior
+    bDahMu_       = initDit * 3.0;                    // B1: seed dah ≈ 3×dit
     bMarkN_       = 0;
     bElemSpaceMu_ = initDit * 0.85;                  // inter-element ≈ 0.85 dit
     bCharSpaceMu_ = 0.0;
@@ -247,10 +248,14 @@ double CwDecoder::logGaussian(double x, double mu, double varr) {
 }
 
 bool CwDecoder::bayesClassifyMark(double ms) const {
-    if (bMarkN_ < BAYES_MIN) return ms < bDitMu_ * MARK_BOUNDARY;
-    const double dahMu  = bDitMu_ * 3.0;
-    const double dahVar = bDitVar_ * 3.0;   // dah spread ≈ 3× dit
-    return logGaussian(ms, bDitMu_, bDitVar_) >= logGaussian(ms, dahMu, dahVar);
+    // B1: ONE boundary for warm-up AND steady-state — the geometric mean of the
+    // dit and independently-learned dah means.  This is the equal-CV Bayes
+    // boundary.  At a machine 3:1 fist √(dit·3dit) = √3·dit, IDENTICAL to the
+    // prior Gaussian model (whose dropped-normalisation compare reduced to that
+    // same √3·dit constant ratio regardless of variance), so machine CW is
+    // unchanged.  On a light fist it tracks the learned dah, and using one
+    // formula removes the old 1.565-vs-√3 warm-up/steady discontinuity.
+    return ms < std::sqrt(bDitMu_ * bDahMu_);
 }
 
 CwDecoder::Space CwDecoder::bayesClassifySpace(double ms) const {
@@ -274,22 +279,38 @@ CwDecoder::Space CwDecoder::bayesClassifySpace(double ms) const {
 // tracked aggressively, slow-downs conservatively.  Keeps dotEst in sync and
 // reports adaptive WPM.
 void CwDecoder::bayesLearnMark(double ms, bool isDit) {
-    const double ditSample = isDit ? ms : ms / 3.0;
-    if (ditSample < bDitMu_ * 0.3 || ditSample > bDitMu_ * 2.5) return;   // outlier
-    ++bMarkN_;
-    const double baseAlpha = isDit ? BAYES_ALPHA : BAYES_ALPHA * 0.5;
-    const double alpha     = ditSample < bDitMu_ ? baseAlpha : baseAlpha * 0.5;
-    const double newMu     = bDitMu_ * (1.0 - alpha) + ditSample * alpha;
-    const double dev       = ditSample - newMu;
-    const double varFloor  = std::pow(bDitMu_ * 0.10, 2.0);
-    bDitVar_ = std::max(bDitVar_ * (1.0 - alpha) + dev * dev * alpha, varFloor);
-    bDitMu_  = std::clamp(newMu, DOT_MIN_MS, DOT_MAX_MS);
-    dotEstMs_= bDitMu_;
-    const int rxWpm = static_cast<int>(std::lround(1200.0 / dotEstMs_));
-    if (rxWpm != rxWpm_) {
-        rxWpm_ = rxWpm;
-        if (onWpm) onWpm(rxWpm_);
+    if (isDit) {
+        // Dit: update the dit model directly from ms.  B1 no longer folds a dah
+        // into the dit estimate (ms/3), so dotEst — and hence the reported WPM —
+        // tracks the TRUE dit length even on a dah-heavy or light (<3:1) fist.
+        // (This is the W1AW over-read fix: a 2.3:1 fist no longer drags dotEst
+        // down → WPM stops reading high.)
+        if (ms < bDitMu_ * 0.3 || ms > bDitMu_ * 2.5) return;   // dit outlier
+        ++bMarkN_;
+        const double alpha    = ms < bDitMu_ ? BAYES_ALPHA : BAYES_ALPHA * 0.5;
+        const double newMu    = bDitMu_ * (1.0 - alpha) + ms * alpha;
+        const double dev      = ms - newMu;
+        const double varFloor = std::pow(bDitMu_ * 0.10, 2.0);
+        bDitVar_ = std::max(bDitVar_ * (1.0 - alpha) + dev * dev * alpha, varFloor);
+        bDitMu_  = std::clamp(newMu, DOT_MIN_MS, DOT_MAX_MS);
+        dotEstMs_= bDitMu_;
+        const int rxWpm = static_cast<int>(std::lround(1200.0 / dotEstMs_));
+        if (rxWpm != rxWpm_) {
+            rxWpm_ = rxWpm;
+            if (onWpm) onWpm(rxWpm_);
+        }
+        return;
     }
+    // Dah (B1): learn the dah length on its OWN EMA — never folded into the dit
+    // model.  Count it toward the space-model warm-up like before, but only
+    // train the dah mean on a *confident* dah (plausibly in [2.0, 5.0]×dit), and
+    // clamp the result HARD to [2.2, 4.2]×dit so a burst of mis-reads can't
+    // collapse the dah model into the dit cluster.
+    ++bMarkN_;
+    if (ms < bDitMu_ * 2.0 || ms > bDitMu_ * 5.0) return;   // ambiguous/implausible — don't train
+    const double dahAlpha = BAYES_ALPHA * 0.5;   // dahs rarer → gentler EMA
+    bDahMu_ = std::clamp(bDahMu_ * (1.0 - dahAlpha) + ms * dahAlpha,
+                         bDitMu_ * 2.2, bDitMu_ * 4.2);
 }
 
 // ── A1: nearest-code rescue ──
@@ -319,7 +340,7 @@ double CwDecoder::markConfidence(double ms) const {
         const double d   = std::fabs(ms - bnd) / std::max(bnd, 1.0);
         return std::clamp(d / CONF_BOUNDARY_SPAN, 0.0, 1.0);
     }
-    const double dahMu  = bDitMu_ * 3.0;
+    const double dahMu  = bDahMu_;            // B1: learned dah, not fixed 3×dit
     const double dahVar = bDitVar_ * 3.0;
     const double margin = std::fabs(logGaussian(ms, bDitMu_, bDitVar_)
                                     - logGaussian(ms, dahMu, dahVar));

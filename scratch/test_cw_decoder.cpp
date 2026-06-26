@@ -45,9 +45,11 @@ const char* morseFor(char c) {
 }
 
 // Build on/off-keyed CW audio for `text` (spaces = word gaps).  Standard
-// spacing: element gap 1 unit, char gap 3 units, word gap 7 units.
+// spacing: element gap 1 unit, char gap 3 units, word gap 7 units.  `dahUnits`
+// is the dah length in dit-units (3.0 = machine-perfect; hand fists run
+// ~2.2..4.0:1 — pass <3 to exercise the B1 light-dah / WPM-bias path).
 std::vector<float> synth(const std::string& text, double wpm, double tone,
-                         double sr, double noiseStd) {
+                         double sr, double noiseStd, double dahUnits = 3.0) {
     const double ditMs   = 1200.0 / wpm;
     const int    ditN    = static_cast<int>(std::lround(ditMs / 1000.0 * sr));
     const double amp     = 0.5;
@@ -57,8 +59,8 @@ std::vector<float> synth(const std::string& text, double wpm, double tone,
     double phase = 0.0;
     const double dphi = 2.0 * kPi * tone / sr;
 
-    auto emit = [&](int units, bool on) {
-        const int n = units * ditN;
+    auto emit = [&](double units, bool on) {
+        const int n = static_cast<int>(std::lround(units * ditN));
         for (int i = 0; i < n; ++i) {
             double s = on ? amp * std::sin(phase) : 0.0;
             s += noise(rng);
@@ -68,18 +70,18 @@ std::vector<float> synth(const std::string& text, double wpm, double tone,
         }
     };
 
-    emit(10, false);   // lead-in silence so the floor/peak settle
+    emit(10.0, false);   // lead-in silence so the floor/peak settle
     for (size_t ci = 0; ci < text.size(); ++ci) {
         char c = text[ci];
-        if (c == ' ') { emit(4, false); continue; }   // +4 → 7-unit word gap
+        if (c == ' ') { emit(4.0, false); continue; }   // +4 → 7-unit word gap
         const char* code = morseFor(c);
         for (const char* p = code; *p; ++p) {
-            emit(*p == '.' ? 1 : 3, true);   // dit / dah
-            emit(1, false);                  // element gap
+            emit(*p == '.' ? 1.0 : dahUnits, true);   // dit / dah
+            emit(1.0, false);                         // element gap
         }
-        emit(2, false);   // +2 → 3-unit char gap
+        emit(2.0, false);   // +2 → 3-unit char gap
     }
-    emit(12, false);      // trailing silence → flush last char
+    emit(12.0, false);      // trailing silence → flush last char
     return out;
 }
 
@@ -156,6 +158,42 @@ int main() {
         CHECK(sawLock);
         CHECK(lockHz > 720.0 && lockHz < 800.0);   // pulled toward 760
         CHECK(contains(got, "TEST"));
+    }
+
+    // ── B1 baseline probe (current decoder): dah:dit fist-ratio sensitivity ──
+    // The decoder folds every dah into the dit estimate via a fixed /3, so a
+    // fist lighter than 3:1 should drag bDitMu_ down → rxWpm reads HIGH (the
+    // W1AW 35-vs-30 over-read).  Print decode + rxWpm across ratios so B1's
+    // assertions can be pinned to the demonstrated gap.  Letters should stay
+    // intact on a clean signal — the synthetic symptom is the WPM bias.
+    // B1: the dit/dah model learns the dah length independently (no ms/3 fold),
+    // so a light or dah-heavy fist no longer drags dotEst → WPM stops reading
+    // high.  Pre-B1 the dah-heavy fist over-read (3.0→19, 2.6→21, 2.3→23, sent
+    // 20).  Post-B1: WPM stays near the true 20 across ALL ratios, and the
+    // dit-heavy reference + the decoded letters are unchanged (no corruption).
+    {
+        std::printf("\n-- B1 (independent dah model), sent 20 wpm --\n");
+        struct Case { const char* text; const char* sub; const char* label; };
+        const Case cases[] = {
+            { "PARIS PARIS PARIS PARIS",  "PARIS", "mix " },   // dit-heavy 71%
+            { "OON TON MOM OON TON MOM",  "TON",   "dahy" },   // dah-heavy
+        };
+        for (const auto& c : cases) {
+            for (double ratio : {3.0, 2.6, 2.3}) {
+                CwDecoder d;
+                d.setSampleRate(kSr);
+                d.setToneHz(700.0);
+                d.setTxWpm(20);
+                const auto sig = synth(c.text, 20.0, 700.0, kSr, 0.01, ratio);
+                const std::string got = decode(d, sig, 512);
+                std::printf("  %s dah:dit=%.1f  rxWpm=%2d  decode=\"%s\"\n",
+                            c.label, ratio, d.rxWpm(), got.c_str());
+                // WPM no longer biased by the fist ratio (sent 20 → read ~20).
+                CHECK(d.rxWpm() >= 17 && d.rxWpm() <= 21);
+                // letters survive on a clean signal (no-corruption guard).
+                CHECK(contains(got, c.sub));
+            }
+        }
     }
 
     if (g_fail == 0) std::printf("test_cw_decoder: ALL PASS\n");
