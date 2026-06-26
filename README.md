@@ -16,13 +16,30 @@ up rewrite using the architecture the project should have started with.
 > headers are preserved in every ported file.  See [NOTICE.md](NOTICE.md)
 > and [CREDITS.md](CREDITS.md) for full attribution.
 
+> ## ⚠️ Platform support — Windows only (for now)
+>
+> **Lyra builds and runs on Windows only at this time.** Linux and macOS
+> support is **planned but not yet implemented** — the source will *not* build
+> or run cleanly on those platforms today. The bundled DSP engine ships as
+> Windows binaries (`wdsp.dll` + FFTW/RNNoise/SpecBleach DLLs) and the wire
+> layer still uses Windows-specific socket/timer code, so a Linux/macOS build
+> will fail. **Please don't try to build or run Lyra on Linux or macOS yet** —
+> the errors you'll hit are expected, not bugs to report. There is also no
+> sound-device selection on those platforms because the audio path isn't wired
+> for them. The native Windows installer (see the
+> [Releases](https://github.com/N8SDR1/Lyra-SDR-cpp/releases) page) is the
+> only supported way to run Lyra right now.
+>
+> Linux and macOS will come **after** RX/TX is stable on Windows — the porting
+> plan is captured in [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
+
 ## Architecture
 
 | Layer            | Choice                                                                                              |
 |------------------|-----------------------------------------------------------------------------------------------------|
 | Language         | C++23                                                                                               |
 | UI framework     | Qt 6 (Qt Quick / QML) — Lyra-native                                                                 |
-| Graphics         | Qt RHI (Vulkan/D3D12 on Windows, Metal on macOS, OpenGL fallback)                                   |
+| Graphics         | Qt RHI — Direct3D 12 / Vulkan / OpenGL fallback on Windows (Metal/macOS auto-selects once the port lands) |
 | RX DSP           | WDSP DSP engine (Warren Pratt NR0V, GPL v3+) — loaded natively                                      |
 | RX architecture  | Lyra-native (no Python, no GIL) + Lyra-native flair (NPE modes, AEPF, captured-profile IQ-domain NR, per-band bounds memory, EiBi overlay, NCDXF beacon follow, ...) |
 | **TX baseline**  | **Ported from [openHPSDR Thetis (MI0BOT fork)](https://github.com/mi0bot/OpenHPSDR-Thetis) ChannelMaster (cmaster, aamix, ilv, supporting modules) — GPL v3+, attributed per file** |
@@ -31,7 +48,7 @@ up rewrite using the architecture the project should have started with.
 | Wire I/O         | Native UDP (`QUdpSocket`) on dedicated OS threads — no GIL                                          |
 | Threading        | `std::jthread` + Qt thread pools, OS-priority + MMCSS later                                         |
 | Build            | CMake 3.21+                                                                                         |
-| Compiler         | MSVC v143 (VS 2022/2026) on Windows; clang/gcc on Linux; Apple Clang on macOS                       |
+| Compiler         | MSVC v143 (VS 2022/2026), **Windows only today** — Linux clang/gcc + macOS Apple Clang are planned, not yet buildable (see [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)) |
 | License          | GPL v3+ (matches both upstream projects)                                                            |
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
