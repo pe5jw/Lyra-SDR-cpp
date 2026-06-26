@@ -128,9 +128,19 @@ QList<HL2Discovery::LocalIf> HL2Discovery::localIPv4Interfaces() const {
             if (addr.protocol() != QAbstractSocket::IPv4Protocol) continue;
             const QString s = addr.toString();
             if (s.startsWith(QStringLiteral("127."))) continue;
-            if (s.startsWith(QStringLiteral("169.254."))) continue;
+            // Link-local / APIPA (169.254.x.x) interfaces are DELIBERATELY
+            // INCLUDED here — do NOT re-add a skip.  On a direct PC<->HL2
+            // cable with no DHCP server, both ends fall back to 169.254.x.x
+            // and the radio is ONLY reachable on that interface; skipping it
+            // made direct-connect radios undiscoverable (Add-by-IP was the
+            // only workaround — a second user reported exactly this).  The
+            // IsUp + IsRunning checks above already drop dead/junk link-local
+            // NICs, so this only adds an *active* direct-connect segment.
             // entry.broadcast() is the subnet-directed broadcast (IP|~mask),
-            // e.g. 10.10.30.255; may be null on some adapters.
+            // e.g. 10.10.30.255 — or 169.254.255.255 for a /16 APIPA NIC; it
+            // may be null on some adapters, in which case the limited
+            // 255.255.255.255 broadcast in sendBroadcastFromAllSockets()
+            // still reaches the radio on that segment.
             out.append(LocalIf{addr, entry.broadcast()});
         }
     }
