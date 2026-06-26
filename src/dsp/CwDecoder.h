@@ -157,9 +157,6 @@ private:
     // ── Bayesian dit/dah model ──
     double bDitMu_  = 60.0;
     double bDitVar_ = 0.0;
-    double bDahMu_  = 180.0;  // B1: dah length learned INDEPENDENTLY (≈3×dit),
-                              // not folded ms/3 into the dit estimate — so a
-                              // light fist no longer biases dotEst/WPM.
     int    bMarkN_  = 0;
     double bElemSpaceMu_ = 0.0;
 
