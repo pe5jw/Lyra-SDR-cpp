@@ -12,7 +12,7 @@
 ; Keep AppVersion in sync with CMake project(VERSION) / LYRA_VERSION.
 
 #define AppName     "Lyra"
-#define AppVersion  "0.4.11"
+#define AppVersion  "0.5.0"
 #define AppPublisher "Rick Langford (N8SDR)"
 #define AppURL      "https://github.com/N8SDR1/Lyra-SDR-cpp"
 #define AppExe      "lyra.exe"
@@ -69,7 +69,7 @@ Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\Sys
 [Files]
 ; The whole deployed build tree, minus CMake/Ninja build artifacts.
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,.qsb\*,.rcc\*,lyra_autogen\*,meta_types\*"
+    Excludes: "test_*.exe,*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,.qsb\*,.rcc\*,lyra_autogen\*,meta_types\*"
 
 [Icons]
 Name: "{group}\Lyra"; Filename: "{app}\{#AppExe}"

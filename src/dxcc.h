@@ -23,6 +23,10 @@ public:
     QString isoOf(const QString &callsign) const;   // "" if unknown
     // "<ISO> <CALL>" when the country is known, else the bare callsign.
     QString enrich(const QString &callsign) const;
+    // Continent ("NA"/"SA"/"EU"/"AF"/"AS"/"OC"/"AN") for an ISO-2 country
+    // code, or "" if unknown.  Static table — no log dependency (used by the
+    // spot region filter for sources that don't carry a continent of their own).
+    static QString continentOf(const QString &iso2);
 
 private:
     QHash<QString, QString> prefix_;   // PREFIX -> ISO2

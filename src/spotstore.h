@@ -13,6 +13,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariantList>
 #include <QVector>
 
@@ -31,11 +32,17 @@ public:
     SpotStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
               lyra::dsp::WdspEngine *engine, QObject *parent = nullptr);
 
-    // --- TCI inbound ---
+    // --- spot bus (source-agnostic) ---
+    // `source` tags which feeder produced the spot ("tci" | "spothole" |
+    // "telnet:<host>") so a source can be toggled off and its spots cleared
+    // without touching the others.  TCI callers keep the default.
     void addSpot(const QString &call, const QString &mode, qint64 freqHz,
-                 quint32 argb, const QString &text);
+                 quint32 argb, const QString &text,
+                 const QString &source = QStringLiteral("tci"),
+                 const QString &continent = QString());
     void deleteSpot(const QString &call);
     void clearAll();
+    void clearSource(const QString &source);   // drop every spot from <source>
 
     // --- QML / panadapter ---
     // Spots within [center±span/2]: { call, freqHz, color (#AARRGGBB),
@@ -56,6 +63,30 @@ public:
     bool flashNew() const         { return flashNew_; }
     QString flashColor() const    { return flashColor_; }
     int  flashSec() const         { return flashSec_; }
+    // Mode display filter: comma-separated whitelist (blank = all).  "CW" →
+    // CW/CWU/CWL, "SSB" → USB/LSB, "DIGI" → FT8/FT4/RTTY/… etc.  Display-only;
+    // the bus keeps every spot, the overlay just hides filtered modes.
+    QString modeFilter() const    { return modeFilter_.join(QLatin1Char(',')); }
+    // Region display filter: comma-separated continent codes (NA/EU/AS/SA/AF/OC)
+    // and/or ISO-2 country codes (US/CA/DE…, the codes shown on the markers).
+    // Blank = all.  A spot is shown if any token matches its continent or country.
+    QString regionFilter() const  { return regionFilter_.join(QLatin1Char(',')); }
+    // Marker colouring: 0 = source/client colour (default), 1 = single custom
+    // colour, 2 = by mode, 3 = by region (continent), 4 = by country (DXCC).
+    int     colorMode() const     { return colorMode_; }
+    QString singleColor() const   { return singleColor_; }
+    bool    legendOn() const      { return legendOn_; }
+    // [{label,color}] for the active colour mode (empty when no legend applies).
+    Q_INVOKABLE QVariantList legendEntries() const;
+    // Clutter caps (§5.4): max spots drawn at once (0 = unlimited); max spots
+    // per frequency bucket before collapsing to a "+K more" badge (0 = off);
+    // bucket width in Hz.
+    int  displayMax() const { return displayMax_; }
+    int  bucketMax() const  { return bucketMax_; }
+    int  bucketHz() const   { return bucketHz_; }
+    void setDisplayMax(int n);
+    void setBucketMax(int n);
+    void setBucketHz(int hz);
     void setShowSpots(bool on);
     void setMaxSpots(int n);
     void setLifetimeSec(int s);
@@ -66,6 +97,11 @@ public:
     void setFlashNew(bool on);
     void setFlashColor(const QString &hex);
     void setFlashSec(int s);
+    void setModeFilter(const QString &csv);
+    void setRegionFilter(const QString &csv);
+    void setColorMode(int m);
+    void setSingleColor(const QString &hex);
+    void setLegendOn(bool on);
 
 signals:
     void changed();   // bank changed → panadapter re-queries
@@ -79,15 +115,21 @@ signals:
 private:
     struct Spot {
         QString call, mode, text, country;   // country = ISO-2 (DXCC), "" if unknown
+        QString continent;                   // "NA"/"EU"/... ("" if unknown)
+        QString source;                      // feeder tag ("tci" | "spothole" | ...)
         qint64  freqHz = 0;
         quint32 argb   = 0xFFFFD700;   // gold default
-        qint64  added  = 0;            // ms since store start (for lifetime)
+        qint64  added  = 0;            // ms epoch of LAST spot (drives age/freshness)
+        qint64  firstSeen = 0;         // ms epoch first seen (drives flash; survives re-spot)
     };
     int  indexOf(const QString &call) const;
     void enforceCap();
     void onAgeTick();
     void onFlashTick();              // repaint pulse while a spot is flashing
     bool anyFlashing(qint64 nowMs) const;
+    bool modeShown(const QString &mode) const;   // mode-filter test (overlay)
+    bool regionShown(const Spot &sp) const;      // region (continent/country) test
+    QString colorFor(const Spot &sp) const;      // marker colour for the active mode
     static QString lyraModeFor(const QString &tciMode, qint64 freqHz);
 
     Prefs                 *prefs_  = nullptr;
@@ -115,6 +157,14 @@ private:
     bool    flashNew_   = false;
     QString flashColor_ = QStringLiteral("#ffeb3b");   // amber-yellow
     int     flashSec_   = 8;
+    QStringList modeFilter_;   // uppercased whitelist; empty = show all modes
+    QStringList regionFilter_; // continent + ISO-country tokens; empty = all
+    int     colorMode_   = 0;                          // 0 = source/client colour
+    QString singleColor_ = QStringLiteral("#66bb6a");  // green (Single mode)
+    bool    legendOn_    = false;
+    int     displayMax_  = 25;     // max spots drawn at once (0 = unlimited)
+    int     bucketMax_   = 3;      // max per frequency bucket (0 = off)
+    int     bucketHz_    = 500;    // bucket width (Hz)
 };
 
 } // namespace lyra::ui

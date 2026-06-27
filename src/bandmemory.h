@@ -34,11 +34,14 @@ public:
     // the Band panel buttons use this to return you to where you were.
     Q_INVOKABLE int freqFor(const QString &band) const;
 
+    // Band string for a frequency (Hz): "" / "40m" / "bc_49m" / "cb_11m".
+    // Pure static helper — shared (e.g. SpotHole band-param derivation).
+    static QString bandNameFor(int hz);
+
 private:
     void onFreqChanged();          // band-edge crossing → restore new band
     void saveCurrent();            // live-save the current band on a change
     void applyBand(const QString &band);
-    static QString bandNameFor(int hz);        // "" / "40m" / "bc_49m" / "cb_11m"
     static QString defaultModeFor(const QString &band);   // band-table default mode
 
     Prefs                *prefs_  = nullptr;

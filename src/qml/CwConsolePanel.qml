@@ -195,10 +195,20 @@ Rectangle {
         }
     }
 
-    ColumnLayout {
-        id: body
+    // Scrollable so the macros / token tags / option rows stay reachable
+    // even when the operator shrinks the console below its natural height.
+    ScrollView {
+        id: bodyScroll
         anchors.fill: parent
         anchors.margins: 6
+        clip: true
+        contentWidth: availableWidth          // no horizontal scroll
+        ScrollBar.vertical.policy: root.collapsed ? ScrollBar.AlwaysOff
+                                                  : ScrollBar.AsNeeded
+
+    ColumnLayout {
+        id: body
+        width: bodyScroll.availableWidth
         spacing: 6
 
         // ── Header ──────────────────────────────────────────────────────
@@ -533,5 +543,6 @@ Rectangle {
         }
         // (RX decoder lives in its own "CW Dec" panel — #173 CW-5b — so it can
         // run independently of this keyer/macro console.)
-    }
+    }   // body ColumnLayout
+    }   // bodyScroll ScrollView
 }

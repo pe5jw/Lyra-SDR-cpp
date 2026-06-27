@@ -12,6 +12,8 @@
 #include "memorystore.h"
 #include "eibistore.h"
 #include "spotstore.h"
+#include "spothole_feeder.h"
+#include "dxcluster_feeder.h"
 // TX-rip Phase 1 (Q2): tci_mic_source.h removed; the TciMicSource type
 // is being ripped along with the rest of the TX DSP subsystem and
 // rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
@@ -403,6 +405,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                            qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_), this);
+    // SpotHole REST feeder — a standalone DX-spot source (no SDRLogger+ /
+    // cluster node needed) that pours into the same SpotStore bus.
+    spotHole_ = new SpotHoleFeeder(spots_, prefs_,
+                                   qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+    // DX-cluster telnet feeder — operator-chosen node into the same bus.
+    dxCluster_ = new DxClusterFeeder(spots_, prefs_, this);
     // Toast when the operator's own callsign gets spotted (opt-in, with a
     // cooldown set in Settings → Network).  Tray balloon + status line.
     connect(spots_, &SpotStore::ownCallSpotted, this,
@@ -1099,7 +1107,7 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, tci_, spots_, meter_, profiles_,
+            wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, profiles_,
             serialPtt_, catServers_, this);
     }
     settingsDlg_->show();

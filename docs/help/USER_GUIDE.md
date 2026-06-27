@@ -358,7 +358,8 @@ receive frequency. **Zoom** in/out from the [Display panel](#display-panel).
 peaks) and a [noise-floor line](#noise-floor-line) — both configured in
 Settings → Visuals, with quick controls on the Display panel; the
 [EiBi shortwave schedule](#shortwave-broadcasters-eibi); and
-[DX-cluster spots](#dx-cluster-spots) fed in over TCI.
+[DX-cluster spots](#dx-cluster-spots) (from TCI, SpotHole or a DX-cluster
+node).
 
 ---
 
@@ -1419,7 +1420,8 @@ single **CW Pitch** the rest of the radio uses, so just put the signal's
 beat note where you normally hear it and the decoder is on it. From there
 it **AFC-tracks drift** on its own — you don't set a separate tone.
 
-**The text pane.** Decoded characters scroll live. The **WPM** readout (top
+**The text pane.** Decoded characters scroll live, and the pane
+**auto-scrolls** to keep the newest text in view. The **WPM** readout (top
 right) shows the speed it's tracking; the **AFC** chip turns cyan and shows
 the locked pitch in Hz while it's holding a signal. Characters the decoder
 is *unsure* of are **dimmed grey** instead of hidden — so a shaky copy
@@ -1442,26 +1444,47 @@ keyer's send speed follows the speed you're *copying*, so you answer at the
 other operator's pace automatically. The current keyer speed shows beside
 it.
 
-**The detector knobs.** Sensible defaults ship (Squelch ≈ ×1.9, Threshold
-≈ 75 %, AFC + NB + DSP filter on) — reach for these only when copy is
-rough:
+**The detector knobs.** The panel is laid out so the everyday controls are
+up front and the niche ones are tucked into **Advanced**. Sensible defaults
+ship (Narrow on at 100 Hz, Auto level on, AFC + NB on) — reach for the rest
+only when copy is rough:
 
-- **AFC** + range (**±50 / 100 / 150 / 200 Hz**) — how far the decoder will
-  chase a drifting or slightly off-pitch signal. Wider catches more drift
-  but is likelier to wander onto a louder neighbour; narrower stays glued
-  to your pitch.
+- **Narrow** — a tight **detection filter** that isolates ONE signal in the
+  passband, with chips for **80 / 100 / 120 / 150 Hz** (default 100). This
+  is the key to clean letter and word spacing when several CW signals are
+  close together: without it the channel never goes quiet between stations
+  and the text runs together. Use ~80 for slow, clean signals and ~100–120
+  for typical speeds; widen only for fast CW on a clean single signal.
+- **Auto** (under **Level**) — when on, the decoder sets its own
+  squelch/threshold and **adapts as conditions change**; a small live
+  readout shows the values it's using (e.g. `×2.2 / 33%`). Recommended —
+  with it on, the manual Squelch/Threshold sliders are hidden because they
+  don't apply.
+- **AFC** — keeps the decoder centred on the signal as it drifts. (Its
+  search **range** lives under Advanced.)
 - **NB** — the decoder's own **impulse blanker**: it clamps static crashes,
   key-clicks and lightning ticks before they can be read as a dit. This is
   *separate* from the main RX Noise Blanker on the Audio panel — it cleans
   up only what the decoder sees, not the audio you hear.
-- **DSP filter** — tightens the decoder's matched filter. **On** (default)
-  gives cleaner element timing and better copy in QRM; turn it **off** to
-  chase a very weak or very fast signal where the tighter filter costs you
-  a little sensitivity.
+- **Advanced** (collapsible) — keeps the main panel clean by tucking away:
+  - **Seek** — auto-grab the loudest tone across the CW passband.
+  - **DSP filter** — tightens the decoder's matched filter; **on** gives
+    cleaner element timing and better copy in QRM, **off** chases a very
+    weak or very fast signal where the tighter filter costs a little
+    sensitivity.
+  - **AFC range** (**±50 / 100 / 150 / 200 Hz**) — how far AFC will chase a
+    drifting or off-pitch signal. Wider catches more drift but is likelier
+    to wander onto a louder neighbour; narrower stays glued to your pitch.
+
+If you turn **Auto** off, the manual gates appear:
+
 - **Squelch** (× over the noise floor) and **Threshold** (the mark/space
   slicing point, in %) — the two gates that decide "signal vs noise." If
   you're getting garbage out of the noise, raise them; if a real signal
   isn't being read, lower them.
+
+> **Tip.** Tune the signal to your CW pitch on the panadapter; the decoder
+> follows the pitch and AFC-tracks the drift from there.
 
 ---
 
@@ -2739,24 +2762,109 @@ recall instead of toggling these by hand.
 
 ### DX-cluster spots
 
-When a TCI client (a logger wired to a DX cluster, RBN, or Skimmer) sends
-spots, Lyra paints them right on the panadapter at each spotted frequency
-— callsign-tagged, with the spotter's **country** abbreviation. CW spots
-are placed allowing for your **CW pitch** so they sit on the actual signal,
-not zero-beat. **Click a spot** to jump there. Controls live in the same
-**Settings → Network** tab:
+Lyra paints DX spots right on the panadapter at each spotted frequency —
+callsign-tagged, with the spotter's **country** abbreviation. CW spots are
+placed allowing for your **CW pitch** so they sit on the actual signal, not
+zero-beat. **Click a spot** to tune to it *and* grab the call into the
+CW-console contact row (so a `{CALL}` macro instantly addresses that
+station). All controls live in **Settings → Network → DX-cluster spots**.
+
+#### Three spot sources
+
+Spots can pour in from any (or all) of three sources at once — they share
+one list, and the filters, clutter caps and marker colours below apply to
+all of them.
+
+- **TCI** — spots pushed in by a logger or cluster app (e.g. **SDRLogger+**)
+  connected to Lyra's TCI server. This works automatically: whenever such an
+  app is wired to a DX cluster, RBN or Skimmer and connected over TCI, its
+  spots land on the panadapter with no extra setup.
+- **SpotHole** — a standalone internet aggregator (DX cluster + POTA +
+  skimmer, all modes) that needs **no logger** of your own. It's an opt-in
+  network feature, **off by default**:
+  - **Fetch DX spots from SpotHole** — turn it on.
+  - **Sources** — which SpotHole sub-feeds to include (e.g. `Cluster,POTA`;
+    blank = every source).
+  - **Only the band I'm on** — request just your current band so the list
+    stays focused.
+  - **Poll every** — how often Lyra refreshes from SpotHole.
+  - **Initial age** — on connect, pull spots received within this window.
+  - **Refresh now** — fetch immediately; a status line beside it reports
+    what happened.
+- **DX-cluster telnet** — connect to a *specific* node (VE7CC / DXSpider /
+  AR-Cluster). Standalone, no SpotHole needed:
+  - **Connect to a DX-cluster node** — turn it on, then set **Host** and
+    **Port** for the node.
+  - **Login call** — the callsign you log in with; **blank = your MYCALL**.
+    Set a club call, a friend's login, or a node-registered call if the node
+    requires one.
+  - **Login cmds** — optional commands sent right after login (separate
+    several with `;` or new lines).
+
+  > **Tip — get more than CW.** Many nodes default to **RBN CW skimmer spots
+  > only**. To also receive FT8/FT4 on VE7CC, set **Login cmds** to something
+  > like `set/ft8;set/ft4` (and `set/nocw` to quiet the CW firehose). SSB
+  > spots are human-posted, so they're always sparse.
+
+#### Filters
+
+These are display-only — the underlying list always keeps everything; the
+filters just decide what's drawn.
+
+- **Show modes** — a comma list, family-aware (e.g. `CW`, `SSB`, `DIGI`).
+  Blank = every mode.
+- **Show regions** — continent codes (NA/EU/AS/SA/AF/OC) and/or ISO-2
+  country codes (US, CA, DE… — the same codes shown on the spot markers).
+  For example `US,EU` = the US plus all of Europe. Blank = worldwide.
+
+#### Clutter caps
+
+These keep a busy band readable.
+
+- **Show at most** — the maximum number of spots drawn at once (newest win);
+  0 = unlimited. Default 25.
+- **Per-freq max** — the maximum spots per frequency before the rest
+  collapse into a **"+K"** badge on the newest marker (tames FT8 pile-ups);
+  0 = off. Default 3.
+- **Bucket width** — how close two spots must be to count as the same
+  frequency. Default 500 Hz.
+
+#### Marker colours
+
+Set how the markers are coloured under **Marker colour**:
+
+- **Source / client colour** (default) — colour by where the spot came from.
+- **Single colour** — one custom colour you pick via the swatch.
+- **By mode** — CW / phone / FT8-digital / RTTY tints.
+- **By region** — a colour per continent.
+- **By country** — a distinct colour per DXCC entity.
+
+Tick **Show colour legend on the panadapter** to draw a small key.
+
+- **Colour new spots** / **New-spot colour** / **New for** — a freshly
+  arrived spot shows a distinct colour for N seconds so you notice it, then
+  settles to the normal colour rules. (It's a *solid* colour, not a blink.)
+
+The own-callsign highlight (below) and its optional toast still apply on top
+of whichever colour mode you choose.
+
+#### Your own callsign + notifications
+
+- **Highlight my callsign when spotted** + **Highlight colour** — draw
+  *your* spots in a colour you pick (default pink/magenta) so they stand out.
+- **Pop up a notification when I'm spotted** — show a toast (and the header
+  **★ Spotted!** badge) when your own callsign is spotted.
+- **Re-notify after** — how long to wait before notifying again about your
+  callsign, so you're not spammed (set to *every time* to disable the
+  cooldown).
+
+#### Other controls
 
 - **Show spots on the panadapter** — master on/off for the overlay.
-- **Max spots** — cap how many are drawn at once.
+- **Max spots** — how many spots to keep in memory (the display caps above
+  decide how many are *drawn*).
 - **Spot lifetime** — how long (in **minutes**) a spot stays before it
   ages out.
-- **Highlight my callsign when spotted** + **Highlight colour** — draw
-  *your* spots in a color you pick (default pink/magenta) so they stand out.
-- **Pop up a notification when I'm spotted** — show a toast (and the
-  header **★ Spotted!** badge) when your own callsign is spotted.
-- **Re-notify after** — how long to wait before notifying again about
-  your callsign, so you're not spammed (set to *every time* to disable the
-  cooldown).
 - **Clear spots now** — wipe the current spot list.
 
 ---

@@ -8,6 +8,7 @@
 
 #include <QColor>
 #include <QDateTime>
+#include <QHash>
 #include <QSettings>
 #include <QTimer>
 #include <QVariantMap>
@@ -27,6 +28,67 @@ constexpr auto kKeyCooldown = "spots/notify_cooldown_min";
 constexpr auto kKeyFlashNew = "spots/flash_new";
 constexpr auto kKeyFlashCol = "spots/flash_color";
 constexpr auto kKeyFlashSec = "spots/flash_sec";
+constexpr auto kKeyModeFilt = "spots/mode_filter";
+constexpr auto kKeyRegionFilt = "spots/region_filter";
+constexpr auto kKeyColorMode = "spots/color_mode";
+constexpr auto kKeySingleCol = "spots/single_color";
+constexpr auto kKeyLegend    = "spots/legend";
+constexpr auto kKeyDispMax   = "spots/display_max";
+constexpr auto kKeyBktMax    = "spots/bucket_max";
+constexpr auto kKeyBktHz     = "spots/bucket_hz";
+
+bool isContinentCode(const QString &up) {
+    static const QStringList kC = {
+        QStringLiteral("NA"), QStringLiteral("SA"), QStringLiteral("EU"),
+        QStringLiteral("AF"), QStringLiteral("AS"), QStringLiteral("OC"),
+        QStringLiteral("AN")};
+    return kC.contains(up);
+}
+
+// Concrete digital sub-modes that the "DIGI" family token matches.
+bool isDigitalMode(const QString &up) {
+    static const QStringList kDigi = {
+        QStringLiteral("FT8"),  QStringLiteral("FT4"),  QStringLiteral("RTTY"),
+        QStringLiteral("PSK"),  QStringLiteral("PSK31"),QStringLiteral("JS8"),
+        QStringLiteral("DIGU"), QStringLiteral("DIGL"), QStringLiteral("JT65"),
+        QStringLiteral("JT9"),  QStringLiteral("MSK144"),QStringLiteral("Q65"),
+        QStringLiteral("FST4"), QStringLiteral("FST4W"),QStringLiteral("DATA"),
+        QStringLiteral("DIGI"), QStringLiteral("OLIVIA"),QStringLiteral("VARAC"),
+        QStringLiteral("WSPR"), QStringLiteral("HELL"), QStringLiteral("SSTV"),
+        QStringLiteral("PACKET"),QStringLiteral("DIG")};
+    return kDigi.contains(up);
+}
+
+// --- colour palettes (color modes 2/3/4) ---
+QString modeColorHex(const QString &mode) {
+    const QString up = mode.trimmed().toUpper();
+    if (up == QStringLiteral("CW") || up == QStringLiteral("CWU")
+        || up == QStringLiteral("CWL")) return QStringLiteral("#29b6f6");      // cyan
+    if (up == QStringLiteral("USB") || up == QStringLiteral("LSB")
+        || up == QStringLiteral("SSB") || up == QStringLiteral("AM")
+        || up == QStringLiteral("SAM") || up == QStringLiteral("DSB")
+        || up == QStringLiteral("FM") || up == QStringLiteral("NFM")
+        || up == QStringLiteral("WFM")) return QStringLiteral("#66bb6a");      // green (phone)
+    if (up == QStringLiteral("RTTY")) return QStringLiteral("#ab47bc");        // purple
+    if (isDigitalMode(up)) return QStringLiteral("#ffa726");                   // orange (FT8/dig)
+    return QStringLiteral("#ffd54f");                                          // gold (unknown)
+}
+QString regionColorHex(const QString &cont) {
+    const QString c = cont.trimmed().toUpper();
+    if (c == QStringLiteral("NA")) return QStringLiteral("#42a5f5");
+    if (c == QStringLiteral("SA")) return QStringLiteral("#26a69a");
+    if (c == QStringLiteral("EU")) return QStringLiteral("#66bb6a");
+    if (c == QStringLiteral("AF")) return QStringLiteral("#ffa726");
+    if (c == QStringLiteral("AS")) return QStringLiteral("#ef5350");
+    if (c == QStringLiteral("OC")) return QStringLiteral("#ab47bc");
+    return QStringLiteral("#bdbdbd");   // unknown / AN
+}
+QString countryColorHex(const QString &iso) {
+    const QString k = iso.trimmed().toUpper();
+    if (k.isEmpty()) return QStringLiteral("#bdbdbd");
+    const int hue = int(qHash(k) % 360u);     // deterministic, distinct per country
+    return QColor::fromHsv(hue, 150, 230).name();
+}
 }
 
 SpotStore::SpotStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
@@ -45,6 +107,15 @@ SpotStore::SpotStore(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     flashColor_ = s.value(QString::fromLatin1(kKeyFlashCol),
                           QStringLiteral("#ffeb3b")).toString();
     flashSec_   = qBound(1, s.value(QString::fromLatin1(kKeyFlashSec), 8).toInt(), 60);
+    setModeFilter(s.value(QString::fromLatin1(kKeyModeFilt), QString()).toString());
+    setRegionFilter(s.value(QString::fromLatin1(kKeyRegionFilt), QString()).toString());
+    colorMode_   = qBound(0, s.value(QString::fromLatin1(kKeyColorMode), 0).toInt(), 4);
+    singleColor_ = s.value(QString::fromLatin1(kKeySingleCol),
+                           QStringLiteral("#66bb6a")).toString();
+    legendOn_    = s.value(QString::fromLatin1(kKeyLegend), false).toBool();
+    displayMax_  = qBound(0, s.value(QString::fromLatin1(kKeyDispMax), 25).toInt(), 1000);
+    bucketMax_   = qBound(0, s.value(QString::fromLatin1(kKeyBktMax), 3).toInt(), 100);
+    bucketHz_    = qBound(50, s.value(QString::fromLatin1(kKeyBktHz), 500).toInt(), 20000);
     tStart_ = QDateTime::currentMSecsSinceEpoch();
 
     ageTimer_ = new QTimer(this);
@@ -68,7 +139,8 @@ int SpotStore::indexOf(const QString &call) const {
 }
 
 void SpotStore::addSpot(const QString &call, const QString &mode, qint64 freqHz,
-                        quint32 argb, const QString &text) {
+                        quint32 argb, const QString &text,
+                        const QString &source, const QString &continent) {
     if (call.trimmed().isEmpty() || freqHz <= 0) return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const int idx = indexOf(call);
@@ -78,10 +150,22 @@ void SpotStore::addSpot(const QString &call, const QString &mode, qint64 freqHz,
     sp.freqHz = freqHz;
     sp.argb = argb ? argb : 0xFFFFD700u;
     sp.text = text.trimmed();
-    sp.country = dxcc_.isoOf(sp.call);     // DXCC country abbreviation
+    sp.source = source.isEmpty() ? QStringLiteral("tci") : source.toLower();
+    sp.country = dxcc_.isoOf(sp.call);     // DXCC country (ISO-2)
+    // Prefer a source-supplied continent (SpotHole gives a precise per-call
+    // one); else derive coarsely from the country.
+    sp.continent = continent.trimmed().isEmpty()
+                   ? DxccLookup::continentOf(sp.country)
+                   : continent.trimmed().toUpper();
     sp.added = now;
-    if (idx >= 0) spots_[idx] = sp;     // update in place (same key)
-    else          spots_.append(sp);
+    const bool isNew = (idx < 0);
+    if (isNew) {
+        sp.firstSeen = now;             // arrival → eligible to flash once
+        spots_.append(sp);
+    } else {
+        sp.firstSeen = spots_[idx].firstSeen;   // preserve → a re-spot never re-flashes
+        spots_[idx] = sp;               // refresh freq/text/added (freshness)
+    }
     enforceCap();
 
     // Toast when the operator's own callsign is spotted — rate-limited by
@@ -100,7 +184,7 @@ void SpotStore::addSpot(const QString &call, const QString &mode, qint64 freqHz,
     // flashColor_ on its own (idempotent: start() on a running timer is
     // a no-op).  Skip self-spots — they already have the own-call ★ +
     // highlight colour, which takes visual priority over a flash.
-    if (flashNew_ && flashTimer_ && !flashTimer_->isActive()) {
+    if (flashNew_ && isNew && flashTimer_ && !flashTimer_->isActive()) {
         const QString own = prefs_ ? prefs_->callsign().trimmed().toUpper()
                                    : QString();
         if (own.isEmpty() || sp.call.toUpper() != own
@@ -121,6 +205,14 @@ void SpotStore::clearAll() {
     if (spots_.isEmpty()) return;
     spots_.clear();
     emit changed();
+}
+
+void SpotStore::clearSource(const QString &source) {
+    const QString tag = source.toLower();
+    bool removed = false;
+    for (int i = spots_.size() - 1; i >= 0; --i)
+        if (spots_[i].source == tag) { spots_.removeAt(i); removed = true; }
+    if (removed) emit changed();
 }
 
 void SpotStore::enforceCap() {
@@ -148,7 +240,7 @@ bool SpotStore::anyFlashing(qint64 nowMs) const {
     if (!flashNew_) return false;
     const qint64 flashMs = qint64(flashSec_) * 1000;
     for (const Spot &sp : spots_)
-        if (nowMs - sp.added < flashMs) return true;
+        if (nowMs - sp.firstSeen < flashMs) return true;
     return false;
 }
 
@@ -212,7 +304,35 @@ QVariantList SpotStore::spotsInSpan(double centerHz, double spanHz) const {
     // (declutters callsigns that sit on top of each other).
     QVector<const Spot *> hits;
     for (const Spot &sp : spots_)
-        if (sp.freqHz >= lo && sp.freqHz <= hi) hits.append(&sp);
+        if (sp.freqHz >= lo && sp.freqHz <= hi
+            && modeShown(sp.mode) && regionShown(sp))
+            hits.append(&sp);
+
+    // --- clutter caps (§5.4) ---
+    QHash<const Spot *, int> moreOf;     // bucket overflow → "+K more" badge
+    auto byNewest = [](const Spot *a, const Spot *b) { return a->added > b->added; };
+    // Per-frequency bucket: keep the N most-recent per bucket, collapse the
+    // rest into a badge on the newest kept marker.
+    if (bucketMax_ > 0 && bucketHz_ > 0) {
+        QHash<qint64, QVector<const Spot *>> buckets;
+        for (const Spot *sp : hits)
+            buckets[sp->freqHz / bucketHz_].append(sp);
+        QVector<const Spot *> kept;
+        for (auto it = buckets.begin(); it != buckets.end(); ++it) {
+            QVector<const Spot *> &v = it.value();
+            if (v.size() <= bucketMax_) { kept += v; continue; }
+            std::sort(v.begin(), v.end(), byNewest);
+            for (int i = 0; i < bucketMax_; ++i) kept.append(v[i]);
+            moreOf[v[0]] = v.size() - bucketMax_;
+        }
+        hits = kept;
+    }
+    // Global cap: keep the most-recent N across the whole display.
+    if (displayMax_ > 0 && hits.size() > displayMax_) {
+        std::sort(hits.begin(), hits.end(), byNewest);
+        hits.resize(displayMax_);
+    }
+
     std::sort(hits.begin(), hits.end(),
               [](const Spot *a, const Spot *b) { return a->freqHz < b->freqHz; });
     const QString own = prefs_ ? prefs_->callsign().trimmed().toUpper() : QString();
@@ -221,9 +341,10 @@ QVariantList SpotStore::spotsInSpan(double centerHz, double spanHz) const {
     for (const Spot *sp : hits) {
         const bool mine = highlightOwn_ && !own.isEmpty()
                           && sp->call.toUpper() == own;
-        // Flash a freshly-arrived spot — but never override the own-call
-        // highlight (mine), which is the stronger signal.
-        const bool flash = flashNew_ && !mine && (nowMs - sp->added) < flashMs;
+        // A freshly-arrived spot wears the flash colour (solid) until it is
+        // older than flashSec, then it follows the normal colour rules.
+        // Never override the own-call highlight (mine), the stronger signal.
+        const bool flash = flashNew_ && !mine && (nowMs - sp->firstSeen) < flashMs;
         QVariantMap m;
         m[QStringLiteral("call")]    = sp->call;          // raw (for activate/echo)
         m[QStringLiteral("country")] = sp->country;       // ISO-2 or ""
@@ -231,13 +352,13 @@ QVariantList SpotStore::spotsInSpan(double centerHz, double spanHz) const {
                                        ? sp->call
                                        : sp->country + QLatin1Char(' ') + sp->call;
         m[QStringLiteral("freqHz")]  = double(sp->freqHz);
-        m[QStringLiteral("color")]   = mine ? highlightColor_
-                                            : QColor::fromRgba(sp->argb).name(QColor::HexArgb);
+        m[QStringLiteral("color")]   = mine ? highlightColor_ : colorFor(*sp);
         m[QStringLiteral("mine")]    = mine;
         m[QStringLiteral("flash")]   = flash;
         m[QStringLiteral("flashColor")] = flashColor_;
         m[QStringLiteral("mode")]    = sp->mode;
         m[QStringLiteral("text")]    = sp->text;
+        m[QStringLiteral("more")]    = moreOf.value(sp, 0);   // "+K more" badge
         out.append(m);
     }
     return out;
@@ -312,6 +433,147 @@ void SpotStore::setFlashSec(int s) {
     if (flashSec_ == s) return;
     flashSec_ = s;
     QSettings().setValue(QString::fromLatin1(kKeyFlashSec), s);
+    emit changed();
+}
+
+bool SpotStore::modeShown(const QString &mode) const {
+    if (modeFilter_.isEmpty()) return true;        // no filter → everything
+    const QString up = mode.trimmed().toUpper();
+    if (up.isEmpty()) return true;                 // unknown mode → don't hide
+    for (const QString &t : modeFilter_) {
+        if (up == t) return true;
+        if (t == QStringLiteral("SSB")
+            && (up == QStringLiteral("USB") || up == QStringLiteral("LSB"))) return true;
+        if (t == QStringLiteral("CW")
+            && (up == QStringLiteral("CWU") || up == QStringLiteral("CWL"))) return true;
+        if (t == QStringLiteral("FM")
+            && (up == QStringLiteral("NFM") || up == QStringLiteral("WFM"))) return true;
+        if (t == QStringLiteral("AM")
+            && (up == QStringLiteral("SAM") || up == QStringLiteral("DSB"))) return true;
+        if ((t == QStringLiteral("DIGI") || t == QStringLiteral("DIGITAL")
+             || t == QStringLiteral("DATA") || t == QStringLiteral("DIG"))
+            && isDigitalMode(up)) return true;
+    }
+    return false;
+}
+
+void SpotStore::setModeFilter(const QString &csv) {
+    QStringList toks;
+    const auto parts = csv.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (const QString &p : parts) {
+        const QString t = p.trimmed().toUpper();
+        if (!t.isEmpty() && !toks.contains(t)) toks << t;
+    }
+    if (toks == modeFilter_) return;
+    modeFilter_ = toks;
+    QSettings().setValue(QString::fromLatin1(kKeyModeFilt),
+                         modeFilter_.join(QLatin1Char(',')));
+    emit changed();
+}
+
+bool SpotStore::regionShown(const Spot &sp) const {
+    if (regionFilter_.isEmpty()) return true;
+    const QString cont = sp.continent.toUpper();
+    const QString ctry = sp.country.toUpper();
+    for (const QString &t : regionFilter_) {
+        // The six continent codes always mean continents (so "NA" = North
+        // America, never Namibia); every other token is an ISO-2 country.
+        if (isContinentCode(t)) { if (!cont.isEmpty() && cont == t) return true; }
+        else                    { if (!ctry.isEmpty() && ctry == t) return true; }
+    }
+    return false;
+}
+
+void SpotStore::setRegionFilter(const QString &csv) {
+    QStringList toks;
+    const auto parts = csv.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (const QString &p : parts) {
+        const QString t = p.trimmed().toUpper();
+        if (!t.isEmpty() && !toks.contains(t)) toks << t;
+    }
+    if (toks == regionFilter_) return;
+    regionFilter_ = toks;
+    QSettings().setValue(QString::fromLatin1(kKeyRegionFilt),
+                         regionFilter_.join(QLatin1Char(',')));
+    emit changed();
+}
+
+QString SpotStore::colorFor(const Spot &sp) const {
+    switch (colorMode_) {
+    case 1: return singleColor_;
+    case 2: return modeColorHex(sp.mode);
+    case 3: return regionColorHex(sp.continent);
+    case 4: return countryColorHex(sp.country);
+    case 0:
+    default:
+        return QColor::fromRgba(sp.argb ? sp.argb : 0xFFFFD700u).name(QColor::HexArgb);
+    }
+}
+
+QVariantList SpotStore::legendEntries() const {
+    QVariantList out;
+    if (!legendOn_) return out;
+    auto add = [&out](const QString &label, const QString &color) {
+        QVariantMap m;
+        m[QStringLiteral("label")] = label;
+        m[QStringLiteral("color")] = color;
+        out.append(m);
+    };
+    if (colorMode_ == 2) {            // by mode
+        add(QStringLiteral("CW"),      QStringLiteral("#29b6f6"));
+        add(QStringLiteral("Phone"),   QStringLiteral("#66bb6a"));
+        add(QStringLiteral("FT8/Dig"), QStringLiteral("#ffa726"));
+        add(QStringLiteral("RTTY"),    QStringLiteral("#ab47bc"));
+    } else if (colorMode_ == 3) {     // by region
+        add(QStringLiteral("NA"), QStringLiteral("#42a5f5"));
+        add(QStringLiteral("SA"), QStringLiteral("#26a69a"));
+        add(QStringLiteral("EU"), QStringLiteral("#66bb6a"));
+        add(QStringLiteral("AF"), QStringLiteral("#ffa726"));
+        add(QStringLiteral("AS"), QStringLiteral("#ef5350"));
+        add(QStringLiteral("OC"), QStringLiteral("#ab47bc"));
+    }
+    // Source / Single / Country → no legend.
+    return out;
+}
+
+void SpotStore::setColorMode(int m) {
+    m = qBound(0, m, 4);
+    if (colorMode_ == m) return;
+    colorMode_ = m;
+    QSettings().setValue(QString::fromLatin1(kKeyColorMode), m);
+    emit changed();
+}
+void SpotStore::setSingleColor(const QString &hex) {
+    if (hex.isEmpty() || singleColor_ == hex) return;
+    singleColor_ = hex;
+    QSettings().setValue(QString::fromLatin1(kKeySingleCol), hex);
+    emit changed();
+}
+void SpotStore::setLegendOn(bool on) {
+    if (legendOn_ == on) return;
+    legendOn_ = on;
+    QSettings().setValue(QString::fromLatin1(kKeyLegend), on);
+    emit changed();
+}
+void SpotStore::setDisplayMax(int n) {
+    n = qBound(0, n, 1000);
+    if (displayMax_ == n) return;
+    displayMax_ = n;
+    QSettings().setValue(QString::fromLatin1(kKeyDispMax), n);
+    emit changed();
+}
+void SpotStore::setBucketMax(int n) {
+    n = qBound(0, n, 100);
+    if (bucketMax_ == n) return;
+    bucketMax_ = n;
+    QSettings().setValue(QString::fromLatin1(kKeyBktMax), n);
+    emit changed();
+}
+void SpotStore::setBucketHz(int hz) {
+    hz = qBound(50, hz, 20000);
+    if (bucketHz_ == hz) return;
+    bucketHz_ = hz;
+    QSettings().setValue(QString::fromLatin1(kKeyBktHz), hz);
     emit changed();
 }
 

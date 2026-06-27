@@ -1130,6 +1130,9 @@ Item {
                 readonly property var spotsList:
                     (bandPlan.spotRev,
                      Spots.spotsInSpan(root.centerHz, bandPlan.spanHz))
+                // #182 — colour legend entries (empty unless legend enabled).
+                readonly property var legendList:
+                    (bandPlan.spotRev, Spots.legendEntries())
                 Connections {
                     target: Spots
                     function onChanged() { bandPlan.spotRev++ }
@@ -1393,8 +1396,8 @@ Item {
                         // different rows instead of stacking on top.
                         readonly property real labelY: 40 + (index % 3) * 13
                         Rectangle {
-                            // #172 — a freshly-arrived spot flashes in the
-                            // operator-set flash colour (own-call highlight
+                            // #172 — a freshly-arrived spot wears the operator's
+                            // new-spot colour for a few seconds (own-call highlight
                             // still wins via `mine`).
                             x: spItem.sx - (spItem.modelData.mine ? 1 : 0.5); y: 38
                             width: spItem.modelData.mine ? 2 : 1; height: 41
@@ -1406,9 +1409,12 @@ Item {
                         }
                         Text {
                             x: spItem.sx + 3; y: spItem.labelY
-                            // "★" marks the operator's own spotted callsign.
+                            // "★" marks own call; "+K" = K more spots collapsed
+                            // onto this frequency bucket (clutter cap).
                             text: (spItem.modelData.mine ? "★ " : "")
                                   + spItem.modelData.label
+                                  + (spItem.modelData.more > 0
+                                     ? "  +" + spItem.modelData.more : "")
                             color: spItem.modelData.flash
                                    ? spItem.modelData.flashColor
                                    : spItem.modelData.color
@@ -1422,7 +1428,11 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                Spots.activate(spItem.modelData.call)
+                                Spots.activate(spItem.modelData.call) // legend below
+                                // #182 — grab the call into the CW-console
+                                // contact row ({CALL} token / F-key macros).
+                                CwMacros.hisCall =
+                                    spItem.modelData.call.toUpperCase()
                                 Status.show(qsTr("Spot: ") + spItem.modelData.call
                                     + " — " + (spItem.modelData.freqHz / 1.0e6).toFixed(3)
                                     + " MHz " + spItem.modelData.mode, 2500)
@@ -1433,7 +1443,41 @@ Item {
                                 + qsTr(" MHz ") + spItem.modelData.mode
                                 + (spItem.modelData.text !== ""
                                    ? "\n" + spItem.modelData.text : "")
-                                + qsTr("\nClick to tune (and log)")
+                                + qsTr("\nClick to tune + grab call")
+                        }
+                    }
+                }
+
+                // #182 — colour legend (top-right) for by-mode / by-region.
+                Rectangle {
+                    visible: bandPlan.legendList.length > 0
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 6
+                    width: legendCol.width + 12
+                    height: legendCol.height + 8
+                    radius: 4
+                    color: "#cc0a0f14"
+                    border.color: "#33ffffff"
+                    Column {
+                        id: legendCol
+                        anchors.centerIn: parent
+                        spacing: 2
+                        Repeater {
+                            model: bandPlan.legendList
+                            delegate: Row {
+                                required property var modelData
+                                spacing: 4
+                                Rectangle {
+                                    width: 9; height: 9; radius: 2
+                                    color: modelData.color
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: modelData.label
+                                    color: "#dde6ee"; font.pixelSize: 10
+                                }
+                            }
                         }
                     }
                 }

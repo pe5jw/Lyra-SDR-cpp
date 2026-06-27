@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.4.11
+    VERSION 0.5.0
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -323,6 +323,10 @@ qt_add_executable(lyra
     src/tci_server.cpp
     src/spotstore.h
     src/spotstore.cpp
+    src/spothole_feeder.h
+    src/spothole_feeder.cpp
+    src/dxcluster_feeder.h
+    src/dxcluster_feeder.cpp
     src/dxcc.h
     src/dxcc.cpp
     src/metermodel.h

@@ -27,6 +27,8 @@ class MemoryStore;
 class EibiStore;
 class TciServer;
 class SpotStore;
+class SpotHoleFeeder;
+class DxClusterFeeder;
 class MeterModel;
 
 class SettingsDialog : public QDialog {
@@ -41,6 +43,7 @@ public:
                    UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                    lyra::wx::WxService *wx, MemoryStore *memory,
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
+                   SpotHoleFeeder *spotHole, DxClusterFeeder *dxCluster,
                    MeterModel *meter,
                    lyra::profile::ProfileManager *profiles,
                    lyra::cat::SerialPtt *serialPtt,
@@ -80,6 +83,8 @@ private:
     EibiStore              *eibi_      = nullptr;
     TciServer              *tci_       = nullptr;
     SpotStore              *spots_     = nullptr;
+    SpotHoleFeeder         *spotHole_  = nullptr;
+    DxClusterFeeder        *dxCluster_ = nullptr;
     MeterModel             *meter_     = nullptr;
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;

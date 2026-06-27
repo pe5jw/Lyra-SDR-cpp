@@ -56,6 +56,8 @@ class TimeStations;
 class MemoryStore;
 class EibiStore;
 class SpotStore;
+class SpotHoleFeeder;
+class DxClusterFeeder;
 class TciServer;
 class MeterModel;
 class UsbBcd;
@@ -258,6 +260,8 @@ private:
     MemoryStore                *memory_ = nullptr;    // frequency memory bank
     EibiStore                  *eibi_  = nullptr;     // EiBi shortwave overlay
     SpotStore                  *spots_ = nullptr;     // DX-cluster spots (TCI)
+    SpotHoleFeeder             *spotHole_ = nullptr;  // SpotHole REST spot source
+    DxClusterFeeder            *dxCluster_ = nullptr; // DX-cluster telnet spot source
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     lyra::cat::SerialPtt       *serialPtt_ = nullptr; // serial PTT input (WSJT-X/VarAC keys Lyra)
     QList<lyra::cat::CatServer *> catServers_;        // Kenwood CAT serial servers (cat1..catN)

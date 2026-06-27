@@ -59,6 +59,8 @@
 #include "cat/CatServer.h"
 #include <QSerialPortInfo>
 #include "spotstore.h"
+#include "spothole_feeder.h"
+#include "dxcluster_feeder.h"
 #include "metermodel.h"
 #include "profile/ProfileManager.h"
 #include <QDesktopServices>
@@ -77,7 +79,8 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                UsbBcd *bcd, lyra::dsp::WdspEngine *engine,
                                lyra::wx::WxService *wx, MemoryStore *memory,
                                EibiStore *eibi, TciServer *tci,
-                               SpotStore *spots, MeterModel *meter,
+                               SpotStore *spots, SpotHoleFeeder *spotHole,
+                               DxClusterFeeder *dxCluster, MeterModel *meter,
                                lyra::profile::ProfileManager *profiles,
                                lyra::cat::SerialPtt *serialPtt,
                                const QList<lyra::cat::CatServer *> &catServers,
@@ -85,6 +88,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     : QDialog(parent), prefs_(prefs), stream_(stream),
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
+      spotHole_(spotHole), dxCluster_(dxCluster),
       meter_(meter), profiles_(profiles), serialPtt_(serialPtt),
       catServers_(catServers) {
     setWindowTitle(tr("Lyra — Settings"));
@@ -1172,9 +1176,42 @@ QWidget *SettingsDialog::buildNetworkTab() {
         auto *maxSp = new QSpinBox(sg);
         maxSp->setRange(1, 5000);
         maxSp->setValue(spots_->maxSpots());
+        maxSp->setToolTip(tr("How many spots to keep in memory (the bus). The "
+                             "display caps below control how many are drawn."));
         connect(maxSp, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
                 [this](int n) { spots_->setMaxSpots(n); });
         sf->addRow(tr("Max spots:"), maxSp);
+
+        // Clutter caps (#182 §5.4) — limit what's drawn without losing the bus.
+        auto *dispMax = new QSpinBox(sg);
+        dispMax->setRange(0, 1000);
+        dispMax->setSpecialValueText(tr("unlimited"));
+        dispMax->setValue(spots_->displayMax());
+        dispMax->setToolTip(tr("Most spots shown on the panadapter at once "
+                               "(newest win). 0 = unlimited."));
+        connect(dispMax, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int n) { spots_->setDisplayMax(n); });
+        sf->addRow(tr("Show at most:"), dispMax);
+
+        auto *bktMax = new QSpinBox(sg);
+        bktMax->setRange(0, 100);
+        bktMax->setSpecialValueText(tr("off"));
+        bktMax->setValue(spots_->bucketMax());
+        bktMax->setToolTip(tr("Max spots per frequency before the rest collapse "
+                              "into a \"+K\" badge (tames FT8 pile-ups). 0 = off."));
+        connect(bktMax, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int n) { spots_->setBucketMax(n); });
+        sf->addRow(tr("Per-freq max:"), bktMax);
+
+        auto *bktHz = new QSpinBox(sg);
+        bktHz->setRange(50, 20000);
+        bktHz->setSingleStep(50);
+        bktHz->setSuffix(tr(" Hz"));
+        bktHz->setValue(spots_->bucketHz());
+        bktHz->setToolTip(tr("How close two spots must be to share a bucket."));
+        connect(bktHz, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
+                [this](int hz) { spots_->setBucketHz(hz); });
+        sf->addRow(tr("Bucket width:"), bktHz);
 
         auto *life = new QSpinBox(sg);
         life->setRange(0, 1440);                 // up to 24 h, in minutes
@@ -1184,6 +1221,63 @@ QWidget *SettingsDialog::buildNetworkTab() {
         connect(life, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
                 [this](int m) { spots_->setLifetimeSec(m * 60); });
         sf->addRow(tr("Spot lifetime:"), life);
+
+        // Mode display filter — show only these mode families on the
+        // panadapter (e.g. "CW" to cut the FT8 clutter). Blank = all.
+        auto *modeFilt = new QLineEdit(spots_->modeFilter(), sg);
+        modeFilt->setPlaceholderText(tr("CW, SSB, DIGI   (blank = all)"));
+        modeFilt->setToolTip(tr("Show only these mode families — CW, SSB, "
+                                "DIGI, AM, FM. Blank shows every mode."));
+        connect(modeFilt, &QLineEdit::editingFinished, spots_,
+                [this, modeFilt]() { spots_->setModeFilter(modeFilt->text()); });
+        sf->addRow(tr("Show modes:"), modeFilt);
+
+        // Region filter — continent codes (NA/EU/AS/SA/AF/OC) and/or ISO-2
+        // country codes (the codes shown on the markers). Blank = the world.
+        auto *regionFilt = new QLineEdit(spots_->regionFilter(), sg);
+        regionFilt->setPlaceholderText(tr("NA, EU, US   (blank = all)"));
+        regionFilt->setToolTip(tr("Show only these regions — continent codes "
+                                  "NA/EU/AS/SA/AF/OC, or country codes like US, "
+                                  "CA, DE (the codes shown on the spots). "
+                                  "e.g. \"US,EU\" = US plus all of Europe. Blank = all."));
+        connect(regionFilt, &QLineEdit::editingFinished, spots_,
+                [this, regionFilt]() { spots_->setRegionFilter(regionFilt->text()); });
+        sf->addRow(tr("Show regions:"), regionFilt);
+
+        // Marker colouring (#182 §6.1): source/client, single custom, or by
+        // mode / region / country.  Single-colour swatch enables for "Single".
+        auto *colorMode = new QComboBox(sg);
+        colorMode->addItems({ tr("Source / client colour"), tr("Single colour"),
+                              tr("By mode"), tr("By region"), tr("By country") });
+        colorMode->setCurrentIndex(spots_->colorMode());
+        sf->addRow(tr("Marker colour:"), colorMode);
+
+        auto *singleCol = new QPushButton(sg);
+        singleCol->setFixedWidth(64);
+        auto paintSingle = [singleCol](const QString &hex) {
+            singleCol->setStyleSheet(
+                QStringLiteral("background:%1;border:1px solid #5a6573;").arg(hex));
+        };
+        paintSingle(spots_->singleColor());
+        singleCol->setEnabled(spots_->colorMode() == 1);
+        connect(singleCol, &QPushButton::clicked, sg, [this, paintSingle]() {
+            const QColor c = QColorDialog::getColor(QColor(spots_->singleColor()),
+                                                    this, tr("Spot colour"));
+            if (c.isValid()) { spots_->setSingleColor(c.name()); paintSingle(c.name()); }
+        });
+        sf->addRow(tr("Single colour:"), singleCol);
+
+        connect(colorMode, QOverload<int>::of(&QComboBox::currentIndexChanged), spots_,
+                [this, singleCol](int idx) {
+                    spots_->setColorMode(idx);
+                    singleCol->setEnabled(idx == 1);
+                });
+
+        auto *legend = new QCheckBox(tr("Show colour legend on the panadapter"), sg);
+        legend->setChecked(spots_->legendOn());
+        connect(legend, &QCheckBox::toggled, spots_,
+                [this](bool on) { spots_->setLegendOn(on); });
+        sf->addRow(QString(), legend);
 
         auto *hlOwn = new QCheckBox(tr("Highlight my callsign when spotted"), sg);
         hlOwn->setChecked(spots_->highlightOwn());
@@ -1211,14 +1305,14 @@ QWidget *SettingsDialog::buildNetworkTab() {
         });
         sf->addRow(tr("Highlight colour:"), hlColor);
 
-        // #172 — Flash new spots (Thetis "Flash new" parity): a freshly-
-        // arrived spot renders in the flash colour for N seconds, then
-        // settles to its normal cluster colour.
-        auto *flashNew = new QCheckBox(tr("Flash new spots"), sg);
+        // #172 — New-spot colour: a freshly-arrived spot renders in a distinct
+        // colour for N seconds (so you notice it), then settles to its normal
+        // colour.  (It's a solid colour, not a blink — hence "new-spot colour".)
+        auto *flashNew = new QCheckBox(tr("Colour new spots"), sg);
         flashNew->setChecked(spots_->flashNew());
-        flashNew->setToolTip(tr("Briefly draw a freshly-arrived spot in the "
-                                "flash colour to catch your eye, then settle "
-                                "to its normal cluster colour."));
+        flashNew->setToolTip(tr("Show a freshly-arrived spot in its own colour "
+                                "for a few seconds so you notice it, then settle "
+                                "to its normal colour."));
         connect(flashNew, &QCheckBox::toggled, spots_,
                 [this](bool on) { spots_->setFlashNew(on); });
         sf->addRow(QString(), flashNew);
@@ -1232,14 +1326,14 @@ QWidget *SettingsDialog::buildNetworkTab() {
         paintFlash(spots_->flashColor());
         connect(flashColor, &QPushButton::clicked, sg, [this, paintFlash]() {
             const QColor c = QColorDialog::getColor(
-                QColor(spots_->flashColor()), this, tr("New-spot flash colour"));
+                QColor(spots_->flashColor()), this, tr("New-spot colour"));
             if (c.isValid()) {
                 const QString hex = c.name();
                 spots_->setFlashColor(hex);
                 paintFlash(hex);
             }
         });
-        sf->addRow(tr("Flash colour:"), flashColor);
+        sf->addRow(tr("New-spot colour:"), flashColor);
 
         auto *flashDur = new QSpinBox(sg);
         flashDur->setRange(1, 60);
@@ -1247,7 +1341,7 @@ QWidget *SettingsDialog::buildNetworkTab() {
         flashDur->setValue(spots_->flashSec());
         connect(flashDur, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
                 [this](int s) { spots_->setFlashSec(s); });
-        sf->addRow(tr("Flash for:"), flashDur);
+        sf->addRow(tr("New for:"), flashDur);
 
         auto *notify = new QCheckBox(tr("Pop up a notification when I'm spotted"), sg);
         notify->setChecked(spots_->notifyOwn());
@@ -1265,6 +1359,130 @@ QWidget *SettingsDialog::buildNetworkTab() {
         connect(cooldown, QOverload<int>::of(&QSpinBox::valueChanged), spots_,
                 [this](int m) { spots_->setNotifyCooldownMin(m); });
         sf->addRow(tr("Re-notify after:"), cooldown);
+
+        // SpotHole — a standalone internet spot source (cluster/POTA/skimmer
+        // aggregator).  Pours into the same bus as TCI; works with no
+        // SDRLogger+ or telnet node configured.
+        if (spotHole_) {
+            auto *shHdr = new QLabel(tr("<b>SpotHole</b> — internet spot feed "
+                                        "(no logger needed)"), sg);
+            shHdr->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+            sf->addRow(shHdr);
+
+            auto *shOn = new QCheckBox(tr("Fetch DX spots from SpotHole"), sg);
+            shOn->setChecked(spotHole_->enabled());
+            connect(shOn, &QCheckBox::toggled, spotHole_,
+                    [this](bool on) { spotHole_->setEnabled(on); });
+            sf->addRow(QString(), shOn);
+
+            auto *shSrc = new QLineEdit(spotHole_->subSource(), sg);
+            shSrc->setPlaceholderText(tr("Cluster,POTA   (blank = all)"));
+            shSrc->setToolTip(tr("Which SpotHole sub-feeds to include — "
+                                 "e.g. Cluster, POTA, SOTA. Blank = every source."));
+            connect(shSrc, &QLineEdit::editingFinished, spotHole_,
+                    [this, shSrc]() { spotHole_->setSubSource(shSrc->text().trimmed()); });
+            sf->addRow(tr("Sources:"), shSrc);
+
+            auto *shBand = new QCheckBox(tr("Only the band I'm on"), sg);
+            shBand->setChecked(spotHole_->currentBandOnly());
+            shBand->setToolTip(tr("Request only spots on your current band so "
+                                  "the bus stays focused (recommended)."));
+            connect(shBand, &QCheckBox::toggled, spotHole_,
+                    [this](bool on) { spotHole_->setCurrentBandOnly(on); });
+            sf->addRow(QString(), shBand);
+
+            auto *shInt = new QSpinBox(sg);
+            shInt->setRange(10, 600);
+            shInt->setSuffix(tr(" s"));
+            shInt->setValue(spotHole_->intervalSec());
+            connect(shInt, QOverload<int>::of(&QSpinBox::valueChanged), spotHole_,
+                    [this](int s) { spotHole_->setIntervalSec(s); });
+            sf->addRow(tr("Poll every:"), shInt);
+
+            auto *shAge = new QSpinBox(sg);
+            shAge->setRange(1, 120);
+            shAge->setSuffix(tr(" min"));
+            shAge->setValue(spotHole_->maxAgeSec() / 60);
+            shAge->setToolTip(tr("On connect, pull spots received within this "
+                                 "window."));
+            connect(shAge, QOverload<int>::of(&QSpinBox::valueChanged), spotHole_,
+                    [this](int m) { spotHole_->setMaxAgeSec(m * 60); });
+            sf->addRow(tr("Initial age:"), shAge);
+
+            auto *shStatus = new QLabel(sg);
+            shStatus->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+            auto *shNow = new QPushButton(tr("Refresh now"), sg);
+            connect(shNow, &QPushButton::clicked, spotHole_,
+                    [this]() { spotHole_->refresh(); });
+            connect(spotHole_, &SpotHoleFeeder::statusChanged, shStatus,
+                    [shStatus](const QString &m) { shStatus->setText(m); });
+            auto *shRow = new QHBoxLayout;
+            shRow->addWidget(shNow);
+            shRow->addWidget(shStatus, 1);
+            sf->addRow(QString(), shRow);
+        }
+
+        // DX-cluster telnet — connect to a specific node (VE7CC / DXSpider /
+        // AR-Cluster).  Standalone, no SpotHole.
+        if (dxCluster_) {
+            auto *tnHdr = new QLabel(tr("<b>DX-cluster (telnet)</b> — a specific "
+                                        "node, e.g. VE7CC"), sg);
+            tnHdr->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+            sf->addRow(tnHdr);
+
+            auto *tnOn = new QCheckBox(tr("Connect to a DX-cluster node"), sg);
+            tnOn->setChecked(dxCluster_->enabled());
+            connect(tnOn, &QCheckBox::toggled, dxCluster_,
+                    [this](bool on) { dxCluster_->setEnabled(on); });
+            sf->addRow(QString(), tnOn);
+
+            auto *tnHost = new QLineEdit(dxCluster_->host(), sg);
+            tnHost->setPlaceholderText(tr("dxc.ve7cc.net"));
+            connect(tnHost, &QLineEdit::editingFinished, dxCluster_,
+                    [this, tnHost]() { dxCluster_->setHost(tnHost->text()); });
+            sf->addRow(tr("Host:"), tnHost);
+
+            auto *tnPort = new QSpinBox(sg);
+            tnPort->setRange(1, 65535);
+            tnPort->setValue(dxCluster_->port());
+            connect(tnPort, QOverload<int>::of(&QSpinBox::valueChanged), dxCluster_,
+                    [this](int p) { dxCluster_->setPort(p); });
+            sf->addRow(tr("Port:"), tnPort);
+
+            auto *tnCall = new QLineEdit(dxCluster_->loginCall(), sg);
+            tnCall->setPlaceholderText(tr("defaults to your callsign"));
+            tnCall->setToolTip(tr("Login callsign for the node — leave blank to "
+                                  "use your MYCALL, or set a club / friend's / "
+                                  "node-registered call."));
+            connect(tnCall, &QLineEdit::editingFinished, dxCluster_,
+                    [this, tnCall]() { dxCluster_->setLoginCall(tnCall->text()); });
+            sf->addRow(tr("Login call:"), tnCall);
+
+            auto *tnCmds = new QLineEdit(dxCluster_->loginCommands(), sg);
+            tnCmds->setPlaceholderText(tr("optional, e.g. set/ft8"));
+            tnCmds->setToolTip(tr("Commands sent right after login (node-specific "
+                                  "filters etc.). Separate multiple with ';' or "
+                                  "new lines. Leave blank for node defaults."));
+            connect(tnCmds, &QLineEdit::editingFinished, dxCluster_,
+                    [this, tnCmds]() {
+                        QString c = tnCmds->text();
+                        c.replace(QLatin1Char(';'), QLatin1Char('\n'));
+                        dxCluster_->setLoginCommands(c);
+                    });
+            sf->addRow(tr("Login cmds:"), tnCmds);
+
+            auto *tnStatus = new QLabel(sg);
+            tnStatus->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+            auto *tnNow = new QPushButton(tr("Reconnect"), sg);
+            connect(tnNow, &QPushButton::clicked, dxCluster_,
+                    [this]() { dxCluster_->reconnectNow(); });
+            connect(dxCluster_, &DxClusterFeeder::statusChanged, tnStatus,
+                    [tnStatus](const QString &m) { tnStatus->setText(m); });
+            auto *tnRow = new QHBoxLayout;
+            tnRow->addWidget(tnNow);
+            tnRow->addWidget(tnStatus, 1);
+            sf->addRow(QString(), tnRow);
+        }
 
         auto *clearSpots = new QPushButton(tr("Clear spots now"), sg);
         connect(clearSpots, &QPushButton::clicked, spots_,
