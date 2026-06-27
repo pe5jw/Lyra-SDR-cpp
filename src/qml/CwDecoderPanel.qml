@@ -67,6 +67,18 @@ Rectangle {
     property bool nbOn: Prefs.cwDecodeNb
     property bool dspOn: Prefs.cwDecodeDsp
     property int  afcRangeHz: Prefs.cwDecodeAfcRange
+    // #187 — auto-seek (grab loudest tone across the CW passband) + auto-level
+    // (squelch/threshold from the live floor/peak SNR).  Both default off.
+    property bool autoSeekOn: Prefs.cwDecodeAutoSeek
+    property bool autoThreshOn: Prefs.cwDecodeAutoThreshold
+    // #187 — narrow detection filter (isolates one signal in a busy band); default on.
+    property bool narrowOn: Prefs.cwDecodeNarrow
+    property int  narrowBwHz: Prefs.cwDecodeNarrowBw
+    // #187 — collapsible Advanced section (Seek / DSP filter / AFC range).
+    property bool advancedOpen: false
+    // #187 — live auto-driven squelch/threshold for the Auto readout (polled).
+    property real autoSqLive: 1.9
+    property real autoThLive: 0.75
 
     // Decoded-text colour presets (SDRLogger+-style choice).
     readonly property var colorChoices:
@@ -85,6 +97,21 @@ Rectangle {
         WdspEngine.setCwDecodeNoiseBlanker(root.nbOn)
         WdspEngine.setCwDecodeDspFilter(root.dspOn)
         WdspEngine.setCwDecodeTxWpm(Math.round(Stream.cwKeyerSpeedWpm))
+        WdspEngine.setCwDecodeAutoSeek(root.autoSeekOn)
+        WdspEngine.setCwDecodeAutoThreshold(root.autoThreshOn)
+        WdspEngine.setCwDecodeNarrow(root.narrowOn)
+        WdspEngine.setCwDecodeNarrowBwHz(root.narrowBwHz)
+    }
+
+    // #187 — poll the live auto-driven squelch/threshold for the Auto readout.
+    Timer {
+        interval: 500
+        running: root.autoThreshOn && root.cwActive
+        repeat: true
+        onTriggered: {
+            root.autoSqLive = WdspEngine.cwDecodeSquelchLive()
+            root.autoThLive = WdspEngine.cwDecodeThresholdLive()
+        }
     }
 
     function applyWpmToKeyer(w) {
@@ -215,9 +242,22 @@ Rectangle {
             color: "#070d12"
             border.color: "#1c2a36"
             ScrollView {
+                id: decodeScroll
                 anchors.fill: parent
                 anchors.margins: 8
                 clip: true
+                // #187 — keep the newest decode visible.  Re-assigning the whole
+                // RichText string didn't reliably re-layout the inner Flickable
+                // (it only caught up on a manual resize); pin contentY to the
+                // bottom once the layout has settled.
+                function scrollToBottom() {
+                    var f = decodeScroll.contentItem
+                    if (!f) return
+                    // use the larger of the Flickable's and the TextArea's own
+                    // height, so a one-frame lag in either can't clip the tail.
+                    var ch = Math.max(f.contentHeight, decodeOut.implicitHeight)
+                    f.contentY = ch > f.height ? ch - f.height : 0
+                }
                 TextArea {
                     id: decodeOut
                     readOnly: true
@@ -233,6 +273,10 @@ Rectangle {
                     font.pixelSize: Prefs.cwDecodeFontSize
                     background: null
                     onTextChanged: cursorPosition = length
+                    // Scroll AFTER the text has re-laid-out (contentHeight settles),
+                    // not on textChanged (which fires before layout → stale height,
+                    // leaving the last rows clipped until a later relayout).
+                    onContentHeightChanged: Qt.callLater(decodeScroll.scrollToBottom)
 
                     // Double-click a word → grab it straight to His Call.
                     // (Drag-select still works for multi-word picks; tap-to-
@@ -290,6 +334,39 @@ Rectangle {
         // ── Detector ────────────────────────────────────────────────────
         Divider { label: qsTr("Detector") }
 
+        // #187 — Narrow filter is the primary control: a tight detection
+        // bandwidth locked to the tone, isolating ONE signal in a busy band.
+        // THE fix for run-together / no-spacing copy.  Default on, ~100 Hz;
+        // widen only for fast CW on a clean single signal.
+        RowLayout {
+            visible: !root.collapsed
+            Layout.fillWidth: true
+            spacing: 8
+            opacity: root.cwActive ? 1.0 : 0.6
+            ChipButton {
+                label: qsTr("Narrow")
+                lit: root.narrowOn
+                onClicked: { root.narrowOn = !root.narrowOn; Prefs.cwDecodeNarrow = root.narrowOn
+                             WdspEngine.setCwDecodeNarrow(root.narrowOn) }
+            }
+            Repeater {
+                // #187 — BW set chosen from real-signal sweeps: 80 (slow/clean) ·
+                // 100 (default, moderate) · 120 · 150 (fast CW).  50 clips the
+                // keying; 250+ lets a busy band back in (no gaps) — both dropped.
+                model: [80, 100, 120, 150]
+                delegate: ChipButton {
+                    label: modelData + " Hz"
+                    lit: root.narrowBwHz === modelData
+                    chipEnabled: root.narrowOn
+                    onClicked: { root.narrowBwHz = modelData; Prefs.cwDecodeNarrowBw = modelData
+                                 WdspEngine.setCwDecodeNarrowBwHz(modelData) }
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // AFC (keep centred on the signal) + NB (static-crash blanker) + the
+        // Advanced disclosure.
         RowLayout {
             visible: !root.collapsed
             Layout.fillWidth: true
@@ -301,22 +378,39 @@ Rectangle {
                 onClicked: { root.afcOn = !root.afcOn; Prefs.cwDecodeAfc = root.afcOn
                              WdspEngine.setCwDecodeAfcEnabled(root.afcOn) }
             }
-            Repeater {
-                model: [50, 100, 150, 200]
-                delegate: ChipButton {
-                    label: "±" + modelData
-                    lit: root.afcRangeHz === modelData
-                    chipEnabled: root.afcOn
-                    onClicked: { root.afcRangeHz = modelData; Prefs.cwDecodeAfcRange = modelData
-                                 WdspEngine.setCwDecodeAfcRange(modelData) }
-                }
-            }
-            Item { Layout.fillWidth: true }
             ChipButton {
                 label: qsTr("NB")
                 lit: root.nbOn
                 onClicked: { root.nbOn = !root.nbOn; Prefs.cwDecodeNb = root.nbOn
                              WdspEngine.setCwDecodeNoiseBlanker(root.nbOn) }
+            }
+            Item { Layout.fillWidth: true }
+            ChipButton {
+                label: root.advancedOpen ? qsTr("Advanced ▴") : qsTr("Advanced ▾")
+                lit: root.advancedOpen
+                onClicked: root.advancedOpen = !root.advancedOpen
+            }
+        }
+
+        // #187 — Advanced (collapsed by default): Seek (grab-loudest across the
+        // passband), DSP filter (extra envelope smoothing), AFC search range.
+        RowLayout {
+            visible: !root.collapsed && root.advancedOpen
+            Layout.fillWidth: true
+            spacing: 8
+            opacity: root.cwActive ? 1.0 : 0.6
+            ChipButton {
+                label: qsTr("Seek")
+                lit: root.autoSeekOn
+                onClicked: {
+                    root.autoSeekOn = !root.autoSeekOn
+                    Prefs.cwDecodeAutoSeek = root.autoSeekOn
+                    WdspEngine.setCwDecodeAutoSeek(root.autoSeekOn)
+                    if (root.autoSeekOn && !root.afcOn) {
+                        root.afcOn = true; Prefs.cwDecodeAfc = true
+                        WdspEngine.setCwDecodeAfcEnabled(true)
+                    }
+                }
             }
             ChipButton {
                 label: qsTr("DSP filter")
@@ -324,12 +418,52 @@ Rectangle {
                 onClicked: { root.dspOn = !root.dspOn; Prefs.cwDecodeDsp = root.dspOn
                              WdspEngine.setCwDecodeDspFilter(root.dspOn) }
             }
+            Item { width: 10 }
+            Label { text: qsTr("AFC range"); color: root.cMuted; font.pixelSize: 12 }
+            Repeater {
+                model: [50, 100, 150, 200]
+                delegate: ChipButton {
+                    label: "±" + modelData
+                    lit: root.afcRangeHz === modelData
+                    chipEnabled: root.afcOn && !root.autoSeekOn
+                    onClicked: { root.afcRangeHz = modelData; Prefs.cwDecodeAfcRange = modelData
+                                 WdspEngine.setCwDecodeAfcRange(modelData) }
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // #187 — Auto level: drive squelch + threshold from the live floor/peak
+        // SNR.  When on, the manual sliders below are disabled.
+        RowLayout {
+            visible: !root.collapsed
+            Layout.fillWidth: true
+            spacing: 8
+            opacity: root.cwActive ? 1.0 : 0.6
+            Label { text: qsTr("Level"); color: root.cMuted; font.pixelSize: 12 }
+            ChipButton {
+                label: qsTr("Auto")
+                lit: root.autoThreshOn
+                onClicked: { root.autoThreshOn = !root.autoThreshOn
+                             Prefs.cwDecodeAutoThreshold = root.autoThreshOn
+                             WdspEngine.setCwDecodeAutoThreshold(root.autoThreshOn) }
+            }
+            Item { Layout.fillWidth: true }
+            Label {
+                // live readout of what Auto is using (squelch × / threshold %)
+                text: root.autoThreshOn
+                      ? qsTr("auto:  ×%1  /  %2%").arg(root.autoSqLive.toFixed(1))
+                                                  .arg(Math.round(root.autoThLive * 100))
+                      : ""
+                color: root.cMuted; font.family: "Consolas"; font.pixelSize: 12
+            }
         }
 
         // Squelch + Threshold side-by-side (shorter sliders, compact panel),
-        // each with a starting-point hint underneath.
+        // each with a starting-point hint underneath.  HIDDEN entirely when Auto
+        // is on — the manual sliders + their "start" markers don't apply then.
         RowLayout {
-            visible: !root.collapsed
+            visible: !root.collapsed && !root.autoThreshOn
             Layout.fillWidth: true
             spacing: 16
             opacity: root.cwActive ? 1.0 : 0.6
@@ -349,6 +483,7 @@ Rectangle {
                 Slider {
                     id: squelch
                     Layout.fillWidth: true
+                    enabled: !root.autoThreshOn
                     from: 1.0; to: 3.0; stepSize: 0.1; value: Prefs.cwDecodeSquelch
                     onMoved: { Prefs.cwDecodeSquelch = value
                                WdspEngine.setCwDecodeSquelch(value) }
@@ -372,12 +507,13 @@ Rectangle {
                 Slider {
                     id: threshold
                     Layout.fillWidth: true
+                    enabled: !root.autoThreshOn
                     from: 15; to: 90; stepSize: 1; value: Prefs.cwDecodeThreshold
                     onMoved: { Prefs.cwDecodeThreshold = Math.round(value)
                                WdspEngine.setCwDecodeThreshold(value / 100) }
                 }
-                Label { text: qsTr("start 70–85%"); color: "#e0a030"
-                        font.pixelSize: 12; font.bold: true }
+                Label { text: root.narrowOn ? qsTr("start ~30–45%") : qsTr("start 70–85%")
+                        color: "#e0a030"; font.pixelSize: 12; font.bold: true }
             }
         }
 

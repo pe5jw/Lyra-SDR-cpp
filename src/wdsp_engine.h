@@ -575,6 +575,18 @@ public:
     Q_INVOKABLE void setCwDecodeDspFilter(bool on)     { cwDecoder_.setDspFilter(on); }
     Q_INVOKABLE void setCwDecodeNoiseBlanker(bool on)  { cwDecoder_.setNoiseBlanker(on); }
     Q_INVOKABLE void setCwDecodeTxWpm(int wpm)         { cwDecoder_.setTxWpm(wpm); }
+    // #187 — CwGet-style acquisition / auto level.  Auto-seek grabs the loudest
+    // tone across the CW passband (span = the RX/CW bandwidth, pushed below);
+    // auto-threshold drives squelch + slicer from the live floor/peak SNR.
+    Q_INVOKABLE void setCwDecodeAutoSeek(bool on)      { cwDecoder_.setAutoSeek(on); }
+    Q_INVOKABLE void setCwDecodeAutoThreshold(bool on) { cwDecoder_.setAutoThreshold(on); }
+    // #187 narrow detection filter — THE fix for busy/multi-station bands:
+    // isolates one signal at the tone so the slicer sees clean key-up gaps.
+    Q_INVOKABLE void setCwDecodeNarrow(bool on)        { cwDecoder_.setNarrowDetect(on); }
+    Q_INVOKABLE void setCwDecodeNarrowBwHz(double hz)  { cwDecoder_.setNarrowDetectBwHz(hz); }
+    // #187 — live (auto-driven) squelch/threshold for the panel's Auto readout.
+    Q_INVOKABLE double cwDecodeSquelchLive() const     { return cwDecoder_.squelch(); }
+    Q_INVOKABLE double cwDecodeThresholdLive() const   { return cwDecoder_.threshold(); }
     int  cwRxWpm()     const { return cwDecoder_.rxWpm(); }
     bool cwAfcLocked() const { return cwDecoder_.afcLocked(); }
     // Task #53 — shared RX+TX filter low edge.  Affects only the

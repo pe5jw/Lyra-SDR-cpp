@@ -55,7 +55,26 @@ public:
     void setNoiseBlanker(bool on);
     void setTxWpm(int wpm);            // bootstrap seed for the timing model
 
+    // #187 — CwGet-style acquisition / auto level.  Auto-seek does a wide,
+    // UNBIASED sweep across the CW passband (span = the filter bandwidth) and
+    // grabs the loudest in-passband tone, then the narrow AFC holds it; the
+    // filter (not a soft centre-bias) does the adjacent-signal rejection.
+    // Auto-threshold drives the squelch + slicer from the live floor/peak SNR.
+    void setAutoSeek(bool on);
+    void setSeekBandwidthHz(double hz);  // current CW passband width (Hz)
+    void setAutoThreshold(bool on);
+    // Narrow detection filter (CwGet "BF" equivalent): a 2-pole complex
+    // baseband low-pass at the detection tone that isolates ONE signal in a
+    // busy/multi-station passband — without it, two ops keep the channel busy
+    // and the slicer never sees a clean key-up gap (no spacing).
+    void setNarrowDetect(bool on);
+    void setNarrowDetectBwHz(double hz);
+
     double toneHz()  const { return toneHz_; }
+    bool   autoSeek()      const { return autoSeek_; }
+    bool   autoThreshold() const { return autoThreshold_; }
+    double squelch()       const { return squelch_; }    // live value (auto-driven when Auto on)
+    double threshold()     const { return threshold_; }
 
     // ── output callbacks (fire from process()) ──────────────────────────────
     // onChar: one decoded character; '?' for an unrecognised element string;
@@ -108,6 +127,18 @@ private:
     bool   dspFilter_   = false;
     bool   noiseBlanker_= false;
     int    txWpm_       = 20;
+
+    // ── #187 acquisition / auto-level ──
+    bool   autoSeek_      = false;   // wide UNBIASED in-passband acquisition
+    double seekHalfHz_    = 200.0;   // half the CW passband == seek span (Hz)
+    bool   autoThreshold_ = false;   // derive squelch/threshold from floor/peak
+    double autoSnr_       = 1.0;     // slow EWMA of peak/floor while gated open
+
+    // #187 narrow detection filter — 2-pole complex baseband LPF at the tone
+    bool   narrowDet_     = false;
+    double narrowBwHz_    = 150.0;
+    double narrowAlpha_   = 0.0;     // 1-pole coeff for each of the 2 stages
+    double nlpI1_ = 0.0, nlpQ1_ = 0.0, nlpI2_ = 0.0, nlpQ2_ = 0.0;
 
     // ── impulse blanker ──
     double nbRunAvg_ = 0.0;

@@ -141,6 +141,14 @@ class Prefs : public QObject {
                NOTIFY cwDecodeNbChanged)
     Q_PROPERTY(bool cwDecodeDsp READ cwDecodeDsp WRITE setCwDecodeDsp
                NOTIFY cwDecodeDspChanged)
+    Q_PROPERTY(bool cwDecodeAutoSeek READ cwDecodeAutoSeek WRITE setCwDecodeAutoSeek
+               NOTIFY cwDecodeAutoSeekChanged)
+    Q_PROPERTY(bool cwDecodeAutoThreshold READ cwDecodeAutoThreshold WRITE setCwDecodeAutoThreshold
+               NOTIFY cwDecodeAutoThresholdChanged)
+    Q_PROPERTY(bool cwDecodeNarrow READ cwDecodeNarrow WRITE setCwDecodeNarrow
+               NOTIFY cwDecodeNarrowChanged)
+    Q_PROPERTY(int cwDecodeNarrowBw READ cwDecodeNarrowBw WRITE setCwDecodeNarrowBw
+               NOTIFY cwDecodeNarrowBwChanged)
     // Noise-floor reference line on the panadapter (old-Lyra parity):
     // a dashed line at the rolling ~20th-percentile floor + an
     // "NF -NN dBFS" label.  On/off + colour are operator-tunable.
@@ -430,7 +438,15 @@ public:
     bool    cwDecodeNb() const { return cwDecodeNb_; }
     void    setCwDecodeNb(bool on);
     bool    cwDecodeDsp() const { return cwDecodeDsp_; }
+    bool    cwDecodeAutoSeek() const { return cwDecodeAutoSeek_; }
+    bool    cwDecodeAutoThreshold() const { return cwDecodeAutoThreshold_; }
+    bool    cwDecodeNarrow() const { return cwDecodeNarrow_; }
+    int     cwDecodeNarrowBw() const { return cwDecodeNarrowBw_; }
     void    setCwDecodeDsp(bool on);
+    void    setCwDecodeAutoSeek(bool on);
+    void    setCwDecodeAutoThreshold(bool on);
+    void    setCwDecodeNarrow(bool on);
+    void    setCwDecodeNarrowBw(int hz);
     bool peakShowDb() const { return peakShowDb_; }
     void setPeakShowDb(bool v);
     bool noiseFloorEnabled() const { return noiseFloorEnabled_; }
@@ -605,6 +621,10 @@ signals:
     void cwDecodeAfcRangeChanged();
     void cwDecodeNbChanged();
     void cwDecodeDspChanged();
+    void cwDecodeAutoSeekChanged();
+    void cwDecodeAutoThresholdChanged();
+    void cwDecodeNarrowChanged();
+    void cwDecodeNarrowBwChanged();
     void peakClearRequested();
     void noiseFloorEnabledChanged();
     void noiseFloorColorChanged();
@@ -697,6 +717,10 @@ private:
     int     cwDecodeAfcRange_;
     bool    cwDecodeNb_;
     bool    cwDecodeDsp_;
+    bool    cwDecodeAutoSeek_;
+    bool    cwDecodeAutoThreshold_;
+    bool    cwDecodeNarrow_;
+    int     cwDecodeNarrowBw_;
     bool    noiseFloorEnabled_;
     QString noiseFloorColor_;
     bool    watermark_;

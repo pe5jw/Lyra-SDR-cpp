@@ -46,6 +46,10 @@ constexpr auto kCwDecAfc   = "cw/decodeAfc";
 constexpr auto kCwDecAfcR  = "cw/decodeAfcRange";
 constexpr auto kCwDecNb    = "cw/decodeNb";
 constexpr auto kCwDecDsp   = "cw/decodeDsp";
+constexpr auto kCwDecAutoSeek = "cw/decodeAutoSeek";
+constexpr auto kCwDecAutoThr  = "cw/decodeAutoThreshold";
+constexpr auto kCwDecNarrow   = "cw/decodeNarrow";
+constexpr auto kCwDecNarrowBw = "cw/decodeNarrowBw";
 constexpr auto kPkShow  = "panadapter/peakShowDb";
 constexpr auto kNfEn    = "panadapter/noiseFloorEnabled";
 constexpr auto kNfColor = "panadapter/noiseFloorColor";
@@ -188,11 +192,15 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     cwDecodeColor_    = s.value(kCwDecColor, QStringLiteral("#39ff14")).toString();
     cwDecodeFontSize_ = std::clamp(s.value(kCwDecFont, 15).toInt(), 10, 32);
     cwDecodeSquelch_  = std::clamp(s.value(kCwDecSql, 1.9).toDouble(), 1.0, 3.0);
-    cwDecodeThreshold_= std::clamp(s.value(kCwDecThr, 75).toInt(), 15, 90);
+    cwDecodeThreshold_= std::clamp(s.value(kCwDecThr, 40).toInt(), 15, 90);  // #187 narrow-era default (was 75, the wide-detector value)
     cwDecodeAfc_      = s.value(kCwDecAfc, true).toBool();
     cwDecodeAfcRange_ = std::clamp(s.value(kCwDecAfcR, 100).toInt(), 50, 200);
     cwDecodeNb_       = s.value(kCwDecNb, true).toBool();
     cwDecodeDsp_      = s.value(kCwDecDsp, true).toBool();
+    cwDecodeAutoSeek_      = s.value(kCwDecAutoSeek, false).toBool();
+    cwDecodeAutoThreshold_ = s.value(kCwDecAutoThr, true).toBool();   // #187 default on — re-ranged, "just works"
+    cwDecodeNarrow_        = s.value(kCwDecNarrow, true).toBool();
+    cwDecodeNarrowBw_      = s.value(kCwDecNarrowBw, 100).toInt();
     peakShowDb_    = s.value(kPkShow, false).toBool();
     noiseFloorEnabled_ = s.value(kNfEn, true).toBool();
     noiseFloorColor_   = s.value(kNfColor, QStringLiteral("#78c88c")).toString();
@@ -603,6 +611,38 @@ void Prefs::setCwDecodeDsp(bool on) {
         cwDecodeDsp_ = on;
         QSettings().setValue(kCwDecDsp, on);
         emit cwDecodeDspChanged();
+    }
+}
+
+void Prefs::setCwDecodeAutoSeek(bool on) {
+    if (on != cwDecodeAutoSeek_) {
+        cwDecodeAutoSeek_ = on;
+        QSettings().setValue(kCwDecAutoSeek, on);
+        emit cwDecodeAutoSeekChanged();
+    }
+}
+
+void Prefs::setCwDecodeAutoThreshold(bool on) {
+    if (on != cwDecodeAutoThreshold_) {
+        cwDecodeAutoThreshold_ = on;
+        QSettings().setValue(kCwDecAutoThr, on);
+        emit cwDecodeAutoThresholdChanged();
+    }
+}
+
+void Prefs::setCwDecodeNarrow(bool on) {
+    if (on != cwDecodeNarrow_) {
+        cwDecodeNarrow_ = on;
+        QSettings().setValue(kCwDecNarrow, on);
+        emit cwDecodeNarrowChanged();
+    }
+}
+
+void Prefs::setCwDecodeNarrowBw(int hz) {
+    if (hz != cwDecodeNarrowBw_) {
+        cwDecodeNarrowBw_ = hz;
+        QSettings().setValue(kCwDecNarrowBw, hz);
+        emit cwDecodeNarrowBwChanged();
     }
 }
 

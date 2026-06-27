@@ -66,6 +66,23 @@ constexpr double CONF_W_SNR        = 0.4;  // A3: SNR weight in the blend (sum =
 constexpr double CONF_RESCUED_SCALE= 0.5;  // A1/A3: rescued char confidence penalty
 constexpr double SNR_HYST          = 0.8;  // A6: gate holds open down to 0.8× squelch
 
+// ── #187 auto-seek / auto-threshold (additive; touch none of the tuned
+//    constants above; gated behind operator toggles, off by default) ──
+constexpr double SEEK_HALF_MIN  = 60.0;    // clamp on the passband-derived seek span
+constexpr double SEEK_HALF_MAX  = 1200.0;
+constexpr double AUTO_SEEK_LOCK_RATIO = 6.0;  // wide-sweep peak must clear scan mean by 6×
+// #187 — re-ranged + slope-corrected against a real off-air capture (2-station
+// hand-keyed QSO).  With the narrow detection filter on (the default), the best
+// slice is LOW (~30 %), not the old wide-detector 70–85 %, and it must go DOWN
+// with SNR (clean/strong → lower slice catches more; weak → higher slice stays
+// above the noise).  Squelch goes UP with SNR (sensitive gate when weak).
+constexpr double AUTO_SNR_ALPHA = 0.02;    // slow EWMA of available SNR (gate-open only)
+constexpr double AUTO_SNR_MAX   = 12.0;    // SNR clamp feeding the auto map
+constexpr double AUTO_SQ_BASE   = 1.60, AUTO_SQ_SLOPE = 0.10;  // squelch = base + slope·(snr−1)  ↑
+constexpr double AUTO_SQ_MIN    = 1.60, AUTO_SQ_MAX   = 2.60;
+constexpr double AUTO_TH_BASE   = 0.46, AUTO_TH_SLOPE = 0.022; // threshold = base − slope·(snr−1) ↓
+constexpr double AUTO_TH_MIN    = 0.30, AUTO_TH_MAX   = 0.46;
+
 // edit distance == 1 over the dot/dash alphabet (substitution / one insert /
 // one delete).  a ≠ b is guaranteed by the caller (a is a table miss, b a key),
 // so distance ≥ 1; this returns true iff it is exactly 1.
@@ -115,7 +132,12 @@ const std::unordered_map<std::string, char>& morseTable() {
 CwDecoder::CwDecoder() { reset(); }
 
 // ── configuration setters ────────────────────────────────────────────────
-void CwDecoder::setSampleRate(double hz)   { if (hz > 0) sampleRate_ = hz; }
+void CwDecoder::setSampleRate(double hz) {
+    if (hz > 0) {
+        sampleRate_  = hz;
+        narrowAlpha_ = 1.0 - std::exp(-2.0 * kPi * (narrowBwHz_ * 0.5) / sampleRate_);
+    }
+}
 void CwDecoder::setToneHz(double hz)       { toneHz_ = hz; }
 void CwDecoder::setSquelch(double snr)     { squelch_ = snr; }
 void CwDecoder::setThreshold(double f)     { threshold_ = std::clamp(f, 0.0, 1.0); }
@@ -124,6 +146,15 @@ void CwDecoder::setAfcRange(int hz)        { afcRange_ = hz; }
 void CwDecoder::setDspFilter(bool on)      { dspFilter_ = on; }
 void CwDecoder::setNoiseBlanker(bool on)   { noiseBlanker_ = on; }
 void CwDecoder::setTxWpm(int wpm)          { txWpm_ = wpm; }
+void CwDecoder::setAutoSeek(bool on)       { autoSeek_ = on; }
+void CwDecoder::setSeekBandwidthHz(double hz)
+                                           { seekHalfHz_ = std::clamp(hz * 0.5, SEEK_HALF_MIN, SEEK_HALF_MAX); }
+void CwDecoder::setAutoThreshold(bool on)  { autoThreshold_ = on; }
+void CwDecoder::setNarrowDetect(bool on)   { narrowDet_ = on; }
+void CwDecoder::setNarrowDetectBwHz(double hz) {
+    narrowBwHz_  = std::clamp(hz, 30.0, 600.0);
+    narrowAlpha_ = 1.0 - std::exp(-2.0 * kPi * (narrowBwHz_ * 0.5) / sampleRate_);
+}
 
 void CwDecoder::seedTiming() {
     const int   w       = std::clamp(txWpm_, 5, 60);
@@ -146,11 +177,13 @@ void CwDecoder::reset() {
     charConfSum_ = 0.0; charSnrSum_ = 0.0; charConfN_ = 0;
     envVal_ = 0.0;
     iqI_ = iqQ_ = 0.0; iqCount_ = 0; iqPhaseAcc_ = 0.0;
+    nlpI1_ = nlpQ1_ = nlpI2_ = nlpQ2_ = 0.0;   // #187 narrow-filter state
     mfBuf_.fill(0.0); mfPos_ = 0; mfSum_ = 0.0; mfWinLast_ = 0;
     afcHz_.reset(); afcBuf_.clear(); afcCount_ = 0;
     afcLocked_ = false; afcPrevHz_.reset(); afcLockCount_ = 0;
     qsbFadeFlag_ = false; floorHoldoffEnd_ = 0.0; snrGateOpen_ = false;
     nbRunAvg_ = 0.0;
+    autoSnr_ = 1.0;   // #187: re-acquire from the most-sensitive end
     lastEmitted_ = '\0';
     rxWpm_ = 0;
     seedTiming();
@@ -183,15 +216,23 @@ void CwDecoder::updateAfcState(bool locked, double hz) {
 void CwDecoder::runAfc(const float* s, int n, double centerHz) {
     double bestHz = centerHz, bestScore = -1.0, bestPow = 0.0, totalPow = 0.0;
     int scanCount = 0;
-    const double range2 = static_cast<double>(afcRange_) * afcRange_ + 1.0;
-    for (int df = -afcRange_; df <= afcRange_; df += AFC_STEP) {
+    // #187: auto-seek widens the sweep to the whole CW passband and drops the
+    // centre-bias — the (linear-phase) RX filter has already rejected adjacent
+    // CW, so we simply grab the loudest tone inside the passband.  Otherwise the
+    // normal narrow biased sweep holds the operator's tuned pitch.
+    const int    range  = autoSeek_ ? static_cast<int>(std::lround(seekHalfHz_)) : afcRange_;
+    const double range2 = static_cast<double>(range) * range + 1.0;
+    for (int df = -range; df <= range; df += AFC_STEP) {
         const double hz = centerHz + df;
         if (hz < 200.0 || hz > 2000.0) continue;
         const double p = goertzel(s, n, hz);
         // A2: bias the pick toward the operator's tuned pitch (centerHz) so a
         // louder adjacent station can't steal the lock.  The weight decays with
         // distance²; an edge peak must be ~(1+AFC_CENTER_BIAS)× stronger to win.
-        const double w     = 1.0 / (1.0 + AFC_CENTER_BIAS * (df * df) / range2);
+        // Auto-seek disables the bias (the filter does the rejection).
+        const double w     = autoSeek_
+            ? 1.0
+            : 1.0 / (1.0 + AFC_CENTER_BIAS * (df * df) / range2);
         const double score = p * w;
         if (score > bestScore) { bestScore = score; bestHz = hz; bestPow = p; }
         totalPow += p; ++scanCount;   // lock threshold uses RAW power (unbiased)
@@ -212,11 +253,30 @@ void CwDecoder::runAfc(const float* s, int n, double centerHz) {
         }
     }
 
-    if (scanCount == 0 || bestPow < (totalPow / scanCount) * 3.0) {
+    // Peak must clear the scan's mean by this margin to count as a real signal.
+    // Auto-seek sweeps a wide, mostly-noise passband with no centre-bias, so a
+    // lone noise bin can beat the 3× narrow-mode gate during a key-up space —
+    // require a much stronger margin there.  On a fail we HOLD the existing lock
+    // (never chase noise): a space simply reports "unlocked" and the next mark
+    // re-confirms the same frequency.
+    const double lockRatio = autoSeek_ ? AUTO_SEEK_LOCK_RATIO : 3.0;
+    if (scanCount == 0 || bestPow < (totalPow / scanCount) * lockRatio) {
         afcLockCount_ = 0;
         const double hz = afcHz_.value_or(centerHz);
         afcHz_ = hz;
         updateAfcState(false, hz);
+        return;
+    }
+
+    if (autoSeek_) {
+        // grab-loudest: the (linear-phase) filter has already isolated the wanted
+        // signal, so skip the narrow path's multi-signal jump hysteresis + slow
+        // 0.7/0.3 crawl.  Snap toward the confident peak with light smoothing
+        // (0.4 old / 0.6 new) — converges in a few scans, damps per-scan jitter.
+        afcLockCount_ = 0; afcPrevHz_.reset();
+        const double r = afcHz_ ? (*afcHz_ * 0.4 + bestHz * 0.6) : bestHz;
+        afcHz_ = r;
+        updateAfcState(true, r);
         return;
     }
 
@@ -466,9 +526,22 @@ void CwDecoder::process(const float* mono, int nframes) {
     double oscSin = std::sin(iqPhaseAcc_);
 
     for (int i = 0; i < nframes; ++i) {
-        const double x = mono[i];
-        iqI_ += x * oscCos;
-        iqQ_ += x * oscSin;
+        const double x  = mono[i];
+        const double bi = x * oscCos;   // I baseband (tone → DC)
+        const double bq = x * oscSin;   // Q baseband
+        // #187 narrow detection filter: a 2-pole complex LPF on the baseband
+        // isolates ONE signal at the tone (rejects a second op a few tens of Hz
+        // away that would otherwise keep the channel busy → no spaces).  Off =
+        // the original boxcar integrate-and-dump (byte-identical legacy path).
+        if (narrowDet_) {
+            nlpI1_ += narrowAlpha_ * (bi     - nlpI1_);
+            nlpI2_ += narrowAlpha_ * (nlpI1_ - nlpI2_);
+            nlpQ1_ += narrowAlpha_ * (bq     - nlpQ1_);
+            nlpQ2_ += narrowAlpha_ * (nlpQ1_ - nlpQ2_);
+        } else {
+            iqI_ += bi;
+            iqQ_ += bq;
+        }
         ++iqCount_;
         const double nc = oscCos * cosDp - oscSin * sinDp;
         oscSin = oscSin * cosDp + oscCos * sinDp;
@@ -476,8 +549,14 @@ void CwDecoder::process(const float* mono, int nframes) {
 
         if (iqCount_ < iqWin) continue;
 
-        double mag = std::sqrt(iqI_ * iqI_ + iqQ_ * iqQ_) / iqWin;
-        iqI_ = iqQ_ = 0.0; iqCount_ = 0;
+        double mag;
+        if (narrowDet_) {
+            mag = std::sqrt(nlpI2_ * nlpI2_ + nlpQ2_ * nlpQ2_);  // decimated LPF output
+        } else {
+            mag = std::sqrt(iqI_ * iqI_ + iqQ_ * iqQ_) / iqWin;
+            iqI_ = iqQ_ = 0.0;
+        }
+        iqCount_ = 0;
 
         if (noiseBlanker_) {
             if (nbRunAvg_ == 0.0) nbRunAvg_ = mag;
@@ -554,6 +633,24 @@ void CwDecoder::process(const float* mono, int nframes) {
         } else {
             snrGateOpen_ = false;
         }
+
+        // #187: AUTO threshold — drive the squelch (gate) + slicer level from the
+        // live floor/peak SNR.  Sample the SNR only while the gate is open so a
+        // long space (peak decaying to floor) doesn't drag the estimate down; the
+        // slow EWMA starts at the most-sensitive end so a cold signal acquires,
+        // then firms up as the real SNR is learned.  Both outputs stay inside the
+        // manual slider ranges and touch none of the tuned constants; the manual
+        // sliders take back over the moment Auto is switched off.
+        if (autoThreshold_) {
+            if (snrGateOpen_ && noiseFloor_ > 0.0) {
+                const double snr = std::clamp(peakPower_ / noiseFloor_, 1.0, AUTO_SNR_MAX);
+                autoSnr_ = autoSnr_ * (1.0 - AUTO_SNR_ALPHA) + snr * AUTO_SNR_ALPHA;
+            }
+            const double s = autoSnr_ - 1.0;
+            squelch_   = std::clamp(AUTO_SQ_BASE + AUTO_SQ_SLOPE * s, AUTO_SQ_MIN, AUTO_SQ_MAX);
+            threshold_ = std::clamp(AUTO_TH_BASE - AUTO_TH_SLOPE * s, AUTO_TH_MIN, AUTO_TH_MAX);
+        }
+
         const bool   snrOk = snrGateOpen_;
         const double norm  = (snrOk && range > 0.0)
             ? std::clamp((mfVal - noiseFloor_) / range, 0.0, 1.0) : 0.0;

@@ -310,6 +310,7 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // CW decoder panel, CW-5b).  AFC centre is seeded from / tracks cwPitchHz_.
     cwDecoder_.setSampleRate(cfg_.outRate);
     cwDecoder_.setToneHz(cwPitchHz_);
+    cwDecoder_.setSeekBandwidthHz(bw_);   // #187 — auto-seek span == CW passband
     cwDecoder_.onChar = [this](char c, double conf) {
         emit cwDecodedChar(QString(QChar::fromLatin1(c)), conf);
     };
@@ -1885,6 +1886,7 @@ void WdspEngine::setBandwidth(int hz)
     bw_ = hz;
     recomputePassband();   // overlay edges
     applyModeFilter();     // re-push passband for the new bandwidth
+    cwDecoder_.setSeekBandwidthHz(bw_);   // #187 — keep the auto-seek span == CW passband
     emit bandwidthChanged();
 }
 
@@ -3371,6 +3373,66 @@ void WdspEngine::setRxEqEngine(lyra::dsp::ParamEq *eng,
     rxEq_.store(eng, std::memory_order_release);
 }
 
+namespace {
+// #187 — passive WAV capture of the EXACT mono audio fed to the CW decoder, for
+// offline filter tuning against a real off-air signal.  Armed only when the env
+// var LYRA_CW_WAV=<path> is set; writes 48 kHz mono 16-bit PCM.  Audio-thread
+// only (single producer); the header is patched on destruction at app exit.
+// Zero cost when the env var is unset (the static QByteArray is empty).
+class CwWavCapture {
+public:
+    CwWavCapture(const QString &path, quint32 sampleRate) {
+        file_.setFileName(path);
+        if (!file_.open(QIODevice::WriteOnly)) return;
+        writeHeader(sampleRate);
+        ok_ = true;
+    }
+    ~CwWavCapture() {
+        if (!ok_) return;
+        file_.seek(4);  writeU32(36 + dataBytes_);   // RIFF chunk size
+        file_.seek(40); writeU32(dataBytes_);         // data sub-chunk size
+        file_.close();
+    }
+    void write(const float *s, int n) {
+        if (!ok_) return;
+        for (int i = 0; i < n; ++i) {
+            float v = s[i];
+            v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
+            const qint16 iv = static_cast<qint16>(qRound(v * 32767.0f));
+            const char b[2] = { static_cast<char>(iv & 0xFF),
+                                static_cast<char>((iv >> 8) & 0xFF) };
+            file_.write(b, 2);
+            dataBytes_ += 2;
+        }
+    }
+private:
+    void writeU32(quint32 v) {
+        const char b[4] = { char(v & 0xFF), char((v >> 8) & 0xFF),
+                            char((v >> 16) & 0xFF), char((v >> 24) & 0xFF) };
+        file_.write(b, 4);
+    }
+    void writeU16(quint16 v) {
+        const char b[2] = { char(v & 0xFF), char((v >> 8) & 0xFF) };
+        file_.write(b, 2);
+    }
+    void writeHeader(quint32 sr) {
+        file_.write("RIFF", 4); writeU32(0);   // patched on close
+        file_.write("WAVE", 4);
+        file_.write("fmt ", 4); writeU32(16);
+        writeU16(1);            // PCM
+        writeU16(1);            // mono
+        writeU32(sr);
+        writeU32(sr * 2);       // byte rate (mono × 2 bytes)
+        writeU16(2);            // block align
+        writeU16(16);           // bits/sample
+        file_.write("data", 4); writeU32(0);   // patched on close
+    }
+    QFile   file_;
+    quint32 dataBytes_ = 0;
+    bool    ok_ = false;
+};
+} // namespace
+
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
     // #173 CW-5a — RX CW decoder tap.  The FIRST consumer of the post-demod
@@ -3384,6 +3446,16 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
         for (int f = 0; f < nframes; ++f)
             cwMonoBuf_[static_cast<size_t>(f)] = static_cast<float>(audio[2 * f]);
         cwDecoder_.process(cwMonoBuf_.data(), nframes);
+
+        // #187 — optional capture of the EXACT decoder input to a WAV for
+        // offline filter tuning.  Armed by LYRA_CW_WAV=<path>; passive, the
+        // file is finalised on app exit.  Unset = one empty-QByteArray check.
+        static const QByteArray cwWavPath = qgetenv("LYRA_CW_WAV");
+        if (!cwWavPath.isEmpty()) {
+            static CwWavCapture cwWav(QString::fromLocal8Bit(cwWavPath),
+                                      static_cast<quint32>(cfg_.outRate));
+            cwWav.write(cwMonoBuf_.data(), nframes);
+        }
     }
 
     // #59 RX EQ — shape the post-RXA receive audio (mono-dup L==R) BEFORE all
