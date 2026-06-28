@@ -3617,15 +3617,17 @@ void HL2Stream::evalSwrProtect() {
     if (swrTicks_ * kSwrEvalIntervalMs < swrBlankMs_) return;
     const double fwd = fwdPowerW();
 
-    // Stage 3b-2 — REACTIVE watts cap (backstop to the predictive cap).
-    // Runs on EVERY band, even during a deliberate tune (TUN is exactly the
+    // Stage 3b-2 — REACTIVE watts cap (GROSS backstop to the predictive
+    // cap).  Runs on EVERY band, even during a deliberate tune (TUN is the
     // over-drive case), independent of the SWR-protect enable: fold the
-    // drive when measured forward power sits over the cap for the dwell.
-    // On a measured band the predictive cap keeps us under, so this rarely
-    // fires; on an unmeasured band (Full Output not entered) it is the
-    // protection.  5 % margin so it doesn't fight the predictive's
-    // just-under landing.
-    constexpr double kWattsCapMargin = 1.05;
+    // drive when measured forward power sits well over the cap for the
+    // dwell.  The PREDICTIVE cap already lands a MEASURED band right at the
+    // cap, so the threshold must clear that landing (+ PWR-meter ballistic/
+    // noise) or it false-trips on a normal at-cap carrier.  30 % margin: a
+    // measured band at the cap never trips; an UNMEASURED band running full
+    // (~2× the cap or more) still folds.  This is a coarse net for an
+    // unmeasured band / a wildly-wrong Full Output, NOT a fine limiter.
+    constexpr double kWattsCapMargin = 1.30;
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
     if (capW > 0.0 && fwd >= swrFwdFloorW_ && fwd > capW * kWattsCapMargin) {
         if (++wattsOverTicks_ * kSwrEvalIntervalMs >= swrDwellMs_) {
