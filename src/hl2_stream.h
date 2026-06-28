@@ -1450,6 +1450,7 @@ private:
     void evalSwrProtect();
     void tripSwrProtect(double swr);   // Cut action (+ fold-floor escalate)
     void foldSwrProtect(double swr);   // Fold action — x0.5 drive step-down
+    void foldWattsProtect(double fwdW, double capW);  // Stage 3b-2 reactive cap
     // #169 Phase 1b — apply a TX drive level to the wire WITHOUT
     // persisting it (mirrors applyLnaGainNoPersist): used by Fold so its
     // transient step-downs never overwrite the operator's stored drive
@@ -1987,6 +1988,7 @@ private:
     QTimer* swrEvalTimer_ = nullptr;   // 50 ms eval tick while keyed
     int     swrTicks_     = 0;         // eval ticks since key-down (blank)
     int     swrOverTicks_ = 0;         // consecutive over-limit ticks (dwell)
+    int     wattsOverTicks_ = 0;       // Stage 3b-2 — over-watts-cap dwell
     // #169 Phase 1b — Fold action state.  swrProtectAction_ 0=Cut/1=Fold.
     // While folded, swrFoldPreDrive_ holds the operator's drive at the
     // first fold step so the next key-down (armSwrProtect) restores it.

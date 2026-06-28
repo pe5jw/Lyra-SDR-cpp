@@ -315,8 +315,12 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         1, 90);
     // #170a — Max TX drive cap (loaded before the drive-level store below
     // so the startup drive is itself clamped to the ceiling).
-    maxDrivePct_ = std::clamp(QSettings().value(
-        QStringLiteral("tx/maxDrivePct"), kMaxDrivePctDefault).toInt(), 1, 100);
+    // #170 (Max TX drive %) RETIRED — the Stage 3b watts Max cap (per-band,
+    // predictive + reactive) supersedes the coarse drive-% ceiling.  Pin it
+    // open (100 = no %-clamp) and drop any stored value so an operator's old
+    // low setting can't strand the drive now the control is gone.
+    maxDrivePct_ = 100;
+    QSettings().remove(QStringLiteral("tx/maxDrivePct"));
     // PA enable is a PERSISTENT OPERATOR PREFERENCE (operator decision
     // 2026-05-29).  Restored across Lyra launches AND across stream
     // Stop/Start cycles within a session — what the operator last
@@ -1815,12 +1819,13 @@ double HL2Stream::radioVolumeFor_(int requestedRaw) const {
 int HL2Stream::wattsDriveCeilingRaw_() const {
     // Stage 3b PREDICTIVE watts cap — the highest requested raw allowed on
     // the active TX band so output stays at/under the watts Max cap.
-    // Power ∝ drive², so driveCeil% = 100·sqrt(capW/fullW[band]) and the
-    // raw ceiling = 255·driveCeil/100.  Conservative: the real curve is
-    // steeper than drive² (the AD9866 byte scales too), so actual output
-    // stays under the cap — the reactive fold (3b-2) is the backstop.
-    // 255 (no clamp) when the cap is off, the band is unmeasured, or the
-    // cap is at/above the band's full output.
+    // The HL2 output ∝ drive³ (CUBIC, operator-measured 2026-06-28: both
+    // the AD9866 coarse byte AND the digital fixed gain scale with drive),
+    // so driveCeil% = 100·cbrt(capW/fullW[band]) lands the output right at
+    // the cap; the reactive fold (3b-2) backstops any band/unit whose curve
+    // is shallower than cubic.  Raw ceiling = 255·driveCeil/100.  255 (no
+    // clamp) when the cap is off, the band is unmeasured, or the cap is
+    // at/above the band's full output.
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
     if (capW <= 0.0) return 255;
     const int band = lyra::bandIndexForFreq(
@@ -1828,7 +1833,7 @@ int HL2Stream::wattsDriveCeilingRaw_() const {
     if (band < 0 || band >= kNumPaGainBands) return 255;
     const double fullW = fullOutputWByBand_[band].load(std::memory_order_relaxed);
     if (fullW <= 0.0 || capW >= fullW) return 255;
-    const double ceilPct = 100.0 * std::sqrt(capW / fullW);
+    const double ceilPct = 100.0 * std::cbrt(capW / fullW);
     const int raw = static_cast<int>(std::lround(ceilPct * 255.0 / 100.0));
     return raw < 1 ? 1 : (raw > 255 ? 255 : raw);
 }
@@ -3589,7 +3594,11 @@ void HL2Stream::armSwrProtect() {
     }
     swrTicks_ = 0;
     swrOverTicks_ = 0;
-    if (!swrProtectEnabled_ || !swrEvalTimer_) return;
+    wattsOverTicks_ = 0;
+    // Stage 3b-2 — arm the evaluator if EITHER SWR protect OR the watts cap
+    // is active; the reactive watts backstop rides the same eval tick.
+    const bool wattsCapOn = maxOutputW_.load(std::memory_order_relaxed) > 0.0;
+    if ((!swrProtectEnabled_ && !wattsCapOn) || !swrEvalTimer_) return;
     swrEvalTimer_->start(kSwrEvalIntervalMs);
 }
 
@@ -3601,18 +3610,41 @@ void HL2Stream::disarmSwrProtect() {
 }
 
 void HL2Stream::evalSwrProtect() {
-    // Operator opt-out: don't protect a deliberate ATU tune carrier if
-    // they've turned that off (default is to protect during tune).
-    if (tuneEnabled_.load(std::memory_order_relaxed) && !swrProtectDuringTune_)
-        return;
     // Guard A — key-down blanking: skip the T/R-settle + ALC ramp window
-    // where fwd/rev are still slewing and the ratio is meaningless.
+    // where fwd/rev are still slewing and the reading is meaningless.
+    // Applies to both the watts cap and SWR checks.
     ++swrTicks_;
     if (swrTicks_ * kSwrEvalIntervalMs < swrBlankMs_) return;
+    const double fwd = fwdPowerW();
+
+    // Stage 3b-2 — REACTIVE watts cap (backstop to the predictive cap).
+    // Runs on EVERY band, even during a deliberate tune (TUN is exactly the
+    // over-drive case), independent of the SWR-protect enable: fold the
+    // drive when measured forward power sits over the cap for the dwell.
+    // On a measured band the predictive cap keeps us under, so this rarely
+    // fires; on an unmeasured band (Full Output not entered) it is the
+    // protection.  5 % margin so it doesn't fight the predictive's
+    // just-under landing.
+    constexpr double kWattsCapMargin = 1.05;
+    const double capW = maxOutputW_.load(std::memory_order_relaxed);
+    if (capW > 0.0 && fwd >= swrFwdFloorW_ && fwd > capW * kWattsCapMargin) {
+        if (++wattsOverTicks_ * kSwrEvalIntervalMs >= swrDwellMs_) {
+            foldWattsProtect(fwd, capW);
+            return;
+        }
+    } else {
+        wattsOverTicks_ = 0;
+    }
+
+    // #169 SWR protect — operator opt-out for a deliberate ATU tune carrier
+    // (default protects during tune), and gated on the SWR-protect enable
+    // (the evaluator may be running only for the watts cap above).
+    if (!swrProtectEnabled_) return;
+    if (tuneEnabled_.load(std::memory_order_relaxed) && !swrProtectDuringTune_)
+        return;
     // Guard B — power floors: below them we're not transmitting enough
     // for the reflected-power ratio to be anything but noise.  NaN (no
     // telemetry yet) fails the >= comparisons → treated as below-floor.
-    const double fwd = fwdPowerW();
     const double rev = revPowerW();
     if (!(fwd >= swrFwdFloorW_) || !(rev >= swrRevFloorW_)) {
         swrOverTicks_ = 0;            // reset the dwell on any quiet tick
@@ -3679,6 +3711,48 @@ void HL2Stream::foldSwrProtect(double swr) {
         "TX SWR protect: SWR %1:1 >= %2:1 — fold drive -> %3 %% (raw %4/255)")
         .arg(swr, 0, 'f', 1).arg(swrProtectLimit_, 0, 'f', 1)
         .arg(pct).arg(next));
+}
+
+void HL2Stream::foldWattsProtect(double fwdW, double capW) {
+    // Stage 3b-2 — REACTIVE watts cap fold.  Same monotone ×0.5 step-down
+    // as the SWR fold, sharing swrFolded_/swrFoldPreDrive_ so the operator's
+    // set point is captured once and restored on the next key-down.  At the
+    // fold floor and STILL over the cap → escalate to a hard Cut (a fold
+    // that can't get under the cap isn't protecting the amp).  Reuses the
+    // same PROT lamp; the reason text ("PWR x W") says it was the watts cap.
+    wattsOverTicks_ = 0;
+    if (!swrFolded_) {
+        swrFolded_ = true;
+        swrFoldPreDrive_ = txDriveLevel_.load(std::memory_order_relaxed);
+    }
+    const int floorLevel =
+        std::clamp((255 * foldMinDrivePct_) / 100, 1, 255);
+    const int cur = txDriveLevel_.load(std::memory_order_relaxed);
+    if (cur <= floorLevel) {
+        safetyLog(QStringLiteral(
+            "TX watts cap: fold floor (%1 %) reached, still %2 W > %3 W — "
+            "escalating to cut")
+            .arg(foldMinDrivePct_).arg(fwdW, 0, 'f', 1).arg(capW, 0, 'f', 1));
+        if (swrEvalTimer_) swrEvalTimer_->stop();
+        swrProtectReason_ = QStringLiteral("PWR %1 W").arg(fwdW, 0, 'f', 1);
+        swrProtectTripped_ = true;
+        emit swrProtectReasonChanged(swrProtectReason_);
+        emit swrProtectTrippedChanged(true);
+        emit swrProtectCut(swrProtectReason_);
+        requestMox(false);
+        return;
+    }
+    const int next = std::max(floorLevel, cur / 2);
+    applyDriveLevelNoPersist(next);
+    const int pct = static_cast<int>(std::lround(next * 100.0 / 255.0));
+    swrProtectReason_ = QStringLiteral("PWR %1 W").arg(fwdW, 0, 'f', 1);
+    swrProtectTripped_ = true;
+    emit swrProtectReasonChanged(swrProtectReason_);
+    emit swrProtectTrippedChanged(true);
+    emit swrProtectCut(swrProtectReason_);
+    safetyLog(QStringLiteral(
+        "TX watts cap: %1 W > %2 W — fold drive -> %3 %% (raw %4/255)")
+        .arg(fwdW, 0, 'f', 1).arg(capW, 0, 'f', 1).arg(pct).arg(next));
 }
 
 void HL2Stream::tripSwrProtect(double swr) {

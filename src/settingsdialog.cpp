@@ -4613,40 +4613,10 @@ QWidget *SettingsDialog::buildTxTab() {
         leftCol->addWidget(grp);   // #169 — SAFETY / set-once column
     }
 
-    // #170a — Max TX drive cap (the always-safe over-power guard for
-    // low-drive amps).  A hard ceiling on TX drive %; the operator's
-    // drive slider / TUN drive / BandMemory restore can't exceed it.
-    // Pure preventive clamp (never trips).  Same LEFT safety column.
-    if (stream_) {
-        auto *grp = new QGroupBox(tr("TX power limit  (drive cap)"), page);
-        auto *form = new QFormLayout(grp);
-
-        auto *capSpin = new QSpinBox(grp);
-        capSpin->setRange(1, 100);
-        capSpin->setSuffix(tr(" %"));
-        capSpin->setValue(stream_->maxDrivePct());
-        capSpin->setToolTip(tr(
-            "Hard ceiling on TX drive — the operator drive slider, the "
-            "TUN tune drive, a recalled per-band drive, and TCI DRIVE "
-            "commands are all clamped to this.  Protects a low-drive "
-            "amplifier whose input can't take the HL2's full output.\n\n"
-            "It's a pure preventive clamp: it never cuts or trips, it "
-            "just won't let drive exceed the ceiling.  100 % = no cap "
-            "(default).  Lowering it re-clamps the current drive down "
-            "immediately; raising it leaves the current drive where it "
-            "is (drive back up yourself to use the new headroom)."));
-        connect(capSpin, qOverload<int>(&QSpinBox::valueChanged),
-                this, [this](int v) {
-                    if (stream_) stream_->setMaxDrivePct(v);
-                });
-        connect(stream_, &lyra::ipc::HL2Stream::maxDrivePctChanged,
-                capSpin, [capSpin](int v) {
-                    if (capSpin->value() != v) capSpin->setValue(v);
-                });
-        form->addRow(tr("Max TX drive:"), capSpin);
-
-        leftCol->addWidget(grp);   // #170a — SAFETY / set-once column
-    }
+    // #170 (Max TX drive %) RETIRED — superseded by the Settings → PA Gain
+    // tab's watts Max cap (per-band, predictive + reactive).  The backend
+    // maxDrivePct_ stays pinned at 100 (no %-clamp); the watts cap is the
+    // amp-protection control now.
 
     // §15.28 — push groups to top of each column so trailing whitespace
     // sits between the body and the Restore button instead of between
