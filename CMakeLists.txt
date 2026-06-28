@@ -133,6 +133,9 @@ qt_add_executable(lyra
     # retrofit and its operator-rejected deviations.
     src/wire/ILV.h
     src/wire/ILV.cpp
+    # txgain.{h,c} DIRECT PORT (NR0V/ChannelMaster) — the TX-output
+    # fixed-gain + amp-protect block for PS-safe HL2 power control.
+    src/wire/TxGain.cpp
     # P0.c — aamix.{h,c} DIRECT PORT (verbatim: `aamix, *AAMIX` twin
     # typedef, raw Outbound fn ptr, paamix[] bank private to the .cpp,
     # RESAMPLE public-ABI typedef at wire/resample.h).  Supersedes the

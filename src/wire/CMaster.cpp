@@ -85,6 +85,7 @@
 #include "wire/CMaster.h"
 #include "wire/Router.h"      // create_router/destroy_router (reference: via cmcomm.h)
 #include "wire/wdspcalls.h"   // the operator-approved wdsp.dll linkage seam
+#include "wire/TxGain.h"      // create_txgain/destroy_txgain/xtxgain (TX power gain block)
 
 namespace lyra::wire {
 
@@ -219,11 +220,20 @@ void create_xmtr()
 			1,
 			1,
 			(char *)"");						// (char*) cast: C++ string-literal constness; callee does not write
-		// DEFERRED [txgain — Penelope gain, reference run=0 on HL2;
-		// PS v0.3] — reference cmaster.c:200-210:
-		//   pcm->xmtr[i].pgain = create_txgain(0, 0,
-		//   	pcm->xmtr[i].ch_outsize, pcm->xmtr[i].out[0],
-		//   	pcm->xmtr[i].out[0], 1.0, 1.0, 0, 50);
+		// Penelope gain (reference cmaster.c:200-210) — the TX-output
+		// fixed-gain + amp-protect block.  Created run=0 / unity gain
+		// (byte-identical to no-gain until the operator drives it via
+		// SetTXFixedGain), matching the reference defaults exactly.
+		pcm->xmtr[i].pgain = create_txgain(
+			0,									// run fixed gain
+			0,									// run protection gain for external amplifier
+			pcm->xmtr[i].ch_outsize,			// size
+			pcm->xmtr[i].out[0],				// in
+			pcm->xmtr[i].out[0],				// out
+			1.0,								// Igain (for fixed gain)
+			1.0,								// Qgain (for fixed gain)
+			0,									// adc_value
+			50);								// ADC Supply = 5.0V
 		// eer
 		pcm->xmtr[i].peer = create_eer (
 			0,									// run
@@ -269,8 +279,7 @@ void destroy_xmtr()
 		//   destroy_sidetone(i);
 		destroy_ilv (pcm->xmtr[i].pilv);
 		destroy_eer (pcm->xmtr[i].peer);
-		// DEFERRED [txgain — PS v0.3]:
-		//   destroy_txgain (pcm->xmtr[i].pgain);
+		destroy_txgain (pcm->xmtr[i].pgain);
 		DestroyAnalyzer (inid (1, i));
 		CloseChannel (chid (inid (1, i), 0));
 		// DEFERRED [dexp/VOX v0.2.3]:
@@ -462,8 +471,7 @@ void xcmaster (int stream)
 		//   xpipe (stream, 1, pcm->xmtr[tx].out);
 		// Spectrum0 (1, stream, 0, 0, pcm->xmtr[tx].out[0]);									// panadapter
 		xMixAudio (0, 0, chid (stream, 0), pcm->xmtr[tx].out[2]);								// mix monitor audio
-		// DEFERRED [txgain — PS v0.3]:
-		//   xtxgain (pcm->xmtr[tx].pgain);															// Gain for Penelope & amp_protect
+		xtxgain (pcm->xmtr[tx].pgain);															// Gain for Penelope & amp_protect
 		xeer (pcm->xmtr[tx].peer);																// EER transmission
 		xilv(pcm->xmtr[tx].pilv, pcm->xmtr[tx].out);											// interleave EER, call Outbound()
 		break;
@@ -727,8 +735,7 @@ void SetXmtrChannelOutrate (int xmtr_id, int rate, int state)	// 2014-11-24:  Ca
 	SetAAudioStreamRate (0, 0, mix_in_id, rate);							//	.Set Mixer input rate (sets size too)
 	SetAAudioMixState (0, 0, mix_in_id, state);								//	.Conditionally make this stream ACTIVE in AAMixer
 																			//
-	// DEFERRED [txgain — PS v0.3]:
-	//   SetTXGainSize(pcm->xmtr[xmtr_id].pgain, size);						// set size for Penelope Gain Block
+	SetTXGainSize(pcm->xmtr[xmtr_id].pgain, size);							// set size for Penelope Gain Block
 	pSetEERSamplerate(pcm->xmtr[xmtr_id].peer, rate);						// set rate for EER
 	pSetEERSize(pcm->xmtr[xmtr_id].peer, size);								// set size for EER
 	pSetILVInsize(pcm->xmtr[xmtr_id].pilv, size);							// set size for Interleave & output
