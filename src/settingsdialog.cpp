@@ -48,6 +48,8 @@
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTimer>
+#include <QVector>
 #include <QTableWidgetItem>
 #include <QHeaderView>
 #include <QAbstractItemView>
@@ -3418,14 +3420,16 @@ QWidget *SettingsDialog::buildPaGainTab() {
     // don't need to span the panel.  A trailing stretch column soaks up
     // the slack so the table hugs the left.
     grid->setHorizontalSpacing(16);
-    grid->setColumnStretch(3, 1);
+    grid->setColumnStretch(4, 1);
     grid->addWidget(new QLabel(tr("Band"),            grp), 0, 0);
     grid->addWidget(new QLabel(tr("PA Gain"),         grp), 0, 1);
     grid->addWidget(new QLabel(tr("Full Output (W)"), grp), 0, 2);
+    grid->addWidget(new QLabel(tr("Cap tuned"),       grp), 0, 3);
 
     constexpr int kPaSpinW = 96;   // plenty for "100.0" + the up/down arrows
     const auto &bands = lyra::amateurBands();
     const int n = static_cast<int>(bands.size());
+    auto *tunedLabels = new QVector<QLabel *>();   // Stage B — live "tuned" marks
     for (int i = 0; i < n; ++i) {
         grid->addWidget(
             new QLabel(QString::fromUtf8(bands[i].name), grp), i + 1, 0);
@@ -3443,7 +3447,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
                 });
 
         // Stage 3b — measured full output (W) at full drive; feeds the
-        // predictive watts cap.  0 = not measured (no predictive cap).
+        // conservative fallback ceiling + the TUN auto-learn servo.
         auto *fullSpin = new QDoubleSpinBox(grp);
         fullSpin->setRange(0.0, 200.0);
         fullSpin->setDecimals(1);
@@ -3456,13 +3460,20 @@ QWidget *SettingsDialog::buildPaGainTab() {
                 this, [this, i](double v) {
                     if (stream_) stream_->setFullOutputForBand(i, v);
                 });
+
+        // Stage B — per-band "is the cap auto-tuned for the current cap?"
+        // indicator; refreshed live so the operator watches each band turn
+        // ✓ as they TUN it.
+        auto *tuned = new QLabel(grp);
+        tuned->setMinimumWidth(56);
+        tunedLabels->append(tuned);
+        grid->addWidget(tuned, i + 1, 3);
     }
     root->addWidget(grp);
 
-    // Stage 3b — the watts Max cap.  One number, band-correct because the
-    // PWR meter + the per-band Full Output above are per-band-calibrated.
-    // Predictive (drive ceiling per band, no first-key overshoot); the
-    // reactive meter-fold backstop lands with the SWR-protect mechanism.
+    // Stage B — the watts Max cap.  One number; the TUN servo walks each
+    // band's drive ceiling up to it and locks it, so it's band-correct +
+    // exact with no model.
     auto *capGrp  = new QGroupBox(tr("Max Output (amp protection)"), page);
     auto *capForm = new QFormLayout(capGrp);
     auto *capRow  = new QHBoxLayout();
@@ -3475,19 +3486,39 @@ QWidget *SettingsDialog::buildPaGainTab() {
     capSpin->setFixedWidth(110);
     const double curCap = stream_ ? stream_->maxOutputW() : 0.0;
     capChk->setChecked(curCap > 0.0);
-    capSpin->setValue(curCap > 0.0 ? curCap : 5.0);
+    capSpin->setValue(curCap > 0.0 ? curCap : 2.5);
     capSpin->setEnabled(curCap > 0.0);
     capRow->addWidget(capChk);
     capRow->addWidget(capSpin);
     capRow->addStretch(1);
     capForm->addRow(capRow);
+
+    auto *warn = new QLabel(
+        tr("⚠  Calibrate into a DUMMY LOAD with your amplifier OUT of "
+           "line.  Tuning a band walks the power UP from below to find your "
+           "cap — verify it settles correctly on every band first, THEN put "
+           "your amp back in."),
+        capGrp);
+    warn->setWordWrap(true);
+    warn->setProperty("lyraWarn", true);
+    capForm->addRow(warn);
+
     auto *capNote = new QLabel(
-        tr("Caps output on every band using each band's Full Output above "
-           "(measure it into a dummy load).  Drive is held below the level "
-           "that would exceed this — set it to protect a low-drive amp."),
+        tr("Set-up (per band, into a dummy load):\n"
+           "1.  Enter each band's Full Output (W) above — key TUN at full "
+           "drive and read the PWR meter.\n"
+           "2.  Tick this box and set your cap.\n"
+           "3.  Key TUN on each band — Lyra walks the power up and locks it "
+           "right at your cap (the band shows ✓).  Do every band you "
+           "use.\n"
+           "SSB and the other modes then hold each tuned band at your cap "
+           "automatically (it caps voice peaks without chasing them).  An "
+           "un-tuned band runs conservatively UNDER the cap until you tune "
+           "it.  Change the cap → re-key TUN on each band to re-learn."),
         capGrp);
     capNote->setWordWrap(true);
     capForm->addRow(capNote);
+
     auto pushCap = [this, capChk, capSpin]() {
         if (stream_)
             stream_->setMaxOutputW(capChk->isChecked() ? capSpin->value() : 0.0);
@@ -3499,6 +3530,27 @@ QWidget *SettingsDialog::buildPaGainTab() {
     root->addWidget(capGrp);
 
     root->addStretch(1);
+
+    // Stage B — refresh the per-band "tuned" marks live (so the operator
+    // sees a band lock as they TUN it).  Timer parented to the page so it
+    // stops + is destroyed with the dialog; the captured label list is
+    // freed on the page's destruction.
+    auto refresh = [this, tunedLabels, capChk]() {
+        const bool capOn = capChk->isChecked();
+        for (int i = 0; i < tunedLabels->size(); ++i) {
+            const bool tuned = capOn && stream_ && stream_->capTunedForBand(i);
+            (*tunedLabels)[i]->setText(capOn ? (tuned ? tr("✓")
+                                                       : tr("—"))
+                                             : QString());
+        }
+    };
+    refresh();
+    auto *timer = new QTimer(page);
+    timer->setInterval(600);
+    connect(timer, &QTimer::timeout, page, refresh);
+    timer->start();
+    connect(page, &QObject::destroyed, [tunedLabels]() { delete tunedLabels; });
+
     return page;
 }
 

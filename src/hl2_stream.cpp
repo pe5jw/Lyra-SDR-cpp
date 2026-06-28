@@ -373,6 +373,16 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                 s.value(QStringLiteral("pa_gain/%1/fullW").arg(band),
                         0.0).toDouble(),
                 std::memory_order_relaxed);
+            // Stage B — per-band TUN-learned cap drive ceiling (-1 = unset)
+            // + the cap it was learned for (-1 = none).
+            capCeilRaw_[i].store(
+                s.value(QStringLiteral("pa_gain/%1/capCeilRaw").arg(band),
+                        -1).toInt(),
+                std::memory_order_relaxed);
+            capCeilCapW_[i].store(
+                s.value(QStringLiteral("pa_gain/%1/capCeilCapW").arg(band),
+                        -1.0).toDouble(),
+                std::memory_order_relaxed);
         }
         // Stage 3b — the single watts Max cap (0 = off).
         maxOutputW_.store(
@@ -1816,26 +1826,113 @@ double HL2Stream::radioVolumeFor_(int requestedRaw) const {
     return rv < 0.0 ? 0.0 : (rv > 1.0 ? 1.0 : rv);
 }
 
+int HL2Stream::wattsFallbackCeilingRaw_(int band, double capW) const {
+    // Stage B — the CONSERVATIVE drive ceiling for a band that hasn't been
+    // TUN-auto-learned yet (or whose cap changed).  A static model can't
+    // predict each band's curve (the HL2 runs ~drive^2.6 low / ~drive^2.1
+    // high + a 16-step DAC), so we deliberately UNDER-shoot: exponent 2.0 is
+    // shallower than the shallowest measured band, guaranteeing output stays
+    // under the cap on every band.  The TUN servo then walks this up to the
+    // exact cap.  No Full Output measured → a safe-low fixed 30 % drive
+    // (the cap can't be honoured without a reference, so stay quiet).
+    if (band < 0 || band >= kNumPaGainBands) return 255;
+    const double fullW = fullOutputWByBand_[band].load(std::memory_order_relaxed);
+    if (fullW <= 0.0) return (255 * 30) / 100;       // no reference → safe-low
+    if (capW >= fullW) return 255;                   // cap above full → no clamp
+    const double ceilPct = 100.0 * std::pow(capW / fullW, 1.0 / kWattsFallbackExp);
+    const int raw = static_cast<int>(std::lround(ceilPct * 255.0 / 100.0));
+    return raw < 1 ? 1 : (raw > 255 ? 255 : raw);
+}
+
+bool HL2Stream::capTunedFor_(int band, double capW) const {
+    if (band < 0 || band >= kNumPaGainBands) return false;
+    if (capCeilRaw_[band].load(std::memory_order_relaxed) < 0) return false;
+    const double learnedCap = capCeilCapW_[band].load(std::memory_order_relaxed);
+    return std::abs(learnedCap - capW) < 0.01;
+}
+
+bool HL2Stream::capTunedForBand(int idx) const {
+    return capTunedFor_(idx, maxOutputW_.load(std::memory_order_relaxed));
+}
+
 int HL2Stream::wattsDriveCeilingRaw_() const {
-    // Stage 3b PREDICTIVE watts cap — the highest requested raw allowed on
-    // the active TX band so output stays at/under the watts Max cap.
-    // The HL2 output ∝ drive³ (CUBIC, operator-measured 2026-06-28: both
-    // the AD9866 coarse byte AND the digital fixed gain scale with drive),
-    // so driveCeil% = 100·cbrt(capW/fullW[band]) lands the output right at
-    // the cap; the reactive fold (3b-2) backstops any band/unit whose curve
-    // is shallower than cubic.  Raw ceiling = 255·driveCeil/100.  255 (no
-    // clamp) when the cap is off, the band is unmeasured, or the cap is
-    // at/above the band's full output.
+    // Stage B — the highest requested raw allowed on the active TX band so
+    // output stays at/under the watts Max cap.  If the band has been
+    // TUN-auto-learned FOR THIS CAP, use that locked ceiling (exact, landed
+    // by the live meter).  Otherwise the conservative fallback (safe-under)
+    // until TUN learns it.  255 (no clamp) when the cap is off.
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
     if (capW <= 0.0) return 255;
     const int band = lyra::bandIndexForFreq(
         static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
     if (band < 0 || band >= kNumPaGainBands) return 255;
+    if (capTunedFor_(band, capW))
+        return capCeilRaw_[band].load(std::memory_order_relaxed);
+    return wattsFallbackCeilingRaw_(band, capW);
+}
+
+void HL2Stream::tickCapServo_(double fwdW) {
+    // Stage B — in TUN, AUTO-LEARN this band's drive ceiling for the cap by
+    // walking it UP from the conservative fallback until the PWR meter
+    // reaches the cap, then locking it.  Approach-from-below = the output
+    // only ever rises TOWARD the cap, never overshoots → SS-amp-safe.  The
+    // locked per-band ceiling is then used statically (incl. SSB), so it
+    // caps voice peaks without chasing them.  Requires a Full Output
+    // reference (so the start + the runaway bound are sane).
+    const double capW = maxOutputW_.load(std::memory_order_relaxed);
+    if (capW <= 0.0) return;
+    const int band = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    if (band < 0 || band >= kNumPaGainBands) return;
     const double fullW = fullOutputWByBand_[band].load(std::memory_order_relaxed);
-    if (fullW <= 0.0 || capW >= fullW) return 255;
-    const double ceilPct = 100.0 * std::cbrt(capW / fullW);
-    const int raw = static_cast<int>(std::lround(ceilPct * 255.0 / 100.0));
-    return raw < 1 ? 1 : (raw > 255 ? 255 : raw);
+    if (fullW <= 0.0 || capW >= fullW) return;       // need a reference; cap≥full = no cap
+
+    const auto persist = [this, band]() {
+        const auto &bands = lyra::amateurBands();
+        const QString b = band < int(bands.size())
+            ? QString::fromUtf8(bands[band].name) : QString::number(band);
+        QSettings s;
+        s.setValue(QStringLiteral("pa_gain/%1/capCeilRaw").arg(b),
+                   capCeilRaw_[band].load(std::memory_order_relaxed));
+        s.setValue(QStringLiteral("pa_gain/%1/capCeilCapW").arg(b),
+                   capCeilCapW_[band].load(std::memory_order_relaxed));
+    };
+
+    // Fresh (never learned, or the cap changed): seed from the conservative
+    // fallback and begin the walk.  capCeilRaw_ drives the ceiling that
+    // applyTxPower_ clamps to, so raising it raises the output.
+    if (!capTunedFor_(band, capW)) {
+        capCeilRaw_[band].store(wattsFallbackCeilingRaw_(band, capW),
+                                std::memory_order_relaxed);
+        capCeilCapW_[band].store(capW, std::memory_order_relaxed);
+        capServoTicks_ = 0;
+        persist();
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+        return;
+    }
+    // Throttle so the PWR meter settles between steps.
+    if (++capServoTicks_ < kCapServoStepTicks) return;
+    capServoTicks_ = 0;
+    if (!(fwdW >= swrFwdFloorW_)) return;            // NaN / below floor → wait
+    // Runaway bound: never walk above the LEAST-conservative sane estimate
+    // (a drive^3 ceiling) even if the meter under-reads — caps the over-drive
+    // to a sensible value (the real curve is always shallower than cube, so
+    // this never blocks reaching the true cap).
+    const int hardMax = static_cast<int>(std::lround(
+        255.0 * std::cbrt(capW / fullW)));
+    int ceil = capCeilRaw_[band].load(std::memory_order_relaxed);
+    if (fwdW < capW * 0.97 && ceil < hardMax) {
+        capCeilRaw_[band].store(std::min(hardMax, ceil + kCapServoStepRaw),
+                                std::memory_order_relaxed);
+        persist();
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+    } else if (fwdW > capW && ceil > 1) {
+        capCeilRaw_[band].store(std::max(1, ceil - kCapServoStepRaw),
+                                std::memory_order_relaxed);
+        persist();
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+    }
+    // else: in [cap·0.97, cap] (or pinned at hardMax) — locked at the cap.
 }
 
 void HL2Stream::applyTxPower_(int requestedRaw) {
@@ -3637,6 +3734,13 @@ void HL2Stream::evalSwrProtect() {
     } else {
         wattsOverTicks_ = 0;
     }
+
+    // Stage B — in TUN with the cap on, AUTO-LEARN this band's drive ceiling
+    // (walk it up to the cap from below + lock).  Runs only in tune (SSB uses
+    // the locked ceiling statically); the reactive fold above stays dormant
+    // because the servo keeps fwd at/under the cap, well below cap·1.30.
+    if (capW > 0.0 && tuneEnabled_.load(std::memory_order_relaxed))
+        tickCapServo_(fwd);
 
     // #169 SWR protect — operator opt-out for a deliberate ATU tune carrier
     // (default protects during tune), and gated on the SWR-protect enable

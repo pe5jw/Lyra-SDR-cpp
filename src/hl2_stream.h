@@ -783,6 +783,9 @@ public:
     void    setFullOutputForBand(int idx, double watts);
     double  maxOutputW() const { return maxOutputW_.load(std::memory_order_relaxed); }
     void    setMaxOutputW(double watts);
+    // Stage B — has this band been auto-tuned (TUN servo locked) for the
+    // CURRENT cap?  For the PA Gain tab's per-band "tuned" indicator.
+    bool    capTunedForBand(int idx) const;
     // TX-0c-tune — tune-tone armed (Q_PROPERTY getter).  Reads the
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
@@ -1490,10 +1493,16 @@ private:
     void   applyTxPower_(int requestedRaw);
     // Thetis HL2: RadioVolume = min(drive% · gbb[band]/100 / 93.75, 1).
     double radioVolumeFor_(int requestedRaw) const;
-    // Stage 3b — the watts-cap predictive drive ceiling (0..255 raw) for
-    // the active TX band; 255 when the cap is off / band unmeasured /
-    // cap >= full output.  applyTxPower_ clamps the requested raw to this.
+    // Stage 3b/B — the watts-cap drive ceiling (0..255 raw) for the active
+    // TX band: the TUN-learned ceiling if the band was tuned for the current
+    // cap, else the conservative fallback (safe-under).  255 when the cap is
+    // off.  applyTxPower_ clamps the requested raw to this.
     int    wattsDriveCeilingRaw_() const;
+    // Stage B — the conservative (safe-under-the-cap) drive ceiling for an
+    // un-tuned band, + the TUN auto-learn servo.
+    int    wattsFallbackCeilingRaw_(int band, double capW) const;
+    void   tickCapServo_(double fwdW);
+    bool   capTunedFor_(int band, double capW) const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
     // picks the TX-side or RX-side per-band OC table (n2adrOcPattern
@@ -1674,6 +1683,20 @@ private:
     // off).  QSettings tx/maxOutputW.
     std::atomic<double>  fullOutputWByBand_[kNumPaGainBands];
     std::atomic<double>  maxOutputW_{0.0};
+    // Stage B — per-band AUTO-LEARNED drive ceiling for the watts cap.
+    // The TUN servo walks this UP from the conservative fallback until the
+    // PWR meter reaches the cap, then locks it (approach-from-below = never
+    // overshoots).  capCeilRaw_ = the learned raw drive ceiling (-1 = unset);
+    // capCeilCapW_ = the cap value it was learned for (-1 = none).  A drive→
+    // watts curve that varies per band + the 16-step DAC make a static model
+    // unreliable; measuring it live is the only way to land exactly at the
+    // cap on every band.  QSettings pa_gain/<band>/capCeilRaw + capCeilCapW.
+    std::atomic<int>     capCeilRaw_[kNumPaGainBands];
+    std::atomic<double>  capCeilCapW_[kNumPaGainBands];
+    int                  capServoTicks_ = 0;   // throttle (let the meter settle)
+    static constexpr int    kCapServoStepTicks = 3;    // step every 3 ticks (150 ms)
+    static constexpr int    kCapServoStepRaw   = 3;    // ~1.2 % drive per step
+    static constexpr double kWattsFallbackExp  = 2.0;  // conservative un-tuned-band exp
     // Last TX band applyTxPower_ ran for — so a freq dial tick only
     // re-applies the power when the band (gbb) actually changed.
     std::atomic<int>     lastTxBand_{-2};
