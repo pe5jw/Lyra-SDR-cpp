@@ -1,8 +1,9 @@
 # TX power model + fine drive — design (A+B arc)
 
-Status: **design drafted, awaiting operator go to build.** Date: 2026-06-28.
+Status: **building — Stage 1 (txgain port, inert) SHIPPED `cc7758b`.** Date: 2026-06-28.
 Operator-reported problem + RTL-grounded root cause + the A+B fix the operator
-scoped ("A + B together").
+scoped ("A + B together"), modelled on Thetis ("do as Thetis does") and so
+PureSignal-safe by construction.
 
 ---
 
@@ -41,35 +42,40 @@ I/Q level / the TUN tone magnitude). Lyra has no such control today.
 
 ## 3. The fix (A + B, operator-scoped)
 
-### A — continuous fine drive (UNIFIED, 2026-06-28 — collapses the old A1/A2 split)
+### A — continuous fine drive (the Thetis model, txgain.c — PureSignal-safe)
 
-**Key finding from the operator's screenshot + code:** Lyra ALREADY applies a
-per-sample amplitude scalar to the outbound TX I/Q at the **EP2 wire-pack stage**
-— the cos² MOX-edge fade (a Lyra invention; `hl2_stream.cpp:381-382` "host-side
-cos² fade", the live fade driven from `hl2_stream`, NOT the empty
-`src/tx/MoxEdgeFade.h` Phase-1 stub). Both the **tune carrier I/Q and the SSB
-modulation I/Q** flow through this same wire-pack multiply. The Waterfall-ID
-"digital drive" level (0.060, "≈¼ digital drive") is the same digital-amplitude
-notion already in the UI.
+**The reference already solves this exactly, and PS-safe.** Thetis's HL2 power
+chain (verified): per-band PA Profile `{Max Power(W), PA Gain(dB)}` →
+`RadioVolume = min(drive · PAgainByBand/100 / 93.75, 1.0)` (console.cs:47777) →
+drives BOTH `SetOutputPower(RadioVolume·1.02)` (the coarse `drive_level` byte,
+the 16-step AD9866 path, PS auto-attenuator tracks it) AND
+`cmaster.CMSetTXOutputLevel()` = `SetTXFixedGain(0, RadioVolume·HighSWRScale, …)`
+(audio.cs:262-269, cmaster.cs:1124-1127). That `SetTXFixedGain` is a **digital
+fixed gain applied to the TX I/Q inside ChannelMaster** — the FINE continuous
+control that fills in between the 16 coarse DAC steps and goes below the PA floor.
 
-⇒ **A is ONE change, not two:** a continuous **digital drive scalar
-`txDriveAmp_ ∈ [0,1]`** multiplied into that existing wire-pack envelope
-(alongside the cos² fade factor). It scales tune AND SSB AND all modes uniformly,
-post-WDSP/ALC (ALC can't fight it), with the cos² fade preserved. This replaces
-the dead-zone AD9866-byte path as the operator's drive control:
+It is **PureSignal-safe by construction**: the gain lives in `txgain.c`'s
+`xtxgain`, run inside the CMaster TX pump where PS taps its reference, so PS
+calibrates against the post-gain signal (a post-predistortion host scalar would
+break PS — this is not that).
 
-- The AD9866 16-step `drive_level` is pinned at a sensible high coarse (so the
-  hardware isn't the limiter); `txDriveAmp_` is the continuous fine control.
-- **Drive %→amp:** power ∝ amp², so `amp = sqrt(pct/100)` gives a power-linear
-  "% of power" feel — what the operator wants (1 % ⇒ ~1 % power, smoothly to ~0).
-- Same scalar serves TUN (replaces the fixed `kMaxToneMag` path) and SSB, so the
-  #95 tune-mode controls keep working but finally move power continuously.
-- The Max-cap becomes a ceiling on `txDriveAmp_` (continuous), not the coarse
-  byte — so "limit to X" actually limits.
+⇒ **A = port `txgain.c`/`txgain.h` into Lyra's CMaster and drive it** (not a
+host wire-pack scalar — the cos² wire-pack fade was deleted "do as reference"):
 
-Exact insertion = the EP2 LRIQ TX-I/Q pack in `write_main_loop_hl2`
-(folded there per task #121/#122); pin the line at build. ALC-safe by being the
-last multiply before int16 quantization.
+- **Stage 1 (DONE, `cc7758b`):** `wire/TxGain.{h,cpp}` ported (attributed); the
+  block is created/pumped/destroyed in CMaster, INERT (unity, run-off → TX
+  byte-identical).
+- **Stage 2:** compute a `RadioVolume`-style level from the operator drive % /
+  per-band Max-Power and feed `SetTXFixedGain(0, lvl, lvl)` + `SetTXFixedGainRun
+  (0,1)` (the fine continuous control) alongside the existing `drive_level` byte
+  (the coarse). **Drive %→level:** power ∝ level², so `level = sqrt(pct/100)`
+  gives a power-linear "% of power" feel (1 % ⇒ ~1 % power, smoothly to ~0).
+- The AD9866 16-step `drive_level` stays a sensible high coarse so the hardware
+  isn't the limiter; `txgain` is the continuous fine control beneath it.
+- The Max-cap becomes a ceiling on the level (continuous), not the coarse byte —
+  so "limit to X" actually limits.
+- Covers TUN and SSB and all modes uniformly (it's in the one CMaster TX pump),
+  so the #95 tune-mode controls keep working but finally move power continuously.
 
 ### B — per-radio power model (the "align with different radios" foundation)
 
@@ -87,19 +93,25 @@ struct later (today they're `kDefault*`-style HL2 constants/fields):
 
 ## 4. Staged plan (each bench-gateable; TX-core discipline)
 
-1. **A — continuous digital drive scalar (unified).** Add `txDriveAmp_` and
-   multiply it into the existing EP2 wire-pack TX-I/Q envelope (the cos² fade
-   site). AD9866 `drive_level` pinned high-coarse. Wire the drive % + the Max-cap
-   to `txDriveAmp_` via `amp = sqrt(pct/100)`. Covers tune + SSB + all modes in
-   ONE place; unsticks the tune slider, fixes the over-drive, makes the cap a real
-   continuous ceiling. Bench: 1 % ⇒ genuine sub-watt, smooth, slider-responsive.
-2. **B — per-radio power model.** `ratedPowerW` (HL2≈5) + coupler-cal as named
+1. **A Stage 1 — port txgain.c, ship INERT (DONE `cc7758b`).** `wire/TxGain.
+   {h,cpp}` + the four CMaster sites (create/xtxgain-pump/destroy/SetTXGainSize)
+   activated at unity / run-off → `xtxgain` is a no-op, TX byte-identical, RX
+   untouched. Bench: confirm normal startup + unchanged TX (provable inert).
+2. **A Stage 2 — wire the control.** Compute a `RadioVolume`-style level from the
+   operator drive % / Max-Power; feed `SetTXFixedGain(0, lvl, lvl)` +
+   `SetTXFixedGainRun(0,1)` (fine) + the `drive_level` byte (coarse), via
+   `level = sqrt(pct/100)`. Make the Max-cap a continuous ceiling on the level.
+   Bench: 1 % ⇒ genuine sub-watt, smooth, slider-responsive; PS unaffected.
+3. **B — per-radio power model.** `ratedPowerW` (HL2≈5) + coupler-cal as named
    per-radio values (becomes the §6.7 caps struct). Re-express drive as **% of
    rated power** + the Max-cap in **watts**, both referencing `ratedPowerW`; meter
    full-scale references it. Adding a radio = adding its `{ratedPowerW, cal}`.
+4. **A Stage 4 (optional) — amp-protect.** `txgain`'s `run_amp_protect` +
+   `SetAmpProtectADCValue` driven from the HL2 PA-current telemetry Lyra already
+   decodes (auto-attenuate on over-current). Off by default.
 
-(The old A1/A2/B1/B2 split is superseded — the wire-pack-scalar finding made A one
-change, and B is cleanest as one model layer on top of it.)
+(The old A1/A2/B1/B2 split + the wire-pack-scalar approach are superseded — the
+txgain.c finding unifies A onto the reference's own PS-safe TX gain stage.)
 
 ## 5. Constraints / open items
 - **PureSignal forward-compat (major future pillar):** PS predistorts TX I/Q
