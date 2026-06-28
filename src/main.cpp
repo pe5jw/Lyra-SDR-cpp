@@ -1211,7 +1211,14 @@ int main(int argc, char *argv[])
                 // Shared state so setMode + setBandpass re-push coherently.
                 struct TxFilter { int mode = 1; double low = 200.0; double high = 3100.0; };
                 auto txf = std::make_shared<TxFilter>();
-                auto pushTxFilter = [txch, txf]() {
+                // FM Carson-bandwidth clamp: FM audio is band-limited
+                // ~300-3000 Hz (nothing useful above ~4 kHz).  The RF channel
+                // an FM signal actually occupies = 2*(deviation + this audio
+                // high-cut) by Carson's rule, so the FM output bandpass is set
+                // from the deviation — NOT the operator's SSB/ESSB TX width
+                // (up to 10 kHz), which would splatter on FM.
+                constexpr double kFmAfHighcutHz = 3000.0;
+                auto pushTxFilter = [txch, txf, stream]() {
                     // Per-mode sign-coded bandpass (TX mirror of RX §14.2):
                     //   USB-side (USB/CWU/DIGU)         → +low..+high   (positive baseband)
                     //   LSB-side (LSB/CWL/DIGL)         → -high..-low   (negative baseband)
@@ -1231,7 +1238,15 @@ int main(int argc, char *argv[])
                     switch (txf->mode) {
                         case 0: case 3: case 9:               // LSB / CWL / DIGL
                             lo = -txf->high; hi = -txf->low;  break;
-                        case 2: case 5: case 6: case 10: {    // DSB / FM / AM / SAM
+                        case 5: {                             // FM
+                            // Carson clamp: occupy only the channel the FM
+                            // signal needs (±(deviation + audio high-cut)),
+                            // NOT the wide SSB/ESSB width in txf->high.
+                            const double halfBw =
+                                stream->fmDeviationHz() + kFmAfHighcutHz;
+                            lo = -halfBw;    hi =  halfBw;    break;
+                        }
+                        case 2: case 6: case 10: {            // DSB / AM / SAM
                             const double half = txf->high / 2.0;
                             lo = -half;      hi =  half;      break;
                         }
@@ -1333,9 +1348,13 @@ int main(int argc, char *argv[])
                         if (lyra::wire::SetTXAPHROTRun)
                             lyra::wire::SetTXAPHROTRun(txch, on ? 1 : 0);
                     },
-                    .setFmDeviation = [txch](double hz) {   // #107 FM deviation
+                    .setFmDeviation = [txch, pushTxFilter](double hz) {   // #107 FM deviation
                         if (lyra::wire::SetTXAFMDeviation)
                             lyra::wire::SetTXAFMDeviation(txch, hz);
+                        // Re-clamp the FM output bandpass to the new Carson
+                        // width.  No-op for non-FM modes (pushTxFilter reads
+                        // the live mode and only mode 5 uses the deviation).
+                        pushTxFilter();
                     },
                     .setCtcssFreq = [txch](double hz) {     // #107 CTCSS tone
                         if (lyra::wire::SetTXACTCSSFreq)
