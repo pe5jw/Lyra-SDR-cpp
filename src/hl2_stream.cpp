@@ -19,6 +19,7 @@
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
 #include "wire/FrameComposer.h" // §5 control-plane mapping: set_rx_freq / set_tx_freq / set_rx_step_attn_db (P4.b RX side)
 #include "wire/TxGain.h"        // SetTXFixedGain/Run — TX power model Stage 2 fine drive
+#include "bands.h"              // amateurBands / bandIndexForFreq — TX power model Stage 3
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -350,6 +351,21 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                  std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
                                               0).toInt(), 0, 255)),
         std::memory_order_relaxed);
+    // TX power model Stage 3 — load the per-band PA Gain table (Thetis
+    // "PA Gain By Band").  Default 100 = neutral on every band; the
+    // operator measures + nudges each band on the PA Gain Settings tab.
+    {
+        QSettings s;
+        const auto &bands = lyra::amateurBands();
+        for (int i = 0; i < kNumPaGainBands; ++i) {
+            const QString key = QStringLiteral("pa_gain/%1/gain")
+                .arg(i < int(bands.size()) ? QString::fromUtf8(bands[i].name)
+                                           : QString::number(i));
+            paGainByBand_[i].store(
+                s.value(key, kPaGainDefault).toDouble(),
+                std::memory_order_relaxed);
+        }
+    }
     // TX-1 component 5a — load operator-tuned TR-sequencing + fade
     // durations from QSettings (tx/trSeq/<key>).  Defaults match the
     // operator's working-station HL2+ DB export (15/50/13/5 ms) which
@@ -994,8 +1010,7 @@ void HL2Stream::open(const QString &ip) {
         {
             const int seedDrive = std::min(maxDriveRaw(),  // #170a drive cap
                 static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed)));
-            lyra::wire::set_drive_level(seedDrive);        // drive level (case 10 C1)
-            applyTxFixedGain_(seedDrive);   // Stage 2 — seed the txgain at TX-up
+            applyTxPower_(seedDrive);   // Stage 3 — seed byte (case 10 C1) + txgain at TX-up
         }
         lyra::wire::set_pa_on(                   // PA enable (case 10 C2/C3)
             paOn_.load(std::memory_order_relaxed));
@@ -1529,6 +1544,12 @@ void HL2Stream::pushEffectiveTxFreq() {
     if (lyra::wire::prn != nullptr)
         // txDdsHzForTune applies the CW ∓pitch carrier offset (zero-beat).
         lyra::wire::set_tx_freq(txDdsHzForTune(eff));
+    // TX power model Stage 3 — the per-band PA Gain (gbb) changes when the
+    // TX band changes, so re-apply the power with the new band's gbb.  Only
+    // on an actual band change, so a freq dial tick within a band is free.
+    const int newBand = lyra::bandIndexForFreq(static_cast<int>(eff));
+    if (newBand != lastTxBand_.exchange(newBand, std::memory_order_relaxed))
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
     // The TX-analyzer crop offset (NCO − RX centre) changed — refresh the
     // panadapter so the TX signal paints at the new VFO-B position.
     emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
@@ -1765,22 +1786,60 @@ void HL2Stream::setTxFreqHz(quint32 hz) {
     }
 }
 
-void HL2Stream::applyTxFixedGain_(int clampedRaw) {
-    // TX power model Stage 2 — the PureSignal-safe fine drive.  The
-    // AD9866 drive_level byte (set by the caller just above) is the
-    // 16-step coarse control with a dead zone in the bottom ~6 %; the
-    // ChannelMaster txgain fixed gain fills in continuously between
-    // those steps and below the PA floor, so 1 % drive becomes a true
-    // sub-watt instead of pinning at the ~0.78 W coarse floor.  Thetis
-    // drives BOTH from the same 0..1 RadioVolume (byte = round(255·RV),
-    // SetTXFixedGain(RV)); the clamped raw here IS 255·RV, so the level
-    // is raw/255.  Operating on the TX I/Q inside CMaster keeps it
-    // PureSignal-safe — PS taps its reference post-gain.  Per-band
-    // power calibration (the RV shaping) is the later watts-referenced
-    // model; this stage just makes the control continuous and sub-watt.
-    const double level = clampedRaw / 255.0;
-    lyra::wire::SetTXFixedGainRun(0, 1);          // run the block (idempotent)
-    lyra::wire::SetTXFixedGain(0, level, level);  // operator drive -> digital level
+double HL2Stream::radioVolumeFor_(int requestedRaw) const {
+    // TX power model Stage 3 — the Thetis HL2 RadioVolume (console.cs:47775):
+    //   RadioVolume = min(driveSlider · gbb[band]/100 / 93.75, 1.0)
+    // The requested raw is the operator drive % mapped 0..255, so the
+    // slider value is raw·100/255.  gbb is the active TX band's PA Gain
+    // (default 100 = neutral).  93.75 is the HL2 16-step DAC correction
+    // (Thetis comment: "jump in steps of 16 but getting 6").
+    const double pct = requestedRaw * 100.0 / 255.0;
+    const int band = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    const double gbb = (band >= 0 && band < kNumPaGainBands)
+                           ? paGainByBand_[band].load(std::memory_order_relaxed)
+                           : kPaGainDefault;
+    const double rv = pct * (gbb / 100.0) / 93.75;
+    return rv < 0.0 ? 0.0 : (rv > 1.0 ? 1.0 : rv);
+}
+
+void HL2Stream::applyTxPower_(int requestedRaw) {
+    // The single TX power chokepoint.  RadioVolume drives BOTH the coarse
+    // AD9866 drive_level byte (round(255·RV)) AND the ChannelMaster txgain
+    // digital fixed gain (SetTXFixedGain(RV)) — exactly as Thetis drives
+    // both from one RadioVolume.  The byte gives the 16 coarse steps; the
+    // fixed gain fills continuously between them + below the PA floor
+    // (sub-watt) and is PureSignal-safe (it's the reference's own TX gain
+    // stage, where PS taps post-gain).  The per-band PA Gain shapes RV so
+    // a band's number can trim or boost.  Both wire calls are guarded
+    // (no-op before create_xmtr / when prn is null).
+    const double rv  = radioVolumeFor_(requestedRaw);
+    const int    byte = static_cast<int>(std::lround(255.0 * rv));
+    if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(byte);
+    lyra::wire::SetTXFixedGainRun(0, 1);
+    lyra::wire::SetTXFixedGain(0, rv, rv);
+}
+
+double HL2Stream::paGainForBand(int idx) const {
+    if (idx < 0 || idx >= kNumPaGainBands) return kPaGainDefault;
+    return paGainByBand_[idx].load(std::memory_order_relaxed);
+}
+
+void HL2Stream::setPaGainForBand(int idx, double gain) {
+    if (idx < 0 || idx >= kNumPaGainBands) return;
+    paGainByBand_[idx].store(gain, std::memory_order_relaxed);
+    const auto &bands = lyra::amateurBands();
+    QSettings().setValue(
+        QStringLiteral("pa_gain/%1/gain")
+            .arg(idx < int(bands.size()) ? QString::fromUtf8(bands[idx].name)
+                                         : QString::number(idx)),
+        gain);
+    // Re-apply live if this is the band we're transmitting on, so the
+    // operator sees the dummy-load power move as they nudge the number.
+    const int cur = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    if (cur == idx)
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
 }
 
 void HL2Stream::setTxDriveLevel(int level) {
@@ -1803,8 +1862,7 @@ void HL2Stream::setTxDriveLevel(int level) {
     const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
     if (prev == clamped) return;
     // §5 (TX): prn->tx[0].drive_level (compose_case_10 C1).
-    if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
-    applyTxFixedGain_(clamped);   // Stage 2 — fine digital level tracks the byte
+    applyTxPower_(clamped);   // Stage 3 — RadioVolume drives the byte + fixed gain
     QSettings().setValue(QStringLiteral("tx/driveLevel"), clamped);
     emit txDriveLevelChanged(clamped);
     // Operator-facing percent for the log line (gateware actually
@@ -1826,8 +1884,7 @@ void HL2Stream::applyDriveLevelNoPersist(int level) {
     const int clamped = std::min(maxDriveRaw(), std::clamp(level, 0, 255));
     const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
     if (prev == clamped) return;
-    if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
-    applyTxFixedGain_(clamped);   // Stage 2 — SWR fold also backs off the digital level
+    applyTxPower_(clamped);   // Stage 3 — SWR fold backs off byte + digital level
     emit txDriveLevelChanged(clamped);
 }
 

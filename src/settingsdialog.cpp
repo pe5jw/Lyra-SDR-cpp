@@ -141,6 +141,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     // HL2Stream setters).
     if (stream_) {
         tabs_->addTab(wrapScroll(buildTxTab()), tr("TX"));
+        // TX power model Stage 3 — per-band PA Gain table on its own tab
+        // (discoverable + self-explanatory, like Thetis's PA-settings area).
+        tabs_->addTab(wrapScroll(buildPaGainTab()), tr("PA Gain"));
         // #105 — CW is its own operating mode (RX pitch + TX keyer);
         // give it a dedicated tab rather than a TX-tab subgroup.
         tabs_->addTab(wrapScroll(buildCwTab()), tr("CW"));
@@ -3382,6 +3385,56 @@ QWidget *SettingsDialog::buildCwTab() {
         root->addWidget(grp);
     }
 
+    root->addStretch(1);
+    return page;
+}
+
+QWidget *SettingsDialog::buildPaGainTab() {
+    // TX power model Stage 3 — the per-band "PA Gain By Band" table
+    // (Thetis port).  One number per band; default 100 = neutral.  The
+    // operator keys each band into a dummy load, reads the watts on the
+    // PWR meter, and nudges that band's number until the dial reads true
+    // — lower to tame a hot band, raise to push a weak one.  Each HL2's
+    // full output varies and varies by band, so nothing is computed: the
+    // table holds measured corrections.  Writes go live through
+    // HL2Stream (persisted to QSettings pa_gain/<band>/gain) and re-apply
+    // immediately if you're transmitting on that band.
+    auto *page = new QWidget(this);
+    auto *root = new QVBoxLayout(page);
+
+    auto *intro = new QLabel(
+        tr("Per-band TX PA gain.  100 = neutral.  Key each band into a "
+           "dummy load, watch the PWR meter, and nudge its number until "
+           "the power reads true — lower tames a hot band, higher pushes "
+           "a weak one.  Drive % stays the dial; this calibrates what it "
+           "means in watts on each band."),
+        page);
+    intro->setWordWrap(true);
+    root->addWidget(intro);
+
+    auto *grp  = new QGroupBox(tr("PA Gain By Band"), page);
+    auto *grid = new QGridLayout(grp);
+    grid->setColumnStretch(1, 1);
+    grid->addWidget(new QLabel(tr("Band"),    grp), 0, 0);
+    grid->addWidget(new QLabel(tr("PA Gain"), grp), 0, 1);
+
+    const auto &bands = lyra::amateurBands();
+    const int n = static_cast<int>(bands.size());
+    for (int i = 0; i < n; ++i) {
+        grid->addWidget(
+            new QLabel(QString::fromUtf8(bands[i].name), grp), i + 1, 0);
+        auto *spin = new QDoubleSpinBox(grp);
+        spin->setRange(0.0, 200.0);   // Thetis range; 100 = neutral
+        spin->setDecimals(1);
+        spin->setSingleStep(1.0);
+        spin->setValue(stream_ ? stream_->paGainForBand(i) : 100.0);
+        grid->addWidget(spin, i + 1, 1);
+        connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this, i](double v) {
+                    if (stream_) stream_->setPaGainForBand(i, v);
+                });
+    }
+    root->addWidget(grp);
     root->addStretch(1);
     return page;
 }

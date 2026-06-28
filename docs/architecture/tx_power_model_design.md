@@ -102,10 +102,32 @@ struct later (today they're `kDefault*`-style HL2 constants/fields):
    `SetTXFixedGainRun(0,1)` (fine) + the `drive_level` byte (coarse), via
    `level = sqrt(pct/100)`. Make the Max-cap a continuous ceiling on the level.
    Bench: 1 % ⇒ genuine sub-watt, smooth, slider-responsive; PS unaffected.
-3. **B — per-radio power model.** `ratedPowerW` (HL2≈5) + coupler-cal as named
-   per-radio values (becomes the §6.7 caps struct). Re-express drive as **% of
-   rated power** + the Max-cap in **watts**, both referencing `ratedPowerW`; meter
-   full-scale references it. Adding a radio = adding its `{ratedPowerW, cal}`.
+3. **B (Stage 3) — per-band PA-Gain table (Thetis port), staged.** Operators
+   can't *compute* full output — each HL2 varies, and it varies per band — so
+   Thetis uses an operator-filled per-band table. Faithful port (formula from
+   `console.cs:47775`, HL2 branch):
+   `RadioVolume = min(driveSlider · gbb[band]/100 / 93.75, 1)`, where `gbb` is the
+   per-band "PA Gain By Band" value (Thetis HL2 default = **100** all HF bands =
+   neutral ≈ Stage 2; at gbb=100 it's `drive/93.75`, full at ~94 % drive). That
+   `RadioVolume` drives BOTH the AD9866 byte (`round(255·RV)`) AND the fixed gain
+   (`SetTXFixedGain(RV)`), so a per-band number can trim OR boost. Drive slider
+   stays a plain %. Sub-stages:
+   - **3a:** the per-band PA-Gain model + the RadioVolume refactor (HL2Stream
+     `applyTxPower_(requestedRaw)` reads the active TX band via
+     `bandIndexForFreq(txFreqHz_)` + `gbb[band]`, sets byte + fixed gain) + a new
+     **"PA Gain" Settings tab** (its own QTabWidget tab, per-band gain spinboxes;
+     persisted `pa_gain/<band>/gain`, default 100). Re-applied on drive change,
+     band/freq change (`pushEffectiveTxFreq`), and gbb edits.
+   - **3b — watts Max cap (predictive + reactive, operator chose BOTH):** add a
+     per-band **Full Output W** column to the PA Gain tab (measured at full while
+     tuning the gain). The Max cap becomes a single **watts** value (replaces the
+     #170 drive-% cap). PREDICTIVE: from `gbb` + `fullOutputW[band]` compute the
+     drive ceiling per band so output never exceeds the cap (no first-key
+     overshoot). REACTIVE backstop: fold drive when the live calibrated PWR meter
+     (`fwdPowerW()`, #45 per-band cal) exceeds the cap (reuse the #169 Cut+Fold).
+     One "max W" number is band-correct because the meter reads true watts per
+     band. The cap acts on RadioVolume → PureSignal-safe.
+   - Stage 4 (optional, later) = `SetAmpProtect*` from PA-current telemetry.
 4. **A Stage 4 (optional) — amp-protect.** `txgain`'s `run_amp_protect` +
    `SetAmpProtectADCValue` driven from the HL2 PA-current telemetry Lyra already
    decodes (auto-attenuate on over-current). Off by default.

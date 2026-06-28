@@ -763,6 +763,15 @@ public:
     // TX-0c-pa-drive — drive DAC level (Q_PROPERTY getter).  Raw 0..255
     // wire value; UI converts to/from 0..100 %.  Reads the wire atomic.
     int     txDriveLevel() const { return txDriveLevel_.load(std::memory_order_relaxed); }
+    // TX power model Stage 3 — per-band "PA Gain By Band" (Thetis port).
+    // gbb is a per-band multiplier in the RadioVolume formula (default
+    // 100 = neutral).  The operator measures each band into a dummy load
+    // and nudges its number so the dial reads true watts.  idx is the
+    // amateurBands() index (0=160m … 10=6m); out-of-range returns the
+    // default.  setPaGainForBand persists + re-applies live if idx is the
+    // active TX band.  Called from the PA Gain Settings tab.
+    double  paGainForBand(int idx) const;
+    void    setPaGainForBand(int idx, double gain);
     // TX-0c-tune — tune-tone armed (Q_PROPERTY getter).  Reads the
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
@@ -1458,13 +1467,16 @@ private:
         const int r = (maxDrivePct_ * 255 + 50) / 100;
         return r < 1 ? 1 : (r > 255 ? 255 : r);
     }
-    // TX power model Stage 2 — push the operator's effective drive raw
-    // (0..255, already cap-clamped) into the ChannelMaster txgain fixed
-    // gain as a 0..1 digital TX-I/Q level (Thetis RadioVolume).  Every
-    // drive-byte write funnels here so the fine digital control tracks
-    // the coarse AD9866 byte.  No-op until create_xmtr (guarded in
-    // SetTXFixedGain).
-    void applyTxFixedGain_(int clampedRaw);
+    // TX power model Stage 2/3 — the single power chokepoint.  Takes the
+    // operator's REQUESTED drive raw (0..255, already cap-clamped),
+    // computes the Thetis HL2 RadioVolume from the active TX band's PA
+    // gain, and drives BOTH the AD9866 drive_level byte (round(255·RV))
+    // AND the ChannelMaster txgain digital fixed gain (SetTXFixedGain(RV)).
+    // Every drive-byte write + every TX band change funnels here.  No-op
+    // until create_xmtr (set_drive_level/SetTXFixedGain are guarded).
+    void   applyTxPower_(int requestedRaw);
+    // Thetis HL2: RadioVolume = min(drive% · gbb[band]/100 / 93.75, 1).
+    double radioVolumeFor_(int requestedRaw) const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
     // picks the TX-side or RX-side per-band OC table (n2adrOcPattern
@@ -1632,6 +1644,17 @@ private:
     std::atomic<int>     ctuneFiltLoHz_{0};   // #174 CTUNE Stage2 — signed RX filter low edge (Hz)
     std::atomic<int>     ctuneFiltHiHz_{3000};// #174 CTUNE Stage2 — signed RX filter high edge (Hz)
     std::atomic<int>     txDriveLevel_{0};      // 0..255; 0x12 C1 (16 steps)
+    // TX power model Stage 3 — per-band "PA Gain By Band" (Thetis port).
+    // 11 HF/6m bands (amateurBands() order, 160m..6m); default 100 =
+    // neutral.  Atomic per element: read on the power chokepoint
+    // (applyTxPower_), written by the PA Gain Settings tab.  Loaded from
+    // QSettings pa_gain/<band>/gain in the ctor.
+    static constexpr int    kNumPaGainBands = 11;
+    static constexpr double kPaGainDefault  = 100.0;
+    std::atomic<double>  paGainByBand_[kNumPaGainBands];
+    // Last TX band applyTxPower_ ran for — so a freq dial tick only
+    // re-applies the power when the band (gbb) actually changed.
+    std::atomic<int>     lastTxBand_{-2};
     std::atomic<int>     txStepAttnDb_{0};      // 0..31 dB; 0x1C C3 (31-db)
     std::atomic<int>     txMode_{1};            // 0=LSB 1=USB; mirror of the WDSP TXA mode, for the TUN DDS-offset sign (txDdsHzForTune)
     // #105 CW-2 — the single live CW pitch (shared with the RX pitch +

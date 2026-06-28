@@ -65,6 +65,7 @@ private:
     QWidget *buildCatSerialTab();// serial PTT input + Kenwood CAT (COM-port)
     QWidget *buildMeterTab();    // S-meter calibration trim
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
+    QWidget *buildPaGainTab();   // TX power model Stage 3: per-band PA Gain table
                                  // + cos² amplitude envelope (amp
                                  // hot-switch protection knobs)
     QWidget *buildCwTab();       // #105 CW mode: keyer + sidetone
