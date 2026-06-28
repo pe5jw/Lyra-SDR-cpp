@@ -3414,27 +3414,90 @@ QWidget *SettingsDialog::buildPaGainTab() {
 
     auto *grp  = new QGroupBox(tr("PA Gain By Band"), page);
     auto *grid = new QGridLayout(grp);
-    grid->setColumnStretch(1, 1);
-    grid->addWidget(new QLabel(tr("Band"),    grp), 0, 0);
-    grid->addWidget(new QLabel(tr("PA Gain"), grp), 0, 1);
+    // Compact, left-aligned columns — the spinboxes hold "100.0", they
+    // don't need to span the panel.  A trailing stretch column soaks up
+    // the slack so the table hugs the left.
+    grid->setHorizontalSpacing(16);
+    grid->setColumnStretch(3, 1);
+    grid->addWidget(new QLabel(tr("Band"),            grp), 0, 0);
+    grid->addWidget(new QLabel(tr("PA Gain"),         grp), 0, 1);
+    grid->addWidget(new QLabel(tr("Full Output (W)"), grp), 0, 2);
 
+    constexpr int kPaSpinW = 96;   // plenty for "100.0" + the up/down arrows
     const auto &bands = lyra::amateurBands();
     const int n = static_cast<int>(bands.size());
     for (int i = 0; i < n; ++i) {
         grid->addWidget(
             new QLabel(QString::fromUtf8(bands[i].name), grp), i + 1, 0);
-        auto *spin = new QDoubleSpinBox(grp);
-        spin->setRange(0.0, 200.0);   // Thetis range; 100 = neutral
-        spin->setDecimals(1);
-        spin->setSingleStep(1.0);
-        spin->setValue(stream_ ? stream_->paGainForBand(i) : 100.0);
-        grid->addWidget(spin, i + 1, 1);
-        connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-                [this, i](double v) {
+
+        auto *gainSpin = new QDoubleSpinBox(grp);
+        gainSpin->setRange(0.0, 200.0);   // Thetis range; 100 = neutral
+        gainSpin->setDecimals(1);
+        gainSpin->setSingleStep(1.0);
+        gainSpin->setFixedWidth(kPaSpinW);
+        gainSpin->setValue(stream_ ? stream_->paGainForBand(i) : 100.0);
+        grid->addWidget(gainSpin, i + 1, 1);
+        connect(gainSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v) {
                     if (stream_) stream_->setPaGainForBand(i, v);
+                });
+
+        // Stage 3b — measured full output (W) at full drive; feeds the
+        // predictive watts cap.  0 = not measured (no predictive cap).
+        auto *fullSpin = new QDoubleSpinBox(grp);
+        fullSpin->setRange(0.0, 200.0);
+        fullSpin->setDecimals(1);
+        fullSpin->setSingleStep(0.1);
+        fullSpin->setFixedWidth(kPaSpinW);
+        fullSpin->setSpecialValueText(tr("—"));   // 0 shows as "not measured"
+        fullSpin->setValue(stream_ ? stream_->fullOutputForBand(i) : 0.0);
+        grid->addWidget(fullSpin, i + 1, 2);
+        connect(fullSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v) {
+                    if (stream_) stream_->setFullOutputForBand(i, v);
                 });
     }
     root->addWidget(grp);
+
+    // Stage 3b — the watts Max cap.  One number, band-correct because the
+    // PWR meter + the per-band Full Output above are per-band-calibrated.
+    // Predictive (drive ceiling per band, no first-key overshoot); the
+    // reactive meter-fold backstop lands with the SWR-protect mechanism.
+    auto *capGrp  = new QGroupBox(tr("Max Output (amp protection)"), page);
+    auto *capForm = new QFormLayout(capGrp);
+    auto *capRow  = new QHBoxLayout();
+    auto *capChk  = new QCheckBox(tr("Limit TX output to"), capGrp);
+    auto *capSpin = new QDoubleSpinBox(capGrp);
+    capSpin->setRange(0.1, 200.0);
+    capSpin->setDecimals(1);
+    capSpin->setSingleStep(0.5);
+    capSpin->setSuffix(tr(" W"));
+    capSpin->setFixedWidth(110);
+    const double curCap = stream_ ? stream_->maxOutputW() : 0.0;
+    capChk->setChecked(curCap > 0.0);
+    capSpin->setValue(curCap > 0.0 ? curCap : 5.0);
+    capSpin->setEnabled(curCap > 0.0);
+    capRow->addWidget(capChk);
+    capRow->addWidget(capSpin);
+    capRow->addStretch(1);
+    capForm->addRow(capRow);
+    auto *capNote = new QLabel(
+        tr("Caps output on every band using each band's Full Output above "
+           "(measure it into a dummy load).  Drive is held below the level "
+           "that would exceed this — set it to protect a low-drive amp."),
+        capGrp);
+    capNote->setWordWrap(true);
+    capForm->addRow(capNote);
+    auto pushCap = [this, capChk, capSpin]() {
+        if (stream_)
+            stream_->setMaxOutputW(capChk->isChecked() ? capSpin->value() : 0.0);
+    };
+    connect(capChk, &QCheckBox::toggled, this,
+            [capSpin, pushCap](bool on) { capSpin->setEnabled(on); pushCap(); });
+    connect(capSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+            [pushCap](double) { pushCap(); });
+    root->addWidget(capGrp);
+
     root->addStretch(1);
     return page;
 }

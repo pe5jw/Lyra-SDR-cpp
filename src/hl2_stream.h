@@ -772,6 +772,17 @@ public:
     // active TX band.  Called from the PA Gain Settings tab.
     double  paGainForBand(int idx) const;
     void    setPaGainForBand(int idx, double gain);
+    // TX power model Stage 3b — per-band measured Full Output (W) at full
+    // drive (0 = not measured) + the single watts Max cap.  Together they
+    // give the PREDICTIVE drive ceiling per band: driveCeil% =
+    // 100·sqrt(capW/fullW[band]) (power∝drive², conservative — the real
+    // curve is steeper so actual output stays under the cap).  Applied at
+    // apply-time inside applyTxPower_, so the operator's drive setpoint is
+    // preserved and moving to a less-restrictive band restores power.
+    double  fullOutputForBand(int idx) const;
+    void    setFullOutputForBand(int idx, double watts);
+    double  maxOutputW() const { return maxOutputW_.load(std::memory_order_relaxed); }
+    void    setMaxOutputW(double watts);
     // TX-0c-tune — tune-tone armed (Q_PROPERTY getter).  Reads the
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
@@ -1324,6 +1335,7 @@ signals:
     void swrProtectActionChanged(int action);
     void foldMinDrivePctChanged(int pct);
     void maxDrivePctChanged(int pct);
+    void maxOutputWChanged(double watts);   // Stage 3b — watts Max cap
     // Fires once per auto-cut (distinct from txTimeoutFired) so the UI
     // can toast "TX cut: SWR x.x:1".
     void swrProtectCut(const QString& reason);
@@ -1477,6 +1489,10 @@ private:
     void   applyTxPower_(int requestedRaw);
     // Thetis HL2: RadioVolume = min(drive% · gbb[band]/100 / 93.75, 1).
     double radioVolumeFor_(int requestedRaw) const;
+    // Stage 3b — the watts-cap predictive drive ceiling (0..255 raw) for
+    // the active TX band; 255 when the cap is off / band unmeasured /
+    // cap >= full output.  applyTxPower_ clamps the requested raw to this.
+    int    wattsDriveCeilingRaw_() const;
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
     // picks the TX-side or RX-side per-band OC table (n2adrOcPattern
@@ -1652,6 +1668,11 @@ private:
     static constexpr int    kNumPaGainBands = 11;
     static constexpr double kPaGainDefault  = 100.0;
     std::atomic<double>  paGainByBand_[kNumPaGainBands];
+    // Stage 3b — per-band measured full output (W); 0 = not measured.
+    // QSettings pa_gain/<band>/fullW.  + the single watts Max cap (0 =
+    // off).  QSettings tx/maxOutputW.
+    std::atomic<double>  fullOutputWByBand_[kNumPaGainBands];
+    std::atomic<double>  maxOutputW_{0.0};
     // Last TX band applyTxPower_ ran for — so a freq dial tick only
     // re-applies the power when the band (gbb) actually changed.
     std::atomic<int>     lastTxBand_{-2};

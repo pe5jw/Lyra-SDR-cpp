@@ -358,13 +358,22 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         QSettings s;
         const auto &bands = lyra::amateurBands();
         for (int i = 0; i < kNumPaGainBands; ++i) {
-            const QString key = QStringLiteral("pa_gain/%1/gain")
-                .arg(i < int(bands.size()) ? QString::fromUtf8(bands[i].name)
-                                           : QString::number(i));
+            const QString band = i < int(bands.size())
+                ? QString::fromUtf8(bands[i].name) : QString::number(i);
             paGainByBand_[i].store(
-                s.value(key, kPaGainDefault).toDouble(),
+                s.value(QStringLiteral("pa_gain/%1/gain").arg(band),
+                        kPaGainDefault).toDouble(),
+                std::memory_order_relaxed);
+            // Stage 3b — per-band measured full output (W); 0 = not measured.
+            fullOutputWByBand_[i].store(
+                s.value(QStringLiteral("pa_gain/%1/fullW").arg(band),
+                        0.0).toDouble(),
                 std::memory_order_relaxed);
         }
+        // Stage 3b — the single watts Max cap (0 = off).
+        maxOutputW_.store(
+            s.value(QStringLiteral("tx/maxOutputW"), 0.0).toDouble(),
+            std::memory_order_relaxed);
     }
     // TX-1 component 5a — load operator-tuned TR-sequencing + fade
     // durations from QSettings (tx/trSeq/<key>).  Defaults match the
@@ -1803,6 +1812,27 @@ double HL2Stream::radioVolumeFor_(int requestedRaw) const {
     return rv < 0.0 ? 0.0 : (rv > 1.0 ? 1.0 : rv);
 }
 
+int HL2Stream::wattsDriveCeilingRaw_() const {
+    // Stage 3b PREDICTIVE watts cap — the highest requested raw allowed on
+    // the active TX band so output stays at/under the watts Max cap.
+    // Power ∝ drive², so driveCeil% = 100·sqrt(capW/fullW[band]) and the
+    // raw ceiling = 255·driveCeil/100.  Conservative: the real curve is
+    // steeper than drive² (the AD9866 byte scales too), so actual output
+    // stays under the cap — the reactive fold (3b-2) is the backstop.
+    // 255 (no clamp) when the cap is off, the band is unmeasured, or the
+    // cap is at/above the band's full output.
+    const double capW = maxOutputW_.load(std::memory_order_relaxed);
+    if (capW <= 0.0) return 255;
+    const int band = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    if (band < 0 || band >= kNumPaGainBands) return 255;
+    const double fullW = fullOutputWByBand_[band].load(std::memory_order_relaxed);
+    if (fullW <= 0.0 || capW >= fullW) return 255;
+    const double ceilPct = 100.0 * std::sqrt(capW / fullW);
+    const int raw = static_cast<int>(std::lround(ceilPct * 255.0 / 100.0));
+    return raw < 1 ? 1 : (raw > 255 ? 255 : raw);
+}
+
 void HL2Stream::applyTxPower_(int requestedRaw) {
     // The single TX power chokepoint.  RadioVolume drives BOTH the coarse
     // AD9866 drive_level byte (round(255·RV)) AND the ChannelMaster txgain
@@ -1813,7 +1843,11 @@ void HL2Stream::applyTxPower_(int requestedRaw) {
     // stage, where PS taps post-gain).  The per-band PA Gain shapes RV so
     // a band's number can trim or boost.  Both wire calls are guarded
     // (no-op before create_xmtr / when prn is null).
-    const double rv  = radioVolumeFor_(requestedRaw);
+    // Stage 3b — apply the per-band watts ceiling here (NOT at the stored
+    // setpoint), so the operator's drive is preserved + moving to a
+    // less-restrictive band restores power.
+    const int    capped = std::min(requestedRaw, wattsDriveCeilingRaw_());
+    const double rv  = radioVolumeFor_(capped);
     const int    byte = static_cast<int>(std::lround(255.0 * rv));
     if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(byte);
     lyra::wire::SetTXFixedGainRun(0, 1);
@@ -1840,6 +1874,37 @@ void HL2Stream::setPaGainForBand(int idx, double gain) {
         static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
     if (cur == idx)
         applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+}
+
+double HL2Stream::fullOutputForBand(int idx) const {
+    if (idx < 0 || idx >= kNumPaGainBands) return 0.0;
+    return fullOutputWByBand_[idx].load(std::memory_order_relaxed);
+}
+
+void HL2Stream::setFullOutputForBand(int idx, double watts) {
+    if (idx < 0 || idx >= kNumPaGainBands) return;
+    fullOutputWByBand_[idx].store(watts, std::memory_order_relaxed);
+    const auto &bands = lyra::amateurBands();
+    QSettings().setValue(
+        QStringLiteral("pa_gain/%1/fullW")
+            .arg(idx < int(bands.size()) ? QString::fromUtf8(bands[idx].name)
+                                         : QString::number(idx)),
+        watts);
+    // Re-apply if this band is live — the watts ceiling just changed.
+    const int cur = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    if (cur == idx)
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+}
+
+void HL2Stream::setMaxOutputW(double watts) {
+    if (watts < 0.0) watts = 0.0;
+    if (watts == maxOutputW_.load(std::memory_order_relaxed)) return;
+    maxOutputW_.store(watts, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("tx/maxOutputW"), watts);
+    emit maxOutputWChanged(watts);
+    // The ceiling changed for the live band — re-apply now.
+    applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
 }
 
 void HL2Stream::setTxDriveLevel(int level) {
