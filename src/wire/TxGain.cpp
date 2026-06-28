@@ -119,9 +119,19 @@ void SetTXGainSize(TXGAIN p, int size)
 	p->size = size;
 }
 
+// Lyra-cpp packaging note (NOT a reference deviation in behaviour):
+// the reference creates the xmtr (and thus `pgain`) unconditionally
+// in create_cmaster() at startup, so these PORT setters can assume a
+// valid `pgain`.  Lyra DEFERS create_xmtr()/destroy_xmtr() until the
+// wdsp.dll seam is resolved (CMaster.cpp preamble), so `pgain` is
+// null before create_xmtr and after destroy_xmtr.  A caller (e.g. the
+// drive-level path) may legitimately fire in that window, so each
+// pgain-dereferencing setter no-ops when it is null.
+
 void SetTXFixedGainRun(int txid, int run)
 {
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return;
 	if (run)
 		InterlockedBitTestAndSet(&a->run_fixed, 0);
 	else
@@ -131,6 +141,7 @@ void SetTXFixedGainRun(int txid, int run)
 void SetTXFixedGain(int txid, double Igain, double Qgain)
 {
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return;
 	EnterCriticalSection (&a->cs_update0);
 	a->Igain = Igain;
 	a->Qgain = Qgain;
@@ -142,6 +153,7 @@ void SetAmpProtectADCValue (int txid, int value)
 {
 	const int thresh = 20;
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return;
 	EnterCriticalSection (&a->cs_update1);
 	a->adc_value = value - thresh;
 	LeaveCriticalSection (&a->cs_update1);
@@ -150,12 +162,14 @@ void SetAmpProtectADCValue (int txid, int value)
 int GetAndResetAmpProtect(int txid)
 {
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return 0;
 	return InterlockedBitTestAndReset(&a->amp_protect_warning, 0);
 }
 
 void SetAmpProtectRun(int txid, int run)
 {
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return;
 	if (run)
 		InterlockedBitTestAndSet(&a->run_amp_protect, 0);
 	else
@@ -165,6 +179,7 @@ void SetAmpProtectRun(int txid, int run)
 void SetADCSupply(int txid, int v)
 {
 	TXGAIN a = pcm->xmtr[txid].pgain;
+	if (a == nullptr) return;
 	a->adc_supply = v;
 }
 

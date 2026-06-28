@@ -456,7 +456,10 @@ class HL2Stream : public QObject {
     // regime where the ratio is just noise (the false-trigger guards).
     // swrProtectTripped / swrProtectReason are read-only lamp state for
     // the TxPanel "PROT" indicator.  Default ENABLED / 5:1.  Phase 1 =
-    // Cut; Fold action + over-power trip (#170) land later.
+    // Cut + Fold (both shipped; see swrProtectAction below).  The #170b
+    // over-power trip is WON'T-DO: an external amp has no telemetry path
+    // into Lyra (we only see the HL2 ~5 W exciter), so a measured-PO trip
+    // can't protect it -- the #170a drive cap is the real protection.
     Q_PROPERTY(bool   swrProtectEnabled    READ swrProtectEnabled
                WRITE setSwrProtectEnabled    NOTIFY swrProtectEnabledChanged)
     Q_PROPERTY(double swrProtectLimit      READ swrProtectLimit
@@ -1455,6 +1458,13 @@ private:
         const int r = (maxDrivePct_ * 255 + 50) / 100;
         return r < 1 ? 1 : (r > 255 ? 255 : r);
     }
+    // TX power model Stage 2 — push the operator's effective drive raw
+    // (0..255, already cap-clamped) into the ChannelMaster txgain fixed
+    // gain as a 0..1 digital TX-I/Q level (Thetis RadioVolume).  Every
+    // drive-byte write funnels here so the fine digital control tracks
+    // the coarse AD9866 byte.  No-op until create_xmtr (guarded in
+    // SetTXFixedGain).
+    void applyTxFixedGain_(int clampedRaw);
     // Recompute the OC pattern (frame-0 C2) from the current band +
     // filter-board-enabled state.  Main thread only.  `transmitting`
     // picks the TX-side or RX-side per-band OC table (n2adrOcPattern

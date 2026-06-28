@@ -18,6 +18,7 @@
 #include "wire/MetisFrame.h"    // metis_wire_bind, metis_socket_fd
 #include "wire/ObBuffs.h"       // destroy_obbuffs (P3 — close() ring teardown)
 #include "wire/FrameComposer.h" // §5 control-plane mapping: set_rx_freq / set_tx_freq / set_rx_step_attn_db (P4.b RX side)
+#include "wire/TxGain.h"        // SetTXFixedGain/Run — TX power model Stage 2 fine drive
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -990,9 +991,12 @@ void HL2Stream::open(const QString &ip) {
         // keyed MOX), so this does not change RX behaviour — it just
         // means the first keydown finds correct drive/PA/att already on
         // the wire rather than create-time defaults.
-        lyra::wire::set_drive_level(            // drive level (case 10 C1)
-            std::min(maxDriveRaw(),             // #170a drive cap
-                static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed))));
+        {
+            const int seedDrive = std::min(maxDriveRaw(),  // #170a drive cap
+                static_cast<int>(txDriveLevel_.load(std::memory_order_relaxed)));
+            lyra::wire::set_drive_level(seedDrive);        // drive level (case 10 C1)
+            applyTxFixedGain_(seedDrive);   // Stage 2 — seed the txgain at TX-up
+        }
         lyra::wire::set_pa_on(                   // PA enable (case 10 C2/C3)
             paOn_.load(std::memory_order_relaxed));
         lyra::wire::set_tx_step_attn_db(         // TX step-att (case 4/11)
@@ -1761,6 +1765,24 @@ void HL2Stream::setTxFreqHz(quint32 hz) {
     }
 }
 
+void HL2Stream::applyTxFixedGain_(int clampedRaw) {
+    // TX power model Stage 2 — the PureSignal-safe fine drive.  The
+    // AD9866 drive_level byte (set by the caller just above) is the
+    // 16-step coarse control with a dead zone in the bottom ~6 %; the
+    // ChannelMaster txgain fixed gain fills in continuously between
+    // those steps and below the PA floor, so 1 % drive becomes a true
+    // sub-watt instead of pinning at the ~0.78 W coarse floor.  Thetis
+    // drives BOTH from the same 0..1 RadioVolume (byte = round(255·RV),
+    // SetTXFixedGain(RV)); the clamped raw here IS 255·RV, so the level
+    // is raw/255.  Operating on the TX I/Q inside CMaster keeps it
+    // PureSignal-safe — PS taps its reference post-gain.  Per-band
+    // power calibration (the RV shaping) is the later watts-referenced
+    // model; this stage just makes the control continuous and sub-watt.
+    const double level = clampedRaw / 255.0;
+    lyra::wire::SetTXFixedGainRun(0, 1);          // run the block (idempotent)
+    lyra::wire::SetTXFixedGain(0, level, level);  // operator drive -> digital level
+}
+
 void HL2Stream::setTxDriveLevel(int level) {
     // Lands C1 of slot 10 (frame 0x12) — the drive DAC level.  Gateware
     // uses the top 4 bits → 16 coarse steps; wire 0..255 maps the
@@ -1782,6 +1804,7 @@ void HL2Stream::setTxDriveLevel(int level) {
     if (prev == clamped) return;
     // §5 (TX): prn->tx[0].drive_level (compose_case_10 C1).
     if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
+    applyTxFixedGain_(clamped);   // Stage 2 — fine digital level tracks the byte
     QSettings().setValue(QStringLiteral("tx/driveLevel"), clamped);
     emit txDriveLevelChanged(clamped);
     // Operator-facing percent for the log line (gateware actually
@@ -1804,6 +1827,7 @@ void HL2Stream::applyDriveLevelNoPersist(int level) {
     const int prev    = txDriveLevel_.exchange(clamped, std::memory_order_relaxed);
     if (prev == clamped) return;
     if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(clamped);
+    applyTxFixedGain_(clamped);   // Stage 2 — SWR fold also backs off the digital level
     emit txDriveLevelChanged(clamped);
 }
 
