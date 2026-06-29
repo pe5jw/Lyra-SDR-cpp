@@ -1278,6 +1278,14 @@ int main(int argc, char *argv[])
                         // changes re-track it (HL2Stream::setFmDeviation drives
                         // SetTXAFMDeviation + re-runs this).
                         lyra::wire::SetTXAFMAFFreqs(txch, kFmAfLowcutHz, kFmAfHighcutHz);
+                    if (txf->mode == 5 && lyra::wire::SetTXAFMEmphPosition)
+                        // Pre-emphasis: FM force-runs the emphasis block, so
+                        // the chain POSITION is the on/off.  1 = the native
+                        // 6 dB/oct (300–3000 Hz) comms curve runs (Comm);
+                        // off-position 2 = both call sites pass through =
+                        // a true bypass (Off — flat for digital/data).
+                        lyra::wire::SetTXAFMEmphPosition(
+                            txch, stream->fmEmphasisMode() == 1 ? 1 : 2);
                     // #107 — CTCSS run/freq is now operator-driven + FM-gated:
                     // HL2Stream::setTxMode → applyCtcssRun forwards the effective
                     // run (ctcssEnabled && FM) on every mode edge, so basic FM is
@@ -1370,6 +1378,11 @@ int main(int argc, char *argv[])
                     .setPhrotRun = [txch](bool on) {   // #109 phase rotator
                         if (lyra::wire::SetTXAPHROTRun)
                             lyra::wire::SetTXAPHROTRun(txch, on ? 1 : 0);
+                    },
+                    .setFmEmphasis = [txch](int mode) {   // FM pre-emphasis: 0=Off, 1=Comm
+                        if (lyra::wire::SetTXAFMEmphPosition)
+                            // 1 = run the native 6 dB/oct comms curve; 2 = bypass
+                            lyra::wire::SetTXAFMEmphPosition(txch, mode == 1 ? 1 : 2);
                     },
                     .setFmDeviation = [txch, pushTxFilter](double hz) {   // #107 FM deviation
                         if (lyra::wire::SetTXAFMDeviation)

@@ -477,6 +477,8 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     ctcssToneHz_   = snapCtcssTone(
         QSettings().value(QStringLiteral("tx/ctcssToneHz"),
                           kDefaultCtcssToneHz).toDouble());
+    fmEmphasisMode_ = std::clamp(
+        QSettings().value(QStringLiteral("tx/fmEmphasisMode"), 1).toInt(), 0, 1);
     levelerMaxGainLinear_ = std::clamp(
         QSettings().value(QStringLiteral("tx/levelerMaxGainLinear"),
                           kDefaultLevelerMaxGainLinear).toDouble(),
@@ -2978,6 +2980,23 @@ void HL2Stream::setFmDeviationHz(double hz) {
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
         fwd = txControl_.setFmDeviation;
+    }
+    if (fwd) fwd(v);
+}
+
+// FM pre-emphasis mode (0=Off, 1=Comm).  Persists + emits + forwards to the
+// WDSP emphasis-position setter via TxControl (no-op out of FM until the FM
+// branch re-applies on entry).
+void HL2Stream::setFmEmphasisMode(int mode) {
+    const int v = std::clamp(mode, 0, 1);
+    if (v == fmEmphasisMode_) return;
+    fmEmphasisMode_ = v;
+    QSettings().setValue(QStringLiteral("tx/fmEmphasisMode"), v);
+    emit fmEmphasisModeChanged(v);
+    std::function<void(int)> fwd;
+    {
+        std::lock_guard<std::mutex> lk(txControlMtx_);
+        fwd = txControl_.setFmEmphasis;
     }
     if (fwd) fwd(v);
 }

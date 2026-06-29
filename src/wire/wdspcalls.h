@@ -222,6 +222,12 @@ extern void (*SetTXAFMDeviation)(int channel, double deviation);
 //   (Carson) RF clamp.  Pin it per FM entry instead of inheriting the
 //   create-time default.
 extern void (*SetTXAFMAFFreqs)(int channel, double low, double high);
+//   emph.c:108       void SetTXAFMEmphPosition (int channel, int position);
+//   Sets the pre-emphasis FIR's chain position; xemphp runs it only when
+//   position matches the call site (0 or 1).  position=1 → the native
+//   6 dB/oct (300–3000 Hz) comms curve runs; any off-position (e.g. 2) →
+//   both call sites pass through = a TRUE bypass even though FM force-runs it.
+extern void (*SetTXAFMEmphPosition)(int channel, int position);
 //   fmmod.c:167      void SetTXACTCSSFreq (int channel, double freq);
 extern void (*SetTXACTCSSFreq)(int channel, double freq);
 //   ammod.c:103      void SetTXAAMCarrierLevel (int channel, double c_level);

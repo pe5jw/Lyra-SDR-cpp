@@ -4398,6 +4398,31 @@ QWidget *SettingsDialog::buildTxTab() {
                 });
         form->addRow(tr("Deviation:"), devSpin);
 
+        // FM pre-emphasis: Off (flat — digital/data + warm HF) vs Comm (the
+        // 6 dB/oct 300–3000 Hz communications curve a hardware rig makes;
+        // voice default).  A true Off — unlike rigs/SDRs that force it on.
+        auto *emphCombo = new QComboBox(grp);
+        emphCombo->addItem(tr("Off (flat / data)"), 0);
+        emphCombo->addItem(tr("Comm (6 dB/oct voice)"), 1);
+        emphCombo->setToolTip(tr(
+            "FM pre-emphasis.  Comm = the standard 6 dB/oct (300–3000 Hz) "
+            "communications curve for voice (Icom/Kenwood-style).  Off = flat "
+            "— use for digital/data (packet, VARA FM) and a warmer HF tone.  "
+            "Affects FM only."));
+        emphCombo->setCurrentIndex(stream_->fmEmphasisMode() == 1 ? 1 : 0);
+        connect(emphCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this, emphCombo](int) {
+                    if (stream_) stream_->setFmEmphasisMode(
+                        emphCombo->currentData().toInt());
+                });
+        connect(stream_, &lyra::ipc::HL2Stream::fmEmphasisModeChanged, emphCombo,
+                [emphCombo](int mode) {
+                    const int idx = mode == 1 ? 1 : 0;
+                    if (emphCombo->currentIndex() != idx)
+                        emphCombo->setCurrentIndex(idx);
+                });
+        form->addRow(tr("Pre-emphasis:"), emphCombo);
+
         auto *ctcssBox = new QCheckBox(tr("CTCSS sub-tone (repeater access)"), grp);
         ctcssBox->setChecked(stream_->ctcssEnabled());
         ctcssBox->setToolTip(tr(

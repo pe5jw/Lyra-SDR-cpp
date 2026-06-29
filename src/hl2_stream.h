@@ -532,6 +532,11 @@ class HL2Stream : public QObject {
                WRITE setCtcssEnabled  NOTIFY ctcssEnabledChanged)
     Q_PROPERTY(double ctcssToneHz   READ ctcssToneHz
                WRITE setCtcssToneHz   NOTIFY ctcssToneHzChanged)
+    // FM pre-emphasis selector: 0 = Off (flat — true bypass, for digital/data
+    // + warm HF), 1 = Comm (the native 6 dB/oct 300–3000 Hz communications
+    // curve; voice default).  50/75 µs broadcast curves are a later option.
+    Q_PROPERTY(int    fmEmphasisMode READ fmEmphasisMode
+               WRITE setFmEmphasisMode NOTIFY fmEmphasisModeChanged)
 
 public:
     explicit HL2Stream(QObject *parent = nullptr);
@@ -642,6 +647,7 @@ public:
         // #107 — FM operator knobs.  setFmDeviation(Hz) → SetTXAFMDeviation;
         // setCtcssFreq(Hz) → SetTXACTCSSFreq; setCtcssRun(on) →
         // SetTXACTCSSRun.  Run is mode-gated (FM only) by applyCtcssRun().
+        std::function<void(int)>    setFmEmphasis;   // pre-emph: 0=Off, 1=Comm
         std::function<void(double)> setFmDeviation;
         std::function<void(double)> setCtcssFreq;
         std::function<void(bool)>   setCtcssRun;
@@ -843,6 +849,7 @@ public:
     double  fmDeviationHz()         const { return fmDeviationHz_;         }
     bool    ctcssEnabled()          const { return ctcssEnabled_;          }
     double  ctcssToneHz()           const { return ctcssToneHz_;           }
+    int     fmEmphasisMode()        const { return fmEmphasisMode_;        }
 
     // Step 3d: register a sink for DDC0 baseband IQ.  Called ONCE per
     // EP6 datagram from the RX worker thread with interleaved
@@ -1180,6 +1187,7 @@ public slots:
     void setFmDeviationHz(double hz);   // clamp 1000..6000
     void setCtcssEnabled(bool on);      // mode-gated run via applyCtcssRun()
     void setCtcssToneHz(double hz);     // snapped to the standard tone table
+    void setFmEmphasisMode(int mode);   // 0=Off, 1=Comm; forward via TxControl
 
     // TX-1 component 8a-tx-mode — push WDSP TXA mode (0=LSB, 1=USB)
     // to the TX channel via the registered TxControl.setMode callback.
@@ -1355,6 +1363,7 @@ signals:
     void cwSidetoneLevelChanged(int level);
     // #93/#106 — AM/SAM carrier level (percent).
     void amCarrierPctChanged(double pct);
+    void fmEmphasisModeChanged(int mode);   // FM pre-emphasis: 0=Off, 1=Comm
     void fmDeviationHzChanged(double hz);   // #107
     void ctcssEnabledChanged(bool on);      // #107
     void ctcssToneHzChanged(double hz);     // #107
@@ -2089,6 +2098,7 @@ private:
     double fmDeviationHz_          = kDefaultFmDeviationHz;
     bool   ctcssEnabled_          = false;
     double ctcssToneHz_           = kDefaultCtcssToneHz;
+    int    fmEmphasisMode_        = 1;   // 0=Off, 1=Comm (voice default)
 
     // §3.9-5 revert (operator-rejected 2026-06-06): the Lyra-native
     // cos² SSB envelope shim (MoxEdgeFade) was deleted per Rule 1
