@@ -49,6 +49,11 @@ class TunerMemory : public QObject {
     // Collapsed (basics-only) vs expanded (full table) — operator toggle.
     Q_PROPERTY(bool collapsed READ collapsed WRITE setCollapsed
                NOTIFY collapsedChanged)
+    // Match window (Hz): within this of a stored point counts as an "exact"
+    // (green) match; beyond it the nearest is shown amber with the delta.
+    // Operator-configurable in Settings → Tuner.  Default 1000 Hz.
+    Q_PROPERTY(double matchToleranceHz READ matchToleranceHz
+               WRITE setMatchToleranceHz NOTIFY matchToleranceChanged)
 
 public:
     explicit TunerMemory(lyra::ipc::HL2Stream *stream,
@@ -72,6 +77,8 @@ public:
     QString currentFreqText() const { return fmtFreq(curHz_); }
     bool collapsed() const { return collapsed_; }
     void setCollapsed(bool v);
+    double matchToleranceHz() const { return matchToleranceHz_; }
+    void   setMatchToleranceHz(double hz);
 
     // Set the live dial (Hz); recomputes the match.  Driven from
     // HL2Stream::rx1FreqChanged, but Q_INVOKABLE so QML can drive it too.
@@ -82,11 +89,19 @@ public:
     Q_INVOKABLE void storePoint(double freqHz, const QString &input,
                                 const QString &output, const QString &inductor,
                                 const QString &note);
-    // Edit an existing point in place (active antenna, by row index).
+    // Edit an existing point's settings in place (active antenna, by row).
     Q_INVOKABLE void updatePoint(int index, const QString &input,
                                  const QString &output, const QString &inductor,
                                  const QString &note);
+    // Full edit incl. the frequency (re-sorts) — used by the Settings editor.
+    Q_INVOKABLE void editPoint(int index, double freqHz, const QString &input,
+                               const QString &output, const QString &inductor,
+                               const QString &note);
     Q_INVOKABLE void deletePoint(int index);
+    // Clear every stored point for the active antenna.
+    Q_INVOKABLE void clearActiveAntenna();
+    // Point count for the active antenna (convenience for editors).
+    Q_INVOKABLE int  pointCount() const;
 
     // Ham-band label for a frequency ("10 M", "40 M", …) or "" if unknown.
     Q_INVOKABLE static QString bandLabel(double freqHz);
@@ -100,6 +115,7 @@ signals:
     void matchChanged();
     void currentChanged();
     void collapsedChanged();
+    void matchToleranceChanged();
 
 private:
     struct Point {
@@ -118,10 +134,13 @@ private:
     double curHz_    = 0.0;
     int    matchIdx_ = -1;          // nearest point in ant_[active_], or -1
     bool   collapsed_ = false;
+    double matchToleranceHz_ = 1000.0;   // operator-set exact-match window
 
-    // Within this window of the dial, a stored point counts as an "exact"
-    // match (green); beyond it the nearest is shown amber with the delta.
-    static constexpr double kExactToleranceHz = 1000.0;
+    // Two stored points closer than this are treated as the SAME point (a
+    // re-store overwrites rather than adding a near-duplicate).  Fixed +
+    // small + independent of the display match window, so the operator can
+    // still keep distinct points a few kHz apart with a wide match window.
+    static constexpr double kSameFreqHz = 100.0;
 };
 
 } // namespace lyra::ui

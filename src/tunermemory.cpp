@@ -79,7 +79,20 @@ QVariantList TunerMemory::points() const {
 }
 
 bool TunerMemory::matchExact() const {
-    return matchIdx_ >= 0 && std::abs(matchDeltaHz()) <= kExactToleranceHz;
+    return matchIdx_ >= 0 && std::abs(matchDeltaHz()) <= matchToleranceHz_;
+}
+
+void TunerMemory::setMatchToleranceHz(double hz) {
+    const double v = std::clamp(hz, 50.0, 20000.0);
+    if (v == matchToleranceHz_) return;
+    matchToleranceHz_ = v;
+    save();
+    emit matchToleranceChanged();
+    emit matchChanged();   // exact/nearest may flip at the new window
+}
+
+int TunerMemory::pointCount() const {
+    return (active_ >= 0 && active_ < ant_.size()) ? ant_[active_].points.size() : 0;
 }
 
 double TunerMemory::matchFreqHz() const {
@@ -133,10 +146,12 @@ void TunerMemory::storePoint(double freqHz, const QString &input,
                              const QString &note) {
     if (active_ < 0 || active_ >= ant_.size()) return;
     auto &pts = ant_[active_].points;
-    // Overwrite a point already within tolerance, else insert a new one.
+    // Overwrite a point at essentially the same frequency, else insert a new
+    // one (kSameFreqHz, NOT the display match window, so distinct nearby
+    // points are kept even when the match window is wide).
     int existing = -1;
     for (int i = 0; i < pts.size(); ++i)
-        if (std::abs(pts[i].freqHz - freqHz) <= kExactToleranceHz) { existing = i; break; }
+        if (std::abs(pts[i].freqHz - freqHz) <= kSameFreqHz) { existing = i; break; }
     Point p{freqHz, bandLabel(freqHz), input.trimmed(), output.trimmed(),
             inductor.trimmed(), note.trimmed()};
     if (existing >= 0) pts[existing] = p;
@@ -162,11 +177,38 @@ void TunerMemory::updatePoint(int index, const QString &input,
     recomputeMatch();
 }
 
+void TunerMemory::editPoint(int index, double freqHz, const QString &input,
+                            const QString &output, const QString &inductor,
+                            const QString &note) {
+    if (active_ < 0 || active_ >= ant_.size()) return;
+    auto &pts = ant_[active_].points;
+    if (index < 0 || index >= pts.size()) return;
+    pts[index].freqHz   = freqHz;
+    pts[index].band     = bandLabel(freqHz);
+    pts[index].input    = input.trimmed();
+    pts[index].output   = output.trimmed();
+    pts[index].inductor = inductor.trimmed();
+    pts[index].note     = note.trimmed();
+    sortAntenna(active_);
+    save();
+    emit pointsChanged();
+    recomputeMatch();
+}
+
 void TunerMemory::deletePoint(int index) {
     if (active_ < 0 || active_ >= ant_.size()) return;
     auto &pts = ant_[active_].points;
     if (index < 0 || index >= pts.size()) return;
     pts.removeAt(index);
+    save();
+    emit pointsChanged();
+    recomputeMatch();
+}
+
+void TunerMemory::clearActiveAntenna() {
+    if (active_ < 0 || active_ >= ant_.size()) return;
+    if (ant_[active_].points.isEmpty()) return;
+    ant_[active_].points.clear();
     save();
     emit pointsChanged();
     recomputeMatch();
@@ -217,6 +259,7 @@ void TunerMemory::save() const {
     s.beginGroup(QStringLiteral("tuner"));
     s.setValue(QStringLiteral("active"), active_);
     s.setValue(QStringLiteral("collapsed"), collapsed_);
+    s.setValue(QStringLiteral("matchToleranceHz"), matchToleranceHz_);
     for (int i = 0; i < ant_.size(); ++i) {
         s.beginGroup(QStringLiteral("antenna%1").arg(i));
         s.setValue(QStringLiteral("name"), ant_[i].name);
@@ -242,6 +285,8 @@ void TunerMemory::load() {
     s.beginGroup(QStringLiteral("tuner"));
     active_    = std::clamp(s.value(QStringLiteral("active"), 0).toInt(), 0, kNumAntennas - 1);
     collapsed_ = s.value(QStringLiteral("collapsed"), false).toBool();
+    matchToleranceHz_ = std::clamp(
+        s.value(QStringLiteral("matchToleranceHz"), 1000.0).toDouble(), 50.0, 20000.0);
     for (int i = 0; i < ant_.size(); ++i) {
         s.beginGroup(QStringLiteral("antenna%1").arg(i));
         ant_[i].name = s.value(QStringLiteral("name"), kDefaultNames[i]).toString();

@@ -30,6 +30,7 @@ class SpotStore;
 class SpotHoleFeeder;
 class DxClusterFeeder;
 class MeterModel;
+class TunerMemory;
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -44,7 +45,7 @@ public:
                    lyra::wx::WxService *wx, MemoryStore *memory,
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
                    SpotHoleFeeder *spotHole, DxClusterFeeder *dxCluster,
-                   MeterModel *meter,
+                   MeterModel *meter, TunerMemory *tuner,
                    lyra::profile::ProfileManager *profiles,
                    lyra::cat::SerialPtt *serialPtt,
                    const QList<lyra::cat::CatServer *> &catServers,
@@ -64,6 +65,7 @@ private:
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
     QWidget *buildCatSerialTab();// serial PTT input + Kenwood CAT (COM-port)
     QWidget *buildMeterTab();    // S-meter calibration trim
+    QWidget *buildTunerTab();    // manual-ATU memory editor + match window
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
     QWidget *buildPaGainTab();   // TX power model Stage 3: per-band PA Gain table
                                  // + cos² amplitude envelope (amp
@@ -87,6 +89,7 @@ private:
     SpotHoleFeeder         *spotHole_  = nullptr;
     DxClusterFeeder        *dxCluster_ = nullptr;
     MeterModel             *meter_     = nullptr;
+    TunerMemory            *tuner_     = nullptr;
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;
     QList<lyra::cat::CatServer *> catServers_;

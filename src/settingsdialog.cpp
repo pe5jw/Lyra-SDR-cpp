@@ -64,6 +64,7 @@
 #include "spothole_feeder.h"
 #include "dxcluster_feeder.h"
 #include "metermodel.h"
+#include "tunermemory.h"
 #include "profile/ProfileManager.h"
 #include <QDesktopServices>
 #include <memory>
@@ -83,6 +84,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                EibiStore *eibi, TciServer *tci,
                                SpotStore *spots, SpotHoleFeeder *spotHole,
                                DxClusterFeeder *dxCluster, MeterModel *meter,
+                               TunerMemory *tuner,
                                lyra::profile::ProfileManager *profiles,
                                lyra::cat::SerialPtt *serialPtt,
                                const QList<lyra::cat::CatServer *> &catServers,
@@ -91,7 +93,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
-      meter_(meter), profiles_(profiles), serialPtt_(serialPtt),
+      meter_(meter), tuner_(tuner), profiles_(profiles), serialPtt_(serialPtt),
       catServers_(catServers) {
     setWindowTitle(tr("Lyra — Settings"));
     // Open big enough to show a full tab — the widest tabs are 2-column
@@ -134,6 +136,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     }
     if (meter_) {
         tabs_->addTab(wrapScroll(buildMeterTab()), tr("Meter"));
+    }
+    if (tuner_) {
+        tabs_->addTab(wrapScroll(buildTunerTab()), tr("Tuner"));
     }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(wrapScroll(buildHardwareTab()), tr("Hardware"));
@@ -3159,6 +3164,146 @@ QWidget *SettingsDialog::buildMeterTab() {
 
     // §15.28 — let groups sit at the top, push trailing space to bottom.
     root->addStretch(1);
+    return page;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Settings → Tuner — manual-ATU memory editor.  Full maintenance for
+// the data the front-panel Tuner panel uses: per-antenna table of
+// Input/Output/Inductor points (add / edit / delete / clear), antenna
+// rename, and the match window (how close a stored point counts as an
+// "exact" green match).  Pure UI + the model's QSettings; RF-safe.
+// ─────────────────────────────────────────────────────────────────
+QWidget *SettingsDialog::buildTunerTab() {
+    auto *page = new QWidget(this);
+    auto *root = new QVBoxLayout(page);
+    root->setSpacing(10);
+
+    // --- Antenna + match window ---
+    auto *grpAnt = new QGroupBox(tr("Antenna"), page);
+    auto *antForm = new QFormLayout(grpAnt);
+    auto *antCombo = new QComboBox(grpAnt);
+    antCombo->addItems(tuner_->antennaNames());
+    antCombo->setCurrentIndex(tuner_->activeAntenna());
+    antForm->addRow(tr("Active antenna"), antCombo);
+
+    auto *renameRow = new QHBoxLayout();
+    auto *nameEdit = new QLineEdit(grpAnt);
+    nameEdit->setText(tuner_->antennaNames().value(tuner_->activeAntenna()));
+    auto *renameBtn = new QPushButton(tr("Rename"), grpAnt);
+    renameRow->addWidget(nameEdit, 1);
+    renameRow->addWidget(renameBtn);
+    antForm->addRow(tr("Name"), renameRow);
+
+    auto *matchSpin = new QSpinBox(grpAnt);
+    matchSpin->setRange(50, 20000);
+    matchSpin->setSingleStep(50);
+    matchSpin->setSuffix(tr(" Hz"));
+    matchSpin->setValue(static_cast<int>(tuner_->matchToleranceHz()));
+    matchSpin->setToolTip(tr(
+        "How close the dial must be to a stored point to count as an exact "
+        "(green) match. Tune farther than this and the nearest point is shown "
+        "amber with the offset."));
+    antForm->addRow(tr("Match window (±)"), matchSpin);
+    root->addWidget(grpAnt);
+
+    // --- Stored-points table ---
+    auto *grpPts = new QGroupBox(tr("Stored tuner settings"), page);
+    auto *ptsLay = new QVBoxLayout(grpPts);
+    auto *table = new QTableWidget(0, 6, grpPts);
+    table->setHorizontalHeaderLabels({tr("Freq (MHz)"), tr("Band"),
+        tr("Input"), tr("Output"), tr("Inductor"), tr("Note")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    ptsLay->addWidget(table);
+
+    auto *btnRow = new QHBoxLayout();
+    auto *addBtn = new QPushButton(tr("Add current freq"), grpPts);
+    auto *delBtn = new QPushButton(tr("Delete"), grpPts);
+    auto *clearBtn = new QPushButton(tr("Clear all"), grpPts);
+    btnRow->addWidget(addBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(clearBtn);
+    ptsLay->addLayout(btnRow);
+    root->addWidget(grpPts, 1);
+
+    // Repopulate the table from the model (block signals so the setItem
+    // calls don't recurse through itemChanged).
+    auto repopulate = [this, table]() {
+        QSignalBlocker block(table);
+        const QVariantList pts = tuner_->points();
+        table->setRowCount(static_cast<int>(pts.size()));
+        for (int r = 0; r < pts.size(); ++r) {
+            const QVariantMap m = pts[r].toMap();
+            const double f = m.value(QStringLiteral("freqHz")).toDouble();
+            auto mkItem = [](const QString &t, bool editable) {
+                auto *it = new QTableWidgetItem(t);
+                if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+                return it;
+            };
+            table->setItem(r, 0, mkItem(QString::number(f / 1e6, 'f', 6), true));
+            table->setItem(r, 1, mkItem(m.value(QStringLiteral("band")).toString(), false));
+            table->setItem(r, 2, mkItem(m.value(QStringLiteral("input")).toString(), true));
+            table->setItem(r, 3, mkItem(m.value(QStringLiteral("output")).toString(), true));
+            table->setItem(r, 4, mkItem(m.value(QStringLiteral("inductor")).toString(), true));
+            table->setItem(r, 5, mkItem(m.value(QStringLiteral("note")).toString(), true));
+        }
+    };
+    repopulate();
+
+    connect(antCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this, nameEdit, repopulate](int i) {
+                tuner_->setActiveAntenna(i);
+                nameEdit->setText(tuner_->antennaNames().value(i));
+                repopulate();
+            });
+    connect(renameBtn, &QPushButton::clicked, this,
+            [this, antCombo, nameEdit]() {
+                const int i = antCombo->currentIndex();
+                tuner_->renameAntenna(i, nameEdit->text());
+                QSignalBlocker b(antCombo);
+                antCombo->setItemText(i, tuner_->antennaNames().value(i));
+            });
+    connect(matchSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int v) { tuner_->setMatchToleranceHz(static_cast<double>(v)); });
+
+    // Cell edit → write the whole row back (Freq cell parsed MHz→Hz; a bad
+    // frequency reverts the edit).  editPoint re-sorts + emits pointsChanged
+    // → the table refreshes via the connection below.
+    connect(table, &QTableWidget::itemChanged, this,
+            [this, table, repopulate](QTableWidgetItem *item) {
+                const int r = item->row();
+                if (r < 0 || r >= tuner_->pointCount()) return;
+                bool ok = false;
+                const double mhz = table->item(r, 0)
+                    ? table->item(r, 0)->text().toDouble(&ok) : 0.0;
+                if (!ok || mhz <= 0) { repopulate(); return; }
+                auto cell = [table, r](int c) {
+                    return table->item(r, c) ? table->item(r, c)->text() : QString();
+                };
+                tuner_->editPoint(r, mhz * 1e6, cell(2), cell(3), cell(4), cell(5));
+            });
+    connect(addBtn, &QPushButton::clicked, this, [this]() {
+        double f = tuner_->currentFreqHz();
+        if (f <= 0) f = 14'100'000.0;   // sensible default if there's no dial
+        tuner_->storePoint(f, QString(), QString(), QString(), QString());
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this, table]() {
+        const int r = table->currentRow();
+        if (r >= 0) tuner_->deletePoint(r);
+    });
+    connect(clearBtn, &QPushButton::clicked, this, [this]() {
+        if (QMessageBox::question(this, tr("Clear tuner memory"),
+                tr("Delete all stored points for this antenna?"))
+            == QMessageBox::Yes)
+            tuner_->clearActiveAntenna();
+    });
+    // Any model change (here or from the front panel) refreshes the table.
+    connect(tuner_, &TunerMemory::pointsChanged, table,
+            [repopulate]() { repopulate(); });
+
     return page;
 }
 

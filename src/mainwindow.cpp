@@ -1148,8 +1148,8 @@ void MainWindow::openSettings() {
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
-            wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, profiles_,
-            serialPtt_, catServers_, this);
+            wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
+            profiles_, serialPtt_, catServers_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
