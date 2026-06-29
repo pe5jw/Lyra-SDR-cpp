@@ -1211,12 +1211,27 @@ int main(int argc, char *argv[])
                 // Shared state so setMode + setBandpass re-push coherently.
                 struct TxFilter { int mode = 1; double low = 200.0; double high = 3100.0; };
                 auto txf = std::make_shared<TxFilter>();
-                // FM Carson-bandwidth clamp: FM audio is band-limited
-                // ~300-3000 Hz (nothing useful above ~4 kHz).  The RF channel
-                // an FM signal actually occupies = 2*(deviation + this audio
-                // high-cut) by Carson's rule, so the FM output bandpass is set
-                // from the deviation — NOT the operator's SSB/ESSB TX width
-                // (up to 10 kHz), which would splatter on FM.
+                // FM band-limiting (two distinct stages — do not conflate):
+                //
+                //  1) bp0 (this primary bandpass) runs on the AUDIO, ahead of
+                //     the FM modulator.  For clean NBFM it must brick-wall the
+                //     audio to the comms voice band (~300-3000 Hz) so nothing
+                //     above the high-cut ever reaches the modulator — that is
+                //     what prevents over-deviation / splatter at the source.
+                //     So bp0's edges are the AUDIO band (±high-cut), NOT a
+                //     function of deviation, and NOT the operator's SSB/ESSB TX
+                //     width (up to 10 kHz, which would splatter on FM).
+                //  2) The modulator's OWN internal output bandpass clamps the
+                //     occupied RF channel to ±(deviation + high-cut) — Carson's
+                //     rule.  That is maintained by the WDSP FM stage itself
+                //     (tracks deviation); we pin its high-cut explicitly via
+                //     SetTXAFMAFFreqs below so it isn't left at a create default.
+                //
+                // (Earlier this branch set bp0 to ±(deviation+high), i.e. ~8 kHz
+                //  of audio, and relied on the modulator's RF bandpass to trim
+                //  the over-deviated result after the fact — dirtier than simply
+                //  band-limiting the audio first.)
+                constexpr double kFmAfLowcutHz  = 300.0;
                 constexpr double kFmAfHighcutHz = 3000.0;
                 auto pushTxFilter = [txch, txf, stream]() {
                     // Per-mode sign-coded bandpass (TX mirror of RX §14.2):
@@ -1239,12 +1254,13 @@ int main(int argc, char *argv[])
                         case 0: case 3: case 9:               // LSB / CWL / DIGL
                             lo = -txf->high; hi = -txf->low;  break;
                         case 5: {                             // FM
-                            // Carson clamp: occupy only the channel the FM
-                            // signal needs (±(deviation + audio high-cut)),
-                            // NOT the wide SSB/ESSB width in txf->high.
-                            const double halfBw =
-                                stream->fmDeviationHz() + kFmAfHighcutHz;
-                            lo = -halfBw;    hi =  halfBw;    break;
+                            // Brick-wall the AUDIO to the comms voice band
+                            // before the modulator: symmetric ±high-cut (a real
+                            // ~3 kHz low-pass on the real-valued mic audio).
+                            // The occupied-RF (Carson) clamp is the modulator's
+                            // own internal bandpass, pinned via SetTXAFMAFFreqs
+                            // below — it is NOT bp0's job.
+                            lo = -kFmAfHighcutHz;    hi =  kFmAfHighcutHz;    break;
                         }
                         case 2: case 6: case 10: {            // DSB / AM / SAM
                             const double half = txf->high / 2.0;
@@ -1255,6 +1271,13 @@ int main(int argc, char *argv[])
                     }
                     lyra::wire::SetTXABandpassFreqs(txch, lo, hi);  // sign-coded edges FIRST
                     lyra::wire::SetTXAMode(txch, txf->mode);        // then mode (re-runs TXASetupBPFilters)
+                    if (txf->mode == 5 && lyra::wire::SetTXAFMAFFreqs)
+                        // Pin the FM modulator's audio high-cut so its internal
+                        // occupied-RF bandpass is ±(deviation + 3000) from a
+                        // known edge, not a create-time default.  Deviation
+                        // changes re-track it (HL2Stream::setFmDeviation drives
+                        // SetTXAFMDeviation + re-runs this).
+                        lyra::wire::SetTXAFMAFFreqs(txch, kFmAfLowcutHz, kFmAfHighcutHz);
                     // #107 — CTCSS run/freq is now operator-driven + FM-gated:
                     // HL2Stream::setTxMode → applyCtcssRun forwards the effective
                     // run (ctcssEnabled && FM) on every mode edge, so basic FM is

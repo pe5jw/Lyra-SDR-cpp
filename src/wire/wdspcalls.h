@@ -216,6 +216,12 @@ extern void (*SetTXACTCSSRun)(int channel, int run);
 //   in the bundled wdsp.dll export table 2026-06-20).
 //   fmmod.c:148      void SetTXAFMDeviation (int channel, double deviation);
 extern void (*SetTXAFMDeviation)(int channel, double deviation);
+//   fmmod.c:216      void SetTXAFMAFFreqs (int channel, double low, double high);
+//   Sets the FM audio passband edges; the modulator's internal output
+//   bandpass is recomputed to ±(deviation + high) = the occupied-channel
+//   (Carson) RF clamp.  Pin it per FM entry instead of inheriting the
+//   create-time default.
+extern void (*SetTXAFMAFFreqs)(int channel, double low, double high);
 //   fmmod.c:167      void SetTXACTCSSFreq (int channel, double freq);
 extern void (*SetTXACTCSSFreq)(int channel, double freq);
 //   ammod.c:103      void SetTXAAMCarrierLevel (int channel, double c_level);

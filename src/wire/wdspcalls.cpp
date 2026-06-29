@@ -82,6 +82,7 @@ void (*SetTXALevelerTop)(int, double) = nullptr;
 void (*SetTXAPHROTRun)(int, int) = nullptr;   // #109 phase rotator run
 void (*SetTXACTCSSRun)(int, int) = nullptr;   // FM sub-tone run (off for basic FM)
 void (*SetTXAFMDeviation)(int, double) = nullptr;   // #107 FM peak deviation Hz
+void (*SetTXAFMAFFreqs)(int, double, double) = nullptr;  // FM audio band edges (low,high) → modulator occupied-BW clamp
 void (*SetTXACTCSSFreq)(int, double) = nullptr;     // #107 FM CTCSS sub-tone Hz
 void (*SetTXAAMCarrierLevel)(int, double) = nullptr;   // AM/SAM carrier fraction 0..1
 void (*pscc)(int, int, double*, double*) = nullptr;
@@ -171,6 +172,7 @@ void (*SetPSIntsAndSpi)(int, int, int) = nullptr;
     X(SetTXAPHROTRun)       \
     X(SetTXACTCSSRun)       \
     X(SetTXAFMDeviation)    \
+    X(SetTXAFMAFFreqs)      \
     X(SetTXACTCSSFreq)      \
     X(SetTXAAMCarrierLevel) \
     X(pscc)                 \
