@@ -3539,9 +3539,13 @@ QWidget *SettingsDialog::buildPaGainTab() {
         const bool capOn = capChk->isChecked();
         for (int i = 0; i < tunedLabels->size(); ++i) {
             const bool tuned = capOn && stream_ && stream_->capTunedForBand(i);
-            (*tunedLabels)[i]->setText(capOn ? (tuned ? tr("✓")
-                                                       : tr("—"))
-                                             : QString());
+            QLabel *lab = (*tunedLabels)[i];
+            lab->setText(capOn ? (tuned ? tr("✓") : tr("—")) : QString());
+            // Green ✓ = locked at the cap; red — = not yet tuned for this cap.
+            lab->setStyleSheet(
+                !capOn ? QString()
+                       : (tuned ? QStringLiteral("color:#4ccf6b;font-weight:bold;")
+                                : QStringLiteral("color:#e5564e;font-weight:bold;")));
         }
     };
     refresh();
