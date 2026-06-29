@@ -1934,6 +1934,21 @@ void MainWindow::restoreLayout() {
         // layout rather than the raw dock-creation order.
         restoreState(defaultWindowState());
     }
+    // A chip-summoned floating dock added AFTER the operator's layout was
+    // saved (e.g. the Tuner) isn't in the restored state, so restoreState()
+    // re-docks it at the bottom instead of leaving it floating like the CW /
+    // TX-DSP panels.  restoreDockWidget() returns false when the dock wasn't
+    // in the saved layout — re-assert float+hide for those so they behave
+    // like the rest (float on summon).  Docks the operator DID save keep
+    // their saved position.
+    for (const char *nm : {"tuner"}) {
+        if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
+            if (!restoreDockWidget(d)) {
+                d->setFloating(true);
+                d->hide();
+            }
+        }
+    }
     // Apply the persisted lock state (default unlocked).
     const bool locked =
         s.value(QStringLiteral("ui/panelsLocked"), false).toBool();
