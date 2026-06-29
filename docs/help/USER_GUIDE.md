@@ -60,6 +60,7 @@ not programmers — if you can click a menu, you can use this.
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
 - [Settings → DSP (filter type)](#settings--dsp-filter-type)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
+- [Settings → PA Gain (per-band power calibration + watts cap)](#settings--pa-gain)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [CW keying over TCI](#cw-keying-over-tci)
 - [Settings → CAT / Serial (rig control over COM / TCP)](#settings--cat--serial-rig-control-over-com--tcp)
@@ -2468,15 +2469,20 @@ antenna; it never recovers on its own while keyed.
   tripped it. With Fold, the live TX **Drive %** readout shows the reduced
   level. Re-key to reset. Click the lamp to toggle enable.
 
-**Max TX drive (drive cap).** A hard ceiling on TX drive % — your drive
-slider, the TUN tune drive, a recalled per-band drive, and TCI DRIVE
-commands are all clamped to it. This is the always-safe way to protect a
-low-drive amplifier whose input can't take the HL2's full output: a pure
-preventive clamp — it never cuts or trips, it just won't let drive exceed
-the ceiling, and it needs no telemetry or calibration. **100 % = no cap**
-(the default). Lowering it re-clamps the current drive down immediately;
-raising it leaves the current drive where it is (drive back up yourself to
-use the new headroom).
+**TX power cap (watts, per band).** The amp-protection power limit now
+lives on its own **Settings → PA Gain** tab and is set in **watts**, not
+drive %. It protects a low-drive amplifier whose input can't take the
+HL2's full output by holding your TX output at or under a watts ceiling
+on **every band** — and because each HL2's drive→watts curve differs by
+band, it **auto-calibrates** instead of guessing. See
+[Settings → PA Gain](#settings--pa-gain) for the full set-up. In short:
+enter each band's full output, tick **Limit TX output to ___ W**, then
+key **TUN** on each band into a **dummy load (amplifier out of line)** —
+Lyra walks the power up to your cap from below and locks that band exactly
+at it (the band turns green ✓). SSB and the other modes then hold each
+tuned band at your cap automatically, capping voice peaks without chasing
+them. *(The old "Max TX drive %" cap is retired — the watts cap supersedes
+it.)*
 
 ### TR Sequencing + Amplitude Envelope (timing knobs below)
 
@@ -2560,6 +2566,44 @@ your voice-TX setting. Only the spinner the active mode uses is enabled.
 > typical workflow: set a low tune level (e.g. 25 % into a dummy / tuner)
 > and a higher voice-TX drive, and TUN tunes safe while your QSO drive is
 > untouched.
+
+---
+
+## Settings → PA Gain
+
+Per-band TX power calibration and amplifier protection. Two things live
+here: a **PA Gain By Band** table that calibrates what your drive % means
+in watts on each band, and a **Max Output (watts)** cap that protects a
+low-drive amplifier by holding your output at or under a watts ceiling —
+auto-tuned per band so it lands exactly on the cap.
+
+> ⚠ **Calibrate into a dummy load with your amplifier out of line.**
+> Tuning a band walks the power *up from below* to find your cap. Verify
+> it settles correctly on every band first, **then** put your amp back in.
+
+**PA Gain By Band.** One number per band, default **100 = neutral**. Each
+HL2 — and each band — varies, so nothing is computed: key each band into a
+dummy load, watch the PWR meter, and nudge its number until the power
+reads true. Lower tames a hot band, higher pushes a weak one. Drive %
+stays the dial; this calibrates what the dial *means* in watts.
+
+**Full Output (W).** The measured watts each band makes at full drive
+(key TUN at 100 % and read the PWR meter). Shows "—" until measured. It
+seeds the conservative fallback ceiling and the auto-tune servo.
+
+**Max Output (amp protection).** Tick **Limit TX output to ___ W** and set
+your cap. Then key **TUN** on each band: Lyra walks the power up from below
+and **locks that band exactly at your cap** — the **Cap tuned** column
+shows a green ✓ when locked, a red — when not yet tuned. SSB and the other
+modes then hold each tuned band at the cap automatically, capping voice
+peaks without chasing them. A band you haven't tuned runs *conservatively
+under* the cap until you do. Change the cap → re-key TUN on each band to
+re-learn.
+
+Because the approach is always *from below*, the output only ever rises
+toward the cap and never overshoots — safe for a solid-state amp where a
+fraction of a watt over matters. *(This replaces the old "Max TX drive %"
+control — the watts cap supersedes it.)*
 
 ---
 
