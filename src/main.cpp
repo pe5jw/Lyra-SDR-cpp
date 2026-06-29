@@ -1438,17 +1438,27 @@ int main(int argc, char *argv[])
                     const QString m = uiMode.toUpper();
                     return m == QStringLiteral("DIGU") || m == QStringLiteral("DIGL");
                 };
+                // Modes that auto-bypass the whole native mic rack: the digital
+                // data modes (above) PLUS FM — a multiband compressor / plate
+                // reverb feeding the FM modulator's 6 dB/oct pre-emphasis
+                // over-drives into "mush", so FM voice runs the clean chain
+                // (the brick-wall AF LPF + selectable pre-emphasis own the FM
+                // audio shaping).  Forced, like the digital gate.
+                auto txModeBypassesRack = [txModeIsDigital](const QString &uiMode) -> bool {
+                    return txModeIsDigital(uiMode)
+                        || uiMode.toUpper() == QStringLiteral("FM");
+                };
                 QObject::connect(wdspEngine,
                                  &lyra::dsp::WdspEngine::modeChanged,
-                                 stream, [stream, wdspEngine, wdspTxModeFor, txModeIsDigital]() {
+                                 stream, [stream, wdspEngine, wdspTxModeFor, txModeBypassesRack]() {
                     const QString m = wdspEngine->mode();
                     stream->setTxMode(wdspTxModeFor(m));
-                    lyra::wire::SetTxRackBypass(txModeIsDigital(m) ? 1 : 0);
+                    lyra::wire::SetTxRackBypass(txModeBypassesRack(m) ? 1 : 0);
                 });
                 {
                     const QString m0 = wdspEngine->mode();
                     stream->setTxMode(wdspTxModeFor(m0));
-                    lyra::wire::SetTxRackBypass(txModeIsDigital(m0) ? 1 : 0);
+                    lyra::wire::SetTxRackBypass(txModeBypassesRack(m0) ? 1 : 0);
                 }
 
                 // #175 — waterfall-ID arm/cadence orchestrator.  Owns the
