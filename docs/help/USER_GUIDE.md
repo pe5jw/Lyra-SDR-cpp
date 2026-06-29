@@ -40,6 +40,7 @@ not programmers — if you can click a menu, you can use this.
 - [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
 - [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
   - [Reading CW — the RX decoder](#reading-cw--the-rx-decoder)
+- [Tuner (manual ATU memory)](#tuner-manual-atu-memory)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -198,11 +199,12 @@ The strip across the top, between the menu bar and the panels:
 - **Connection status** — **green "Connected to …"** while streaming, **red
   "Disconnected"** when not, and **amber "Connecting…/Scanning…"** during a
   connect attempt.
-- **DSP / CW / Options chips** — labelled groups of toggle chips: **TX DSP:**
-  (the mic-rack panels — EQ / Speech / Combinator / Plating), **CW** (the CW
-  console), **RX DSP:** (RX EQ), and **Options:** — **CTUN** (centre-tune
-  lock) and **WF-ID** (arm the waterfall callsign ID). A lit chip means that
-  panel is open, or that toggle is on.
+- **DSP / Options chips** — labelled groups of toggle chips: **TX DSP:**
+  (the mic-rack panels — EQ / Speech / Combinator / Plating), **RX DSP:**
+  (RX EQ), and **Options:** — **CTUN** (centre-tune lock), **Tuner** (the
+  manual-ATU [tuning memory](#tuner-manual-atu-memory)), **CW** / **CW Dec**
+  (the CW console and the RX decoder), and **WF-ID** (arm the waterfall
+  callsign ID). A lit chip means that panel is open, or that toggle is on.
 - **● TCI** — the TCI-server indicator, just after the connection status.
   Green **● TCI: N** when one or more programs (logger, cluster, etc.) are
   connected, showing the client count; amber **● TCI** when the server is
@@ -1496,6 +1498,61 @@ If you turn **Auto** off, the manual gates appear:
 
 > **Tip.** Tune the signal to your CW pitch on the panadapter; the decoder
 > follows the pitch and AFC-tracks the drift from there.
+
+---
+
+## Tuner (manual ATU memory)
+
+If you run a **manual antenna tuner** (the kind you set by hand with
+Input / Output / Inductor controls), the **Tuner** panel remembers your
+settings so you can return to a known-good match without starting from
+scratch. Open it from the header — **Options: → Tuner**. It's a floating
+panel; drag it anywhere. (Pure tuning memory — it doesn't drive or read your
+tuner, it just remembers what *you* dialled in.)
+
+**Pick your antenna.** Three antenna slots across the top — **Beam /
+Dipole / Vertical** by default; rename any of them (Settings → Tuner) to
+match your station. Pick the one you're using; each antenna keeps its own
+set of saved points.
+
+**Live SWR.** The pill in the header shows your real **SWR** while you
+transmit, colour-coded — **green** ≤ 1.5, **amber** 1.6–2.4, **red** ≥ 2.5
+— so you can watch the match as you adjust the tuner. It reads "—" until
+you key up.
+
+**Reading the panel.** The big tiles show the **Input / Output / Inductor**
+settings for the nearest stored point to where you're tuned:
+
+- **Green "exact match"** — you're sitting on a saved frequency; the tiles
+  are exactly what you set last time. Dial in those three numbers and you're
+  matched.
+- **Amber "nearest …"** — you're between saved points; the tiles show the
+  closest one, with a **±x.x kHz** badge telling you how far off it is
+  (**+** = the saved point is *above* you on the band, **−** = *below*). It's
+  a starting position — set those numbers, then fine-tune to your SWR.
+- The list below shows just the points that **bracket** your dial — the one
+  just below and the one just above (and the exact one if you're on it). No
+  endless scrolling: the complete table lives in **Settings → Tuner**.
+
+**Saving a point.** When the amber banner says nothing's stored near you (or
+you've improved a match), click **Store this freq** (or **Add current
+freq**), type your Input / Output / Inductor numbers (whatever your tuner
+shows — they're free text), and **Save**. Storing on a frequency you already
+have overwrites that point.
+
+**Editing / deleting.** Click **✎** to edit. Then **click a single row** to
+make just that row editable (so you can't fat-finger a neighbour); change a
+cell and click away to save. The **−** button on that row asks **✓ / ✗**
+before it deletes. For bulk maintenance — add, rename antennas, delete,
+clear, or set the "nearest match" window (how close counts as *exact*) — use
+**Settings → Tuner**.
+
+**Collapse** (**▸ / ▾**) tucks the panel down to just the SWR pill and the
+match tiles for a compact at-a-glance reminder.
+
+> The match is by **dial (carrier) frequency** — it reads the same in USB or
+> LSB, which is correct: an antenna tuner matches the RF frequency, not the
+> sideband.
 
 ---
 

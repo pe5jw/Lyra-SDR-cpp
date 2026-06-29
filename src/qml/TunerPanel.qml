@@ -48,8 +48,50 @@ Rectangle {
 
     // Store-a-new-point editor state.
     property bool editingNew: false
-    // Edit-existing toggle (✎): rows become editable + deletable.
+    // Edit-existing toggle (✎): clicking a row makes ONLY that row editable.
     property bool editRows: false
+    // Original index (into Tuner.points) of the single row being edited; -1 = none.
+    property int editRowIdx: -1
+    // Original index of the row awaiting a delete confirm; -1 = none.
+    property int confirmDelIdx: -1
+    onEditRowsChanged: { editRowIdx = -1; confirmDelIdx = -1 }
+
+    // Reset edit/confirm selection when the antenna changes (indices are per-antenna).
+    Connections {
+        target: Tuner
+        function onActiveAntennaChanged() { root.editRowIdx = -1; root.confirmDelIdx = -1 }
+    }
+
+    // How many stored points to show on each side of the current dial freq.
+    // 1 = just the nearest below + nearest above (the bracketing pair); when
+    // you're sitting on a stored point it shows that exact row + one each side
+    // (3 rows).  Deliberately NOT a full scrollable list — see Settings → Tuner
+    // for the complete table.
+    property int windowEach: 1
+
+    // Nearest-window view: instead of listing every stored point (which would
+    // grow the panel unbounded and force scrolling through hundreds of combos),
+    // show only the points that BRACKET the current frequency — up to
+    // `windowEach` just below + the exact one if the current freq is stored +
+    // up to `windowEach` just above.  Gives a ready starting position for the
+    // manual tuner even on an unsaved frequency (the setting one notch down and
+    // one notch up).  Each item carries its original index into Tuner.points so
+    // edit/delete + match-highlight still address the right point.
+    readonly property var nearbyPoints: {
+        var pts = Tuner.points            // sorted ascending by freqHz
+        var cur = Tuner.currentFreqHz
+        var below = [], above = [], exact = null
+        for (var i = 0; i < pts.length; ++i) {
+            var item = { p: pts[i], idx: i }
+            if (i === Tuner.matchIndex && Tuner.matchExact) { exact = item; continue }
+            if (pts[i].freqHz <= cur) below.push(item)
+            else above.push(item)
+        }
+        // closest below = tail of `below`; closest above = head of `above`
+        var out = below.slice(Math.max(0, below.length - windowEach))
+        if (exact) out = out.concat([exact])
+        return out.concat(above.slice(0, windowEach))
+    }
 
     function fmtDelta(hz) {
         var k = hz / 1000
@@ -72,22 +114,28 @@ Rectangle {
                     font.pixelSize: 11; Layout.fillWidth: true }
             // live SWR pill
             Rectangle {
-                implicitHeight: 20; implicitWidth: swrLbl.implicitWidth + 16
-                radius: 5; color: "#0d141b"
+                implicitHeight: 26; implicitWidth: swrLbl.implicitWidth + 20
+                radius: 6; color: "#0d141b"
                 border.color: root.swrColor(root.swr)
                 Label {
                     id: swrLbl; anchors.centerIn: parent
                     text: root.swr < 0 ? qsTr("SWR —")
                           : qsTr("SWR ") + root.swr.toFixed(1) + ":1"
-                    color: root.swrColor(root.swr); font.pixelSize: 11; font.bold: true
+                    color: root.swrColor(root.swr); font.pixelSize: 14; font.bold: true
                 }
             }
             // edit-existing toggle (hidden when collapsed)
             ToolButton {
+                id: editBtn
                 visible: !Tuner.collapsed
                 checkable: true; checked: root.editRows
                 onToggled: root.editRows = checked
                 implicitWidth: 26; implicitHeight: 22
+                background: Rectangle {
+                    radius: 5
+                    color: editBtn.checked ? "#10323a"
+                           : (editBtn.hovered ? "#16242e" : "transparent")
+                }
                 contentItem: Label { text: "✎"; anchors.centerIn: parent
                     font.pixelSize: 15; font.bold: true
                     color: root.editRows ? root.cAccent : root.cText }
@@ -96,8 +144,13 @@ Rectangle {
             }
             // collapse / expand
             ToolButton {
+                id: collBtn
                 onClicked: Tuner.collapsed = !Tuner.collapsed
                 implicitWidth: 26; implicitHeight: 22
+                background: Rectangle {
+                    radius: 5
+                    color: collBtn.hovered ? "#16242e" : "transparent"
+                }
                 contentItem: Label {
                     text: Tuner.collapsed ? "▸" : "▾"
                     anchors.centerIn: parent; font.pixelSize: 15; font.bold: true
@@ -262,49 +315,114 @@ Rectangle {
                 Label { text: qsTr("In");    color: root.cMuted; font.pixelSize: 11; Layout.preferredWidth: 48 }
                 Label { text: qsTr("Out");   color: root.cMuted; font.pixelSize: 11; Layout.preferredWidth: 48 }
                 Label { text: qsTr("Ind");   color: root.cMuted; font.pixelSize: 11; Layout.preferredWidth: 48 }
-                Item { Layout.preferredWidth: root.editRows ? 22 : 0 }
+                Item { Layout.preferredWidth: root.editRows ? 48 : 0 }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#22323e" }
 
+            // Fixed nearest-window list (no scroll): only the points bracketing
+            // the current dial freq, so the panel stays a locked height.
             Repeater {
-                model: Tuner.points
+                model: root.nearbyPoints
                 delegate: Rectangle {
                     id: row
                     required property int index
                     required property var modelData
-                    readonly property bool here: Tuner.matchIndex === index
+                    readonly property int pIdx: modelData.idx
+                    readonly property var p: modelData.p
+                    readonly property bool here: Tuner.matchIndex === pIdx
+                    // Only the single clicked row is editable (prevents accidental
+                    // edits to a neighbour); confirming = this row's delete prompt.
+                    readonly property bool editing: root.editRows && root.editRowIdx === pIdx
+                    readonly property bool confirming: root.confirmDelIdx === pIdx
                     Layout.fillWidth: true
                     implicitHeight: 26
-                    color: here ? "#10323a" : "transparent"
+                    radius: editing ? 5 : 0
+                    color: editing ? "#0e2a34" : (here ? "#10323a" : "transparent")
+                    border.color: editing ? root.cAccent : "transparent"
+                    border.width: editing ? 1 : 0
+
+                    // In edit mode, click a (non-editing) row to select it for edit.
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: root.editRows && !row.editing
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.confirmDelIdx = -1; root.editRowIdx = row.pIdx }
+                    }
+
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 0; spacing: 0
-                        Label { text: row.modelData.band; color: row.here ? root.cAccent : root.cMuted
+                        Label { text: row.p.band; color: row.here ? root.cAccent : root.cMuted
                                 font.pixelSize: 12; Layout.preferredWidth: 46 }
-                        Label { text: row.modelData.freqText
+                        Label { text: row.p.freqText
                                 color: row.here ? root.cAccent : root.cText
                                 font.family: "Consolas"; font.pixelSize: 12; Layout.fillWidth: true }
-                        // read-only labels OR edit fields
-                        Label { visible: !root.editRows; text: row.modelData.input || "—"
+                        // read-only labels (every row except the one being edited)
+                        Label { visible: !row.editing; text: row.p.input || "—"
                                 color: root.cText; font.family: "Consolas"; font.pixelSize: 12; Layout.preferredWidth: 48 }
-                        Label { visible: !root.editRows; text: row.modelData.output || "—"
+                        Label { visible: !row.editing; text: row.p.output || "—"
                                 color: root.cText; font.family: "Consolas"; font.pixelSize: 12; Layout.preferredWidth: 48 }
-                        Label { visible: !root.editRows; text: row.modelData.inductor || "—"
+                        Label { visible: !row.editing; text: row.p.inductor || "—"
                                 color: root.cText; font.family: "Consolas"; font.pixelSize: 12; Layout.preferredWidth: 48 }
 
-                        TextField { id: reIn;  visible: root.editRows; text: row.modelData.input
+                        // edit fields (only the selected row)
+                        TextField { id: reIn;  visible: row.editing; text: row.p.input
                                     Layout.preferredWidth: 48; font.pixelSize: 12
-                                    onEditingFinished: Tuner.updatePoint(row.index, reIn.text, reOut.text, reInd.text, row.modelData.note) }
-                        TextField { id: reOut; visible: root.editRows; text: row.modelData.output
+                                    onEditingFinished: Tuner.updatePoint(row.pIdx, reIn.text, reOut.text, reInd.text, row.p.note) }
+                        TextField { id: reOut; visible: row.editing; text: row.p.output
                                     Layout.preferredWidth: 48; font.pixelSize: 12
-                                    onEditingFinished: Tuner.updatePoint(row.index, reIn.text, reOut.text, reInd.text, row.modelData.note) }
-                        TextField { id: reInd; visible: root.editRows; text: row.modelData.inductor
+                                    onEditingFinished: Tuner.updatePoint(row.pIdx, reIn.text, reOut.text, reInd.text, row.p.note) }
+                        TextField { id: reInd; visible: row.editing; text: row.p.inductor
                                     Layout.preferredWidth: 48; font.pixelSize: 12
-                                    onEditingFinished: Tuner.updatePoint(row.index, reIn.text, reOut.text, reInd.text, row.modelData.note) }
-                        ToolButton { visible: root.editRows; implicitWidth: 22; implicitHeight: 22
-                                     contentItem: Label { text: "−"; anchors.centerIn: parent; color: root.cRed }
-                                     onClicked: Tuner.deletePoint(row.index) }
+                                    onEditingFinished: Tuner.updatePoint(row.pIdx, reIn.text, reOut.text, reInd.text, row.p.note) }
+
+                        // trailing control: delete-with-confirm, only on the active row
+                        Item {
+                            Layout.preferredWidth: root.editRows ? 48 : 0
+                            Layout.fillHeight: true
+                            RowLayout {
+                                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2; visible: row.editing
+                                ToolButton {
+                                    visible: !row.confirming; implicitWidth: 22; implicitHeight: 22
+                                    background: Item {}
+                                    contentItem: Label { text: "−"; anchors.centerIn: parent; color: root.cRed
+                                        font.pixelSize: 16; font.bold: true }
+                                    onClicked: root.confirmDelIdx = row.pIdx
+                                    ToolTip.text: qsTr("Delete this point")
+                                    ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 500
+                                }
+                                ToolButton {
+                                    visible: row.confirming; implicitWidth: 20; implicitHeight: 22
+                                    background: Item {}
+                                    contentItem: Label { text: "✓"; anchors.centerIn: parent; color: root.cRed
+                                        font.pixelSize: 14; font.bold: true }
+                                    onClicked: { var i = row.pIdx; root.confirmDelIdx = -1
+                                                 root.editRowIdx = -1; Tuner.deletePoint(i) }
+                                    ToolTip.text: qsTr("Confirm delete")
+                                    ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 300
+                                }
+                                ToolButton {
+                                    visible: row.confirming; implicitWidth: 20; implicitHeight: 22
+                                    background: Item {}
+                                    contentItem: Label { text: "✗"; anchors.centerIn: parent; color: root.cMuted
+                                        font.pixelSize: 14; font.bold: true }
+                                    onClicked: root.confirmDelIdx = -1
+                                    ToolTip.text: qsTr("Cancel")
+                                    ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 300
+                                }
+                            }
+                        }
                     }
                 }
+            }
+            // Empty-window hint + "more in Settings" note.
+            Label {
+                Layout.fillWidth: true; Layout.topMargin: 2
+                visible: root.nearbyPoints.length === 0 || Tuner.points.length > root.nearbyPoints.length
+                color: root.cDim; font.pixelSize: 10; wrapMode: Text.WordWrap
+                text: root.nearbyPoints.length === 0
+                      ? qsTr("No stored points near this frequency.")
+                      : qsTr("Showing nearest stored points · full list in Settings → Tuner")
             }
 
             // Add-current-freq affordance.
@@ -319,7 +437,7 @@ Rectangle {
                 }
                 Label {
                     visible: root.editRows; color: root.cDim; font.pixelSize: 10
-                    text: qsTr("edit a cell then click away to save · − deletes")
+                    text: qsTr("click a row to edit · click away saves · − asks before deleting")
                     Layout.fillWidth: true }
             }
         }

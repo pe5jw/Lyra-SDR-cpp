@@ -102,7 +102,10 @@ double TunerMemory::matchFreqHz() const {
 
 double TunerMemory::matchDeltaHz() const {
     if (matchIdx_ < 0) return 0.0;
-    return curHz_ - ant_[active_].points[matchIdx_].freqHz;
+    // Stored point RELATIVE TO the current dial: +ve = the saved point is
+    // higher in frequency (tune UP to reach it), −ve = lower (tune DOWN).
+    // Reads the natural way ("nearest +10 kHz" = saved setting is 10 kHz up).
+    return ant_[active_].points[matchIdx_].freqHz - curHz_;
 }
 
 QString TunerMemory::matchInput() const {

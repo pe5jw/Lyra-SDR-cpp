@@ -4,6 +4,38 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-29 — RELEASED v0.7.0 "Tuner memory" (Tuner panel + FM polish + tooltips toggle + header tidy)
+
+Cut **v0.7.0** off `main` (bump `CMakeLists.txt` + `installer/lyra.iss`
+0.6.0 → 0.7.0; README Features → v0.7.0 + Tuner bullet; release note
+`docs/releases/v0.7.0.md`; USER_GUIDE "Tuner (manual ATU memory)" section +
+header-chip + TOC; regen PDF/DOCX). Installer `dist/Lyra-Setup-0.7.0.exe`.
+
+Headline: the new **Tuner** manual-ATU memory subsystem (operator-requested
+2026-06-29, benched this session).
+- `src/tunermemory.{h,cpp}` + `src/qml/TunerPanel.qml` + Settings → Tuner tab.
+  3 antennas × freq-keyed Input/Output/Inductor, live colour-coded SWR,
+  nearest-point **bracket** view (1 each side; exact + 1 each side when on a
+  point — `windowEach=1`), Store→Save, single-row inline edit, ✓/✗ delete
+  confirm. Match by carrier freq (USB/LSB-agnostic). Pure UI + QSettings,
+  RF-safe.
+- Tuner polish this session: SWR pill enlarged; flat (background-`Item{}`)
+  header buttons; `matchDeltaHz` sign flipped to `point − dial` (so **+** =
+  saved point above the dial — read the natural way).
+- Header chip strip regrouped: **TX DSP** · **RX DSP** · **Options**
+  (CTUN · Tuner · CW · CW Dec · WF-ID). CW/CW Dec/Tuner moved into Options;
+  RX DSP slid left. `mainwindow.cpp buildToolbar`.
+- Also folded into v0.7.0 (committed since v0.6.0): FM pre-emphasis Off/Comm
+  selector + FM-aware bandwidth + Deviation→RX-BW auto-size + native mic rack
+  auto-bypass on FM; global **Show tooltips** toggle (Settings → Visuals) +
+  Profile-picker polish.
+- The earlier "float like TX DSP" experiment for the Tuner dock was reverted
+  (`11dd6d2`) after it caused intermittent launches; re-approached as just the
+  `isChipSummonedPanel` predicate entry (`297a753`) which fixed the cyan
+  dock-drop targets without the launch issue.
+
+---
+
 ## 2026-06-29 — FM TX "beat Thetis" arc (pre-emphasis + clean chain + Tuning-panel UX)
 
 All on `main`, unreleased (on top of v0.6.0). The FM transmit arc, brought

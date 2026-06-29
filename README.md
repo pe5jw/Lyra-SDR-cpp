@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.6.0)
+## Features (v0.7.0)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -103,6 +103,12 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
 * **Waterfall callsign ID** — an optional courtesy ID that paints your
   callsign as a readable image in the SSB passband (USB/LSB), armed from the
   header — a visual hello on the band (not a replacement for legal ID).
+* **Tuner memory (manual-ATU reminder)** — a built-in tuning-memory panel
+  for manual antenna tuners: three named antennas, each with a
+  frequency-keyed Input / Output / Inductor table, live colour-coded SWR,
+  and a nearest-point view that brackets your dial (the saved settings just
+  above and below where you're tuned) so you start a re-tune from the right
+  place instead of from scratch — no third-party app, no paper sheets.
 * **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
   glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
   drag/wheel tuning; draggable RX passband; collapsible waterfall.

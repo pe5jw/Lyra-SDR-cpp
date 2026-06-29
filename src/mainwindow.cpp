@@ -1255,46 +1255,8 @@ void MainWindow::buildToolbar() {
                 }
             }
         }
-        // CW console launcher (#105 CW-3b) — its own chip after the TX DSP
-        // strip; summons the floating CW Console (keyboard send + the CW-5
-        // decoder pane).  Same boxed style; the chip IS the dock's
-        // toggleViewAction so open/close stays in sync + rides Save-layout.
-        tb->addSeparator();
-        if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
-            QAction *act = d->toggleViewAction();
-            act->setText(tr("CW"));
-            tb->addAction(act);
-            if (auto *btn = qobject_cast<QToolButton *>(
-                    tb->widgetForAction(act))) {
-                btn->setObjectName(QStringLiteral("txDspChip"));
-                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
-            }
-        }
-        // CW Decoder launcher (#173 CW-5b) — its own chip next to the CW
-        // console; summons the floating CW Decoder panel (RX-only).  Separate
-        // chip so decoder-only / keyer-only / both are each one click.
-        if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
-            QAction *act = d->toggleViewAction();
-            act->setText(tr("CW Dec"));
-            tb->addAction(act);
-            if (auto *btn = qobject_cast<QToolButton *>(
-                    tb->widgetForAction(act))) {
-                btn->setObjectName(QStringLiteral("txDspChip"));
-                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
-            }
-        }
-        // Tuner launcher — summons the manual-ATU memory panel (own chip so
-        // it's one click from the front panel, like the CW / RX EQ chips).
-        if (QDockWidget *d = docks_.value(QStringLiteral("tuner"))) {
-            QAction *act = d->toggleViewAction();
-            act->setText(tr("Tuner"));
-            tb->addAction(act);
-            if (auto *btn = qobject_cast<QToolButton *>(
-                    tb->widgetForAction(act))) {
-                btn->setObjectName(QStringLiteral("txDspChip"));
-                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
-            }
-        }
+        // (CW / CW Dec / Tuner chips live in the Options group below — they
+        // are operating launchers, not part of the mic rack.)
         // RX DSP launcher (#59) — the RX EQ pops as a floating window, same
         // chip idiom as the TX DSP strip (the chip IS the dock's
         // toggleViewAction, so open/close stays in sync + rides Save-layout).
@@ -1322,8 +1284,9 @@ void MainWindow::buildToolbar() {
         tb->addSeparator();
         auto *optsLabel = new QLabel(tr("Options:"), tb);
         optsLabel->setContentsMargins(8, 0, 4, 0);
-        optsLabel->setToolTip(tr("Operating toggles — center-tune lock (CTUN) "
-                                 "and the waterfall callsign ID (WF-ID)."));
+        optsLabel->setToolTip(tr("Operating tools — center-tune lock (CTUN), the "
+                                 "Tuner memory, the CW console / decoder, and the "
+                                 "waterfall callsign ID (WF-ID)."));
         tb->addWidget(optsLabel);
         // CTUN (#174) — Center-tune lock.  NOT a dock; a state toggle on the
         // stream (lock the panadapter/DDC centre, tune the VFO within the
@@ -1359,6 +1322,40 @@ void MainWindow::buildToolbar() {
                         QSignalBlocker block(ctun);
                         ctun->setChecked(st->ctuneEnabled());
                     });
+        }
+        // Tuner launcher — manual-ATU memory panel (operating tool, not a DSP
+        // rack), so it sits in Options.  The chip IS the dock's toggleViewAction.
+        if (QDockWidget *d = docks_.value(QStringLiteral("tuner"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("Tuner"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // CW console launcher (#105 CW-3b) — floating CW Console (keyboard send).
+        if (QDockWidget *d = docks_.value(QStringLiteral("cwconsole"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("CW"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // CW Decoder launcher (#173 CW-5b) — floating CW Decoder panel (RX-only).
+        if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("CW Dec"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
         }
         // Waterfall ID (#175) ARM chip — NOT a dock, NOT a popup; a state
         // toggle on Prefs.wfIdEnabled.  Armed = the auto-ID is live (fires one
