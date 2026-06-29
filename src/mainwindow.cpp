@@ -200,7 +200,8 @@ inline bool isChipSummonedPanel(const QString &objectName) {
         || objectName == QLatin1String("txplate")
         || objectName == QLatin1String("rxeq")
         || objectName == QLatin1String("cwconsole")
-        || objectName == QLatin1String("cwdecoder");
+        || objectName == QLatin1String("cwdecoder")
+        || objectName == QLatin1String("tuner");
 }
 
 // Global tooltip gate — swallows QWidget tooltip events app-wide when the
