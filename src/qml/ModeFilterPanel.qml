@@ -30,7 +30,14 @@ Rectangle {
     readonly property var bwCW:  [50, 100, 150, 250, 400, 500, 750, 1000]
     readonly property var bwDSB: [3000, 4000, 5000, 6000, 8000, 10000]
     readonly property var bwAM:  [3000, 4000, 6000, 8000, 10000, 12000]
-    readonly property var bwFM:  [6000, 8000, 10000, 12000, 15000]
+    // FM RX presets are the FM CHANNEL widths the IF must pass, not SSB
+    // widths: narrow FM (±2.5 kHz dev) ≈ 12 k, wide FM (±5 kHz dev) ≈ 16 k
+    // (Carson: 2·(dev + 3 kHz audio)).  8/10 cover data/very-narrow.
+    readonly property var bwFM:  [8000, 10000, 12000, 16000]
+    // FM derives its occupied TX width from deviation (audio is brick-walled
+    // to 3 kHz ahead of the modulator), so the TX-BW selector + RX↔TX lock
+    // are meaningless in FM and are disabled there.
+    readonly property bool isFm: Prefs.mode === "FM"
     readonly property var bwDIG: [1500, 2400, 3000, 3600, 4000, 6000]
 
     function presetsFor(mode) {
@@ -156,21 +163,35 @@ Rectangle {
             Layout.preferredWidth: 32
             checkable: true
             checked: Prefs.bwLocked
+            enabled: !root.isFm           // no TX-BW to lock to in FM
             text: "🔗"
             ToolTip.visible: hovered
-            ToolTip.text: qsTr("Lock TX BW to RX BW (mirrors both directions when ON)")
+            ToolTip.text: root.isFm
+                ? qsTr("N/A in FM — TX bandwidth is set from deviation")
+                : qsTr("Lock TX BW to RX BW (mirrors both directions when ON)")
             onToggled: Prefs.bwLocked = checked
         }
 
-        Label { text: qsTr("TX BW"); color: "#cccccc"; font.bold: true }
+        Label {
+            text: qsTr("TX BW"); font.bold: true
+            color: root.isFm ? "#666666" : "#cccccc"
+        }
         ComboBox {
             id: txBwCombo
             Layout.preferredWidth: 120
-            // Same per-mode presets + custom-entry handling as RX BW.
-            model: root.bwModel(Prefs.mode, Prefs.txBandwidth)
-            currentIndex: root.bwCurrentIndex(Prefs.mode, Prefs.txBandwidth)
-            onActivated: Prefs.txBandwidth =
+            enabled: !root.isFm           // FM TX width is auto (deviation-derived)
+            // In FM, show the auto-derived occupied channel (Carson:
+            // 2·(deviation + 3 kHz audio)) instead of an editable preset —
+            // it's a readout, not a control.
+            model: root.isFm
+                ? [root.fmtBw(2 * (Stream.fmDeviationHz + 3000)) + qsTr(" (auto)")]
+                : root.bwModel(Prefs.mode, Prefs.txBandwidth)
+            currentIndex: root.isFm ? 0
+                : root.bwCurrentIndex(Prefs.mode, Prefs.txBandwidth)
+            onActivated: if (!root.isFm) Prefs.txBandwidth =
                 root.bwValueAt(Prefs.mode, Prefs.txBandwidth, currentIndex)
+            ToolTip.visible: root.isFm && hovered
+            ToolTip.text: qsTr("FM occupies ±(deviation + 3 kHz audio); set it with the Dev control")
         }
 
         Item { Layout.fillWidth: true }
