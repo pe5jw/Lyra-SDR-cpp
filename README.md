@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.5.0)
+## Features (v0.6.0)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -89,6 +89,14 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
 * **TX profiles & metering** — save/recall the whole transmit chain as named
   profiles; multimeter (PO / SWR / MIC / COMP / ALC / PA current); hot-mic
   monitor (HL2 jack, a PC device, or over TCI).
+* **Per-band TX power (PA Gain tab)** — a per-band **PA Gain** table that
+  calibrates what your drive % means in real watts on each band (measure
+  each band into a dummy load and nudge its number), plus an **auto-tuning
+  watts-output cap** to protect a low-drive amp: key TUN on a band and Lyra
+  walks the power up *from below* and locks that band exactly at your cap
+  (live green/red "Cap tuned" marks), then holds it in SSB without chasing
+  voice peaks.  Approach-from-below never overshoots — safe for an SS amp.
+  PureSignal-safe.
 * **TX safety** — ATT-on-TX RX-front-end protection, TR-sequencing for amp
   hot-switch safety, an operator TX time-out, and a hard External TX Inhibit
   lockout (for sharing the antenna/bench with sensitive gear).
