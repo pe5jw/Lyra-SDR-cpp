@@ -136,6 +136,19 @@ Rectangle {
         return best
     }
 
+    // FM RX channel-width presets (Hz), matching the Filters panel FM list.
+    // Picking a Deviation auto-sizes the RX filter to the smallest preset
+    // that still passes the Carson occupied width 2·(dev + 3 kHz audio), so
+    // ±2.5 k → 12 k and ±5 k → 16 k.  Operator-overridable afterward (the
+    // Filters panel still lets you pick any preset).
+    readonly property var fmRxPresets: [8000, 10000, 12000, 16000]
+    function fmRxBwForDev(devHz) {
+        var carson = 2 * (devHz + 3000)
+        for (var i = 0; i < root.fmRxPresets.length; ++i)
+            if (root.fmRxPresets[i] >= carson) return root.fmRxPresets[i]
+        return root.fmRxPresets[root.fmRxPresets.length - 1]   // cap at widest
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.leftMargin: 12
@@ -458,9 +471,36 @@ Rectangle {
                 value: Math.round(Stream.fmDeviationHz / 100)
                 textFromValue: function(v, loc) { return (v / 10).toFixed(1) + " k" }
                 valueFromText: function(t, loc) { return Math.round(parseFloat(t) * 10) }
-                onValueModified: Stream.setFmDeviationHz(value * 100)
+                onValueModified: {
+                    Stream.setFmDeviationHz(value * 100)
+                    // Auto-size the RX filter to the new deviation's occupied
+                    // width (Carson).  TX BW is already deviation-derived in FM;
+                    // this makes RX follow too.  Overridable in the Filters panel.
+                    Prefs.rxBandwidth = root.fmRxBwForDev(value * 100)
+                }
                 ToolTip.text: qsTr("FM peak deviation — 5.0 k = Wide (US), 2.5 k = "
-                    + "Narrow.  Same control as Settings → TX → FM.")
+                    + "Narrow.  Sets RX bandwidth to match.  Same control as "
+                    + "Settings → TX → FM.")
+                ToolTip.visible: hovered; ToolTip.delay: 800
+            }
+
+            // FM pre-emphasis quick chip — Comm (6 dB/oct voice) / Off (flat,
+            // data + warm HF).  Mirrors Settings → TX → FM (two-way via the
+            // shared Stream.fmEmphasisMode property).  0 = Off, 1 = Comm.
+            Label {
+                text: qsTr("Emph"); color: "#cccccc"; font.bold: true
+                visible: root.fmMode
+            }
+            ComboBox {
+                id: emphCombo
+                visible: root.fmMode
+                Layout.preferredWidth: 88
+                model: [qsTr("Comm"), qsTr("Off")]
+                currentIndex: Stream.fmEmphasisMode === 1 ? 0 : 1
+                onActivated: Stream.setFmEmphasisMode(currentIndex === 0 ? 1 : 0)
+                ToolTip.text: qsTr("FM pre-emphasis — Comm = 6 dB/oct voice curve, "
+                    + "Off = flat (digital/data + warmer HF).  Same control as "
+                    + "Settings → TX → FM.")
                 ToolTip.visible: hovered; ToolTip.delay: 800
             }
 
