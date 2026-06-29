@@ -21,6 +21,7 @@
 #include "cat/SerialPtt.h"
 #include "cat/CatServer.h"
 #include "metermodel.h"
+#include "tunermemory.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
 #include "eqmodel.h"                  // complete type for new EqModel + context property
 #include "speechmodel.h"              // complete type for new SpeechModel + context property
@@ -369,6 +370,10 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                             qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                             this);
 
+    // Tuner panel — manual-ATU tuning memory (tracks the dial vs stored
+    // Input/Output/Inductor points per antenna).  Pure UI + QSettings.
+    tuner_ = new TunerMemory(qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
     // #50 TX parametric EQ model (drives EqPanel.qml, "Eq" context property).
     // Routes the TX mic rack through eqModel_->engine() (CMaster TX hook).
     eqModel_ = new EqModel(EqModel::Side::Tx, this);
@@ -632,6 +637,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Spots"), spots_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Meter"), meter_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Tuner"), tuner_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Profiles"), profiles_);
     qw->rootContext()->setContextProperty(
@@ -942,6 +949,18 @@ void MainWindow::buildDocks() {
                  QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea,
                  /*resizable=*/true);
     if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
+        d->setFloating(true);
+        d->hide();
+    }
+    // Tuner — native manual-ATU memory (the "Tuner Reminder" idea built in):
+    // tracks the dial vs the active antenna's stored Input/Output/Inductor
+    // points + live colour-coded SWR.  Own floating dock, summoned by its
+    // header "Tuner" chip; hidden by default so the front panel stays clean.
+    addQuickDock(QStringLiteral("tuner"), tr("Tuner"),
+                 QStringLiteral("TunerPanel.qml"),
+                 QStringLiteral("tuner"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
+    if (QDockWidget *d = docks_.value(QStringLiteral("tuner"))) {
         d->setFloating(true);
         d->hide();
     }
@@ -1256,6 +1275,18 @@ void MainWindow::buildToolbar() {
         if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
             QAction *act = d->toggleViewAction();
             act->setText(tr("CW Dec"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // Tuner launcher — summons the manual-ATU memory panel (own chip so
+        // it's one click from the front panel, like the CW / RX EQ chips).
+        if (QDockWidget *d = docks_.value(QStringLiteral("tuner"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("Tuner"));
             tb->addAction(act);
             if (auto *btn = qobject_cast<QToolButton *>(
                     tb->widgetForAction(act))) {

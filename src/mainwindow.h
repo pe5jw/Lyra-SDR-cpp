@@ -40,6 +40,7 @@ class EqModel;
 class SpeechModel;
 class CombinatorModel;
 class PlateModel;
+class TunerMemory;
 
 class Prefs;
 class SettingsDialog;
@@ -206,6 +207,7 @@ private:
     QObject *wdsp_       = nullptr;
     QObject *wdspEngine_ = nullptr;
     Prefs   *prefs_      = nullptr;
+    TunerMemory *tuner_  = nullptr;   // manual-ATU memory (Tuner panel)
     lyra::wx::WxService *wx_ = nullptr;
     lyra::solar::SolarService *solar_ = nullptr;   // HamQSL solar/propagation
     NcdxfFollow         *ncdxfFollow_ = nullptr;   // NCDXF beacon auto-follow

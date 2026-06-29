@@ -1,0 +1,127 @@
+// Lyra — manual-ATU tuning memory (Tuner panel).
+//
+// Up to 3 named antennas, each with a frequency-keyed table of manual
+// tuner settings (Input / Output / Inductor + a note).  Tracks the live
+// dial and surfaces the matching — or nearest — stored point so the
+// operator can re-set a manual tuner without paper sheets, the way the
+// 3rd-party "Tuner Reminder" (TCI) app does, but native: Lyra already
+// knows the band / frequency / antenna, so there's no loopback.
+//
+// Pure UI + QSettings persistence; no DSP / wire involvement.  Exposed to
+// QML (TunerPanel.qml) as the `Tuner` context property.  All native C++23.
+
+#pragma once
+
+#include <QObject>
+#include <QString>
+#include <QStringList>
+#include <QVariantList>
+#include <QVector>
+
+namespace lyra::ipc { class HL2Stream; }
+
+namespace lyra::ui {
+
+class TunerMemory : public QObject {
+    Q_OBJECT
+    // The 3 antenna names (operator-renamable).
+    Q_PROPERTY(QStringList antennaNames READ antennaNames NOTIFY antennasChanged)
+    // Which antenna is active (0..2) — manual select; each has its own table.
+    Q_PROPERTY(int activeAntenna READ activeAntenna WRITE setActiveAntenna
+               NOTIFY activeChanged)
+    // The active antenna's stored points, sorted by frequency.  Each entry is
+    // a map { band, freqHz, freqText, input, output, inductor, note }.
+    Q_PROPERTY(QVariantList points READ points NOTIFY pointsChanged)
+    // Live match of the current dial against the active antenna:
+    Q_PROPERTY(bool   matchValid   READ matchValid   NOTIFY matchChanged)
+    Q_PROPERTY(bool   matchExact   READ matchExact   NOTIFY matchChanged)
+    Q_PROPERTY(int    matchIndex   READ matchIndex   NOTIFY matchChanged)
+    Q_PROPERTY(double matchFreqHz  READ matchFreqHz  NOTIFY matchChanged)
+    Q_PROPERTY(double matchDeltaHz READ matchDeltaHz NOTIFY matchChanged)
+    Q_PROPERTY(QString matchInput    READ matchInput    NOTIFY matchChanged)
+    Q_PROPERTY(QString matchOutput   READ matchOutput   NOTIFY matchChanged)
+    Q_PROPERTY(QString matchInductor READ matchInductor NOTIFY matchChanged)
+    Q_PROPERTY(QString matchNote     READ matchNote     NOTIFY matchChanged)
+    // Live dial (Hz) + its band label + formatted text.
+    Q_PROPERTY(double  currentFreqHz READ currentFreqHz NOTIFY currentChanged)
+    Q_PROPERTY(QString currentBand   READ currentBand   NOTIFY currentChanged)
+    Q_PROPERTY(QString currentFreqText READ currentFreqText NOTIFY currentChanged)
+    // Collapsed (basics-only) vs expanded (full table) — operator toggle.
+    Q_PROPERTY(bool collapsed READ collapsed WRITE setCollapsed
+               NOTIFY collapsedChanged)
+
+public:
+    explicit TunerMemory(lyra::ipc::HL2Stream *stream,
+                         QObject *parent = nullptr);
+
+    QStringList antennaNames() const;
+    int  activeAntenna() const { return active_; }
+    void setActiveAntenna(int i);
+    QVariantList points() const;
+    bool   matchValid() const { return matchIdx_ >= 0; }
+    bool   matchExact() const;
+    int    matchIndex() const { return matchIdx_; }
+    double matchFreqHz() const;
+    double matchDeltaHz() const;
+    QString matchInput() const;
+    QString matchOutput() const;
+    QString matchInductor() const;
+    QString matchNote() const;
+    double  currentFreqHz() const { return curHz_; }
+    QString currentBand() const { return bandLabel(curHz_); }
+    QString currentFreqText() const { return fmtFreq(curHz_); }
+    bool collapsed() const { return collapsed_; }
+    void setCollapsed(bool v);
+
+    // Set the live dial (Hz); recomputes the match.  Driven from
+    // HL2Stream::rx1FreqChanged, but Q_INVOKABLE so QML can drive it too.
+    Q_INVOKABLE void setCurrentFreqHz(double hz);
+    Q_INVOKABLE void renameAntenna(int i, const QString &name);
+    // Insert or overwrite (within tolerance) a point at freqHz for the active
+    // antenna.  Empty fields are allowed (operator fills them in later).
+    Q_INVOKABLE void storePoint(double freqHz, const QString &input,
+                                const QString &output, const QString &inductor,
+                                const QString &note);
+    // Edit an existing point in place (active antenna, by row index).
+    Q_INVOKABLE void updatePoint(int index, const QString &input,
+                                 const QString &output, const QString &inductor,
+                                 const QString &note);
+    Q_INVOKABLE void deletePoint(int index);
+
+    // Ham-band label for a frequency ("10 M", "40 M", …) or "" if unknown.
+    Q_INVOKABLE static QString bandLabel(double freqHz);
+    // Group a frequency as MHz.kHz.Hz — 28550774 -> "28.550.774".
+    Q_INVOKABLE static QString fmtFreq(double freqHz);
+
+signals:
+    void antennasChanged();
+    void activeChanged();
+    void pointsChanged();
+    void matchChanged();
+    void currentChanged();
+    void collapsedChanged();
+
+private:
+    struct Point {
+        double  freqHz = 0.0;
+        QString band, input, output, inductor, note;
+    };
+    struct Antenna { QString name; QVector<Point> points; };
+
+    void recomputeMatch();
+    void sortAntenna(int i);
+    void save() const;
+    void load();
+
+    QVector<Antenna> ant_;          // exactly 3
+    int    active_   = 0;
+    double curHz_    = 0.0;
+    int    matchIdx_ = -1;          // nearest point in ant_[active_], or -1
+    bool   collapsed_ = false;
+
+    // Within this window of the dial, a stored point counts as an "exact"
+    // match (green); beyond it the nearest is shown amber with the delta.
+    static constexpr double kExactToleranceHz = 1000.0;
+};
+
+} // namespace lyra::ui

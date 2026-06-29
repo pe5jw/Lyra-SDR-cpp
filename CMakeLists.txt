@@ -334,6 +334,9 @@ qt_add_executable(lyra
     src/dxcc.cpp
     src/metermodel.h
     src/metermodel.cpp
+    # Tuner panel — native manual-ATU tuning memory (Tuner Reminder, built in).
+    src/tunermemory.h
+    src/tunermemory.cpp
     # #50 / #59 — parametric-EQ model (bridges dsp/ParamEq to EqPanel.qml).
     src/eqmodel.h
     src/eqmodel.cpp
@@ -394,6 +397,7 @@ qt_add_qml_module(lyra
         src/qml/BandPanel.qml
         src/qml/ModeFilterPanel.qml
         src/qml/MeterPanel.qml
+        src/qml/TunerPanel.qml
         src/qml/HorizonArc.qml
         src/qml/PlasmaBar.qml
         src/qml/VerticalLadder.qml
