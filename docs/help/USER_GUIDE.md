@@ -75,6 +75,7 @@ not programmers — if you can click a menu, you can use this.
   - [Trace smoothing](#trace-smoothing)
   - [Peak glow](#peak-glow)
   - [Glass sheen](#glass-sheen)
+  - [Tooltips](#tooltips)
   - [Gridline brightness](#gridline-brightness)
   - [Frame rate](#frame-rate)
   - [dB range (floor / ceiling)](#db-range-floor--ceiling)
@@ -3083,6 +3084,13 @@ graphics work only when it's on.
 
 A subtle glassy highlight across the panadapter for the "floating glass"
 look. **0 % = Off**; **20 %** is the default. Raise for a stronger sheen.
+
+### Tooltips
+
+**Show tooltips** (default on) toggles the hover-help bubbles on controls
+across the **whole app** — the front panels *and* the Settings dialog. Turn
+it off for a quieter, no-popup UI once you know your way around. It's a
+single global switch (Settings → Visuals → Tooltips).
 
 ### Gridline brightness
 

@@ -66,6 +66,16 @@ full before touching shipped behaviour.
   clean-chain note + Tuning-panel mirror + Dev→RX-BW); TX-BW + Lock bullets
   note the FM auto-width behaviour; Tuning-panel FM front-row bullets updated.
 
+### UI cosmetics — global tooltips toggle + Profile picker (`ff0cdf9`)
+- **Global "Show tooltips" toggle** (Settings → Visuals, default on,
+  persisted `ui/tooltips_enabled`). New `Prefs.tooltipsEnabled`; all 69 QML
+  `ToolTip.visible` bindings across 9 panels AND it in (swept), and an
+  app-wide `QEvent::ToolTip` event filter (`TooltipGate` in mainwindow.cpp)
+  swallows QWidget (Settings dialog / menu) tooltips too → one genuinely
+  global switch. USER_GUIDE Visuals → Tooltips section added.
+- **Profile picker (ProfilePanel):** the recall tooltip no longer pops over
+  the open dropdown (gated `!popup.visible`); combo width 300 → 170.
+
 ---
 
 ## 2026-06-28 — v0.6.0 RELEASED: per-band TX power model + auto-calibrated watts cap + FM fix #1
