@@ -404,7 +404,10 @@ row beneath the VFOs has:
 front-end (FM repeaters are the common split case):
 
 - **Dev** — FM deviation, right there in the row (same control as
-  Settings → TX → FM).
+  Settings → TX → FM). Changing it auto-sizes the RX bandwidth to the
+  matching FM channel width (±2.5 kHz → 12 kHz, ±5 kHz → 16 kHz).
+- **Emph** — FM pre-emphasis, **Comm** (6 dB/oct voice) / **Off** (flat,
+  for data). Same control as Settings → TX → FM; leave it on Comm for voice.
 - **RPT** — the FM split toggle. Turn it on, then pick **Offset** direction
   (**−** / **+**) and amount (100 kHz / 500 kHz / 600 kHz / 1 MHz / 5 MHz)
   → VFO B = VFO A ± offset, split armed. As you tune VFO A, VFO B **tracks**
@@ -470,18 +473,24 @@ picker moved to the Tuning panel, under the VFO.)
 - **🔗 (Lock)** — links RX and TX bandwidths so changes to either side
   mirror the other for the current mode. Click to toggle. Toggling it
   ON pulls the RX bandwidth into TX. With the lock OFF, RX and TX BW
-  are independent per-mode.
+  are independent per-mode. (Disabled in **FM** — there's no separate
+  TX width to lock to; see TX BW below.)
 - **TX BW** — the transmit filter bandwidth. Per-mode just like RX BW.
   For **SSB / digital** it's the high edge: the TX passband runs from
   the **Filter Low edge** (Settings → Audio, shared with RX) up to this
   high edge — e.g. Filter Low = 70 Hz and TX BW = 4 kHz gives a
   70-4000 Hz single sideband. For the **double-sideband modes (AM,
-  DSB, FM, SAM)** the value is the **total occupied width**: the TX
+  DSB, SAM)** the value is the **total occupied width**: the TX
   filter is symmetric around the carrier at **±(TX BW / 2)**, so AM at
   TX BW = 6 kHz transmits ±3 kHz = 6 kHz total and lands exactly inside
   the on-screen filter markers (matching RX). Sign-codes correctly per
   mode (USB positive, LSB negative-and-swapped, double-sideband
-  symmetric) inside the WDSP TXA chain.
+  symmetric) inside the WDSP TXA chain. In **FM** the TX BW is **not
+  editable** — it shows the auto-derived occupied width
+  `2 × (deviation + 3 kHz)` (e.g. **"16 k (auto)"** at ±5 kHz), which
+  updates live as you change the FM Deviation. The RX BW presets in FM
+  are FM channel widths (8 / 10 / 12 / 16 kHz) and follow the deviation
+  too (see the FM section).
 
 SSB and digital filters open at the **Filter Low edge** (Settings → Audio
 → Filter Low edge, shared RX+TX, default 100 Hz); CW filters are
@@ -2357,16 +2366,40 @@ across sessions.
 > rated for 100 W PEP that's a ~25 W carrier, with the sidebands swinging
 > the envelope toward 100 W on modulation peaks.
 
-### FM (deviation & CTCSS)
+### FM (deviation, pre-emphasis & CTCSS)
 
-FM transmit has two operator knobs in **Settings → TX → FM**. Both affect
+FM transmit has three operator knobs in **Settings → TX → FM**. All affect
 **FM only** — they're inert in SSB / AM / CW, so you can set them and they
-only bite when you key FM. Both persist across sessions.
+only bite when you key FM. All persist across sessions.
 
 | Setting | Default | What it does |
 |---|---|---|
-| **Deviation** | 5.0 kHz | Peak FM deviation. The spin box flags the two standard presets — **5.0 kHz — Wide (US)** and **2.5 kHz — Narrow (US/EU)** — and reads plain `kHz` at any other value. Too much deviation splatters into adjacent channels; too little sounds weak and quiet. |
+| **Deviation** | 5.0 kHz | Peak FM deviation. The spin box flags the two standard presets — **5.0 kHz — Wide (US)** and **2.5 kHz — Narrow (US/EU)** — and reads plain `kHz` at any other value. Too much deviation splatters into adjacent channels; too little sounds weak and quiet. Changing it also re-sizes the RX filter and the TX occupied-width readout to match (see below). |
+| **Pre-emphasis** | Comm | The treble-boost curve applied before the modulator. **Comm** is the standard 6 dB/oct (300–3000 Hz) communications curve every FM rig and repeater expects — leave it here for **voice**. **Off** is flat (no boost) — use it for **FM data** (packet, 1200/9600 baud, VARA FM), where the treble tilt would distort the data tones, or for a deliberately flat/warm sound. (A true *Off* is a Lyra edge — most rigs force pre-emphasis on.) |
 | **CTCSS sub-tone** | Off | Transmit a sub-audible **CTCSS** tone to open a tone-protected FM repeater. Tick **enable** and pick your repeater's tone from the standard list (67.0–254.1 Hz). Leave it off for simplex. |
+
+> **Why pre-emphasis exists:** FM brings high audio frequencies out of the
+> receiver noisier than low ones. Every FM radio boosts the highs on
+> transmit (pre-emphasis) and cuts them back on receive (de-emphasis) — that
+> matching cut flattens your audio *and* knocks the now-amplified
+> high-frequency hiss back down, so you come through clean. **Comm** sends
+> the curve the receiving station expects; **Off** sends flat audio for data.
+
+**FM runs a clean audio chain automatically.** In FM, Lyra bypasses the
+whole TX speech rack (EQ, Combinator, Plate reverb, speech enhancements) —
+exactly as it does for the digital data modes. Feeding a multiband
+compressor / reverb into FM's pre-emphasis just over-drives into "mush", so
+FM audio is shaped only by its band-limit and the pre-emphasis curve above.
+Nothing to switch off by hand.
+
+**Quick access on the Tuning panel.** In FM the Tuning panel's front row
+mirrors these controls — a **Dev** spin box and an **Emph** (Comm / Off)
+chip sit right next to the **RPT** repeater button, two-way-synced with
+Settings → TX → FM. And **choosing a Deviation auto-sizes the RX bandwidth**
+to the matching FM channel width (±2.5 kHz → 12 kHz, ±5 kHz → 16 kHz); the
+TX bandwidth in FM is always shown as the auto-derived occupied width
+(`2 × (deviation + 3 kHz)`), so you never set a TX filter by hand in FM.
+You can still override the RX bandwidth in the Filters panel afterward.
 
 **Deviation by region (rule of thumb — match your band plan / the
 repeater):**

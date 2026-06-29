@@ -4,6 +4,163 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-29 — FM TX "beat Thetis" arc (pre-emphasis + clean chain + Tuning-panel UX)
+
+All on `main`, unreleased (on top of v0.6.0). The FM transmit arc, brought
+to a complete stopping point. WDSP study-first: read `fmmod.c` + `emph.c` in
+full before touching shipped behaviour.
+
+### FM Fix #2 — clean audio band-limit (`b72bc50`, earlier; logged for completeness)
+- The FM primary bandpass `bp0` runs on the AUDIO before `xfmmod`, so it's
+  now a symmetric **±3 kHz brick-wall AF low-pass** (was inheriting ±(dev+3k)
+  ≈ ±8 k, over-feeding the modulator). The occupied-RF (Carson) clamp stays
+  owned by the modulator's own internal bandpass, pinned via new
+  `SetTXAFMAFFreqs(txch, 300, 3000)` on FM entry. Supersedes Fix #1's bp0
+  value (v0.6.0).
+
+### Mode-aware FM bandwidth (`4f32ca1`, earlier) — `ModeFilterPanel.qml`
+- FM TX-BW selector + RX↔TX 🔗 lock disabled in FM (FM width is derived from
+  deviation). TX-BW box is a read-only **"<N> k (auto)"** Carson readout
+  `2·(dev+3k)`, live-tracking Dev. FM RX presets = FM channel widths
+  **8/10/12/16 k** (was the SSB list).
+
+### #3a — pre-emphasis selector Off / Comm (`a826c8c`)
+- WDSP-native via `SetTXAFMEmphPosition` (bound in wdspcalls X-macro):
+  **Comm** = position 1 = the native 6 dB/oct (300–3000) comms curve runs;
+  **Off** = position 2 = both call sites pass through = a TRUE bypass (FM
+  force-runs the emph block, so the chain position is the on/off — a real
+  Off, which rigs/Thetis don't give you).
+- `HL2Stream` `fmEmphasisMode` Q_PROPERTY (0=Off, 1=Comm, default Comm) +
+  QSettings `tx/fmEmphasisMode` + `TxControl::setFmEmphasis` callback;
+  applied on FM entry in `pushTxFilter` + live on operator change.
+- UI: **Settings → TX → FM** combo (beside Deviation / CTCSS).
+
+### #3b-3 — FM auto-bypasses the native mic rack (`12c8991`)
+- In FM the whole TX rack (EQ + Combinator + Plate + speech enhancements)
+  auto-bypasses, same forced-auto as the digital modes — a multiband
+  compressor/reverb into FM's pre-emphasis = mush. One-line predicate
+  change in `main.cpp` (`txModeBypassesRack` now fires for "FM" alongside
+  DIGU/DIGL → `SetTxRackBypass`).
+
+### Tuning-panel UX (`67abf05`) — `TuningPanel.qml`
+- **Emph** quick chip (Comm / Off) added to the FM front row beside Dev/RPT,
+  two-way-synced with Settings via the shared `Stream.fmEmphasisMode` prop.
+- **Deviation now auto-sizes RX bandwidth** to the smallest FM channel
+  preset ≥ Carson `2·(dev+3k)` — ±2.5 k → 12 k, ±5 k → 16 k. TX BW was
+  already deviation-derived; RX now follows (Thetis-style). Still
+  overridable in the Filters panel.
+
+### #3b 50/75 µs + 300 Hz HPF — DROPPED / DEFERRED (operator call)
+- Read `emph.c`: WDSP FM pre-emph is a 6 dB/oct ramp between f_low/f_high.
+  **50/75 µs are broadcast-FM constants** (15 kHz audio, ±75 kHz dev),
+  meaningless over our 3 kHz comms band (75 µs corner ≈2122 Hz = a weak
+  top-end lift; 50 µs corner ≈3183 Hz is *above* the 3 kHz cutoff → no
+  pre-emph at all). "Comm" already IS the correct amateur curve → 50/75 µs
+  **dropped** (dead UI options). **300 Hz low-cut deferred** — needs a new
+  native HPF stage (can't ride bp0 = Hilbert trap; rack is bypassed in FM),
+  mostly redundant with Comm's bass rolloff; build only if FM-data-flat
+  bass-cut is later wanted.
+
+### Docs
+- USER_GUIDE: FM section rewritten (deviation / pre-emphasis / CTCSS +
+  clean-chain note + Tuning-panel mirror + Dev→RX-BW); TX-BW + Lock bullets
+  note the FM auto-width behaviour; Tuning-panel FM front-row bullets updated.
+
+---
+
+## 2026-06-28 — v0.6.0 RELEASED: per-band TX power model + auto-calibrated watts cap + FM fix #1
+
+Released `v0.6.0` (`5b41fc3`; installer `dist/Lyra-Setup-0.6.0.exe`, 68.2 MB,
+GitHub release published; main FF'd). Bundled the whole TX power-model arc +
+the first FM fix that had been pending on main.
+
+### Per-band TX power model (Settings → **PA Gain** tab)
+- ChannelMaster `txgain.c` ported → `wire/TxGain.*`; operator drive% drives a
+  digital fixed gain (Thetis RadioVolume) on top of the AD9866 byte, so **1 %
+  drive is a true sub-watt** (was pinned at the ~0.78 W nibble-0 dead zone).
+- Per-band **PA Gain table** (`RadioVolume = min(drive·gbb[band]/100/93.75,1)`)
+  so the dial can be tuned to read true watts per band.
+- **Watts Max cap** (amp protection) + **auto-calibrate**: key TUN per band
+  into a dummy and Lyra walks power up to the cap and locks that band exactly
+  (✓), SS-amp-safe (approach-from-below). Coloured Cap-tuned marks (green ✓
+  tuned / red — not tuned). The old "Max TX drive %" (#170) control retired.
+
+### FM fix #1 (`ae6eb19`) — FM Carson bandpass clamp (value later superseded by Fix #2)
+- FM output bandpass sized from the FM signal's own occupied channel instead
+  of inheriting the wide SSB/ESSB TX width → no FM splatter at wide TX BW.
+
+### Docs
+- USER_GUIDE "Settings → PA Gain" section; `docs/releases/v0.6.0.md`; README
+  bumped to v0.6.0.
+
+---
+
+## 2026-06-27 — v0.5.0 RELEASED: DX-cluster spots subsystem (#182) + CW RX-decoder overhaul (#187) + #159 DSP filter type
+
+Released `v0.5.0` (`63b0799`; CW `7ebc599`) — two commits on `main`,
+installer `dist/Lyra-Setup-0.5.0.exe` (68.2 MB) published as a GitHub
+release. (v0.4.11 — the Kenwood CAT-over-COM/TCP + serial-PTT arc —
+shipped between v0.4.10 and this; it has its own release notes.)
+
+### DX-cluster spots subsystem #182 — the headline (`spotstore.*`, `spothole_feeder.*`, `dxcluster_feeder.*`, `dxcc.*`, `PanadapterPanel.qml`, `settingsdialog.*`)
+- Source-agnostic **spot bus** (`SpotStore`): call-keyed dedup, age-out,
+  own-call highlight + toast, `source`/`continent`/`firstSeen` fields.
+- **3 feeders**, each its own on/off (Settings → Network → DX-cluster spots):
+  - **TCI** inbound (logger / SDRLogger+) — `addSpot(...,source="tci")`.
+  - **SpotHole REST** (`SpotHoleFeeder`) — `spothole.app/api/v1/spots`,
+    standalone (internet only), default-OFF poll. Parse is **snake_case**
+    (`dx_call` / `freq` in **Hz** / `de_call` / `dx_continent` / skip `qrt`)
+    — first cut used hamlog's processed field names and got zero spots;
+    fixed by probing the raw API.
+  - **DX-cluster telnet** (`DxClusterFeeder`) — host/port/login-call
+    (defaults MYCALL, overridable) + login-commands, auto-login +
+    auto-reconnect 20 s. NOTE: VE7CC-type nodes default to **RBN CW
+    skimmer only**; `set/ft8;set/ft4` login cmds open up FT8/FT4 (confirmed
+    by reading the node banner — not a bug).
+- **Filters** (display-only; the bus keeps everything): `modeShown`
+  (family-aware CW/SSB/DIGI/AM/FM), `regionShown` + `DxccLookup::continentOf`
+  ISO-2→continent table (continent codes NA/EU/AS/SA/AF/OC always mean
+  continents, else ISO-2 country; "US,EU" = US + all Europe).
+- **Clutter caps**: per-freq bucket cap (`freqHz/bucketHz` bins, keep N
+  newest, "+K more" badge — tames FT8 piles) + global display cap.
+- **Colour modes**: source / single / by-mode / by-region / by-country +
+  optional legend (`legendEntries()` Q_INVOKABLE). **New-spot colour**:
+  a fresh spot wears a solid colour for N s (driven by `firstSeen`, not
+  `added`, so a re-poll doesn't reset it) then settles. Two bugs fixed
+  here: spots flipping green↔gold every poll (separated `firstSeen` from
+  `added`), and the original blink flashing EVERYTHING on startup
+  (reverted blink → solid new-spot colour; renamed all "Flash" UI +
+  docs → "new spot colour" so folks don't expect a blink).
+- **Console import**: click a spot → tune to it + `CwMacros.hisCall` grabs
+  the call into the CW-console contact row (#176/#181).
+- Band display filter DEFERRED (redundant on the panadapter; lands with a
+  future spot-LIST view).
+
+### CW RX-decoder overhaul #187 (`CwDecoderPanel.qml`)
+- Decode-window **scroll fix**: ScrollView + `onContentHeightChanged →
+  Qt.callLater(scrollToBottom)` so rows stop clipping at the 3rd line
+  before a resize. (Took two passes — the first "fixed" it only until the
+  text reflowed.)
+- Narrow detect-filter BW chips tuned to `[80,100,120,150]`; Auto level
+  with live readout; Advanced (Seek / DSP filter / AFC range). Operator
+  copy-confirmed on real Field Day CW (S4–S9, 10–25 wpm).
+
+### Also shipped
+- **CW console scroll** (`CwConsolePanel.qml`): wrapped `body` in a
+  ScrollView so the macro tags + bottom option rows stay reachable when
+  the console is sized small.
+- **#159 DSP filter type** (Linear Phase / Low Latency per mode family,
+  opt-in) — was the prior pending item; rode out with v0.5.0.
+
+### Docs / release
+- USER_GUIDE: new "DX-cluster spots" section + reworked "Reading CW — the
+  RX decoder" section; #159 Linear Phase / Low Latency already present.
+- `docs/releases/v0.5.0.md`; version single-sourced via CMake
+  `project(VERSION 0.5.0)` → installer `.iss` + README.
+- Installer `Excludes` now drops `test_*.exe` (release hygiene).
+
+---
+
 ## 2026-06-25 — v0.4.10 RELEASED: CTUN drag-the-marker (4th look, FIXED) + CW decoder A-series + CW-decoder docs
 
 Working on `main`. Two releases since v0.4.8: **v0.4.9** (fast patch —
