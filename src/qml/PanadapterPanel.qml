@@ -398,7 +398,7 @@ Item {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: Prefs.waterfallCollapsed =
                                    !Prefs.waterfallCollapsed
-                    ToolTip.visible: containsMouse
+                    ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                     ToolTip.text: Prefs.waterfallCollapsed
                                   ? qsTr("Show waterfall")
                                   : qsTr("Collapse waterfall")
@@ -1193,7 +1193,7 @@ Item {
                                     + " MHz USB · " + segItem.modelData.label,
                                     2500)
                             }
-                            ToolTip.visible: containsMouse
+                            ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                             ToolTip.text: segItem.modelData.label + " — "
                                 + (segItem.modelData.qsy / 1.0e6).toFixed(3)
                                 + " MHz USB"
@@ -1269,7 +1269,7 @@ Item {
                                     + " MHz " + markItem.modelData.mode
                                     + " · " + markItem.modelData.label, 2500)
                             }
-                            ToolTip.visible: containsMouse
+                            ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                             // NCDXF beacons show the LIVE rotating station
                             // (computed on hover); others show label/mode.
                             ToolTip.text: {
@@ -1317,7 +1317,7 @@ Item {
                                     + " — " + (cbItem.modelData.freq / 1.0e6).toFixed(4)
                                     + " MHz AM", 2000)
                             }
-                            ToolTip.visible: containsMouse
+                            ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                             ToolTip.text: "CB " + cbItem.modelData.label + "  "
                                 + (cbItem.modelData.freq / 1.0e6).toFixed(3)
                                 + qsTr(" MHz AM")
@@ -1367,7 +1367,7 @@ Item {
                                     + (ebItem.modelData.freqHz / 1.0e6).toFixed(3)
                                     + " MHz AM · " + ebItem.modelData.station, 2500)
                             }
-                            ToolTip.visible: containsMouse
+                            ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                             ToolTip.text: ebItem.modelData.station + "  "
                                 + (ebItem.modelData.freqHz / 1.0e6).toFixed(3)
                                 + qsTr(" MHz")
@@ -1437,7 +1437,7 @@ Item {
                                     + " — " + (spItem.modelData.freqHz / 1.0e6).toFixed(3)
                                     + " MHz " + spItem.modelData.mode, 2500)
                             }
-                            ToolTip.visible: containsMouse
+                            ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                             ToolTip.text: spItem.modelData.call + "  "
                                 + (spItem.modelData.freqHz / 1.0e6).toFixed(3)
                                 + qsTr(" MHz ") + spItem.modelData.mode

@@ -39,7 +39,7 @@ Rectangle {
             // field but shows in full in the open dropdown list, so we
             // don't stretch the combo across the whole dock.
             Layout.fillWidth: false
-            Layout.preferredWidth: 300
+            Layout.preferredWidth: 170
             implicitHeight: 26
             font.pixelSize: 12
             model: Profiles.names
@@ -58,7 +58,10 @@ Rectangle {
             }
             ToolTip.text: qsTr("Recall a saved TX/RX profile. Create / rename / "
                 + "delete and set the default in Settings → Profiles.")
-            ToolTip.visible: hovered; ToolTip.delay: 400
+            // Suppress the tooltip while the dropdown is open — it otherwise
+            // pops over the list you're trying to pick from.
+            ToolTip.visible: hovered && !popup.visible && Prefs.tooltipsEnabled
+            ToolTip.delay: 600
         }
 
         Item { Layout.fillWidth: true }   // absorb slack → dot + Save sit right
@@ -75,7 +78,7 @@ Rectangle {
                 ? qsTr("Modified — live settings differ from “%1”. Save to keep them.")
                     .arg(Profiles.activeName)
                 : qsTr("Saved — live settings match the active profile.")
-            ToolTip.visible: dotMa.containsMouse
+            ToolTip.visible: dotMa.containsMouse && Prefs.tooltipsEnabled
             MouseArea { id: dotMa; anchors.fill: parent; hoverEnabled: true }
         }
 
@@ -94,7 +97,7 @@ Rectangle {
             ToolTip.text: qsTr("Save the current live settings — overwrite the "
                 + "active profile, or create a new one (and optionally set "
                 + "which mode family auto-recalls it).")
-            ToolTip.visible: hovered; ToolTip.delay: 400
+            ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 400
         }
     }
 }

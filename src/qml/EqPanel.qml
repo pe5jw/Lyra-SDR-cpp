@@ -206,7 +206,7 @@ Rectangle {
                 onClicked: eq.resetAll()
                 ToolTip.text: qsTr("Reset all bands to their default "
                                    + "freq / gain / Q")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
                 background: Rectangle { radius: 4
                     color: resetBtn.down ? "#0b3a44" : "#1f2a35"
                     border.color: "#3a5060" }
@@ -228,7 +228,7 @@ Rectangle {
                 onClicked: eq.analyzerMode = (eq.analyzerMode + 1) % 3
                 ToolTip.text: qsTr("Analyzer behind the curve — click to cycle "
                                    + "Off → Spectrum → RTA (live on the mic)")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
                 background: Rectangle { radius: 4
                     color: specBtn.active ? "#0b3a44" : "#1f2a35"
                     border.color: specBtn.active ? root.cAccent : "#3a5060" }
@@ -247,7 +247,7 @@ Rectangle {
                 onClicked: eq.accumulate = checked
                 ToolTip.text: qsTr("Accumulate — peak-hold line over the "
                                    + "spectrum.  Right-click for hang/decay.")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
                 background: Rectangle { radius: 4
                     color: accBtn.checked ? "#0b3a44" : "#1f2a35"
                     border.color: accBtn.checked ? root.cAccent : "#3a5060"
@@ -274,7 +274,7 @@ Rectangle {
                 onClicked: eq.beforeAfterMod = checked
                 ToolTip.text: qsTr("Before/After-Mod — overlay the pre-EQ "
                                    + "(before) trace so you see what the EQ did")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
                 background: Rectangle { radius: 4
                     color: baBtn.checked ? "#0b3a44" : "#1f2a35"
                     border.color: baBtn.checked ? root.cAccent : "#3a5060"
@@ -306,7 +306,7 @@ Rectangle {
                 onClicked: root.collapsed = !root.collapsed
                 ToolTip.text: root.collapsed ? qsTr("Show EQ graph")
                                              : qsTr("Collapse EQ graph")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 ToolTip.delay: 800
                 background: Rectangle { radius: 4; color: "#1f2a35"; border.color: "#3a5060" }
                 contentItem: Text {

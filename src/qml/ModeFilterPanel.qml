@@ -165,7 +165,7 @@ Rectangle {
             checked: Prefs.bwLocked
             enabled: !root.isFm           // no TX-BW to lock to in FM
             text: "🔗"
-            ToolTip.visible: hovered
+            ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             ToolTip.text: root.isFm
                 ? qsTr("N/A in FM — TX bandwidth is set from deviation")
                 : qsTr("Lock TX BW to RX BW (mirrors both directions when ON)")
@@ -190,7 +190,7 @@ Rectangle {
                 : root.bwCurrentIndex(Prefs.mode, Prefs.txBandwidth)
             onActivated: if (!root.isFm) Prefs.txBandwidth =
                 root.bwValueAt(Prefs.mode, Prefs.txBandwidth, currentIndex)
-            ToolTip.visible: root.isFm && hovered
+            ToolTip.visible: (root.isFm && hovered) && Prefs.tooltipsEnabled
             ToolTip.text: qsTr("FM occupies ±(deviation + 3 kHz audio); set it with the Dev control")
         }
 

@@ -98,7 +98,7 @@ Rectangle {
         Label {
             text: qsTr("Drive"); color: root.cMuted
             HoverHandler { id: driveLblHov }
-            ToolTip.visible: driveLblHov.hovered
+            ToolTip.visible: (driveLblHov.hovered) && Prefs.tooltipsEnabled
             ToolTip.delay: 600
             ToolTip.text: qsTr("How hard the HL2 drives its PA.  0 % = no carrier "
                 + "even with PA + MOX.  Start LOW (5–10 %) on a dummy load; raise "
@@ -142,7 +142,7 @@ Rectangle {
         Label {
             text: qsTr("Mic"); color: root.cMuted
             HoverHandler { id: micLblHov }
-            ToolTip.visible: micLblHov.hovered
+            ToolTip.visible: (micLblHov.hovered) && Prefs.tooltipsEnabled
             ToolTip.delay: 600
             ToolTip.text: qsTr("Mic gain into the TX modulator (WDSP TXA "
                 + "PanelGain1).  0 dB = unity.  Raise toward +10 to +20 dB for "
@@ -247,7 +247,7 @@ Rectangle {
                 + "toggle (also in Settings → TX); value set there too.  "
                 + "Disabling removes RX-ADC protection on TX.")
             ToolTip.delay: 1000
-            ToolTip.visible: hovered && !pressed
+            ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
         }
 
         // ── SWR-protection lamp (#169) ──────────────────────────────
@@ -308,7 +308,7 @@ Rectangle {
                        + "armed, red = acted.  Click to toggle.")
                       .arg(Stream.swrProtectLimit.toFixed(1))
             ToolTip.delay: 1000
-            ToolTip.visible: hovered && !pressed
+            ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
         }
 
         Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
@@ -323,7 +323,7 @@ Rectangle {
             color: root.cMuted
             visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
             HoverHandler { id: tuneLblHov }
-            ToolTip.visible: tuneLblHov.hovered
+            ToolTip.visible: (tuneLblHov.hovered) && Prefs.tooltipsEnabled
             ToolTip.delay: 600
             ToolTip.text: qsTr("Drive %% applied while TUN is armed. "
                 + "Per-band remembered (tune-into-amp on 80 m vs tune-"
@@ -427,7 +427,7 @@ Rectangle {
             // the panel — long delay + hide-on-press so a fast tune-arm
             // gesture isn't fighting a popup that's already up.
             ToolTip.delay: 1500
-            ToolTip.visible: hovered && !pressed
+            ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
         }
 
         // ── MOX — the keying button, big + lit red on wire truth ────
@@ -480,7 +480,7 @@ Rectangle {
             // delay + hide-on-press means hover-with-intent still gets the
             // hint, but key-the-radio gestures are instant.
             ToolTip.delay: 1500
-            ToolTip.visible: hovered && !pressed
+            ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
         }
     }
 }

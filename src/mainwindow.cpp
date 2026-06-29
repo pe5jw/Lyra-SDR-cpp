@@ -201,6 +201,23 @@ inline bool isChipSummonedPanel(const QString &objectName) {
         || objectName == QLatin1String("cwconsole")
         || objectName == QLatin1String("cwdecoder");
 }
+
+// Global tooltip gate — swallows QWidget tooltip events app-wide when the
+// operator turns tooltips off (Settings → Visuals).  QML ToolTips gate
+// themselves on Prefs.tooltipsEnabled; this covers the QtWidgets side
+// (Settings dialog, menus) so the one toggle is genuinely global.
+class TooltipGate : public QObject {
+public:
+    explicit TooltipGate(Prefs *p, QObject *parent)
+        : QObject(parent), prefs_(p) {}
+    bool eventFilter(QObject *o, QEvent *e) override {
+        if (e->type() == QEvent::ToolTip && prefs_ && !prefs_->tooltipsEnabled())
+            return true;   // consume → no tooltip shown
+        return QObject::eventFilter(o, e);
+    }
+private:
+    Prefs *prefs_;
+};
 } // namespace
 
 MainWindow::MainWindow(QObject *discovery, QObject *stream,
@@ -216,6 +233,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         "Lyra — Hermes Lite 2 / 2+ — v" LYRA_VERSION " (C++23 / Qt 6)"));
     setObjectName(QStringLiteral("LyraMainWindow"));
     resize(1100, 760);
+
+    // Global tooltip gate (Settings → Visuals → Show tooltips).  Swallows
+    // QWidget tooltip events app-wide when disabled; QML ToolTips honour
+    // the same Prefs flag via their visible bindings.
+    qApp->installEventFilter(new TooltipGate(prefs_, this));
 
     // Full QDockWidget feature set: nested + tabbed docks, animated,
     // grouped-drag handle — the panel-arranging UX the operator wants.

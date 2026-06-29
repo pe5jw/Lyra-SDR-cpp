@@ -335,6 +335,13 @@ class Prefs : public QObject {
     Q_PROPERTY(QString micSource READ micSource WRITE setMicSource
                NOTIFY micSourceChanged)
 
+    // Global tooltips on/off (Settings → Visuals).  Default true.  Every
+    // QML ToolTip.visible binding ANDs this in, and an app-wide event
+    // filter swallows QWidget (Settings dialog) tooltips too, so the
+    // toggle is genuinely global.  Persisted: ui/tooltips_enabled.
+    Q_PROPERTY(bool tooltipsEnabled READ tooltipsEnabled
+               WRITE setTooltipsEnabled NOTIFY tooltipsEnabledChanged)
+
 public:
     explicit Prefs(QObject *parent = nullptr);
 
@@ -564,6 +571,8 @@ public:
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
+    bool tooltipsEnabled() const { return tooltipsEnabled_; }
+    void setTooltipsEnabled(bool on);
     // Task #33 — operator-facing token list with display labels.  Used
     // by the Settings → TX → Mic Source dropdown.  Order matches the
     // dropdown order (Mic In default first).  Disabled entries get a
@@ -668,6 +677,7 @@ signals:
     void spaceBarPttEnabledChanged();
     void autoStartOnLaunchChanged();
     void micSourceChanged();
+    void tooltipsEnabledChanged();
 
 private:
     int     gridLevel_;
@@ -786,6 +796,7 @@ private:
     // Task #33 — TX mic source token.  Default "mic1" matches the
     // v0.2.0..v0.2.2 ship behaviour.  Persisted: tx/mic_source.
     QString micSource_   = QStringLiteral("mic1");
+    bool    tooltipsEnabled_ = true;   // Settings → Visuals; ui/tooltips_enabled
 };
 
 } // namespace lyra::ui

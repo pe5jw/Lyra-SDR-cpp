@@ -5567,6 +5567,18 @@ QWidget *SettingsDialog::buildVisualsTab() {
     });
     form->addRow(tr("Cursor readout"), curRdt);
 
+    // --- Tooltips on/off (global) ---
+    auto *tips = new QCheckBox(tr("Show tooltips"), page);
+    tips->setChecked(prefs_->tooltipsEnabled());
+    tips->setToolTip(tr("Show the hover help bubbles on controls across the "
+                        "whole app. Turn off for a quieter, no-popup UI."));
+    connect(tips, &QCheckBox::toggled, prefs_, &Prefs::setTooltipsEnabled);
+    connect(prefs_, &Prefs::tooltipsEnabledChanged, page, [this, tips]() {
+        if (tips->isChecked() != prefs_->tooltipsEnabled())
+            tips->setChecked(prefs_->tooltipsEnabled());
+    });
+    form->addRow(tr("Tooltips"), tips);
+
     // --- Target frame rate (fps) ---
     auto *fps = new QSpinBox(page);
     fps->setRange(1, 240);

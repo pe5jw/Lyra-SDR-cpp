@@ -110,7 +110,7 @@ Rectangle {
             Meter.source = next
         }
         ToolTip.delay: 1500
-        ToolTip.visible: containsMouse && !pressed
+        ToolTip.visible: (containsMouse && !pressed) && Prefs.tooltipsEnabled
         ToolTip.text: qsTr("Click to cycle the meter source.  Sets your "
                            + "RX or TX preference (depending on whether "
                            + "the radio is keyed) — Settings → Meter "

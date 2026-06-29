@@ -452,7 +452,7 @@ Rectangle {
                 ToolTip.text: qsTr("SPLIT — receive on VFO A, transmit on VFO B "
                     + "(same band).  Set VFO B to your TX freq; key and the red "
                     + "TX border + panadapter marker move to B.")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
 
             // ── FM front group: Deviation (always) + RPT → Dir/Offset/CTCSS ──
@@ -481,7 +481,7 @@ Rectangle {
                 ToolTip.text: qsTr("FM peak deviation — 5.0 k = Wide (US), 2.5 k = "
                     + "Narrow.  Sets RX bandwidth to match.  Same control as "
                     + "Settings → TX → FM.")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
             }
 
             // FM pre-emphasis quick chip — Comm (6 dB/oct voice) / Off (flat,
@@ -501,7 +501,7 @@ Rectangle {
                 ToolTip.text: qsTr("FM pre-emphasis — Comm = 6 dB/oct voice curve, "
                     + "Off = flat (digital/data + warmer HF).  Same control as "
                     + "Settings → TX → FM.")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
             }
 
             // RPT — FM repeater duplex.  In FM, split ⟺ RPT.
@@ -540,7 +540,7 @@ Rectangle {
                 ToolTip.text: qsTr("Repeater — TX on VFO B = VFO A ± offset, RX on "
                     + "A.  Pick the shift direction + offset and (if needed) the "
                     + "CTCSS access tone.  VFO B tracks A as you tune.")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             Label {
                 text: qsTr("Offset"); color: "#cccccc"; font.bold: true
@@ -552,7 +552,7 @@ Rectangle {
                 implicitHeight: 26; implicitWidth: 30; font.pixelSize: 15
                 text: root.rptDirSign < 0 ? "−" : "+"
                 onClicked: { root.rptDirSign = -root.rptDirSign; root.rptApply() }
-                ToolTip.text: qsTr("Repeater shift direction"); ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: qsTr("Repeater shift direction"); ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             // Common repeater offsets.
             ComboBox {
@@ -563,7 +563,7 @@ Rectangle {
                 currentIndex: 0
                 onActivated: root.rptApply()
                 ToolTip.text: qsTr("Repeater offset (10 m = 100 kHz, 6 m = 1 MHz)")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             // CTCSS access tone — lit toggle button (clearer than a tickbox) +
             // tone combo, two-way with Settings → TX → FM.  Orange when on.
@@ -591,7 +591,7 @@ Rectangle {
                 }
                 ToolTip.text: qsTr("Send a CTCSS sub-audible access tone — required "
                     + "by tone-protected repeaters.  Pick the tone at right.")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             Label {
                 text: qsTr("Tone"); color: "#cccccc"; font.bold: true
@@ -605,7 +605,7 @@ Rectangle {
                 currentIndex: root.nearestCtcssIndex(Stream.ctcssToneHz)
                 onActivated: Stream.setCtcssToneHz(root.ctcssTones[currentIndex])
                 ToolTip.text: qsTr("CTCSS access tone (Hz)")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
 
             // VFO copy / swap.  1→2 = A→B, 2→1 = B→A, ⇄ = swap.
@@ -613,13 +613,13 @@ Rectangle {
                 implicitHeight: 26; implicitWidth: 40; font.pixelSize: 12
                 text: qsTr("1→2")
                 onClicked: Stream.setVfoBHz(Stream.rx1FreqHz)
-                ToolTip.text: qsTr("Copy VFO A → VFO B"); ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: qsTr("Copy VFO A → VFO B"); ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             Button {
                 implicitHeight: 26; implicitWidth: 40; font.pixelSize: 12
                 text: qsTr("2→1")
                 onClicked: Stream.setRx1FreqHz(Stream.vfoBHz)
-                ToolTip.text: qsTr("Copy VFO B → VFO A"); ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: qsTr("Copy VFO B → VFO A"); ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             Button {
                 implicitHeight: 26; implicitWidth: 36; font.pixelSize: 14
@@ -630,7 +630,7 @@ Rectangle {
                     Stream.setVfoBHz(a)
                     Stream.setRx1FreqHz(b)
                 }
-                ToolTip.text: qsTr("Swap VFO A ↔ VFO B"); ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: qsTr("Swap VFO A ↔ VFO B"); ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
 
             // ── RIT / XIT — RX / TX incremental tuning offsets ──────────────
@@ -663,7 +663,7 @@ Rectangle {
                 ToolTip.text: qsTr("RIT — Receiver Incremental Tuning.  Shifts "
                     + "only the RX by the offset; TX stays put.  Chase an "
                     + "off-frequency station without moving your VFO.")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             SpinBox {
                 id: ritSpin
@@ -694,7 +694,7 @@ Rectangle {
                 }
                 ToolTip.text: qsTr("RX offset, ±9.99 kHz.  Arrows = 1 Hz, "
                     + "wheel = 10 Hz (Shift = 100 Hz).  '0' clears it.")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
             }
             // Quick-zero — a reliable button (double-click on the spin fought
             // the SpinBox's own input handling and killed the arrows).
@@ -704,7 +704,7 @@ Rectangle {
                 text: qsTr("0"); font.pixelSize: 12
                 onClicked: Stream.setRitOffsetHz(0)
                 ToolTip.text: qsTr("Zero the RIT offset")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
 
             Button {
@@ -731,7 +731,7 @@ Rectangle {
                 ToolTip.text: qsTr("XIT — Transmitter Incremental Tuning.  Shifts "
                     + "only the TX by the offset; RX stays put.  PureSignal "
                     + "tracks the shifted TX automatically.")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             SpinBox {
                 id: xitSpin
@@ -759,7 +759,7 @@ Rectangle {
                 }
                 ToolTip.text: qsTr("TX offset, ±9.99 kHz.  Arrows = 1 Hz, "
                     + "wheel = 10 Hz (Shift = 100 Hz).  '0' clears it.")
-                ToolTip.visible: hovered; ToolTip.delay: 800
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 800
             }
             Button {
                 visible: xitBtn.checked
@@ -767,7 +767,7 @@ Rectangle {
                 text: qsTr("0"); font.pixelSize: 12
                 onClicked: Stream.setXitOffsetHz(0)
                 ToolTip.text: qsTr("Zero the XIT offset")
-                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
 
             Label {

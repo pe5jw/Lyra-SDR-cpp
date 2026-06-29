@@ -103,6 +103,7 @@ constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 constexpr auto kSpaceBarPttEnabled = "tx/space_bar_ptt_enabled";
 constexpr auto kAutoStartOnLaunch  = "hw/autoStartOnLaunch";
 constexpr auto kMicSource    = "tx/mic_source";
+constexpr auto kTooltipsEnabled = "ui/tooltips_enabled";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
 constexpr auto kUseTuneDrive = "tx/use_tune_drive";   // legacy (#74); migrated
@@ -283,6 +284,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // Task #157 — space-bar PTT.  Default true preserves the historical
     // always-on space-bar keying for existing operators.
     spaceBarPttEnabled_ = s.value(kSpaceBarPttEnabled, true).toBool();
+    tooltipsEnabled_    = s.value(kTooltipsEnabled, true).toBool();
     autoStartOnLaunch_  = s.value(kAutoStartOnLaunch, true).toBool();
     // Task #33 — TX mic source token.  Validate against the known
     // token list; an unknown value (older Lyra, mistyped QSettings)
@@ -1216,6 +1218,14 @@ void Prefs::setSpaceBarPttEnabled(bool on) {
         spaceBarPttEnabled_ = on;
         QSettings().setValue(kSpaceBarPttEnabled, on);
         emit spaceBarPttEnabledChanged();
+    }
+}
+
+void Prefs::setTooltipsEnabled(bool on) {
+    if (on != tooltipsEnabled_) {
+        tooltipsEnabled_ = on;
+        QSettings().setValue(kTooltipsEnabled, on);
+        emit tooltipsEnabledChanged();
     }
 }
 

@@ -38,7 +38,7 @@ Rectangle {
         checkable: true
         font.pixelSize: 12
         ToolTip.text: note
-        ToolTip.visible: hovered && note.length > 0
+        ToolTip.visible: (hovered && note.length > 0) && Prefs.tooltipsEnabled
         ToolTip.delay: 400
         background: Rectangle {
             radius: 3
@@ -76,7 +76,7 @@ Rectangle {
                 ToolTip.text: qsTr("LNA — RF input gain on the HL2's AD9866 PGA, −12…+48 dB.\n"
                     + "Higher = more sensitivity; back off on strong bands to avoid ADC overload.\n"
                     + "The S-meter compensates automatically, so changing LNA won't shift the reading.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 WheelHandler {
                     onWheel: (ev) => Stream.setLnaGainDb(
                         Stream.lnaGainDb + (ev.angleDelta.y > 0 ? 1 : -1))
@@ -109,7 +109,7 @@ Rectangle {
                 ToolTip.text: qsTr("Auto-LNA — backs the LNA off on ADC overload and "
                     + "creeps it back when the band clears (rides the overload edge).\n"
                     + "Auto roams freely; your manual setting is restored when you turn it off.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             // ADC-overload lamp — red when the HL2 front end is clipping.
             Rectangle {
@@ -119,7 +119,7 @@ Rectangle {
                 border.color: Stream.adcOverload ? "#ff8080" : "#33424e"
                 ToolTip.text: qsTr("ADC overload — the HL2 front end is clipping. "
                     + "Reduce LNA or enable Auto.")
-                ToolTip.visible: ovLampMa.containsMouse
+                ToolTip.visible: (ovLampMa.containsMouse) && Prefs.tooltipsEnabled
                 MouseArea { id: ovLampMa; anchors.fill: parent; hoverEnabled: true }
             }
 
@@ -134,7 +134,7 @@ Rectangle {
                 onMoved: WdspEngine.setAfGainDb(value)
                 ToolTip.text: qsTr("AF makeup gain (0…+40 dB) — pre-Volume output "
                     + "trim. Set a comfortable level here, then ride Vol on top.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { text: "+" + Math.round(WdspEngine.afGainDb) + qsTr(" dB")
                     color: root.cText; font.family: "Consolas"
@@ -172,7 +172,7 @@ Rectangle {
                 onToggled: WdspEngine.setMuted(checked)
                 implicitWidth: 66; implicitHeight: 24
                 ToolTip.text: qsTr("Silence output without changing the Volume slider.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
 
             Item { width: 10 }
@@ -187,7 +187,7 @@ Rectangle {
                 onMoved: WdspEngine.setBalance(Math.abs(value) < 0.06 ? 0.0 : value)
                 ToolTip.text: qsTr("Stereo balance — pan the audio left/right "
                     + "(centre = both channels equal; snaps to centre near the middle).")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
 
             Item { width: 10 }
@@ -219,7 +219,7 @@ Rectangle {
                     + "the DSP rack, before the radio's corrective ALC and TX "
                     + "bandpass — set the level with the Monitor slider. "
                     + "(HL2 jack now; a separate PC monitor device comes later.)")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Slider {
                 id: monSlider
@@ -236,7 +236,7 @@ Rectangle {
                     }
                 }
                 ToolTip.text: qsTr("Monitor level — how loud your own TX audio is in the monitor.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label {
                 text: WdspEngine.monVolume <= 0.0
@@ -271,7 +271,7 @@ Rectangle {
                          + ((i >= 0 && i < d.length) ? d[i] : "?")
                          + qsTr(" — click to switch (full setup in Settings → Audio).")
                 }
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 // #164 — styled list popup: a titled dark panel with one row
                 // per device, the current one ▶-marked / accented, hover
                 // highlight, and an as-needed scrollbar.  Reads the same
@@ -451,7 +451,7 @@ Rectangle {
                         WdspEngine.setAgcMode(order[(i + 1) % order.length])
                     }
                     ToolTip.text: qsTr("Click to cycle AGC: Off → Fast → Med → Slow.")
-                    ToolTip.visible: containsMouse
+                    ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                     ToolTip.delay: 500
                 }
             }
@@ -486,7 +486,7 @@ Rectangle {
                     ToolTip.text: qsTr("CW sidetone level — how loud you hear "
                         + "your own CW while keying (0-127). The radio's "
                         + "hardware sidetone; separate from the MON TX monitor.")
-                    ToolTip.visible: hovered
+                    ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 }
                 Label {
                     text: Stream.cwSidetoneLevel
@@ -510,7 +510,7 @@ Rectangle {
                 onMoved: WdspEngine.setNrMode(Math.round(value))
                 ToolTip.text: qsTr("NR mode 1..4 (WDSP EMNR gain function):\n"
                     + "1 Wiener+SPP   2 Wiener   3 MMSE-LSA (default)   4 trained")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { text: WdspEngine.nrMode; color: "#50d0ff"
                     font.family: "Consolas"; font.bold: true
@@ -526,7 +526,7 @@ Rectangle {
                     + "stages (artifact elimination + post-filter). On = "
                     + "noticeably less musical 'twinkle' with the voice kept "
                     + "natural (MMSE-LSA); off = rawer EMNR on quiet bands.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
 
             Item { width: 6 }
@@ -553,7 +553,7 @@ Rectangle {
                 onMoved: WdspEngine.setLmsStrength(value / 100.0)
                 ToolTip.text: qsTr("LMS strength — more taps + harder prediction.\n"
                     + "0 subtle · 50 WDSP-class default · 100 full")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { visible: WdspEngine.lmsEnabled
                     text: Math.round(WdspEngine.lmsStrength * 100) + "%"
@@ -573,7 +573,7 @@ Rectangle {
                 onMoved: WdspEngine.setSquelchThreshold(value / 100.0)
                 ToolTip.text: qsTr("Squelch threshold — higher = tighter (only stronger signals open it).\n"
                     + "Typical sweet spot 10–30; routes to SSQL / FM-SQ / AM-SQ by mode.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { visible: WdspEngine.squelchEnabled
                     text: Math.round(WdspEngine.squelchThreshold * 100)
@@ -593,7 +593,7 @@ Rectangle {
                 onMoved: WdspEngine.setNbStrength(value / 100.0)
                 ToolTip.text: qsTr("Noise-blanker strength — higher = more aggressive impulse blanking.\n"
                     + "Back off if it starts chewing CW/SSB transients.")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { visible: WdspEngine.nbEnabled
                     text: Math.round(WdspEngine.nbStrength * 100) + "%"
@@ -613,7 +613,7 @@ Rectangle {
                 Layout.preferredWidth: 110
                 onMoved: WdspEngine.setApfGainDb(value)
                 ToolTip.text: qsTr("APF peak gain — how hard the CW peak lifts the tone (3–18 dB).")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { visible: WdspEngine.apfEnabled
                     text: Math.round(WdspEngine.apfGainDb) + qsTr(" dB")
@@ -632,7 +632,7 @@ Rectangle {
                 Layout.preferredWidth: 110
                 onMoved: WdspEngine.setBinDepth(value / 100.0)
                 ToolTip.text: qsTr("Binaural depth — soundstage width on headphones (0 = mono, 100 = full Hilbert pair).")
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
             Label { visible: WdspEngine.binEnabled
                     text: Math.round(WdspEngine.binDepth * 100) + "%"
@@ -671,7 +671,7 @@ Rectangle {
                 }
                 ToolTip.text: qsTr("Capture the band's noise spectrum over the chosen "
                     + "window — do it on a quiet, signal-free frequency. Click again to cancel.")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
             ComboBox {
@@ -682,7 +682,7 @@ Rectangle {
                 currentIndex: secs.indexOf(WdspEngine.noiseCaptureSeconds)
                 onActivated: (i) => WdspEngine.setNoiseCaptureSeconds(secs[i])
                 ToolTip.text: qsTr("Capture window length.")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
             ComboBox {
@@ -695,7 +695,7 @@ Rectangle {
                 ToolTip.text: qsTr("FFT resolution — 8192 resolves wide ESSB noise finest "
                     + "(more latency); 2048 = lowest latency. Changing it clears the "
                     + "current profile (size-specific).")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
             DspToggle {
@@ -715,7 +715,7 @@ Rectangle {
                 onClicked: tunePop.open()
                 ToolTip.text: qsTr("Tune the captured-profile noise reduction "
                     + "(Strength / Floor / Smoothing).")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
                 background: Rectangle {
                     radius: 3
                     color: tunePop.opened ? "#16242e" : "#161e28"
@@ -819,7 +819,7 @@ Rectangle {
                 }
                 ToolTip.text: qsTr("Saved noise profiles — select to load (tagged with "
                     + "rate + FFT size).")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
             Button {
@@ -829,7 +829,7 @@ Rectangle {
                 opacity: enabled ? 1.0 : 0.45
                 onClicked: WdspEngine.promptSaveProfile()
                 ToolTip.text: qsTr("Save the just-captured profile under a name.")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
             Button {
                 text: qsTr("Del"); implicitHeight: 24; implicitWidth: 44
@@ -839,7 +839,7 @@ Rectangle {
                 onClicked: if (WdspEngine.noiseActiveProfile.length > 0)
                                WdspEngine.deleteNoiseProfile(WdspEngine.noiseActiveProfile)
                 ToolTip.text: qsTr("Delete the selected profile.")
-                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
             Item { Layout.fillWidth: true }

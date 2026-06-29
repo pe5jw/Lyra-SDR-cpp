@@ -182,7 +182,7 @@ Rectangle {
                     activeBorder: "#7ff7ff"
                     activeText:   "#d8fbff"
                     onClicked: Gen.recall(slot)
-                    ToolTip.visible: hovered
+                    ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                     ToolTip.text: "GEN" + slot + ":  "
                         + (Gen.slotFreq(slot) / 1.0e6).toFixed(3) + " MHz "
                         + Gen.slotMode(slot)
@@ -215,7 +215,7 @@ Rectangle {
                 Layout.preferredWidth: 50
                 chipActive: false
                 onClicked: { Gen.deactivate(); Status.show(Time.cycleNext(), 2500) }
-                ToolTip.visible: hovered
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 ToolTip.text: qsTr("HF time stations\n"
                     + "Click to cycle · right-click for the full list")
                 MouseArea {
