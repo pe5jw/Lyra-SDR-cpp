@@ -358,6 +358,43 @@ unilaterally — surface them when picking up tomorrow:
 Newest at top.  Cross-references SESSION_LOG.md for full
 arc details.
 
+### 2026-06-29 — v0.7.0: FM transmit refinements [TX-relevant slice]
+
+FM is a TX modulator concern, so it belongs here. The FM TX "beat
+Thetis" arc reached a complete stopping point and shipped in v0.7.0
+(release commit `7737d60`; the Tuner-memory headline is pure-UI and
+NOT a TX-port item — see SESSION_LOG 2026-06-29). The WDSP study-first
+discipline held: `fmmod.c` + `emph.c` read in full before touching
+shipped behaviour.
+
+- **Fix #2 — clean audio band-limit** (`b72bc50`). The FM primary
+  bandpass `bp0` runs on the AUDIO before `xfmmod`, so it is now a
+  symmetric **±3 kHz brick-wall AF low-pass** (was inheriting the wide
+  SSB/ESSB ±(dev+3k) ≈ ±8 k, over-feeding the modulator). The
+  occupied-RF (Carson) clamp stays owned by the modulator's own internal
+  bandpass, pinned via `SetTXAFMAFFreqs(txch, 300, 3000)` on FM entry.
+  Supersedes the bp0 value shipped in v0.6.0's Fix #1.
+- **FM-aware bandwidth** (`4f32ca1`). In FM the TX-BW selector + RX↔TX
+  lock are disabled (FM occupied width is derived from deviation, not a
+  chosen width); the TX BW box is a read-only `<N> k (auto)` Carson
+  readout (2·(dev+3k), live-tracks Dev). FM RX BW presets switched from
+  the SSB list to FM channel widths 8/10/12/16 k.
+- **Pre-emphasis selector Off/Comm** (`a826c8c`, fix #3a). WDSP-native
+  via `SetTXAFMEmphPosition` (position 1 = run = the 6 dB/oct comms
+  curve, voice default; 2 = bypass = true Off for data / flat HF). The
+  `xfmmod` true-FM path means the 6 dB/oct comms curve is the correct
+  pre-emphasis (read confirmed in `fmmod.c`).
+- **Native mic rack auto-bypass on FM** (`12c8991`, #3b-3). The whole
+  native TX rack (EQ + Combinator + Plate + speech enhancements)
+  auto-bypasses in FM, same forced-auto as the digital modes — a
+  multiband compressor into FM's pre-emphasis = mush. One-line predicate
+  change (`txModeBypassesRack` now fires for FM).
+- **Tuning-panel pre-emph chip + Dev→RX-BW auto-size** (`67abf05`).
+  The Tuning panel FM row mirrors the Settings pre-emph Comm/Off via the
+  shared `Stream.fmEmphasisMode` prop; the Dev spinner auto-sets RX BW
+  to the smallest FM preset ≥ Carson (RX now follows TX, Thetis-style,
+  still overridable).
+
 ### 2026-06-24 — v0.4.8: CW transmit metering (#105) [TX-relevant slice]
 
 - **CW meter RX↔TX flip + forward power** (`8347ce9`, `6cc90e0`). The
@@ -611,14 +648,33 @@ enables the gateware CWX decode (`cmd_data[24]` = the 0x0f C1 bit).
   macros field. Plus CW follow-ons (Semi/Manual host-MOX for CWX, F-key
   memories, CWFWKeyer toggle; TCI cw_terminal/cw_macros_delay/macro syntax).
 
-Other open major arcs (unchanged): **RX2 + Split** (#96–#101) and
-**PureSignal** (Stage G/H). Smaller items: VOX (#91), voice keyer (#89),
-DSP buffer/latency options (#159), FM operator-knob refinement (#107),
-parked #156 (restart-after-hard-kill, intermittent).
+**SHIPPED SINCE (TX-relevant, through v0.7.0):** CW-5 RX decoder (#173,
+v0.4.5) + decoder-accuracy A-series (v0.4.10); CW macros (#176, v0.4.5);
+TX waterfall callsign ID (#175, v0.4.5); the TX power model + fine-drive
+arc (per-band PA Gain calibration + auto-tuning watts cap, v0.6.0); and
+the **FM transmit refinements** (v0.7.0 — see the SHIPPED-WORK LOG top
+entry; FM is now at a complete stopping point, fixes #2/#3a/#3b done).
+
+**Remaining open TX-port / major arcs:** **RX2 + Split** (#96–#101),
+**PureSignal** (Stage G/H — the last big TX-port pillar; needs the TX
+analyzer port to reference parity, #140/Stage E.1 prerequisite). Smaller
+TX items still open: VOX (#91), voice keyer (#89), DSP buffer/latency
+options (#159), external CW keyer (#171), CW keyer settings panel (#186),
+#114 post-FrameComposer TX-policy plumbing, #118 Step-14 Stage 2b, #119
+non-HL2 FrameComposer branches (needs tester hardware), parked #156
+(restart-after-hard-kill, intermittent). A standalone **what's-left
+checklist** lives in `docs/REMAINING_WORK.md`.
 
 ---
 
-*Last updated: 2026-06-19 — **v0.4.1 RELEASED**: TX protection (#169 SWR cut +
+*Last updated: 2026-06-29 — **v0.7.0 RELEASED** (release commit `7737d60`).
+TX-relevant slice = the **FM transmit refinements** (fix #2 AF brick-wall
+`b72bc50` + FM-aware bandwidth `4f32ca1` + pre-emphasis Off/Comm `a826c8c`
++ mic-rack auto-bypass `12c8991` + Tuning-panel pre-emph chip / Dev→RX-BW
+`67abf05`) — FM TX "beat Thetis" arc now at a complete stopping point. The
+v0.7.0 headline (Tuner manual-ATU memory) is pure-UI, not a TX-port item.
+NEXT major TX-port arcs unchanged: PureSignal (Stage G/H, the last pillar)
++ RX2/Split (#96–#101). Prior: 2026-06-19 — **v0.4.1 RELEASED**: TX protection (#169 SWR cut +
 Fold / #170a drive cap) + PHROT (#109, WDSP `SetTXAPHROTRun` w/ digital
 auto-off). Commits `6c3e8e7`/`d99794d`/`165e176`/`eff9a5d`; main FF
 `1c6de15..eff9a5d`; tag `v0.4.1` + GitHub release + installer. #170b
