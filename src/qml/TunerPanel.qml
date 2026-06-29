@@ -89,7 +89,8 @@ Rectangle {
                 onToggled: root.editRows = checked
                 implicitWidth: 26; implicitHeight: 22
                 contentItem: Label { text: "✎"; anchors.centerIn: parent
-                    color: root.editRows ? root.cAccent : root.cMuted }
+                    font.pixelSize: 15; font.bold: true
+                    color: root.editRows ? root.cAccent : root.cText }
                 ToolTip.text: qsTr("Edit / delete stored points")
                 ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 500
             }
@@ -99,7 +100,8 @@ Rectangle {
                 implicitWidth: 26; implicitHeight: 22
                 contentItem: Label {
                     text: Tuner.collapsed ? "▸" : "▾"
-                    anchors.centerIn: parent; color: root.cMuted }
+                    anchors.centerIn: parent; font.pixelSize: 15; font.bold: true
+                    color: root.cText }
                 ToolTip.text: Tuner.collapsed ? qsTr("Expand") : qsTr("Collapse to basics")
                 ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 500
             }
