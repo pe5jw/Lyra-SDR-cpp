@@ -45,6 +45,22 @@ All on `main`, unreleased (after v0.7.0). A doc pass + one operator feature.
 - Operator decision: **ACCUMULATE** — stays on `main` unreleased; testers stay
   on v0.7.0 until the next release bundles it.
 
+### NEXT SESSION — operator-flagged (2026-06-29 EOD)
+1. **Tuner panel delete → trashcan icon.** Cosmetic: the per-row delete control
+   on the Tuner panel (currently the `−` button, with the ✓/✗ confirm) should be
+   a trashcan symbol. `src/qml/TunerPanel.qml`.
+2. **BUG — layout save/recall re-adds the Solar panel.** Saving a named panel
+   layout WITHOUT the Solar (HamQSL) panel open, then recalling it, ADDS the
+   Solar panel even though it wasn't present at save time. **Only the Solar
+   panel shows this so far** — other panels round-trip their hidden state fine.
+   Smells like the Solar panel has a default-visible/auto-show that the
+   layout-restore path doesn't suppress (cf. the Tuner base-dock "shows on
+   summon" pattern from this session — a dock that buildDocks creates
+   visible/auto and the saved hidden state doesn't override on restore).
+   Investigate the named-layout save/restore (#184 / v0.4.8) dock-visibility
+   serialization for the Solar/HamQSL panel specifically. See
+   [[reference-hamqsl-solar]].
+
 ---
 
 ## 2026-06-29 — RELEASED v0.7.0 "Tuner memory" (Tuner panel + FM polish + tooltips toggle + header tidy)
