@@ -5,6 +5,7 @@
 #include "bands.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QSettings>
 
 #ifdef _WIN32
@@ -80,8 +81,26 @@ UsbBcd::UsbBcd(QObject *parent) : QObject(parent) {
     serial_       = s.value(QStringLiteral("hw/bcdSerial"), QString()).toString();
     sixtyAsForty_ = s.value(QStringLiteral("hw/bcd60as40"), true).toBool();
     elevenAsTen_  = s.value(QStringLiteral("hw/bcd11as10"), true).toBool();
+    // Restore a previously-selected cable on startup (the equivalent of
+    // re-selecting it).  Enabling with no serial opens nothing.
     if (enabled_ && libLoaded_ && !serial_.isEmpty()) {
         openDevice();
+    }
+    // CRITICAL — release the FTDI handle on app shutdown. Lyra's teardown
+    // hard-exits (TerminateProcess/_Exit watchdog, see main.cpp) which
+    // BYPASSES ~UsbBcd(), so FT_Close would never run and the exclusive
+    // D2XX lock would leak — the cable then stays locked (no other app,
+    // not even another HPSDR program, can open it) until a full cold
+    // reboot or a cable unplug/replug. Every other must-release resource
+    // (cmaster / TX worker / mic source) is freed by an aboutToQuit handler
+    // for exactly this reason; the BCD cable must be too. closeDevice()
+    // drives the lines low (amp → bypass) then FT_Close, and is idempotent
+    // so the dtor calling it again on a clean exit is a safe no-op.
+    if (auto *a = QCoreApplication::instance()) {
+        connect(a, &QCoreApplication::aboutToQuit, this, [this]() {
+            qInfo("[usb-bcd] aboutToQuit -> releasing FTDI handle before shutdown");
+            closeDevice();
+        });
     }
 }
 
@@ -93,24 +112,32 @@ QStringList UsbBcd::devices() const {
     QStringList out;
 #ifdef _WIN32
     Ftdi &f = ftdi();
-    if (!f.ok()) {
-        return out;
-    }
-    DWORD n = 0;
-    if (f.createList(&n) != FT_OK) {
-        return out;
-    }
-    for (DWORD i = 0; i < n; ++i) {
-        DWORD flags = 0, type = 0, id = 0, loc = 0;
-        char serial[16] = {0};
-        char desc[64]   = {0};
-        FT_HANDLE h = nullptr;
-        if (f.infoDetail(i, &flags, &type, &id, &loc, serial, desc, &h) == FT_OK) {
-            const QString s = QString::fromLatin1(serial);
-            if (!s.isEmpty()) {
-                out << s;
+    if (f.ok()) {
+        DWORD n = 0;
+        if (f.createList(&n) == FT_OK) {
+            for (DWORD i = 0; i < n; ++i) {
+                DWORD flags = 0, type = 0, id = 0, loc = 0;
+                char serial[16] = {0};
+                char desc[64]   = {0};
+                FT_HANDLE h = nullptr;
+                if (f.infoDetail(i, &flags, &type, &id, &loc, serial, desc, &h)
+                        == FT_OK) {
+                    const QString s = QString::fromLatin1(serial);
+                    if (!s.isEmpty()) {
+                        out << s;
+                    }
+                }
             }
         }
+    }
+    // The info-list enumeration above NEVER opens a cable, so a device that is
+    // not currently held shows its serial normally.  But the driver reports a
+    // BLANK serial for any device that IS open, so the cable we are actively
+    // holding would otherwise vanish from its own picker (= the "(none)"
+    // symptom).  We know the serial we opened: always include it (deduped) so
+    // the dropdown reflects the cable actually in use — never hide the device.
+    if (!serial_.isEmpty() && !out.contains(serial_)) {
+        out << serial_;
     }
 #endif
     return out;
@@ -122,11 +149,18 @@ void UsbBcd::setEnabled(bool on) {
     }
     enabled_ = on;
     QSettings().setValue(QStringLiteral("hw/bcdEnabled"), on);
+    // Enabling only ARMS the feature.  The exclusive cable handle is taken
+    // when a serial is actually selected (openDevice below is the restore of
+    // an already-chosen cable — the equivalent of re-selecting it).  Disabling
+    // drives the band-data lines low and releases the handle immediately, so
+    // any other program can open the cable with no cold reboot.
     if (on) {
-        openDevice();
-        reapply();
+        if (!serial_.isEmpty()) {
+            openDevice();
+            reapply();
+        }
     } else {
-        closeDevice();   // leaves the amp's BCD lines low
+        closeDevice();
     }
     emit enabledChanged(on);
 }
@@ -135,10 +169,14 @@ void UsbBcd::setSerial(const QString &serial) {
     if (serial == serial_) {
         return;
     }
+    // A different cable is wanted: release the one currently held FIRST so we
+    // never hold two exclusive handles (and so the old cable is freed cleanly).
+    if (deviceOpen_) {
+        closeDevice();
+    }
     serial_ = serial;
     QSettings().setValue(QStringLiteral("hw/bcdSerial"), serial);
-    closeDevice();
-    if (enabled_) {
+    if (enabled_ && !serial_.isEmpty()) {
         openDevice();
         reapply();
     }
@@ -189,10 +227,16 @@ void UsbBcd::reapply() {
     }
 }
 
+// Take the exclusive cable handle for the configured serial and put it into
+// synchronous bit-bang mode: one byte write then drives the 8 output pins that
+// carry the amp's band-data lines.  Held open for as long as the cable stays
+// selected; the amp reads the static lines continuously, so we write only on a
+// real band change (see writeByte's dedup).  Idempotent — a second call while
+// already open is a no-op (deviceOpen_ guard).
 void UsbBcd::openDevice() {
 #ifdef _WIN32
     Ftdi &f = ftdi();
-    if (!f.ok() || serial_.isEmpty() || handle_) {
+    if (!f.ok() || serial_.isEmpty() || deviceOpen_ || handle_) {
         return;
     }
     FT_HANDLE h = nullptr;
@@ -203,28 +247,43 @@ void UsbBcd::openDevice() {
                 .arg(serial_));
         return;
     }
-    f.setBitMode(h, 0xFF, FT_BITMODE_SYNC_BITBANG);
+    // Baud first, then the bit-bang mode + full-output mask (0xFF = all 8 pins
+    // are outputs), matching the configure order the cable expects.
     f.setBaud(h, 921600);
-    handle_ = h;
-    lastValue_ = -1;   // force a real write next time
-    writeByte(0);      // start with all lines low (amp bypassed)
+    f.setBitMode(h, 0xFF, FT_BITMODE_SYNC_BITBANG);
+    handle_     = h;
+    deviceOpen_ = true;
+    lastValue_  = -1;   // force a real write next time
+    writeByte(0);       // start with all band-data lines low (amp bypassed)
+    qInfo("[usb-bcd] cable '%s' opened (sync bit-bang 921600) — handle now HELD",
+          qUtf8Printable(serial_));
 #endif
 }
 
+// Drive the band-data lines low (amp → bypass) THEN release the exclusive
+// handle, so another program — or a later Lyra run — can open the cable with no
+// cold reboot.  The one reliable release point: callers are disable, re-select,
+// and the aboutToQuit shutdown hook (the runtime hard-exits past destructors).
 void UsbBcd::closeDevice() {
 #ifdef _WIN32
     if (!handle_) {
+        deviceOpen_ = false;
+        qInfo("[usb-bcd] closeDevice: no cable handle held (nothing to release)");
         return;
     }
     Ftdi &f = ftdi();
+    FT_STATUS st = 1;   // non-OK unless FT_Close says otherwise
     if (f.ok()) {
         unsigned char z = 0;
         DWORD w = 0;
-        if (f.write) f.write(handle_, &z, 1, &w);   // leave lines low
-        if (f.close) f.close(handle_);
+        if (f.write) f.write(handle_, &z, 1, &w);   // lines low → amp bypass
+        if (f.close) st = f.close(handle_);
     }
-    handle_ = nullptr;
-    lastValue_ = -1;
+    qInfo("[usb-bcd] cable '%s' FT_Close -> status=%lu (0=OK) — handle RELEASED",
+          qUtf8Printable(serial_), static_cast<unsigned long>(st));
+    handle_     = nullptr;
+    deviceOpen_ = false;
+    lastValue_  = -1;
 #endif
 }
 

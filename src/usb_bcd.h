@@ -84,7 +84,8 @@ private:
     int        currentBcd_  = -1;      // -1 = nothing asserted yet
     int        lastValue_   = -1;      // last byte written (dedup)
     quint32    lastFreqHz_  = 0;
-    void      *handle_      = nullptr; // FT_HANDLE (opaque)
+    void      *handle_      = nullptr; // FT_HANDLE (opaque) — the one open cable
+    bool       deviceOpen_  = false;   // is the exclusive cable handle held now?
 };
 
 } // namespace lyra::ui
