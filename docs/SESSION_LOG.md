@@ -4,6 +4,49 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-29 (EOD) — Post-v0.7.0: docs + VAC latency posture (VarAC turnaround)
+
+All on `main`, unreleased (after v0.7.0). A doc pass + one operator feature.
+
+### Docs (`e199993`)
+- Recorded the v0.7.0 **FM transmit refinements** as a TX-relevant entry in
+  `THETIS_DIRECT_PORT_PLAN.md`'s SHIPPED-WORK LOG (FM is a TX modulator
+  concern): fix #2 AF brick-wall `b72bc50`, FM-aware bandwidth `4f32ca1`,
+  pre-emphasis Off/Comm `a826c8c`, mic-rack auto-bypass `12c8991`, Tuning-panel
+  pre-emph chip + Dev→RX-BW `67abf05`. RESUME POINTER + trailer refreshed to
+  v0.7.0 (PureSignal + RX2/Split = remaining major TX-port arcs). Regen plan
+  PDF/DOCX.
+- New `docs/REMAINING_WORK.md` (+ PDF): standalone what's-left checklist — much
+  smaller now (two big arcs left, RX2/Split + PureSignal, plus TX/CW
+  follow-ons). Cleaned two stale tasks (CW macros #176, Spots #182 — shipped).
+
+### VAC latency posture — `dc9c4c2` (#158 follow-up, operator-bench-confirmed
+### "works better for VarAC")
+- Operator wanted to squeeze VAC TX↔RX turnaround for VarAC/ARQ (runs 25 ms
+  rings in Thetis). The IVAC engine already ported the full latency surface
+  (`SetIVACInLatency`/`OutLatency`/`PAInLatency`/`PAOutLatency` + `vac_size`,
+  driven by hardcoded `vac1LatencyMs_=120`/`vac1VacSize_=2048`); this exposed it.
+- **Settings → Audio → VAC1** gains: **Buffer size** dropdown (128..8192, each
+  ms-labelled at 48 kHz), **Latency** spinbox (5..500 ms — rmatchV ring depth;
+  one knob feeds all four reference latency fields), + a live **Monitor** line
+  (ring fill % + overflow/underflow per direction, from `getIVACdiags` on a
+  500 ms QTimer — the reference VAC1 Monitor). Drop latency until counters
+  twitch, back off.
+- `setVac1LatencyMs`/`setVac1VacSize` persist (`vac1/latencyMs`, `vac1/vacSize`)
+  + reopen VAC when live via the proven `rebuildVac1` path; `vac1Diags()` =
+  guarded diag read.
+- **Carried per-profile (Profile schema v4→v5, tolerant-load):** a tight VarAC
+  profile keeps low latency while SSB stays at 2048/120 — flip profiles, flip
+  the whole VAC posture. USER_GUIDE "Latency (for fast ARQ modes like VarAC)"
+  note added.
+- GOTCHA: reference `ivac.c:795` type comment is REVERSED vs its code; the
+  TO/FROM VAC diag labels follow the code (`rmatchOUT`=TO type0 /
+  `rmatchIN`=FROM type1, Ivac.cpp:797). Flag if they read backwards at bench.
+- Operator decision: **ACCUMULATE** — stays on `main` unreleased; testers stay
+  on v0.7.0 until the next release bundles it.
+
+---
+
 ## 2026-06-29 — RELEASED v0.7.0 "Tuner memory" (Tuner panel + FM polish + tooltips toggle + header tidy)
 
 Cut **v0.7.0** off `main` (bump `CMakeLists.txt` + `installer/lyra.iss`
