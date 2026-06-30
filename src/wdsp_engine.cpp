@@ -406,6 +406,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
         s.value(QStringLiteral("vac1/rxGainDb"), 0.0).toDouble(), -60.0, 20.0);
     vac1TxGainDb_ = std::clamp(
         s.value(QStringLiteral("vac1/txGainDb"), 3.0).toDouble(), -60.0, 20.0);
+    // VAC latency posture (#158 follow-up) — rmatchV ring depth (ms) + PA block
+    // size (frames).  Operator-tunable to squeeze ARQ turnaround (VarAC); also
+    // carried per-profile (schema v5).  Defaults = reference (120 ms / 2048).
+    vac1LatencyMs_ = std::clamp(
+        s.value(QStringLiteral("vac1/latencyMs"), 120).toInt(), 5, 500);
+    vac1VacSize_ = std::clamp(
+        s.value(QStringLiteral("vac1/vacSize"), 2048).toInt(), 64, 8192);
     // Mono-combine the captured VAC input (I=Q=L+R) before the TX modulator,
     // matching the reference VAC "combine input" + the TCI mic convention
     // (#67).  Default ON so a mic routed to either VAC channel reaches the
@@ -1558,6 +1565,65 @@ void WdspEngine::setVac1RxGainDb(double db)
         }
     }
     emit vac1Changed();
+}
+
+void WdspEngine::setVac1LatencyMs(int ms)
+{
+    ms = std::clamp(ms, 5, 500);
+    if (ms == vac1LatencyMs_) {
+        return;
+    }
+    vac1LatencyMs_ = ms;
+    QSettings().setValue(QStringLiteral("vac1/latencyMs"), ms);
+    // The rmatchV ring depth + PA suggested latency are set at create_ivac /
+    // SetIVAC*Latency time, so a change only takes effect on a VAC rebuild.
+    // Reopen if live (same reconcile path as a device change).
+    if (vac1ShouldBeOn()) {
+        rebuildVac1();
+    }
+    emit vac1Changed();
+}
+
+void WdspEngine::setVac1VacSize(int frames)
+{
+    // Reference VAC buffer choices are powers of two; the UI offers those.
+    // Clamp to the engine's create_ivac range; non-pow2 still works.
+    frames = std::clamp(frames, 64, 8192);
+    if (frames == vac1VacSize_) {
+        return;
+    }
+    vac1VacSize_ = frames;
+    QSettings().setValue(QStringLiteral("vac1/vacSize"), frames);
+    if (vac1ShouldBeOn()) {
+        rebuildVac1();   // vac_size feeds create_ivac → reopen to apply
+    }
+    emit vac1Changed();
+}
+
+QVariantMap WdspEngine::vac1Diags()
+{
+    QVariantMap m;
+    std::lock_guard<std::mutex> lk(vacMtx_);
+    const bool active = vac1Active_.load(std::memory_order_relaxed) &&
+                        lyra::wire::ivacGet(kVac1Id) != nullptr;
+    m.insert(QStringLiteral("active"), active);
+    if (!active) {
+        return m;
+    }
+    auto read = [&](int type, const char *uKey, const char *oKey,
+                    const char *pctKey) {
+        int under = 0, over = 0, ringsize = 0, nring = 0;
+        double var = 1.0;
+        lyra::wire::getIVACdiags(kVac1Id, type, &under, &over, &var,
+                                 &ringsize, &nring);
+        m.insert(QString::fromLatin1(uKey), under);
+        m.insert(QString::fromLatin1(oKey), over);
+        m.insert(QString::fromLatin1(pctKey),
+                 ringsize > 0 ? (nring * 100 / ringsize) : 0);
+    };
+    read(0, "outUnder", "outOver", "outPct");   // rmatchOUT = TO VAC (RX→cable)
+    read(1, "inUnder",  "inOver",  "inPct");    // rmatchIN  = FROM VAC (cable→TX)
+    return m;
 }
 
 void WdspEngine::setVac1CombineInput(bool on)

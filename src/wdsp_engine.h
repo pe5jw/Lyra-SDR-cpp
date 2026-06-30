@@ -651,6 +651,23 @@ public:
     Q_INVOKABLE QStringList vac1InputDevices() const;
     Q_INVOKABLE void setVac1InputDeviceName(const QString &name);
     Q_INVOKABLE void setVac1TxGainDb(double db);
+    // VAC latency posture (#158 follow-up) — operator-tunable to squeeze the
+    // TX→RX turnaround for ARQ digital modes (VarAC).  vac1LatencyMs = rmatchV
+    // ring depth (+ PA suggested latency); vac1VacSize = PortAudio block.  Both
+    // are create-time / ring-rebuild params, so the setters reopen VAC when
+    // live (like the device setters).  Carried per-profile (schema v5).
+    int     vac1LatencyMs() const         { return vac1LatencyMs_; }
+    int     vac1VacSize() const           { return vac1VacSize_; }
+    Q_INVOKABLE void setVac1LatencyMs(int ms);
+    Q_INVOKABLE void setVac1VacSize(int frames);
+    // Live rmatchV ring diagnostics for the Settings VAC tab (reference VAC1
+    // Monitor: overflows / underflows / ring fill %, per direction) — lets the
+    // operator drop the latency until the counters just twitch, then back off.
+    // Keys: {active, outUnder, outOver, outPct, inUnder, inOver, inPct}.
+    // type 0 = rmatchOUT = TO VAC (RX→cable); type 1 = rmatchIN = FROM VAC
+    // (cable→TX).  (The reference ivac.c comment reverses these; the code's
+    // rmatchOUT/IN mapping is authoritative — Ivac.cpp:797-800.)
+    Q_INVOKABLE QVariantMap vac1Diags();
     bool    vac1CombineInput() const      { return vac1CombineInput_; }
     Q_INVOKABLE void setVac1CombineInput(bool on);
     // #161 — "Mute will mute VAC".  Reference MuteWillMuteVAC1: when set, the

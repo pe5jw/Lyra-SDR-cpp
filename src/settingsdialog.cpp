@@ -359,6 +359,70 @@ QWidget *SettingsDialog::buildAudioTab() {
             "the transmitter (reference default +3 dB)."));
         vf->addRow(tr("TX gain"), vacTxGain);
 
+        // ── Latency posture (#158 follow-up) — squeeze ARQ turnaround ──
+        // Buffer size = the PortAudio block (fixed ms/block); latency = the
+        // rmatchV ring depth. Both ride per-profile (schema v5), so a VarAC
+        // profile can carry tight rings while SSB stays fat & safe.
+        auto *vacBuf = new QComboBox(grp);
+        struct BufChoice { int frames; const char *label; };
+        static const BufChoice kBufChoices[] = {
+            {128,  "128 (~3 ms)"},   {256,  "256 (~5 ms)"},
+            {512,  "512 (~11 ms)"},  {1024, "1024 (~21 ms)"},
+            {2048, "2048 (~43 ms)"}, {4096, "4096 (~85 ms)"},
+            {8192, "8192 (~171 ms)"},
+        };
+        for (const auto &c : kBufChoices)
+            vacBuf->addItem(QString::fromLatin1(c.label), c.frames);
+        {
+            const int i = vacBuf->findData(engine_->vac1VacSize());
+            vacBuf->setCurrentIndex(i >= 0 ? i : 4);   // default 2048
+        }
+        vacBuf->setToolTip(tr(
+            "PortAudio buffer block (at 48 kHz, ms shown).  Smaller = lower "
+            "TX↔RX turnaround (better for VarAC / ARQ digital), but more CPU "
+            "and less dropout margin.  2048 is the safe default for SSB/voice."));
+        vf->addRow(tr("Buffer size"), vacBuf);
+
+        auto *vacLat = new QSpinBox(grp);
+        vacLat->setRange(5, 500);
+        vacLat->setSingleStep(5);
+        vacLat->setSuffix(tr(" ms"));
+        vacLat->setValue(engine_->vac1LatencyMs());
+        vacLat->setToolTip(tr(
+            "VAC ring-buffer latency (each direction).  Lower it to shave "
+            "turnaround for VarAC — but keep it above ~2× the buffer-block "
+            "time, or the ring underflows (watch the monitor below).  120 ms "
+            "is the safe default."));
+        vf->addRow(tr("Latency"), vacLat);
+
+        // Live ring monitor (reference VAC1 Monitor): drop the latency until the
+        // overflow/underflow counters just start to twitch, then back off.
+        auto *vacMon = new QLabel(grp);
+        vacMon->setWordWrap(true);
+        vacMon->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+        vf->addRow(tr("Monitor"), vacMon);
+        auto refreshMon = [this, vacMon]() {
+            const QVariantMap d = engine_->vac1Diags();
+            if (!d.value(QStringLiteral("active")).toBool()) {
+                vacMon->setText(tr("VAC not running — enable it to see ring fill / "
+                                   "overflow / underflow."));
+                return;
+            }
+            vacMon->setText(tr("TO VAC: %1%% full · %2 ovf / %3 unf      "
+                               "FROM VAC: %4%% full · %5 ovf / %6 unf")
+                .arg(d.value(QStringLiteral("outPct")).toInt())
+                .arg(d.value(QStringLiteral("outOver")).toInt())
+                .arg(d.value(QStringLiteral("outUnder")).toInt())
+                .arg(d.value(QStringLiteral("inPct")).toInt())
+                .arg(d.value(QStringLiteral("inOver")).toInt())
+                .arg(d.value(QStringLiteral("inUnder")).toInt()));
+        };
+        refreshMon();
+        auto *vacMonTimer = new QTimer(grp);
+        vacMonTimer->setInterval(500);
+        connect(vacMonTimer, &QTimer::timeout, vacMon, refreshMon);
+        vacMonTimer->start();
+
         auto *vacCombine = new QCheckBox(tr("Combine input (mono)"), grp);
         vacCombine->setChecked(engine_->vac1CombineInput());
         vacCombine->setToolTip(tr("Sum the captured left + right channels to "
@@ -422,6 +486,12 @@ QWidget *SettingsDialog::buildAudioTab() {
                 });
         connect(vacTxGain, qOverload<int>(&QSpinBox::valueChanged), engine_,
                 [this](int db) { engine_->setVac1TxGainDb(db); });
+        connect(vacBuf, qOverload<int>(&QComboBox::activated), engine_,
+                [this, vacBuf](int) {
+                    engine_->setVac1VacSize(vacBuf->currentData().toInt());
+                });
+        connect(vacLat, qOverload<int>(&QSpinBox::valueChanged), engine_,
+                [this](int ms) { engine_->setVac1LatencyMs(ms); });
         connect(vacCombine, &QCheckBox::toggled, engine_,
                 [this](bool on) { engine_->setVac1CombineInput(on); });
         connect(vacMuteVac, &QCheckBox::toggled, engine_,
@@ -429,7 +499,20 @@ QWidget *SettingsDialog::buildAudioTab() {
 
         // ← engine (reflect programmatic/external changes)
         connect(engine_, &lyra::dsp::WdspEngine::vac1Changed, grp,
-                [this, vacEnable, vacAuto, vacGain, vacTxGain, vacCombine]() {
+                [this, vacEnable, vacAuto, vacGain, vacTxGain, vacCombine,
+                 vacBuf, vacLat]() {
+                    // Latency posture (profile load / external change) → reflect.
+                    if (const int bi = vacBuf->findData(engine_->vac1VacSize());
+                        bi >= 0 && vacBuf->currentIndex() != bi) {
+                        vacBuf->blockSignals(true);
+                        vacBuf->setCurrentIndex(bi);
+                        vacBuf->blockSignals(false);
+                    }
+                    if (vacLat->value() != engine_->vac1LatencyMs()) {
+                        vacLat->blockSignals(true);
+                        vacLat->setValue(engine_->vac1LatencyMs());
+                        vacLat->blockSignals(false);
+                    }
                     if (vacEnable->isChecked() != engine_->vac1Enabled()) {
                         vacEnable->blockSignals(true);
                         vacEnable->setChecked(engine_->vac1Enabled());

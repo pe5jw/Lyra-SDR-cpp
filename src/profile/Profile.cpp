@@ -24,6 +24,8 @@ QJsonObject Profile::toJson() const {
     o["vac1AutoDigital"] = vac1AutoDigital;
     o["vac1RxGainDb"]    = vac1RxGainDb;
     o["vac1TxGainDb"]    = vac1TxGainDb;
+    o["vac1LatencyMs"]   = vac1LatencyMs;   // v5 #158
+    o["vac1VacSize"]     = vac1VacSize;      // v5 #158
     o["agcMode"]       = agcMode;
     o["autoMuteOnTx"]  = autoMuteOnTx;
     o["alcMaxGainLinear"]     = alcMaxGainLinear;
@@ -71,6 +73,8 @@ Profile Profile::fromJson(const QString &name, const QJsonObject &o) {
     if (o.contains("vac1AutoDigital")) p.vac1AutoDigital = o["vac1AutoDigital"].toBool(p.vac1AutoDigital);
     if (o.contains("vac1RxGainDb"))    p.vac1RxGainDb    = o["vac1RxGainDb"].toDouble(p.vac1RxGainDb);
     if (o.contains("vac1TxGainDb"))    p.vac1TxGainDb    = o["vac1TxGainDb"].toDouble(p.vac1TxGainDb);
+    if (o.contains("vac1LatencyMs"))   p.vac1LatencyMs   = o["vac1LatencyMs"].toInt(p.vac1LatencyMs);
+    if (o.contains("vac1VacSize"))     p.vac1VacSize     = o["vac1VacSize"].toInt(p.vac1VacSize);
     if (o.contains("agcMode"))       p.agcMode       = o["agcMode"].toString(p.agcMode);
     if (o.contains("autoMuteOnTx"))  p.autoMuteOnTx  = o["autoMuteOnTx"].toBool(p.autoMuteOnTx);
     if (o.contains("alcMaxGainLinear"))     p.alcMaxGainLinear     = o["alcMaxGainLinear"].toDouble(p.alcMaxGainLinear);
@@ -113,6 +117,8 @@ bool Profile::sameValues(const Profile &b) const {
         && vac1AutoDigital == b.vac1AutoDigital
         && dEq(vac1RxGainDb, b.vac1RxGainDb)
         && dEq(vac1TxGainDb, b.vac1TxGainDb)
+        && vac1LatencyMs == b.vac1LatencyMs
+        && vac1VacSize == b.vac1VacSize
         && agcMode == b.agcMode
         && autoMuteOnTx == b.autoMuteOnTx
         && dEq(alcMaxGainLinear, b.alcMaxGainLinear)

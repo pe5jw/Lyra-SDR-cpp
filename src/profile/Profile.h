@@ -29,11 +29,12 @@ namespace lyra::profile {
 
 struct Profile {
     QString name;
-    int     schemaVersion = 4;   // v2 (#160): ALC max gain + Leveler trio
+    int     schemaVersion = 5;   // v2 (#160): ALC max gain + Leveler trio
                                  // v3 (#49):  + native rack blobs (eq/speech/
                                  //            combinator/plate)
                                  // v4 (#107/#109/#93): + PHROT, FM deviation,
                                  //            CTCSS enable/tone, AM carrier %
+                                 // v5 (#158): + VAC ring-latency + buffer size
 
     // --- TX/RX bandwidth ---
     // NOTE: the operating mode is deliberately NOT a profile field.
@@ -80,6 +81,14 @@ struct Profile {
     bool    vac1AutoDigital = false;
     double  vac1RxGainDb    = 0.0;
     double  vac1TxGainDb    = 3.0;
+    // VAC latency posture (v5) — operator-tunable rmatchV ring depth (ms) +
+    // PortAudio buffer size (frames) so a low-latency digital profile (VarAC /
+    // ARQ turnaround) carries tight rings + a small buffer while an SSB/voice
+    // profile keeps the safe fat defaults.  Flipping profiles flips the whole
+    // VAC latency posture with the chain.  Defaults match the engine (120 ms /
+    // 2048); the engine setters clamp (latency 5..500 ms, size 64..8192).
+    int     vac1LatencyMs   = 120;
+    int     vac1VacSize     = 2048;
 
     // --- DSP / dynamics ---
     QString agcMode = QStringLiteral("med");     // off/fast/med/slow

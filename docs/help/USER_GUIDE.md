@@ -841,6 +841,24 @@ VB-CABLE) — it appears as both a playback and a recording device.
 There's an option to auto-enable VAC1 when you switch to a digital mode.
 VAC1 also carries **PC → TX** (covered in *Setting up your mic input*).
 
+**Latency (for fast ARQ modes like VarAC).** Two controls tune how much
+buffering the cable carries:
+
+- **Buffer size** — the audio block (smaller = lower latency, more CPU, less
+  dropout margin). 2048 is the safe default for SSB/voice.
+- **Latency** — the ring‑buffer depth in each direction.
+
+For a quick‑turnaround digital mode (VarAC and other ARQ modes), a smaller
+buffer + lower latency shaves the TX↔RX turnaround. Keep the latency above
+roughly **2× the buffer‑block time** or the ring underflows. Use the live
+**Monitor** line below the controls — it shows ring fill % plus
+overflow/underflow per direction; drop the latency until the over/underflow
+counters just start to climb, then back off one step.
+
+Both values are **saved with the profile** (schema v5), so a tight VarAC
+profile and a fat, safe SSB profile each keep their own latency posture —
+switching profiles switches the whole VAC setup with them.
+
 ### Hearing your own transmit
 
 On the Audio panel, **MON TX** monitors your own processed TX audio (set

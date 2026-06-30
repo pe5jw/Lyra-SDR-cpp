@@ -766,6 +766,8 @@ int main(int argc, char *argv[])
         p.vac1AutoDigital = wdspEngine->vac1AutoDigital();
         p.vac1RxGainDb    = wdspEngine->vac1RxGainDb();
         p.vac1TxGainDb    = wdspEngine->vac1TxGainDb();
+        p.vac1LatencyMs   = wdspEngine->vac1LatencyMs();   // v5 #158
+        p.vac1VacSize     = wdspEngine->vac1VacSize();      // v5 #158
         p.agcMode         = wdspEngine->agcMode();
         p.autoMuteOnTx    = wdspEngine->autoMuteOnTx();
         // #160: ALC ceiling + Leveler trio — operator runs leveler ON for
@@ -810,6 +812,12 @@ int main(int argc, char *argv[])
         // stay global (Settings → Audio) — not profile fields.
         wdspEngine->setVac1RxGainDb(p.vac1RxGainDb);
         wdspEngine->setVac1TxGainDb(p.vac1TxGainDb);
+        // Latency posture (v5 #158) BEFORE enable: while VAC is off these just
+        // store the values, so the single rebuild that setVac1Enabled fires
+        // picks up the profile's ring depth + buffer size in one shot (if VAC
+        // is already live and only these changed, the setters rebuild here).
+        wdspEngine->setVac1LatencyMs(p.vac1LatencyMs);
+        wdspEngine->setVac1VacSize(p.vac1VacSize);
         wdspEngine->setVac1AutoDigital(p.vac1AutoDigital);
         wdspEngine->setVac1Enabled(p.vac1Enabled);
         prefs->setMicSource(p.micSource);   // fires the applyTciTxSource gate above
