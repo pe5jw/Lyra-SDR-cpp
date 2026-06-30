@@ -75,6 +75,12 @@ bool ProfileManager::load(const QString &name) {
     return true;
 }
 
+bool ProfileManager::loadByUser(const QString &name) {
+    const bool ok = load(name);
+    if (ok) emit userLoaded(name);   // explicit pick → companion app may launch
+    return ok;
+}
+
 void ProfileManager::remove(const QString &name) {
     if (!store_.contains(name)) return;
     const bool wasActive = (store_.active() == name);

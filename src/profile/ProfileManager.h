@@ -44,6 +44,12 @@ public:
     // Recall a stored profile (apply its values + make active).  GUARDED:
     // a no-op while TX is active.  Returns true if applied.
     Q_INVOKABLE bool load(const QString &name);
+    // Explicit OPERATOR selection (Settings "Load" + the front quick-recall
+    // dock): applies the profile AND emits userLoaded() so a companion app can
+    // launch.  Auto-recall (onModeChanged) + startup-default call load()
+    // directly and so NEVER fire userLoaded — only a deliberate pick launches
+    // the companion app (#193).
+    Q_INVOKABLE bool loadByUser(const QString &name);
     Q_INVOKABLE void remove(const QString &name);
     Q_INVOKABLE void rename(const QString &oldName, const QString &newName);
     Q_INVOKABLE void setDefault(const QString &name);
@@ -77,6 +83,9 @@ signals:
     void namesChanged();
     void activeChanged(const QString &name);
     void modifiedChanged(bool modified);
+    // Emitted ONLY on an explicit operator pick (loadByUser) — drives the
+    // companion-app launch (#193).  NOT emitted by auto-recall / startup.
+    void userLoaded(const QString &name);
 
 private:
     void setBaselineFromActive();

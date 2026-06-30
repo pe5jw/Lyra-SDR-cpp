@@ -16,7 +16,7 @@ class QTabWidget;
 namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
 namespace lyra::wx  { class WxService; }
-namespace lyra::profile { class ProfileManager; }
+namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class CatServer; }
 
 namespace lyra::ui {
@@ -47,6 +47,7 @@ public:
                    SpotHoleFeeder *spotHole, DxClusterFeeder *dxCluster,
                    MeterModel *meter, TunerMemory *tuner,
                    lyra::profile::ProfileManager *profiles,
+                   lyra::profile::CompanionLauncher *companion,
                    lyra::cat::SerialPtt *serialPtt,
                    const QList<lyra::cat::CatServer *> &catServers,
                    QWidget *parent = nullptr);
@@ -91,6 +92,7 @@ private:
     MeterModel             *meter_     = nullptr;
     TunerMemory            *tuner_     = nullptr;
     lyra::profile::ProfileManager *profiles_ = nullptr;
+    lyra::profile::CompanionLauncher *companion_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;
     QList<lyra::cat::CatServer *> catServers_;
     QTabWidget             *tabs_      = nullptr;

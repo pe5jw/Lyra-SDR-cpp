@@ -54,6 +54,8 @@
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QFileDialog>
+#include <QDir>
+#include <QSignalBlocker>
 #include "memorystore.h"
 #include "eibistore.h"
 #include "tci_server.h"
@@ -66,6 +68,7 @@
 #include "metermodel.h"
 #include "tunermemory.h"
 #include "profile/ProfileManager.h"
+#include "profile/CompanionLauncher.h"
 #include <QDesktopServices>
 #include <memory>
 #include <QVBoxLayout>
@@ -89,6 +92,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                DxClusterFeeder *dxCluster, MeterModel *meter,
                                TunerMemory *tuner,
                                lyra::profile::ProfileManager *profiles,
+                               lyra::profile::CompanionLauncher *companion,
                                lyra::cat::SerialPtt *serialPtt,
                                const QList<lyra::cat::CatServer *> &catServers,
                                QWidget *parent)
@@ -96,8 +100,8 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
-      meter_(meter), tuner_(tuner), profiles_(profiles), serialPtt_(serialPtt),
-      catServers_(catServers) {
+      meter_(meter), tuner_(tuner), profiles_(profiles), companion_(companion),
+      serialPtt_(serialPtt), catServers_(catServers) {
     setWindowTitle(tr("Lyra — Settings"));
     // Open big enough to show a full tab — the widest tabs are 2-column
     // (Visuals / TX) and were forcing both scrollbars at the old 700×640.
@@ -6509,26 +6513,137 @@ QWidget *SettingsDialog::buildProfilesTab() {
     auto *statusLbl = new QLabel(page);
     outer->addWidget(statusLbl);
 
+    // Name of the currently-selected list profile ("" if none).
+    auto selectedName = [list]() -> QString {
+        auto *item = list->currentItem();
+        return item ? item->data(Qt::UserRole).toString() : QString();
+    };
+
+    // --- companion-app launch (per-machine, NOT part of the profile) ---
+    // SECURITY: this binding lives in QSettings under
+    // profileLaunch/<profile>/* and is filtered out of every exported
+    // .lyra — a shared profile carries the DSP chain only, never a
+    // "run this exe".  It fires ONLY when the operator explicitly picks
+    // the profile (Load / the panel combo), never on auto-recall.
+    auto *compGrp = new QGroupBox(
+        tr("Companion app — launches when you select this profile"), page);
+    auto *compForm = new QFormLayout(compGrp);
+    auto *compEnable = new QCheckBox(
+        tr("Launch a program when this profile is selected"), compGrp);
+    compForm->addRow(compEnable);
+
+    auto *compName = new QLineEdit(compGrp);
+    compName->setPlaceholderText(tr("e.g. VarAC"));
+    compForm->addRow(tr("Program name"), compName);
+
+    auto *cmdRow  = new QHBoxLayout();
+    auto *compCmd = new QLineEdit(compGrp);
+    compCmd->setPlaceholderText(tr("Full path to the .exe / .bat / .cmd"));
+    auto *browseBtn = new QPushButton(tr("Browse…"), compGrp);
+    cmdRow->addWidget(compCmd, 1);
+    cmdRow->addWidget(browseBtn);
+    compForm->addRow(tr("Program"), cmdRow);
+
+    auto *compArgs = new QLineEdit(compGrp);
+    compArgs->setPlaceholderText(tr("Optional command-line arguments"));
+    compForm->addRow(tr("Arguments"), compArgs);
+
+    auto *delayRow  = new QHBoxLayout();
+    auto *compDelay = new QDoubleSpinBox(compGrp);
+    compDelay->setRange(0.0, 60.0);
+    compDelay->setSingleStep(0.5);
+    compDelay->setDecimals(1);
+    compDelay->setSuffix(tr(" s"));
+    compDelay->setToolTip(tr("Wait this long after the profile applies "
+                             "before launching, so the radio settles first."));
+    auto *testBtn = new QPushButton(tr("Test launch"), compGrp);
+    delayRow->addWidget(compDelay);
+    delayRow->addStretch(1);
+    delayRow->addWidget(testBtn);
+    compForm->addRow(tr("Start delay"), delayRow);
+
+    auto *compHint = new QLabel(
+        tr("This binding stays on this PC only — it is never written into an "
+           "exported profile.  Close the program yourself when you switch away."),
+        compGrp);
+    compHint->setWordWrap(true);
+    {
+        QFont hf = compHint->font();
+        hf.setPointSizeF(hf.pointSizeF() * 0.92);
+        compHint->setFont(hf);
+    }
+    compForm->addRow(compHint);
+    outer->addWidget(compGrp);
+
     // --- per-family auto-recall bindings ---
     // Sidebands collapse (USB/LSB -> SSB, CWU/CWL -> CW, DIGU/DIGL ->
     // Digital); AM/SAM/DSB/FM stand alone.  The recalled profile carries
     // no mode field, so an auto-recall changes the chain but leaves the
     // operator on the sideband they switched to (Thetis-faithful).
+    // Two compact columns with width-capped combos (no full-width boxes).
     const QStringList kFamilies = lyra::profile::ProfileManager::modeFamilies();
     auto *bindGrp = new QGroupBox(tr("Auto-recall by mode family"), page);
-    auto *bindForm = new QFormLayout(bindGrp);
+    auto *bindGrid = new QGridLayout(bindGrp);
     auto *modeCombos = new QHash<QString, QComboBox *>();
+    int bindRow = 0, bindCol = 0;
     for (const QString &m : kFamilies) {
+        auto *lbl = new QLabel(m, bindGrp);
         auto *cb = new QComboBox(bindGrp);
+        cb->setMaximumWidth(180);
+        cb->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         modeCombos->insert(m, cb);
-        bindForm->addRow(m, cb);
+        bindGrid->addWidget(lbl, bindRow, bindCol * 2);
+        bindGrid->addWidget(cb,  bindRow, bindCol * 2 + 1);
+        if (++bindCol == 2) { bindCol = 0; ++bindRow; }
     }
+    bindGrid->setColumnStretch(4, 1);   // push the 2 columns to the left
     outer->addWidget(bindGrp);
     outer->addStretch(1);
 
+    // Push the selected profile's companion fields into the editor and
+    // gate the sub-controls on selection + the enable tick.
+    auto syncCompanion = [this, selectedName, compGrp, compEnable, compName,
+                          compCmd, browseBtn, compArgs, compDelay, testBtn]() {
+        const QString name = selectedName();
+        const bool haveSel = !name.isEmpty();
+        compGrp->setEnabled(haveSel);
+        const lyra::profile::CompanionLauncher::Config c =
+            haveSel ? companion_->config(name)
+                    : lyra::profile::CompanionLauncher::Config{};
+        const QSignalBlocker b1(compEnable), b2(compName), b3(compCmd),
+            b4(compArgs), b5(compDelay);
+        compEnable->setChecked(c.enabled);
+        compName->setText(c.name);
+        compCmd->setText(c.command);
+        compArgs->setText(c.args);
+        compDelay->setValue(c.delayMs / 1000.0);
+        const bool on = haveSel && c.enabled;
+        for (QWidget *w : {static_cast<QWidget *>(compName),
+                           static_cast<QWidget *>(compCmd),
+                           static_cast<QWidget *>(browseBtn),
+                           static_cast<QWidget *>(compArgs),
+                           static_cast<QWidget *>(compDelay),
+                           static_cast<QWidget *>(testBtn)})
+            w->setEnabled(on);
+    };
+
+    // Persist the editor fields back onto the selected profile's binding.
+    auto saveCompanion = [this, selectedName, compEnable, compName, compCmd,
+                          compArgs, compDelay]() {
+        const QString name = selectedName();
+        if (name.isEmpty()) return;
+        lyra::profile::CompanionLauncher::Config c;
+        c.enabled = compEnable->isChecked();
+        c.name    = compName->text().trimmed();
+        c.command = compCmd->text().trimmed();
+        c.args    = compArgs->text().trimmed();
+        c.delayMs = static_cast<int>(qRound(compDelay->value() * 1000.0));
+        companion_->setConfig(name, c);
+    };
+
     // Repopulate the list + per-mode combos + status from the store.
     // Captured raw pointers outlive the closures (children of the dialog).
-    auto refresh = [this, list, statusLbl, modeCombos]() {
+    auto refresh = [this, list, statusLbl, modeCombos, syncCompanion]() {
         const QStringList names = profiles_->names();
         const QString active = profiles_->activeName();
         const QString def    = profiles_->defaultName();
@@ -6571,12 +6686,8 @@ QWidget *SettingsDialog::buildProfilesTab() {
             cb->setCurrentIndex(idx < 0 ? 0 : idx);
             cb->blockSignals(false);
         }
-    };
 
-    // Name of the currently-selected list profile ("" if none).
-    auto selectedName = [list]() -> QString {
-        auto *item = list->currentItem();
-        return item ? item->data(Qt::UserRole).toString() : QString();
+        syncCompanion();   // selection may have moved with the list rebuild
     };
 
     refresh();
@@ -6619,7 +6730,9 @@ QWidget *SettingsDialog::buildProfilesTab() {
             [this, selectedName, refresh]() {
         const QString name = selectedName();
         if (name.isEmpty()) return;
-        if (!profiles_->load(name)) {
+        // loadByUser() == explicit operator pick → fires the companion
+        // launch (load() alone, used by auto-recall, never does).
+        if (!profiles_->loadByUser(name)) {
             QMessageBox::information(
                 this, tr("Can’t switch now"),
                 tr("Profiles can’t be switched while transmitting.  "
@@ -6637,8 +6750,10 @@ QWidget *SettingsDialog::buildProfilesTab() {
             this, tr("Rename Profile"), tr("New name:"),
             QLineEdit::Normal, old, &ok);
         const QString trimmed = name.trimmed();
-        if (ok && !trimmed.isEmpty() && trimmed != old)
+        if (ok && !trimmed.isEmpty() && trimmed != old) {
             profiles_->rename(old, trimmed);
+            companion_->renameBinding(old, trimmed);   // keep the launch binding
+        }
         refresh();
     });
 
@@ -6651,6 +6766,7 @@ QWidget *SettingsDialog::buildProfilesTab() {
                 tr("Delete profile “%1”?").arg(name))
             == QMessageBox::Yes) {
             profiles_->remove(name);
+            companion_->removeBinding(name);   // drop the launch binding too
             refresh();
         }
     });
@@ -6674,6 +6790,52 @@ QWidget *SettingsDialog::buildProfilesTab() {
                 profiles_->bindMode(mode, cb->currentText());
         });
     }
+
+    // --- companion-app field wiring ---
+    // Reload the fields whenever the list selection moves.
+    connect(list, &QListWidget::currentItemChanged, this,
+            [syncCompanion](QListWidgetItem *, QListWidgetItem *) {
+        syncCompanion();
+    });
+
+    // Enable tick: persist + re-gate the sub-controls.
+    connect(compEnable, &QCheckBox::toggled, this,
+            [saveCompanion, syncCompanion](bool) {
+        saveCompanion();
+        syncCompanion();
+    });
+
+    // Text + delay edits persist on change.
+    connect(compName, &QLineEdit::editingFinished, this,
+            [saveCompanion]() { saveCompanion(); });
+    connect(compCmd, &QLineEdit::editingFinished, this,
+            [saveCompanion]() { saveCompanion(); });
+    connect(compArgs, &QLineEdit::editingFinished, this,
+            [saveCompanion]() { saveCompanion(); });
+    connect(compDelay, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [saveCompanion](double) { saveCompanion(); });
+
+    connect(browseBtn, &QPushButton::clicked, this,
+            [this, compCmd, saveCompanion]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Choose companion program"), compCmd->text(),
+            tr("Programs (*.exe *.bat *.cmd);;All files (*.*)"));
+        if (!path.isEmpty()) {
+            compCmd->setText(QDir::toNativeSeparators(path));
+            saveCompanion();
+        }
+    });
+
+    connect(testBtn, &QPushButton::clicked, this,
+            [this, compCmd, compArgs]() {
+        const QString cmd = compCmd->text().trimmed();
+        if (cmd.isEmpty()) {
+            QMessageBox::information(this, tr("Test launch"),
+                                    tr("Enter a program path first."));
+            return;
+        }
+        companion_->testLaunch(cmd, compArgs->text().trimmed());
+    });
 
     return page;
 }

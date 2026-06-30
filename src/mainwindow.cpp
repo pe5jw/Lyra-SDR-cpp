@@ -23,6 +23,7 @@
 #include "metermodel.h"
 #include "tunermemory.h"
 #include "profile/ProfileManager.h"  // complete type for setContextProperty(QObject*)
+#include "profile/CompanionLauncher.h" // #193 launch digital app on explicit profile pick
 #include "eqmodel.h"                  // complete type for new EqModel + context property
 #include "speechmodel.h"              // complete type for new SpeechModel + context property
 #include "combinatormodel.h"          // complete type for new CombinatorModel + context property
@@ -516,6 +517,19 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // ratings for the operator's day/night.  Drives the PROP dock.  It
     // re-arms itself on a Prefs location change internally.
     solar_ = new lyra::solar::SolarService(prefs_, this);
+
+    // #193 Companion-app launcher.  When the operator EXPLICITLY picks a profile
+    // (Settings "Load" or the front quick-recall dock → ProfileManager
+    // ::userLoaded), optionally launch that profile's digital-mode app
+    // (VarAC/MSHV/…) after a short delay so Lyra's CAT server + VAC come up
+    // first.  Per-machine binding; never fires on the automatic mode-change
+    // auto-recall or the startup default; never auto-closes the app.
+    companion_ = new lyra::profile::CompanionLauncher(this);
+    if (profiles_)
+        connect(profiles_, &lyra::profile::ProfileManager::userLoaded,
+                companion_, &lyra::profile::CompanionLauncher::launchFor);
+    connect(companion_, &lyra::profile::CompanionLauncher::statusMessage,
+            this, [this](const QString &m) { statusBar()->showMessage(m, 5000); });
 
     // NCDXF beacon auto-follow engine (drives the Solar panel's Follow
     // dropdown).  Needs the stream to QSY + Prefs to set CWU.
@@ -1151,7 +1165,7 @@ void MainWindow::openSettings() {
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
             wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
-            profiles_, serialPtt_, catServers_, this);
+            profiles_, companion_, serialPtt_, catServers_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();
@@ -2016,6 +2030,10 @@ bool isMachineSpecificKey(const QString &k) {
     // already-distributed pre-fix export when it's imported.
     if (k == QStringLiteral("radio/lastIp")) return true;
     if (k.startsWith(QStringLiteral("lastRadio/"))) return true;
+    // #193 companion-app launch bindings: per-machine exe/bat paths bound to a
+    // profile NAME.  NEVER export/import — a shared profile must carry the DSP
+    // chain only, never "run this exe" (and the path is per-PC anyway).
+    if (k.startsWith(QStringLiteral("profileLaunch/"))) return true;
     return false;
 }
 } // namespace

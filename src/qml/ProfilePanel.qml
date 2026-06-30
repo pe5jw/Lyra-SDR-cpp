@@ -44,7 +44,9 @@ Rectangle {
             font.pixelSize: 12
             model: Profiles.names
             displayText: count > 0 ? currentText : qsTr("(no profiles)")
-            onActivated: (i) => Profiles.load(textAt(i))
+            // loadByUser() == explicit operator pick → fires the companion-app
+            // launch (#193).  Plain load() (auto-recall) deliberately does not.
+            onActivated: (i) => Profiles.loadByUser(textAt(i))
             function syncToActive() {
                 var i = Profiles.names.indexOf(Profiles.activeName)
                 currentIndex = i >= 0 ? i

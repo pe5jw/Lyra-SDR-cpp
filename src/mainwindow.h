@@ -30,7 +30,7 @@ class QSystemTrayIcon;
 
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
-namespace lyra::profile { class ProfileManager; }
+namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class CatServer; }
 namespace lyra::ui {
 
@@ -275,6 +275,7 @@ private:
     CombinatorModel            *combinatorModel_ = nullptr; // #51 combinator (CombinatorPanel.qml)
     PlateModel                 *plateModel_ = nullptr;     // #52 plate reverb (PlatePanel.qml)
     lyra::profile::ProfileManager *profiles_ = nullptr; // TX/RX profile engine (Settings→Profiles)
+    lyra::profile::CompanionLauncher *companion_ = nullptr; // #193 launch digital app on profile pick
     ProfileUi                  *profileUi_ = nullptr;  // native Save-Profile dialog (front panel)
     int                         driftSeverity_ = 0;   // 0 unknown/ok .. 2 warn .. 3 bad
     UsbBcd                     *usbBcd_  = nullptr;   // USB-BCD amp band output

@@ -261,6 +261,8 @@ qt_add_executable(lyra
     src/profile/ProfileStore.cpp
     src/profile/ProfileManager.h
     src/profile/ProfileManager.cpp
+    src/profile/CompanionLauncher.h
+    src/profile/CompanionLauncher.cpp
     src/profileui.h
     src/profileui.cpp
     # #158 DL-5 — src/ivac_audio.{h,cpp} (the Qt two-stream device layer)
