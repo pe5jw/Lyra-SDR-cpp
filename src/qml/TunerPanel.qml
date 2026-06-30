@@ -383,10 +383,37 @@ Rectangle {
                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                                 spacing: 2; visible: row.editing
                                 ToolButton {
-                                    visible: !row.confirming; implicitWidth: 22; implicitHeight: 22
+                                    visible: !row.confirming; implicitWidth: 24; implicitHeight: 24
                                     background: Item {}
-                                    contentItem: Label { text: "−"; anchors.centerIn: parent; color: root.cRed
-                                        font.pixelSize: 16; font.bold: true }
+                                    // Trashcan glyph (drawn — the flat dark UI uses
+                                    // mono line-art, not a colour emoji).
+                                    contentItem: Canvas {
+                                        anchors.centerIn: parent
+                                        width: 18; height: 20
+                                        readonly property color col: root.cRed
+                                        onColChanged: requestPaint()
+                                        Component.onCompleted: requestPaint()
+                                        onPaint: {
+                                            var ctx = getContext("2d"); ctx.reset();
+                                            ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+                                            ctx.lineCap = "round"; ctx.lineJoin = "round";
+                                            var w = width, h = height;
+                                            ctx.beginPath();              // lid
+                                            ctx.moveTo(1.5, 3.5); ctx.lineTo(w - 1.5, 3.5); ctx.stroke();
+                                            ctx.beginPath();              // handle
+                                            ctx.moveTo(w * 0.34, 3.5); ctx.lineTo(w * 0.38, 1.4);
+                                            ctx.lineTo(w * 0.62, 1.4); ctx.lineTo(w * 0.66, 3.5); ctx.stroke();
+                                            ctx.beginPath();              // body (tapered)
+                                            ctx.moveTo(2.6, 4.6); ctx.lineTo(w - 2.6, 4.6);
+                                            ctx.lineTo(w - 3.6, h - 1.2); ctx.lineTo(3.6, h - 1.2);
+                                            ctx.closePath(); ctx.stroke();
+                                            ctx.beginPath();              // ribs
+                                            ctx.moveTo(w * 0.37, 6.2); ctx.lineTo(w * 0.37, h - 3.0);
+                                            ctx.moveTo(w * 0.50, 6.2); ctx.lineTo(w * 0.50, h - 3.0);
+                                            ctx.moveTo(w * 0.63, 6.2); ctx.lineTo(w * 0.63, h - 3.0);
+                                            ctx.stroke();
+                                        }
+                                    }
                                     onClicked: root.confirmDelIdx = row.pIdx
                                     ToolTip.text: qsTr("Delete this point")
                                     ToolTip.visible: hovered && Prefs.tooltipsEnabled; ToolTip.delay: 500
