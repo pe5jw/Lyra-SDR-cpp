@@ -8,6 +8,7 @@
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QFont>
 #include <QPainter>
 #include <QStatusBar>
 #include <QToolBar>
@@ -28,14 +29,16 @@ public:
         setAttribute(Qt::WA_TranslucentBackground, true);
         hide();
     }
-    void setHighlight(const QRect &r) {
-        if (r == rect_) return;
-        rect_ = r;
+    void setHighlight(const QRect &r, const QString &label = QString()) {
+        if (r == rect_ && label == label_) return;
+        rect_  = r;
+        label_ = label;
         update();
     }
     void clearHighlight() {
-        if (rect_.isNull()) return;
+        if (rect_.isNull() && label_.isEmpty()) return;
         rect_ = QRect();
+        label_.clear();
         update();
     }
 
@@ -50,10 +53,35 @@ protected:
         p.fillRect(rect_, fill);
         p.setPen(QPen(cyan, 2.0));
         p.drawRect(rect_.adjusted(1, 1, -1, -1));
+
+        // Name the action ("Dock left" / "Stack as tab" / "Split right") on a
+        // dark pill centred in the target.  Not knowing what a drop will do is
+        // the docking friction — worse on a small screen where every drop
+        // reflows the layout.
+        if (label_.isEmpty()) return;
+        QFont f = font();
+        f.setBold(true);
+        p.setFont(f);
+        const QRect tb = p.fontMetrics().boundingRect(label_);
+        QRect pill(0, 0, tb.width() + 20, tb.height() + 12);
+        pill.moveCenter(rect_.center());
+        // Keep the pill on-screen even for a thin edge strip.
+        if (pill.left()   < 2)            pill.moveLeft(2);
+        if (pill.top()    < 2)            pill.moveTop(2);
+        if (pill.right()  > width()  - 2) pill.moveRight(width()  - 2);
+        if (pill.bottom() > height() - 2) pill.moveBottom(height() - 2);
+        QColor pillBg(0x0a, 0x12, 0x18);
+        pillBg.setAlpha(225);
+        p.setPen(QPen(cyan, 1.0));
+        p.setBrush(pillBg);
+        p.drawRoundedRect(pill, 6, 6);
+        p.setPen(QColor(0xe6, 0xf7, 0xff));
+        p.drawText(pill, Qt::AlignCenter, label_);
     }
 
 private:
-    QRect rect_;
+    QRect   rect_;
+    QString label_;
 };
 
 // ── controller ──────────────────────────────────────────────────────────────
@@ -138,16 +166,19 @@ DockDragController::hitTest(const QPoint &globalPos) const {
         const int lx = p.x() - tr.left();
         const int ly = p.y() - tr.top();
         z.neighbor = t;
-        if (lx < tr.width() / 3) {
+        // Outer QUARTERS split (drop near a panel's edge to sit beside it); the
+        // generous center half stacks as a TAB — the space-saving arrangement a
+        // small screen needs, and previously a hard-to-hit center third.
+        if (lx < tr.width() / 4) {
             z.type = ZoneType::Split; z.orient = Qt::Horizontal; z.before = true;
             z.highlight = QRect(tr.left(), tr.top(), tr.width() / 2, tr.height());
-        } else if (lx > 2 * tr.width() / 3) {
+        } else if (lx > 3 * tr.width() / 4) {
             z.type = ZoneType::Split; z.orient = Qt::Horizontal; z.before = false;
             z.highlight = QRect(tr.center().x(), tr.top(), tr.width() / 2, tr.height());
-        } else if (ly < tr.height() / 3) {
+        } else if (ly < tr.height() / 4) {
             z.type = ZoneType::Split; z.orient = Qt::Vertical; z.before = true;
             z.highlight = QRect(tr.left(), tr.top(), tr.width(), tr.height() / 2);
-        } else if (ly > 2 * tr.height() / 3) {
+        } else if (ly > 3 * tr.height() / 4) {
             z.type = ZoneType::Split; z.orient = Qt::Vertical; z.before = false;
             z.highlight = QRect(tr.left(), tr.center().y(), tr.width(), tr.height() / 2);
         } else {
@@ -277,8 +308,30 @@ bool DockDragController::eventFilter(QObject *obj, QEvent *event) {
         if (dragWasFloating_)
             dragDock_->move(g - floatGrabOffset_);
         const Zone z = hitTest(g);
-        if (z.type == ZoneType::None) overlay_->clearHighlight();
-        else                          overlay_->setHighlight(z.highlight);
+        if (z.type == ZoneType::None) {
+            overlay_->clearHighlight();   // off the dock region → release to float
+            return true;
+        }
+        QString label;
+        switch (z.type) {
+        case ZoneType::Edge:
+            label = z.edge == Qt::LeftDockWidgetArea  ? tr("Dock left")
+                  : z.edge == Qt::RightDockWidgetArea ? tr("Dock right")
+                  : z.edge == Qt::TopDockWidgetArea   ? tr("Dock top")
+                                                      : tr("Dock bottom");
+            break;
+        case ZoneType::Tabify:
+            label = tr("Stack as tab");
+            break;
+        case ZoneType::Split:
+            label = z.orient == Qt::Horizontal
+                        ? (z.before ? tr("Split left") : tr("Split right"))
+                        : (z.before ? tr("Split top")  : tr("Split bottom"));
+            break;
+        default:
+            break;
+        }
+        overlay_->setHighlight(z.highlight, label);
         return true;
     }
     case QEvent::MouseButtonRelease: {
