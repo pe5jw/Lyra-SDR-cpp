@@ -1982,9 +1982,9 @@ void MainWindow::restoreUserLayout() {
         restoreGeometry(geo);
     }
     restoreState(st);
-    for (auto *dock : std::as_const(docks_)) {
-        dock->show();
-    }
+    // Trust restoreState() for each dock's saved visibility — do NOT force-show
+    // (that re-opened panels the operator had closed when saving this layout;
+    // see #189).
     // Re-apply the saved divider position (QML re-applies on the
     // panadapterSplit change).
     if (prefs_) {
@@ -2091,7 +2091,8 @@ void MainWindow::importSettings() {
             s.value(QStringLiteral("ui/windowState")).toByteArray();
         if (!geo.isEmpty()) restoreGeometry(geo);
         if (!st.isEmpty())  restoreState(st);
-        for (auto *dock : std::as_const(docks_)) dock->show();
+        // Trust the imported layout's saved per-dock visibility (no force-show;
+        // see #189).
         if (prefs_) {
             const QVariant sp =
                 s.value(QStringLiteral("ui/panadapterSplit"));
@@ -2176,12 +2177,11 @@ void MainWindow::recallNamedLayout(int slot) {
         s.value(base + QStringLiteral("geometry")).toByteArray();
     if (!geo.isEmpty()) restoreGeometry(geo);
     restoreState(st);
-    // restoreState() already set each dock's saved visibility; only ensure the
-    // always-on main panels are shown.  Do NOT force-show the chip-summoned
-    // rack/CW panels — leave them at their saved (usually hidden) state so a
-    // recall doesn't pop every TX/RX DSP window open.
-    for (auto *dock : std::as_const(docks_))
-        if (!isChipSummonedPanel(dock->objectName())) dock->show();
+    // Trust restoreState() for each dock's saved open/closed state.  An earlier
+    // force-show of every non-chip panel here re-opened ANY panel the operator
+    // had closed when saving this slot — the Solar panel was the visible victim
+    // (#189), but it hit meter/audio/tx/band equally.  A faithful recall must
+    // reproduce exactly what was saved, so no force-show.
     if (prefs_) {
         const QVariant sp = s.value(base + QStringLiteral("panadapterSplit"));
         if (sp.isValid()) prefs_->setPanadapterSplit(sp);
