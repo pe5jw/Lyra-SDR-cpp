@@ -483,8 +483,9 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // Kenwood CAT serial servers (logger / digital-mode rig control over
     // virtual COM ports).  Several independent instances so different apps
     // each get their own CAT port to Lyra.  PS1/PS0 drive the connect flow
-    // like TciServer.
-    for (int i = 1; i <= 2; ++i) {
+    // like TciServer.  Three instances → two even columns in Settings
+    // (Serial PTT + CAT 1 left, CAT 2 + CAT 3 right).
+    for (int i = 1; i <= 3; ++i) {
         auto *cat = new lyra::cat::CatServer(
             QStringLiteral("cat%1").arg(i), prefs_,
             qobject_cast<lyra::ipc::HL2Stream *>(stream_),

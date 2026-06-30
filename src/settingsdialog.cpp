@@ -70,8 +70,11 @@
 #include <memory>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QSettings>
+#include <QMap>
 
 #include <algorithm>
+#include <utility>
 #include <cmath>
 #include <iterator>
 
@@ -795,12 +798,93 @@ QWidget *SettingsDialog::buildBandsTab() {
     return page;
 }
 
+// Enumerate available COM ports the way the reference does.  Qt's
+// QSerialPortInfo::availablePorts() only lists devices in the Windows "Ports
+// (COM & LPT)" class, which MISSES virtual ports (com0com, VSPE, …) created
+// outside that class — the #1 reason a user's virtual pair never appears.  The
+// reference instead reads the registry HARDWARE\DEVICEMAP\SERIALCOMM (the same
+// source .NET's SerialPort.GetPortNames() uses), which lists every device that
+// registered a COM name regardless of class.  Read both and merge: SERIALCOMM
+// for completeness, QSerialPortInfo for human-readable descriptions.  Sorted
+// COMn-first by number, then virtual-named alphabetically.
+static QList<std::pair<QString, QString>> enumComPorts() {
+    QMap<QString, QString> ports;   // name -> description (QMap keeps it sorted)
+#ifdef Q_OS_WIN
+    QSettings reg(
+        QStringLiteral("HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM"),
+        QSettings::NativeFormat);
+    for (const QString &k : reg.allKeys()) {
+        const QString name = reg.value(k).toString().trimmed();
+        if (!name.isEmpty() && !ports.contains(name))
+            ports.insert(name, QString());
+    }
+#endif
+    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts())
+        ports.insert(info.portName(), info.description());
+
+    QList<std::pair<QString, QString>> out;
+    out.reserve(ports.size());
+    for (auto it = ports.constBegin(); it != ports.constEnd(); ++it)
+        out.append({it.key(), it.value()});
+
+    auto comNum = [](const QString &s) -> int {
+        if (s.startsWith(QLatin1String("COM"))) {
+            bool ok = false;
+            const int n = s.mid(3).toInt(&ok);
+            if (ok) return n;
+        }
+        return -1;
+    };
+    std::sort(out.begin(), out.end(),
+              [comNum](const std::pair<QString, QString> &a,
+                       const std::pair<QString, QString> &b) {
+        const int na = comNum(a.first), nb = comNum(b.first);
+        if (na >= 0 && nb >= 0) return na < nb;   // both COMn → numeric
+        if (na >= 0) return true;                 // COMn before virtual-named
+        if (nb >= 0) return false;
+        return a.first < b.first;                 // both non-COM → alphabetical
+    });
+    return out;
+}
+
 QWidget *SettingsDialog::buildCatSerialTab() {
     // COM-port features.  Today: serial PTT input (a digital app keys Lyra
     // over RTS/DTR).  The Kenwood TS-480 / TS-2000 CAT serial server lands
     // in this same tab next.  See docs/architecture/com_port_design.md.
     auto *page = new QWidget(this);
     auto *v = new QVBoxLayout(page);
+
+    // Resolve the COM-port name from an *editable* picker: a chosen list item
+    // carries the real port name in its data; anything the operator typed by
+    // hand (a com0com port Windows didn't enumerate, e.g. CNCB0 / COM12) is
+    // taken verbatim from the text.  This is the unlock for virtual pairs that
+    // never show up in QSerialPortInfo::availablePorts().
+    auto resolvePort = [](QComboBox *c) -> QString {
+        const int idx = c->currentIndex();
+        if (idx >= 0 && c->itemText(idx) == c->currentText())
+            return c->itemData(idx).toString();   // a listed item ("(none)" = "")
+        return c->currentText().trimmed();         // hand-typed name
+    };
+    // Cap a field widget's width instead of letting it stretch the full panel.
+    auto capW = [](QWidget *w, int px) -> QWidget * {
+        w->setMaximumWidth(px);
+        return w;
+    };
+    const QString kPortHint =
+        tr("Ports auto-list, including virtual ones (com0com, VSPE, …).  If "
+           "yours still isn't shown, type its exact name here — e.g. COM12 "
+           "or CNCB0.");
+
+    // Two-column layout: Serial PTT + Kenwood CAT 1 on the left, CAT 2 on the
+    // right; the help text spans full width underneath (mirrors the other
+    // refactored Settings tabs — 28 px gutter).
+    auto *cols     = new QHBoxLayout();
+    cols->setSpacing(28);
+    auto *leftCol  = new QVBoxLayout();
+    auto *rightCol = new QVBoxLayout();
+    cols->addLayout(leftCol, 1);
+    cols->addLayout(rightCol, 1);
+    v->addLayout(cols);
 
     auto *grp  = new QGroupBox(tr("Serial PTT input"), page);
     auto *form = new QFormLayout(grp);
@@ -809,19 +893,21 @@ QWidget *SettingsDialog::buildCatSerialTab() {
     // COM-port picker — enumerate live ports; keep the persisted (possibly
     // virtual) choice selectable even when it isn't present right now.
     auto *portCombo = new QComboBox(grp);
+    portCombo->setEditable(true);
+    portCombo->setInsertPolicy(QComboBox::NoInsert);
+    portCombo->setToolTip(kPortHint);
+    portCombo->lineEdit()->setPlaceholderText(tr("type COMx / CNCB0 if not listed"));
+    capW(portCombo, 380);
     auto repopulate = [this, portCombo]() {
         const QString cur = serialPtt_->portName();
         QSignalBlocker b(portCombo);
         portCombo->clear();
         portCombo->addItem(tr("(none)"), QString());
-        for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
-            const QString name = info.portName();
-            const QString desc = info.description();
-            portCombo->addItem(desc.isEmpty()
-                                   ? name
-                                   : QStringLiteral("%1 — %2").arg(name, desc),
-                               name);
-        }
+        for (const auto &p : enumComPorts())
+            portCombo->addItem(p.second.isEmpty()
+                                   ? p.first
+                                   : QStringLiteral("%1 — %2").arg(p.first, p.second),
+                               p.first);
         if (!cur.isEmpty() && portCombo->findData(cur) < 0)
             portCombo->addItem(tr("%1 (not present)").arg(cur), cur);
         const int idx = portCombo->findData(cur);
@@ -829,10 +915,13 @@ QWidget *SettingsDialog::buildCatSerialTab() {
     };
     repopulate();
     form->addRow(tr("COM port:"), portCombo);
+    auto applyPttPort = [this, portCombo, resolvePort]() {
+        serialPtt_->setPortName(resolvePort(portCombo));
+    };
     connect(portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            serialPtt_, [this, portCombo](int) {
-        serialPtt_->setPortName(portCombo->currentData().toString());
-    });
+            serialPtt_, applyPttPort);
+    connect(portCombo->lineEdit(), &QLineEdit::editingFinished,
+            serialPtt_, applyPttPort);
 
     auto *rescan = new QPushButton(tr("Rescan ports"), grp);
     connect(rescan, &QPushButton::clicked, grp,
@@ -846,10 +935,10 @@ QWidget *SettingsDialog::buildCatSerialTab() {
                        int(lyra::cat::SerialPtt::Line::Dsr));
     lineCombo->setCurrentIndex(int(serialPtt_->watchLine()));
     lineCombo->setToolTip(tr("Which input line carries the app's PTT.  On a "
-                             "com0com virtual pair the app's RTS crosses to "
+                             "virtual COM-port pair the app's RTS crosses to "
                              "your CTS and DTR to your DSR.  If PTT seems stuck "
                              "or inverted, try the other line (or Invert)."));
-    form->addRow(tr("PTT line:"), lineCombo);
+    form->addRow(tr("PTT line:"), capW(lineCombo, 240));
     connect(lineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             serialPtt_, [this, lineCombo](int) {
         serialPtt_->setWatchLine(static_cast<lyra::cat::SerialPtt::Line>(
@@ -881,55 +970,66 @@ QWidget *SettingsDialog::buildCatSerialTab() {
     connect(serialPtt_, &lyra::cat::SerialPtt::activeChanged, status, refresh);
     connect(serialPtt_, &lyra::cat::SerialPtt::enabledChanged, status, refresh);
 
-    v->addWidget(grp);
-    v->addWidget(status);
+    leftCol->addWidget(grp);
+    leftCol->addWidget(status);
 
     // ── Kenwood CAT serial servers (one group per instance) ──────────
     for (int i = 0; i < catServers_.size(); ++i) {
         lyra::cat::CatServer *cat = catServers_.at(i);
+        QVBoxLayout *col = (i == 0) ? leftCol : rightCol;
         auto *cg = new QGroupBox(tr("Kenwood CAT %1").arg(i + 1), page);
         auto *cf = new QFormLayout(cg);
         cf->setVerticalSpacing(10);
 
         auto *clabel = new QLineEdit(cat->label(), cg);
         clabel->setPlaceholderText(tr("what's it for? e.g. N1MM / VarAC / FLDIGI"));
-        cf->addRow(tr("Label:"), clabel);
+        cf->addRow(tr("Label:"), capW(clabel, 360));
         connect(clabel, &QLineEdit::editingFinished, cat,
                 [cat, clabel]() { cat->setLabel(clabel->text().trimmed()); });
 
         auto *transport = new QComboBox(cg);
         transport->addItem(tr("COM Port"),
                            int(lyra::cat::CatServer::Transport::Serial));
-        transport->addItem(tr("TCP  (no com0com needed)"),
+        transport->addItem(tr("TCP  (no virtual port needed)"),
                            int(lyra::cat::CatServer::Transport::Tcp));
         transport->setCurrentIndex(int(cat->transport()));
-        cf->addRow(tr("Transport:"), transport);
+        cf->addRow(tr("Transport:"), capW(transport, 260));
+
+        // Per-instance guidance: spell out exactly what the operator points
+        // their app at for the chosen transport (updated in syncTransport).
+        auto *cguide = new QLabel(cg);
+        cguide->setWordWrap(true);
+        cguide->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+        cf->addRow(cguide);
 
         auto *cport = new QComboBox(cg);
+        cport->setEditable(true);
+        cport->setInsertPolicy(QComboBox::NoInsert);
+        cport->setToolTip(kPortHint);
+        cport->lineEdit()->setPlaceholderText(tr("type COMx / CNCB0 if not listed"));
         auto crepop = [cat, cport]() {
             const QString cur = cat->portName();
             QSignalBlocker b(cport);
             cport->clear();
             cport->addItem(tr("(none)"), QString());
-            for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
-                const QString name = info.portName();
-                const QString desc = info.description();
-                cport->addItem(desc.isEmpty()
-                                   ? name
-                                   : QStringLiteral("%1 — %2").arg(name, desc),
-                               name);
-            }
+            for (const auto &p : enumComPorts())
+                cport->addItem(p.second.isEmpty()
+                                   ? p.first
+                                   : QStringLiteral("%1 — %2").arg(p.first, p.second),
+                               p.first);
             if (!cur.isEmpty() && cport->findData(cur) < 0)
                 cport->addItem(tr("%1 (not present)").arg(cur), cur);
             const int idx = cport->findData(cur);
             cport->setCurrentIndex(idx < 0 ? 0 : idx);
         };
         crepop();
-        cf->addRow(tr("COM port:"), cport);
+        cf->addRow(tr("COM port:"), capW(cport, 380));
+        auto applyCatPort = [cat, cport, resolvePort]() {
+            cat->setPortName(resolvePort(cport));
+        };
         connect(cport, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                cat, [cat, cport](int) {
-            cat->setPortName(cport->currentData().toString());
-        });
+                cat, applyCatPort);
+        connect(cport->lineEdit(), &QLineEdit::editingFinished, cat, applyCatPort);
 
         auto *crescan = new QPushButton(tr("Rescan ports"), cg);
         connect(crescan, &QPushButton::clicked, cg, [crepop]() { crepop(); });
@@ -941,14 +1041,14 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         if (baud->findData(cat->baud()) < 0)
             baud->addItem(QString::number(cat->baud()), cat->baud());
         baud->setCurrentIndex(baud->findData(cat->baud()));
-        cf->addRow(tr("Baud:"), baud);
+        cf->addRow(tr("Baud:"), capW(baud, 160));
         connect(baud, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, baud](int) { cat->setBaud(baud->currentData().toInt()); });
 
         auto *data = new QComboBox(cg);
         for (int d : {5, 6, 7, 8}) data->addItem(QString::number(d), d);
         data->setCurrentIndex(data->findData(cat->dataBits()));
-        cf->addRow(tr("Data bits:"), data);
+        cf->addRow(tr("Data bits:"), capW(data, 120));
         connect(data, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, data](int) { cat->setDataBits(data->currentData().toInt()); });
 
@@ -957,7 +1057,7 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         parity->addItem(tr("Even"), 1);
         parity->addItem(tr("Odd"),  2);
         parity->setCurrentIndex(parity->findData(cat->parity()));
-        cf->addRow(tr("Parity:"), parity);
+        cf->addRow(tr("Parity:"), capW(parity, 140));
         connect(parity, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, parity](int) { cat->setParity(parity->currentData().toInt()); });
 
@@ -965,20 +1065,20 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         stop->addItem(QStringLiteral("1"), 1);
         stop->addItem(QStringLiteral("2"), 2);
         stop->setCurrentIndex(stop->findData(cat->stopBits()));
-        cf->addRow(tr("Stop bits:"), stop);
+        cf->addRow(tr("Stop bits:"), capW(stop, 120));
         connect(stop, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, stop](int) { cat->setStopBits(stop->currentData().toInt()); });
 
         auto *host = new QLineEdit(cat->host(), cg);
         host->setPlaceholderText(QStringLiteral("127.0.0.1"));
-        cf->addRow(tr("TCP host:"), host);
+        cf->addRow(tr("TCP host:"), capW(host, 220));
         connect(host, &QLineEdit::editingFinished, cat,
                 [cat, host]() { cat->setHost(host->text().trimmed()); });
 
         auto *tcpPort = new QSpinBox(cg);
         tcpPort->setRange(1, 65535);
         tcpPort->setValue(cat->tcpPort());
-        cf->addRow(tr("TCP port:"), tcpPort);
+        cf->addRow(tr("TCP port:"), capW(tcpPort, 140));
         connect(tcpPort, QOverload<int>::of(&QSpinBox::valueChanged),
                 cat, [cat](int v) { cat->setTcpPort(v); });
 
@@ -992,7 +1092,7 @@ QWidget *SettingsDialog::buildCatSerialTab() {
                              "the rig model selected in your logger / digital "
                              "app.  Thetis-flavoured profiles (e.g. VarAC "
                              "“Anan Thetis”) expect TS-2000."));
-        cf->addRow(tr("Rig model:"), model);
+        cf->addRow(tr("Rig model:"), capW(model, 240));
         connect(model, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, model](int) {
             cat->setRigModel(static_cast<lyra::cat::CatServer::RigModel>(
@@ -1014,21 +1114,43 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         };
         crefresh();
         connect(cat, &lyra::cat::CatServer::enabledChanged, cstatus, crefresh);
+        // Surface the real open/listen result (success detail OR the failure
+        // reason — "cannot open COMx (Access is denied)") in the status line,
+        // which the dialog otherwise never showed.
+        connect(cat, &lyra::cat::CatServer::statusMessage, cstatus,
+                [cstatus](const QString &m) { cstatus->setText(m); });
 
-        // Gray out the irrelevant transport's fields (serial params vs
-        // host/port) and apply the toggle.
+        // Show only the chosen transport's fields (serial params vs host/port)
+        // and spell out exactly what the operator must point their app at —
+        // the #1 com0com / COM-vs-TCP trip-up.
         auto syncTransport = [transport, cport, crescan, baud, data, parity,
-                              stop, host, tcpPort]() {
+                              stop, host, tcpPort, cf, cguide, cat]() {
             const bool tcp = transport->currentData().toInt()
                              == int(lyra::cat::CatServer::Transport::Tcp);
-            cport->setEnabled(!tcp);
-            crescan->setEnabled(!tcp);
-            baud->setEnabled(!tcp);
-            data->setEnabled(!tcp);
-            parity->setEnabled(!tcp);
-            stop->setEnabled(!tcp);
-            host->setEnabled(tcp);
-            tcpPort->setEnabled(tcp);
+            cf->setRowVisible(cport,   !tcp);
+            cf->setRowVisible(crescan, !tcp);
+            cf->setRowVisible(baud,    !tcp);
+            cf->setRowVisible(data,    !tcp);
+            cf->setRowVisible(parity,  !tcp);
+            cf->setRowVisible(stop,    !tcp);
+            cf->setRowVisible(host,    tcp);
+            cf->setRowVisible(tcpPort, tcp);
+            if (tcp)
+                cguide->setText(tr("Point your logger / digital app at a "
+                                   "<b>network (TCP) rig</b> at %1:%2 (e.g. "
+                                   "Hamlib NET rigctl). No virtual COM port "
+                                   "needed.")
+                                    .arg(cat->host().isEmpty()
+                                             ? QStringLiteral("127.0.0.1")
+                                             : cat->host())
+                                    .arg(cat->tcpPort()));
+            else
+                cguide->setText(tr("This is Lyra's end of a <b>virtual COM-port "
+                                   "pair</b> (com0com or another virtual "
+                                   "serial-port app). Point your app's CAT/rig "
+                                   "port at the <b>OTHER</b> end of the same "
+                                   "pair (not this port), rig = Kenwood, "
+                                   "matching baud."));
         };
         syncTransport();
         connect(transport, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -1037,22 +1159,33 @@ QWidget *SettingsDialog::buildCatSerialTab() {
                 transport->currentData().toInt()));
             syncTransport();
         });
+        // Keep the TCP guidance line current when host / port change.
+        connect(host, &QLineEdit::editingFinished, cguide, syncTransport);
+        connect(tcpPort, QOverload<int>::of(&QSpinBox::valueChanged),
+                cguide, [syncTransport](int) { syncTransport(); });
 
-        v->addWidget(cg);
-        v->addWidget(cstatus);
+        col->addWidget(cg);
+        col->addWidget(cstatus);
     }
+    leftCol->addStretch(1);
+    rightCol->addStretch(1);
 
     auto *hint = new QLabel(
         tr("A digital-mode app (WSJT-X, VarAC, fldigi, …) keys Lyra over a "
            "serial PTT line (set the app's PTT method to RTS or DTR) and/or "
            "reads + sets frequency / mode over Kenwood CAT.  On Windows a "
-           "com0com virtual pair links the app to Lyra — point the app at one "
-           "end of the pair and Lyra at the other.  Lyra then transmits / "
-           "tunes, which keys your HL2 / ANAN / Brick rig.\n\nMany setups run "
-           "CAT on one COM port and RTS/DTR PTT on a second."),
+           "virtual COM-port pair (com0com or another virtual serial-port app) "
+           "links the app to Lyra — point the app at one end of the pair and "
+           "Lyra at the other.  Lyra then transmits / tunes, which keys your "
+           "HL2 / ANAN / Brick rig.  Many setups run CAT on one COM port and "
+           "RTS/DTR PTT on a second."),
         page);
     hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
+    hint->setStyleSheet(QStringLiteral("color:#9fb6ca;"));
+    // Slightly larger than the field text so the how-it-works note stands out.
+    QFont hintFont = hint->font();
+    hintFont.setPointSizeF(hintFont.pointSizeF() * 1.15);
+    hint->setFont(hintFont);
     v->addWidget(hint);
     v->addStretch(1);
     return page;
