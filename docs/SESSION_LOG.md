@@ -60,6 +60,19 @@ All on `main`, unreleased (after v0.7.0). A doc pass + one operator feature.
    Investigate the named-layout save/restore (#184 / v0.4.8) dock-visibility
    serialization for the Solar/HamQSL panel specifically. See
    [[reference-hamqsl-solar]].
+3. **⚠ SAFETY BUG (task #190) — USB-BCD adapter intermittently undetected +
+   amp changed bands during RX.** FTDI C232HM (FT232H, COM1 in Windows) often
+   not seen by Lyra's BCD dropdown; amp "beeped + changed bands in RX" (NOT
+   RFI — heavily choked cable). Code-read root causes in `src/usb_bcd.cpp`:
+   (a) enumeration is D2XX-only and the adapter is in VCP mode (owns the
+   interface) → intermittent D2XX enumerate (the unplug/replug symptom);
+   (b) `devices()` (~103-114) filters empty serials, but FTDI returns an empty
+   serial for any OPEN device and Lyra's ctor opens+holds the device when BCD
+   is enabled → its own dropdown shows "(none)" (matches the screenshot). Fix
+   on the operator's bench (verify-don't-guess; spurious-BCD glitch is a
+   separate lower-confidence item — get a repro + logging first). Interim
+   safety: untick "Enable USB-BCD amp band output". Full detail in the memory
+   note + task #190.
 
 ---
 
