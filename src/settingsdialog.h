@@ -69,6 +69,7 @@ private:
     QWidget *buildMeterTab();    // S-meter calibration trim
     QWidget *buildTunerTab();    // manual-ATU memory editor + match window
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
+    QWidget *buildVoxTab();      // #91 VOX — voice-operated TX (own tab)
     QWidget *buildPaGainTab();   // TX power model Stage 3: per-band PA Gain table
                                  // + cos² amplitude envelope (amp
                                  // hot-switch protection knobs)

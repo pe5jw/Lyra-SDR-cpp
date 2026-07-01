@@ -254,6 +254,8 @@ private:
 // MetisReadThreadMainLoop_HL2:424-425 verbatim).
 
 std::int64_t ep6_seq_errors();
+// #91 VOX — latest EWMA-smoothed EP6 mic RMS (linear [0,1); 0 idle).
+double       ep6_mic_rms_lin();
 std::int64_t ep6_total_datagrams();
 std::int64_t ep6_framing_errors();
 // Atomic exchange-to-0 for operator stats tick (Hz computation).

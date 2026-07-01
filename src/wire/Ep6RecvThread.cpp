@@ -54,6 +54,7 @@
 
 #include <QtGlobal>   // Q_ASSERT_X (sink-registration-time contract)
 #include <cstring>
+#include <cmath>      // std::sqrt — #91 VOX mic-RMS accumulation
 
 #if defined(_WIN32)
   #ifndef WIN32_LEAN_AND_MEAN
@@ -180,6 +181,15 @@ std::atomic<std::int64_t> g_seq_error{0};
 std::atomic<std::int64_t> g_total_datagrams  {0};
 std::atomic<std::int64_t> g_framing_errors   {0};
 std::atomic<std::int64_t> g_window_datagrams {0};
+
+// #91 VOX — running RMS of the decoded EP6 mic samples (linear, [0,1)).
+// Lyra-native observability, NOT a reference counter: the VOX gate
+// (HL2Stream::onVoxPoll) reads it to decide whether to key.  Written
+// ONLY by the EP6 reader thread's mic harvest (single writer),
+// EWMA-smoothed per datagram; read cross-thread by the Qt main-thread
+// poll → atomic.  Flows continuously in RX (the mic harvest runs every
+// datagram regardless of MOX), which is exactly what VOX needs.
+std::atomic<double> g_mic_rms_lin{0.0};
 
 // Reference: `unsigned char ControlBytesIn[5];` at
 // `network.h:414`.  Cached C&C-in header bytes from the most
@@ -829,6 +839,7 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
     // pair output is interleaved {I=mic, Q=0.0}, matching the
     // reference's TxReadBufp layout.
     int mic_sample_count = 0;
+    double mic_sumsq = 0.0;   // #91 VOX — Σ mic² over this datagram
     for (int isamp = 0; isamp < spr; ++isamp) {
         const int k = kFrameSampleAreaOffset
                     + n * kBytesPerDdc
@@ -836,11 +847,22 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
         ++mic_decimation_count;
         if (mic_decimation_count == mic_decimation_factor) {
             mic_decimation_count = 0;
-            prn->TxReadBufp[2 * mic_sample_count + 0] =
-                unpack_mic_be(frame + k);
+            const double m = unpack_mic_be(frame + k);
+            prn->TxReadBufp[2 * mic_sample_count + 0] = m;
             prn->TxReadBufp[2 * mic_sample_count + 1] = 0.0;
+            mic_sumsq += m * m;
             ++mic_sample_count;
         }
+    }
+    // #91 VOX — EWMA-smoothed mic RMS for the gate.  ~30 ms time
+    // constant (α=0.2 per ~2.6 ms datagram) so a single click doesn't
+    // slam the level yet speech onset is tracked promptly.  Single
+    // writer (this thread); atomic for the Qt-main-thread poll reader.
+    if (mic_sample_count > 0) {
+        const double rms = std::sqrt(mic_sumsq / mic_sample_count);
+        const double prev = g_mic_rms_lin.load(std::memory_order_relaxed);
+        g_mic_rms_lin.store(prev + 0.2 * (rms - prev),
+                            std::memory_order_relaxed);
     }
     // Reference networkproto1.c:579 (verbatim, unconditional): hand the
     // harvested mic block to the stream-1 TX input ring.  Inbound
@@ -998,6 +1020,11 @@ void Ep6RecvThread::decode_status_header(const uint8_t cc[5]) {
 
 std::int64_t ep6_seq_errors() {
     return g_seq_error.load(std::memory_order_relaxed);
+}
+
+// #91 VOX — latest EWMA-smoothed mic RMS (linear, [0,1)); 0 when idle.
+double ep6_mic_rms_lin() {
+    return g_mic_rms_lin.load(std::memory_order_relaxed);
 }
 
 std::int64_t ep6_total_datagrams() {

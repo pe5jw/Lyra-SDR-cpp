@@ -3551,6 +3551,26 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
         audio = rxEqBuf_.data();   // every tee below now reads the EQ'd audio
     }
 
+    // #91 VOX anti-VOX — running RMS of the RX audio the operator HEARS
+    // (post-EQ, mono-dup: audio[2*f] is the L==R sample).  A studio-
+    // monitor setup can spill this into the mic; the VOX gate reads this
+    // level (WdspEngine::voxRxAudioRmsLin) to suppress opening on it.
+    // EWMA ~40 ms (α=0.2 per block); single writer (this audio thread) →
+    // atomic for the Qt-main VOX poll's provider pull.  One cheap pass,
+    // negligible vs the DSP already run; always computed so the level is
+    // live the instant VOX is enabled.
+    if (nframes > 0) {
+        double sumsq = 0.0;
+        for (int f = 0; f < nframes; ++f) {
+            const double s = audio[2 * f];
+            sumsq += s * s;
+        }
+        const double rms  = std::sqrt(sumsq / nframes);
+        const double prev = voxRxRmsLin_.load(std::memory_order_relaxed);
+        voxRxRmsLin_.store(prev + 0.2 * (rms - prev),
+                           std::memory_order_relaxed);
+    }
+
     // #90 TX monitor — drain the post-rack tap ONCE per block into monScratch_
     // (mono), shared by Route 1 (HL2 jack, in the output loop below) and
     // Route 2 (VAC stream-2 feed in the tee block).  monActive = MOX up + MON

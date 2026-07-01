@@ -613,6 +613,14 @@ int main(int argc, char *argv[])
                      });
     stream->setCwPitchHz(wdspEngine->cwPitchHz());   // seed from persisted RX pitch
 
+    // #91 VOX anti-VOX — feed the stream's VOX gate the live "what the
+    // operator hears" RX-audio RMS from the engine.  Pulled on the Qt
+    // main thread inside HL2Stream::onVoxPoll (50 ms), so it never runs
+    // after the stream closes → dangle-proof (wdspEngine is an app child,
+    // outlives the stream's poll timer).  VOX itself is default-OFF.
+    stream->setVoxRxRmsProvider(
+        [wdspEngine]() { return wdspEngine->voxRxAudioRmsLin(); });
+
     // Stop the RX worker on quit BEFORE the QObject children are
     // destroyed.  The IQ sink (above) calls into wdspEngine from the
     // worker thread; aboutToQuit fires while every object is still

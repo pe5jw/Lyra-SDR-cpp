@@ -218,6 +218,13 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     hwPttTimer_.setInterval(50);
     connect(&hwPttTimer_, &QTimer::timeout,
             this, &HL2Stream::onHwPttPoll);
+    // #91 — VOX polls on the SAME 50 ms tick as HW-PTT (its own slot,
+    // not chained inside onHwPttPoll, so onHwPttPoll's early-returns
+    // can't skip it).  Timer start/stop lifecycle is shared (open()/
+    // close()).  The detector is seeded via applyVoxParams() AFTER the
+    // QSettings VOX loads further down (so persisted params take effect).
+    connect(&hwPttTimer_, &QTimer::timeout,
+            this, &HL2Stream::onVoxPoll);
     // Radio memory: restore the last tuned RX1 frequency.  QSettings
     // resolves to %APPDATA%\N8SDR\Lyra-cpp\ (org/app set in main()
     // before this object is constructed).
@@ -287,6 +294,23 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         kTxTimeoutMinSec, kTxTimeoutMaxSec);
     txTimeoutBypass_ = QSettings().value(
         QStringLiteral("tx/timeoutBypass"), false).toBool();
+    // #91 — VOX state.  All persisted; VOX itself is default-OFF (no
+    // surprise auto-keying on a fresh launch).  Params clamped to the
+    // same ranges the setters enforce.  applyVoxParams() (called from
+    // the ctor after the timer wiring) seeds the detector from these.
+    voxEnabled_       = QSettings().value(
+        QStringLiteral("tx/voxEnabled"), false).toBool();
+    voxThresholdDbfs_ = std::clamp(QSettings().value(
+        QStringLiteral("tx/voxThresholdDbfs"), -35.0).toDouble(), -80.0, 0.0);
+    voxAntiVoxDbfs_   = std::clamp(QSettings().value(
+        QStringLiteral("tx/voxAntiVoxDbfs"), -45.0).toDouble(), -90.0, 0.0);
+    voxOpenMs_        = std::clamp(QSettings().value(
+        QStringLiteral("tx/voxOpenMs"), 10).toInt(), 0, 500);
+    voxHangMs_        = std::clamp(QSettings().value(
+        QStringLiteral("tx/voxHangMs"), 300).toInt(), 0, 3000);
+    voxAntiVoxOn_     = QSettings().value(
+        QStringLiteral("tx/voxAntiVoxOn"), true).toBool();
+    applyVoxParams();   // seed vox_ from the persisted params
     // #169 — SWR-protection state.  Operator surface persisted; the
     // advanced false-trigger-guard knobs (blank/dwell/floors) are
     // QSettings-only so the bench can tune them without a rebuild.
@@ -2344,12 +2368,171 @@ void HL2Stream::onHwPttPoll() {
     }
 }
 
+// #91 — VOX gate tick.  Runs on the Qt main thread (50 ms cadence) as
+// the SOLE owner of vox_ / voxOwnsKey_ / voxKeying_.  Reads the EP6
+// mic RMS (wire thread → atomic) + the anti-VOX RX-audio RMS (audio
+// thread → atomic) and drives the funnel via requestMoxFromVox with
+// the multi-source safety Thetis's PollPTT enforces: VOX never opens
+// while another source keys, and releases ONLY a key it raised itself.
+void HL2Stream::onVoxPoll() {
+    auto setKeying = [this](bool v) {
+        if (voxKeying_ != v) { voxKeying_ = v; emit voxKeyingChanged(v); }
+    };
+
+    // Publish the live mic level (dBFS) ALWAYS — before any gating — so
+    // the Settings VOX meter reads out even with VOX disabled / in CW,
+    // giving the operator a reference to dial the threshold against.
+    const double micRms = lyra::wire::ep6_mic_rms_lin();
+    const double micDb  = micRms > 1e-9 ? 20.0 * std::log10(micRms) : -200.0;
+    if (std::abs(micDb - voxMicDbfs_) > 0.1) {   // ~0.1 dB deadband, no spam
+        voxMicDbfs_ = micDb;
+        emit voxMicDbfsChanged(micDb);
+    }
+
+    // Publish the live RX-audio level (dBFS) too — the anti-VOX reference
+    // (the "what the operator hears" RMS the gate compares against).  Same
+    // always-before-gating treatment as the mic level so the Settings
+    // anti-VOX meter stays live for dialing even with VOX off / in CW.
+    const double rxRms = voxRxRmsProvider_ ? voxRxRmsProvider_()
+                       : voxRxRmsLin_.load(std::memory_order_relaxed);
+    const double rxDb  = rxRms > 1e-9 ? 20.0 * std::log10(rxRms) : -200.0;
+    if (std::abs(rxDb - voxRxDbfs_) > 0.1) {     // ~0.1 dB deadband, no spam
+        voxRxDbfs_ = rxDb;
+        emit voxRxDbfsChanged(rxDb);
+    }
+
+    // Reconcile: our key vanished from under us (manual/foot-switch
+    // release, TX-timeout, SWR cut, mode flip) — drop ownership + reset
+    // so the gate restarts clean on the next mic crossing.
+    if (voxOwnsKey_ &&
+        (!mox_.load(std::memory_order_relaxed) || pttSource() != PttSource::Vox)) {
+        voxOwnsKey_ = false;
+        vox_.reset();
+        setKeying(false);
+    }
+
+    // Gating (mirrors console.cs PollPTT): VOX active only when enabled,
+    // in a voice mode (NOT CW: txMode_ 3=CWL / 4=CWU), and not inhibited.
+    // Any gate off → make safe: release our own key, reset, idle.
+    const int  tm     = txMode_.load(std::memory_order_relaxed);
+    const bool cwMode = (tm == 3 || tm == 4);
+    if (!voxEnabled_ || cwMode || txInhibit_) {
+        if (voxOwnsKey_) {
+            requestMoxFromVox(false);
+            voxOwnsKey_ = false;
+            setKeying(false);
+        }
+        vox_.reset();
+        return;
+    }
+
+    // Anti-VOX RX level (rxRms computed at top with the readout).
+    const bool   want    = vox_.tick(micRms, rxRms,   // micRms/rxRms at top
+                                     static_cast<double>(hwPttTimer_.interval()));
+
+    if (want && !voxOwnsKey_) {
+        // Open edge — take the key ONLY if nobody else holds it (wire OR
+        // intent).  If another source is keying, stay out of the way; the
+        // reconcile block re-acquires cleanly once they release.
+        if (!mox_.load(std::memory_order_relaxed) && !requestedMox_) {
+            requestMoxFromVox(true);
+            voxOwnsKey_ = true;
+            setKeying(true);
+        }
+    } else if (!want && voxOwnsKey_) {
+        // Close edge — release ONLY a key this gate raised.
+        if (mox_.load(std::memory_order_relaxed) && pttSource() == PttSource::Vox) {
+            requestMoxFromVox(false);
+        }
+        voxOwnsKey_ = false;
+        setKeying(false);
+    }
+}
+
+void HL2Stream::applyVoxParams() {
+    lyra::tx::VoxDetector::Params p;
+    p.thresholdDbfs = voxThresholdDbfs_;
+    p.antiVoxDbfs   = voxAntiVoxDbfs_;
+    p.openMs        = voxOpenMs_;
+    p.hangMs        = voxHangMs_;
+    p.antiVoxOn     = voxAntiVoxOn_;
+    vox_.setParams(p);
+}
+
+void HL2Stream::setVoxEnabled(bool on) {
+    if (voxEnabled_ == on) return;
+    voxEnabled_ = on;
+    QSettings().setValue(QStringLiteral("tx/voxEnabled"), on);
+    if (!on) {
+        // Turning VOX off must drop a VOX-held key immediately (don't
+        // wait for the next poll) so the operator can't be left keyed.
+        if (voxOwnsKey_ && mox_.load(std::memory_order_relaxed)
+            && pttSource() == PttSource::Vox) {
+            requestMoxFromVox(false);
+        }
+        voxOwnsKey_ = false;
+        vox_.reset();
+        if (voxKeying_) { voxKeying_ = false; emit voxKeyingChanged(false); }
+    }
+    emit voxEnabledChanged(on);
+}
+
+void HL2Stream::setVoxThresholdDbfs(double dbfs) {
+    dbfs = std::clamp(dbfs, -80.0, 0.0);
+    if (voxThresholdDbfs_ == dbfs) return;
+    voxThresholdDbfs_ = dbfs;
+    QSettings().setValue(QStringLiteral("tx/voxThresholdDbfs"), dbfs);
+    applyVoxParams();
+}
+
+void HL2Stream::setVoxAntiVoxDbfs(double dbfs) {
+    dbfs = std::clamp(dbfs, -90.0, 0.0);
+    if (voxAntiVoxDbfs_ == dbfs) return;
+    voxAntiVoxDbfs_ = dbfs;
+    QSettings().setValue(QStringLiteral("tx/voxAntiVoxDbfs"), dbfs);
+    applyVoxParams();
+}
+
+void HL2Stream::setVoxOpenMs(int ms) {
+    ms = std::clamp(ms, 0, 500);
+    if (voxOpenMs_ == ms) return;
+    voxOpenMs_ = ms;
+    QSettings().setValue(QStringLiteral("tx/voxOpenMs"), ms);
+    applyVoxParams();
+}
+
+void HL2Stream::setVoxHangMs(int ms) {
+    ms = std::clamp(ms, 0, 3000);
+    if (voxHangMs_ == ms) return;
+    voxHangMs_ = ms;
+    QSettings().setValue(QStringLiteral("tx/voxHangMs"), ms);
+    applyVoxParams();
+}
+
+void HL2Stream::setVoxAntiVoxOn(bool on) {
+    if (voxAntiVoxOn_ == on) return;
+    voxAntiVoxOn_ = on;
+    QSettings().setValue(QStringLiteral("tx/voxAntiVoxOn"), on);
+    applyVoxParams();
+}
+
 void HL2Stream::requestMoxFromTci(bool on) {
     requestMox(on, PttSource::Tci);
 }
 
 void HL2Stream::requestMoxFromSerialPtt(bool on) {
     requestMox(on, PttSource::Serial);
+}
+
+// #91 — VOX gate edge.  Same funnel as the other auto-PTT sources
+// (wire behaviour identical to requestMox(bool, PttSource::Vox)); the
+// onVoxPoll safety layer guarantees this only fires (on=true) when no
+// higher-priority source holds the key, and (on=false) only for a key
+// this gate itself raised — so VOX never stomps a foot-switch / manual
+// MOX.  Adds NOTHING to the TX DSP chain (PureSignal-safe): VOX only
+// decides WHEN to key.
+void HL2Stream::requestMoxFromVox(bool on) {
+    requestMox(on, PttSource::Vox);
 }
 
 // #171 — serial straight-key / external-keyer edge.  Drives the #105 CWX

@@ -235,6 +235,10 @@ qt_add_executable(lyra
     src/tx/CwMorse.cpp
     src/tx/CwKeyer.h
     src/tx/CwKeyer.cpp
+    # #91 VOX — pure voice-operated-TX decision gate (threshold + open-
+    # delay + hang + anti-VOX); HL2Stream owns the taps + PttSource::Vox.
+    src/tx/VoxDetector.h
+    src/tx/VoxDetector.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated

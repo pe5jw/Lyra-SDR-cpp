@@ -28,6 +28,8 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QPainter>      // #91 VOX — colored mic-level meter bar
+#include <QPaintEvent>
 #include <QGridLayout>
 #include <QHash>
 #include <QHBoxLayout>
@@ -158,6 +160,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     // HL2Stream setters).
     if (stream_) {
         tabs_->addTab(wrapScroll(buildTxTab()), tr("TX"));
+        // #91 — VOX gets its own tab (operator: the TX tab was getting
+        // cluttered).  Sits right after TX, before PA Gain.
+        tabs_->addTab(wrapScroll(buildVoxTab()), tr("VOX"));
         // TX power model Stage 3 — per-band PA Gain table on its own tab
         // (discoverable + self-explanatory, like Thetis's PA-settings area).
         tabs_->addTab(wrapScroll(buildPaGainTab()), tr("PA Gain"));
@@ -5226,6 +5231,293 @@ QWidget *SettingsDialog::buildTxTab() {
     hint->setWordWrap(true);
     hint->setTextFormat(Qt::RichText);
     root->addWidget(hint);
+
+    root->addStretch(1);
+    return page;
+}
+
+namespace {
+// #91 VOX — compact colored mic-level meter with a threshold marker.
+// Plain QWidget (no Q_OBJECT — driven by external setLevel/setThreshold
+// calls from the VOX tab's signal connections).  green→yellow→red fill
+// grows with the live mic level; a bright cyan line marks where the
+// threshold sits, so the operator sets it by eye against their voice.
+class VoxLevelBar : public QWidget {
+public:
+    explicit VoxLevelBar(QWidget *parent = nullptr) : QWidget(parent) {
+        // Compact meter — capped length (no full-width stretch) + trimmed
+        // height so it reads as a tidy bar next to the number, not a slab.
+        setMinimumSize(90, 12);
+        setMaximumSize(170, 13);
+    }
+    QSize sizeHint() const override { return QSize(150, 13); }
+    void setLevel(double db)     { level_  = db; update(); }
+    void setThreshold(double db) { thresh_ = db; update(); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const double w = r.width();
+        auto frac = [](double db) {
+            constexpr double lo = -60.0, hi = 0.0;   // display window
+            double f = (db - lo) / (hi - lo);
+            return f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+        };
+        // track
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#0d1319"));
+        p.drawRoundedRect(r, 3, 3);
+        // level fill — gradient anchored to full width, clipped to level
+        const double lf = frac(level_);
+        if (lf > 0.001) {
+            QLinearGradient g(r.left(), 0, r.right(), 0);
+            g.setColorAt(0.00, QColor("#2ecc71"));   // green
+            g.setColorAt(0.55, QColor("#8bd13a"));
+            g.setColorAt(0.75, QColor("#f1c40f"));   // yellow
+            g.setColorAt(0.90, QColor("#e67e22"));   // orange
+            g.setColorAt(1.00, QColor("#e74c3c"));   // red
+            p.setBrush(g);
+            p.drawRoundedRect(QRectF(r.left(), r.top(), w * lf, r.height()),
+                              3, 3);
+        }
+        // threshold marker — bright cyan vertical line
+        const double tx = r.left() + w * frac(thresh_);
+        p.setPen(QPen(QColor("#00e5ff"), 2));
+        p.drawLine(QPointF(tx, r.top() - 0.5), QPointF(tx, r.bottom() + 0.5));
+        // border
+        p.setPen(QPen(QColor("#2a3a4a"), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(r, 3, 3);
+    }
+private:
+    double level_  = -200.0;
+    double thresh_ = -35.0;
+};
+}  // namespace
+
+// #91 — VOX (voice-operated TX) on its OWN tab (operator: the TX tab was
+// getting cluttered).  A mic-RMS gate keys TX on speech and drops it
+// after a hang; anti-VOX suppresses opening on the RX audio your studio
+// monitors spill into the mic.  VOX never overrides a manual / foot-
+// switch key, keys voice modes only (never CW/digital), and respects TX
+// Inhibit.  The front-panel TxPanel "VOX" button mirrors the enable +
+// shows keying state.  Single-column form — VOX is a small control set.
+QWidget *SettingsDialog::buildVoxTab() {
+    auto *page = new QWidget(this);
+    auto *root = new QVBoxLayout(page);
+
+    if (stream_) {
+        auto *grp = new QGroupBox(tr("VOX  (voice-operated transmit)"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *enBox = new QCheckBox(tr("Enabled  (key TX on voice)"), grp);
+        enBox->setChecked(stream_->voxEnabled());
+        enBox->setToolTip(tr(
+            "Voice-operated transmit: keys the radio when your mic level "
+            "rises above the threshold and drops back to receive after the "
+            "hang time.  Works in voice modes only (never CW or digital) "
+            "and is blocked by TX Inhibit.  It never overrides a manual MOX "
+            "or foot-switch press — those always win, and VOX only releases "
+            "a key it raised itself.  The front-panel VOX button mirrors "
+            "this and lights while VOX holds the key."));
+        connect(enBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setVoxEnabled(on);
+        });
+        connect(stream_, &lyra::ipc::HL2Stream::voxEnabledChanged, enBox,
+                [enBox](bool on) {
+                    if (enBox->isChecked() != on) enBox->setChecked(on);
+                });
+        form->addRow(enBox);
+
+        // Short spin boxes (operator: the full-width ones drove them nuts).
+        constexpr int kSpinW = 96;
+
+        // Live mic-level METER — a colored bar with the threshold marked,
+        // placed ABOVE the threshold spin so you dial the number while
+        // watching your voice hit the bar.  Updates ~20 Hz off the VOX
+        // poll (even with VOX disabled) so it's live while you set up.
+        auto *bar = new VoxLevelBar(grp);
+        bar->setLevel(stream_->voxMicDbfs());
+        bar->setThreshold(stream_->voxThresholdDbfs());
+        bar->setToolTip(tr(
+            "Live mic level (−60…0 dBFS).  Green→red as you get louder; the "
+            "cyan line is your Threshold.  Speak normally and set Threshold "
+            "just below where your voice peaks — but above where the bar "
+            "sits when you're silent (desk/room noise)."));
+        auto *num = new QLabel(grp);
+        num->setMinimumWidth(58);
+        num->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        num->setStyleSheet(QStringLiteral("font-family:Consolas;"));
+        auto fmtMic = [](double db) {
+            return db <= -199.0 ? QStringLiteral("—")
+                                : QString::number(db, 'f', 0) + QStringLiteral(" dBFS");
+        };
+        num->setText(fmtMic(stream_->voxMicDbfs()));
+        auto *meterRow = new QWidget(grp);
+        auto *meterH   = new QHBoxLayout(meterRow);
+        meterH->setContentsMargins(0, 0, 0, 0);
+        meterH->setSpacing(8);
+        meterH->addWidget(bar, 0);
+        meterH->addWidget(num, 0);
+        meterH->addStretch(1);   // keep the short bar + number left-clustered
+        connect(stream_, &lyra::ipc::HL2Stream::voxMicDbfsChanged, bar,
+                [bar, num, fmtMic](double db) {
+                    bar->setLevel(db);
+                    num->setText(fmtMic(db));
+                });
+        form->addRow(tr("Mic level:"), meterRow);
+
+        auto *thrSpin = new QDoubleSpinBox(grp);
+        thrSpin->setRange(-80.0, 0.0);
+        thrSpin->setSingleStep(1.0);
+        thrSpin->setDecimals(0);
+        thrSpin->setSuffix(tr(" dBFS"));
+        thrSpin->setMaximumWidth(kSpinW);
+        thrSpin->setValue(stream_->voxThresholdDbfs());
+        thrSpin->setToolTip(tr(
+            "Mic level (relative to full scale) your voice must exceed to "
+            "key TX.  Higher (toward 0) = you must speak louder / desk "
+            "noise won't trip it; lower = more sensitive.  Default −35 dBFS.  "
+            "The cyan line on the meter above tracks this."));
+        connect(thrSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, bar](double v) {
+                    if (stream_) stream_->setVoxThresholdDbfs(v);
+                    bar->setThreshold(v);   // move the marker live
+                });
+        form->addRow(tr("Threshold:"), thrSpin);
+
+        auto *openSpin = new QSpinBox(grp);
+        openSpin->setRange(0, 500);
+        openSpin->setSuffix(tr(" ms"));
+        openSpin->setMaximumWidth(kSpinW);
+        openSpin->setValue(stream_->voxOpenMs());
+        openSpin->setToolTip(tr(
+            "How long your voice must stay above the threshold before VOX "
+            "keys — rejects clicks, thumps and short desk noises.  Default "
+            "10 ms."));
+        connect(openSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) { if (stream_) stream_->setVoxOpenMs(v); });
+        form->addRow(tr("Open delay:"), openSpin);
+
+        auto *hangSpin = new QSpinBox(grp);
+        hangSpin->setRange(0, 3000);
+        hangSpin->setSingleStep(50);
+        hangSpin->setSuffix(tr(" ms"));
+        hangSpin->setMaximumWidth(kSpinW);
+        hangSpin->setValue(stream_->voxHangMs());
+        hangSpin->setToolTip(tr(
+            "How long TX is held after your voice drops below the threshold "
+            "— bridges the gaps between words so VOX doesn't chatter mid-"
+            "sentence.  Default 300 ms."));
+        connect(hangSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int v) { if (stream_) stream_->setVoxHangMs(v); });
+        form->addRow(tr("Hang time:"), hangSpin);
+
+        auto *antiBox = new QCheckBox(
+            tr("Anti-VOX  (ignore speaker/monitor bleed)"), grp);
+        antiBox->setChecked(stream_->voxAntiVoxOn());
+        antiBox->setToolTip(tr(
+            "When ON (recommended if you run open studio monitors instead "
+            "of headphones), VOX will NOT key while the received audio is "
+            "above the anti-VOX level below — so a loud RX signal spilling "
+            "into your mic can't false-trigger transmit."));
+        connect(antiBox, &QCheckBox::toggled, this, [this](bool on) {
+            if (stream_) stream_->setVoxAntiVoxOn(on);
+        });
+        form->addRow(antiBox);
+
+        // Live RX-audio METER — the anti-VOX reference (the "what the
+        // operator hears" RMS the gate compares against).  Same idiom as
+        // the mic meter above: colored bar (−60…0 dBFS) with the anti-VOX
+        // level marked in cyan.  Reuses fmtMic (in scope).
+        auto *rxBar = new VoxLevelBar(grp);
+        rxBar->setLevel(stream_->voxRxDbfs());
+        rxBar->setThreshold(stream_->voxAntiVoxDbfs());
+        rxBar->setToolTip(tr(
+            "Live received-audio level (what you hear on the speaker).  The "
+            "cyan line is the Anti-VOX level below — set that just above "
+            "where this bar sits when the radio is receiving voice, so RX "
+            "bleed into the mic can't false-key VOX."));
+        auto *rxNum = new QLabel(grp);
+        rxNum->setMinimumWidth(58);
+        rxNum->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        rxNum->setStyleSheet(QStringLiteral("font-family:Consolas;"));
+        rxNum->setText(fmtMic(stream_->voxRxDbfs()));
+        auto *rxRow = new QWidget(grp);
+        auto *rxH   = new QHBoxLayout(rxRow);
+        rxH->setContentsMargins(0, 0, 0, 0);
+        rxH->setSpacing(8);
+        rxH->addWidget(rxBar, 0);
+        rxH->addWidget(rxNum, 0);
+        rxH->addStretch(1);   // keep the short bar + number left-clustered
+        connect(stream_, &lyra::ipc::HL2Stream::voxRxDbfsChanged, rxBar,
+                [rxBar, rxNum, fmtMic](double db) {
+                    rxBar->setLevel(db);
+                    rxNum->setText(fmtMic(db));
+                });
+        form->addRow(tr("RX level:"), rxRow);
+
+        auto *antiSpin = new QDoubleSpinBox(grp);
+        antiSpin->setRange(-90.0, 0.0);
+        antiSpin->setSingleStep(1.0);
+        antiSpin->setDecimals(0);
+        antiSpin->setSuffix(tr(" dBFS"));
+        antiSpin->setMaximumWidth(kSpinW);
+        antiSpin->setValue(stream_->voxAntiVoxDbfs());
+        antiSpin->setToolTip(tr(
+            "RX audio level above which anti-VOX blocks VOX from keying.  "
+            "Lower (toward −90) = more aggressive (even quiet RX blocks "
+            "VOX); higher = only loud RX blocks it.  Default −45 dBFS.  "
+            "The cyan line on the RX meter above tracks this.  Only used "
+            "when Anti-VOX above is ticked."));
+        connect(antiSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, rxBar](double v) {
+                    if (stream_) stream_->setVoxAntiVoxDbfs(v);
+                    rxBar->setThreshold(v);   // move the marker live
+                });
+        form->addRow(tr("Anti-VOX level:"), antiSpin);
+
+        // The RX meter + anti-VOX level are only in play when anti-VOX is
+        // on — grey them with the toggle so the panel reads clearly.
+        const bool antiOn = stream_->voxAntiVoxOn();
+        rxRow->setEnabled(antiOn);
+        antiSpin->setEnabled(antiOn);
+        connect(antiBox, &QCheckBox::toggled, this,
+                [rxRow, antiSpin](bool on) {
+                    rxRow->setEnabled(on);
+                    antiSpin->setEnabled(on);
+                });
+
+        root->addWidget(grp);
+
+        // #91 — quick how-to (operator asked: threshold is hard to dial
+        // by number alone).  Wrapped, subtle, sits under the controls.
+        auto *how = new QLabel(page);
+        how->setWordWrap(true);
+        how->setProperty("lyraColSubtitle", true);   // muted §15.28 style
+        how->setText(tr(
+            "How to set it:\n"
+            "1.  Pick a voice mode (USB/LSB/AM/FM) — VOX ignores CW/digital.\n"
+            "2.  With VOX off, speak normally and watch \"Mic level\" above. "
+            "Note your speech peaks, and the quiet level when you stop.\n"
+            "3.  Set Threshold BETWEEN the two — a few dB below your speech "
+            "peaks, but above the quiet/room-noise level so breathing, the "
+            "desk fan, or a keyboard can't key you.\n"
+            "4.  Arm VOX and talk. If it clips the start of words, lower "
+            "Open delay; if it drops between words, raise Hang time.\n"
+            "5.  On open speakers, keep Anti-VOX on and set its level just "
+            "above your normal RX audio so received signals can't trip TX.\n"
+            "VOX never overrides a manual MOX or foot-switch — those always "
+            "win."));
+        root->addWidget(how);
+    } else {
+        // No stream — VOX writes through HL2Stream; show a hint instead
+        // of an empty tab (the tab is only added when stream_ exists, so
+        // this branch is defensive).
+        root->addWidget(new QLabel(
+            tr("Connect to the radio to configure VOX."), page));
+    }
 
     root->addStretch(1);
     return page;

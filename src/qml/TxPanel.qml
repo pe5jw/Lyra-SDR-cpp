@@ -106,7 +106,7 @@ Rectangle {
         }
         Slider {
             id: driveSlider
-            Layout.preferredWidth: 130   // operator-shrunk from 200 — gesture room enough; saves panel width for TUN slider + buttons
+            Layout.preferredWidth: 110   // operator-shrunk (#91 VOX room) — gesture room enough; saves panel width for the button cluster
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: root.rawToPct(Stream.txDriveLevel)
             onMoved: Stream.setTxDriveLevel(root.pctToRaw(value))
@@ -154,7 +154,7 @@ Rectangle {
         }
         Slider {
             id: micGainSlider
-            Layout.preferredWidth: 130   // matches driveSlider — front-panel sliders kept short
+            Layout.preferredWidth: 110   // matches driveSlider — front-panel sliders kept short
             // Range matches the verified reference's Default TX profile
             // (Max +40, Min -90) so the operator's full reference-style
             // travel is preserved.  Live value bidirectionally binds
@@ -199,11 +199,14 @@ Rectangle {
         // TX — default ON.
         Button {
             id: attBtn
-            checkable: true
-            implicitWidth: 72
-            implicitHeight: 30
+            // NOT checkable: `checked` stays a pure one-way reflection of
+            // Stream.attOnTxEnabled (never severed by the control), so the
+            // lamp always agrees with Settings → TX.  Click = toggle command.
+            checkable: false
+            implicitWidth: 64
+            implicitHeight: 26
             checked: Stream.attOnTxEnabled
-            onToggled: Stream.setAttOnTxEnabled(checked)
+            onClicked: Stream.setAttOnTxEnabled(!Stream.attOnTxEnabled)
             // engaged = protection actually live on the wire right now
             readonly property bool engaged: Stream.attOnTxEnabled && Stream.moxActive
             // Disabled → "ATT off"; armed (RX) → "ATT 31" (the setpoint
@@ -217,7 +220,7 @@ Rectangle {
                       ? qsTr("ATT -%1").arg(Stream.attOnTxDb)
                       : qsTr("ATT %1").arg(Stream.attOnTxDb)
             font.bold: true
-            font.pixelSize: 13
+            font.pixelSize: 12
             background: Rectangle {
                 // Engaged = solid saturated red with white text (the MOX-
                 // live idiom) — NOT a light-salmon-on-dark-maroon blend,
@@ -260,17 +263,20 @@ Rectangle {
         // is wrong with the antenna / feedline."
         Button {
             id: protBtn
-            checkable: true
-            implicitWidth: 96
-            implicitHeight: 30
+            // NOT checkable: `checked` stays a pure one-way reflection of
+            // Stream.swrProtectEnabled (never severed by the control), so the
+            // lamp always agrees with Settings → TX.  Click = toggle command.
+            checkable: false
+            implicitWidth: 84
+            implicitHeight: 26
             checked: Stream.swrProtectEnabled
-            onToggled: Stream.setSwrProtectEnabled(checked)
+            onClicked: Stream.setSwrProtectEnabled(!Stream.swrProtectEnabled)
             readonly property bool tripped: Stream.swrProtectTripped
             text: !Stream.swrProtectEnabled ? qsTr("PROT off")
                 : protBtn.tripped            ? Stream.swrProtectReason
                                              : qsTr("PROT")
             font.bold: true
-            font.pixelSize: 13
+            font.pixelSize: 12
             background: Rectangle {
                 radius: 4
                 // tripped = solid red alarm (MOX idiom); armed = calm
@@ -339,7 +345,7 @@ Rectangle {
         Slider {
             id: tuneDriveSlider
             visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
-            Layout.preferredWidth: 130
+            Layout.preferredWidth: 110
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: Prefs.tuneDrivePct
             onMoved: Prefs.tuneDrivePct = value
@@ -373,6 +379,64 @@ Rectangle {
             Layout.preferredWidth: 36
         }
 
+        // ── VOX — voice-operated TX arm/keying lamp (#91) ───────────
+        // Sits left of TUN in the right-hand button cluster.  Same
+        // green-armed / red-live idiom as the PROT lamp: gray = off;
+        // green = armed (the mic gate is listening); red = keying NOW
+        // (VOX is holding the wire key on your voice).  Click arms/
+        // disarms (bidirectional with Settings → TX, where the
+        // threshold / hang / anti-VOX knobs live).  VOX keys voice
+        // modes only and never overrides a manual / foot-switch key.
+        Button {
+            id: voxBtn
+            // NOT checkable: `checked` stays a PURE one-way reflection of
+            // Stream.voxEnabled and is never written by the control, so the
+            // binding can't break (the old checkable+onToggled form broke it
+            // on first click → the front-panel lamp desynced from the real
+            // VOX state / from the Settings toggle).  Click = a toggle
+            // command; the model change flows back through the binding.
+            checkable: false
+            implicitWidth: 64
+            implicitHeight: 26
+            checked: Stream.voxEnabled
+            onClicked: Stream.setVoxEnabled(!Stream.voxEnabled)
+            // keying = this gate currently holds the wire key (voice up)
+            readonly property bool keying: Stream.voxKeying
+            text: !Stream.voxEnabled ? qsTr("VOX off")
+                : voxBtn.keying        ? qsTr("VOX ●")   // ● = keyed now
+                                       : qsTr("VOX")
+            font.bold: true
+            font.pixelSize: 12
+            background: Rectangle {
+                radius: 4
+                // keying = solid red alarm (MOX idiom); armed = calm
+                // green ("listening"); disabled = gray.
+                color: voxBtn.keying  ? root.cMox
+                     : voxBtn.checked ? "#13301f"
+                     : "#161e28"
+                border.color: voxBtn.keying  ? root.cMoxEdge
+                            : voxBtn.checked ? "#2e8b57"
+                            : "#2a3a4a"
+                border.width: 2
+            }
+            contentItem: Text {
+                text: voxBtn.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: voxBtn.keying  ? "#ffffff"
+                     : voxBtn.checked ? "#3fd07f"
+                     : root.cText
+                font: voxBtn.font
+            }
+            ToolTip.text: qsTr("VOX — voice-operated transmit.  Green = armed "
+                + "(listening to your mic); red = keying now.  Keys TX when you "
+                + "speak and drops after the hang time.  Voice modes only; never "
+                + "overrides a manual / foot-switch key.  Threshold, hang time + "
+                + "anti-VOX live in Settings → TX.  Click to arm / disarm.")
+            ToolTip.delay: 1000
+            ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
+        }
+
         // ── TUN — armed-tune button (carrier @ TX freq + 1 kHz) ─────
         // Clicking arms the host-streamed 1 kHz tone AND requests MOX
         // in a single gesture (the operator's "press to tune" pattern).
@@ -387,15 +451,18 @@ Rectangle {
         // I/Q stream but the gateware DAC scales it to inaudible.
         Button {
             id: tunBtn
-            checkable: true
-            implicitWidth: 76
-            implicitHeight: 44
-            text: qsTr("TUN")
+            // NOT checkable: `checked` stays a pure one-way reflection of
+            // Stream.tuneEnabled (wire truth) so the auto-clear on MOX-drop
+            // shows immediately.  Click = toggle command (arm / release).
+            checkable: false
+            implicitWidth: 64
+            implicitHeight: 26
+            text: qsTr("Tune")
             font.bold: true
-            font.pixelSize: 16
+            font.pixelSize: 12
             checked: Stream.tuneEnabled
             onClicked: {
-                if (checked) {
+                if (!Stream.tuneEnabled) {
                     // Arming: set tone first so the very first EP2 frame
                     // after wire-MOX rises already carries the carrier.
                     Stream.setTuneEnabled(true)
@@ -438,14 +505,17 @@ Rectangle {
         // honest through the ~65 ms keydown window.
         Button {
             id: moxBtn
-            checkable: true
-            implicitWidth: 96
-            implicitHeight: 44
+            // NOT checkable: `checked` stays a pure one-way reflection of
+            // Stream.moxActive (wire truth); the lamp already reads moxActive
+            // directly, so this just keeps the control from severing it.
+            checkable: false
+            implicitWidth: 64
+            implicitHeight: 26
             text: qsTr("MOX")
             font.bold: true
-            font.pixelSize: 18
+            font.pixelSize: 12
             checked: Stream.moxActive
-            onClicked: Stream.requestMox(checked)
+            onClicked: Stream.requestMox(!Stream.moxActive)
             background: Rectangle {
                 // Three-way state: moxActive (wire MOX live) → red;
                 // pressIntent (operator pressed within last ~220 ms,

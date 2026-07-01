@@ -91,6 +91,8 @@
 // register_sink() + router_instance(0) calls (the post-rxWorker_
 // IQ-dispatch path).
 #include "wire/Router.h"
+// #91 VOX — pure mic-RMS gate (hardware-free decision core).
+#include "tx/VoxDetector.h"
 #include <memory>
 
 // #105 CW-3a — host CW keyer (CWX); the full type is pulled in the .cpp.
@@ -445,6 +447,19 @@ class HL2Stream : public QObject {
     // restarts until consciously cleared); a visible indicator shows it's on.
     Q_PROPERTY(bool txInhibit READ txInhibit WRITE setTxInhibit
                NOTIFY txInhibitChanged)
+    // #91 — VOX (voice-operated TX).  A pure mic-RMS gate (VoxDetector)
+    // fed the EP6 mic level polled off the same 50 ms tick as HW-PTT;
+    // keys through requestMoxFromVox with the "never override a manual /
+    // foot-switch key" safety.  Default OFF.  voxKeying reflects whether
+    // THIS gate currently holds the key (for a front-panel lamp state).
+    Q_PROPERTY(bool voxEnabled READ voxEnabled WRITE setVoxEnabled
+               NOTIFY voxEnabledChanged)
+    Q_PROPERTY(bool voxKeying  READ voxKeying  NOTIFY voxKeyingChanged)
+    // Live mic level (dBFS) the VOX gate sees — a reference for setting
+    // the threshold ("speak, watch the peaks, set threshold a bit below").
+    // Updated every VOX poll (~50 ms) whenever the stream is open, even
+    // with VOX disabled, so it works while you're dialling it in.
+    Q_PROPERTY(double voxMicDbfs READ voxMicDbfs NOTIFY voxMicDbfsChanged)
     // #169 — SWR protection (auto-cut TX on sustained high reflected
     // power).  A stream-side evaluator (off the GUI loop, beside the
     // host TX-safety timer + ATT-on-TX) samples fwd/rev power on a 50 ms
@@ -823,6 +838,39 @@ public:
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     bool    txInhibit()             const { return txInhibit_;             }
     int     attOnTxDb()             const { return attOnTxDb_;             }
+    // #91 — VOX getters/setters.  Params echo VoxDetector::Params; the
+    // detector + safety live on the Qt main thread (onVoxPoll sole
+    // owner).  setVoxRxRmsLin is the anti-VOX RX-audio level feed,
+    // pushed from WdspEngine::dispatchAudioFrame (atomic; audio thread).
+    bool    voxEnabled()            const { return voxEnabled_;            }
+    bool    voxKeying()             const { return voxKeying_;             }
+    double  voxMicDbfs()            const { return voxMicDbfs_;            }
+    double  voxRxDbfs()             const { return voxRxDbfs_;             }
+    double  voxThresholdDbfs()      const { return voxThresholdDbfs_;      }
+    double  voxAntiVoxDbfs()        const { return voxAntiVoxDbfs_;        }
+    int     voxOpenMs()             const { return voxOpenMs_;             }
+    int     voxHangMs()             const { return voxHangMs_;             }
+    bool    voxAntiVoxOn()          const { return voxAntiVoxOn_;          }
+    // Q_INVOKABLE so the front-panel VOX button can call it from QML (the
+    // other VOX setters below are driven from C++ by the Settings dialog and
+    // don't need it).  Without this, Stream.setVoxEnabled(...) silently threw
+    // in QML → the front-panel toggle did nothing; only Settings worked.
+    Q_INVOKABLE void setVoxEnabled(bool on);
+    void    setVoxThresholdDbfs(double dbfs);
+    void    setVoxAntiVoxDbfs(double dbfs);
+    void    setVoxOpenMs(int ms);
+    void    setVoxHangMs(int ms);
+    void    setVoxAntiVoxOn(bool on);
+    void    setVoxRxRmsLin(double rms) noexcept {
+        voxRxRmsLin_.store(rms, std::memory_order_relaxed);
+    }
+    // Anti-VOX RX-audio level source.  Pulled on the Qt main thread in
+    // onVoxPoll (50 ms) — dangle-proof: the poll only runs while the
+    // stream is open, so the provider (which reads WdspEngine's atomic)
+    // is never invoked after teardown.  main.cpp wires it to the engine.
+    void    setVoxRxRmsProvider(std::function<double()> p) {
+        voxRxRmsProvider_ = std::move(p);
+    }
     // #169 — SWR-protection getters.
     bool    swrProtectEnabled()     const { return swrProtectEnabled_;     }
     double  swrProtectLimit()       const { return swrProtectLimit_;       }
@@ -1055,8 +1103,10 @@ public:
         Serial = 3,   // serial PTT line — a digital app (WSJT-X / VarAC /
                       // fldigi) asserts RTS/DTR on a (virtual) COM port,
                       // polled via QSerialPort (lyra::cat::SerialPtt).
-        // Forward-compat: Cw / Vox land with their respective
-        // subsystems and follow the same pattern.
+        Vox    = 4,   // #91 voice-operated TX — the VoxDetector mic-RMS gate
+                      // keys through this source (never overrides a Manual /
+                      // HwPtt key; releases only its own key).
+        // Forward-compat: Cw lands with its subsystem, same pattern.
     };
     void requestMox(bool on, PttSource source);     // explicit
 
@@ -1079,6 +1129,7 @@ public slots:
     Q_INVOKABLE void requestMoxFromHwPtt(bool on);
     Q_INVOKABLE void requestMoxFromTci(bool on);
     Q_INVOKABLE void requestMoxFromSerialPtt(bool on);   // serial PTT input
+    Q_INVOKABLE void requestMoxFromVox(bool on);         // #91 VOX gate edge
 
     // #171 — straight-key / external-keyer key edge from a serial COM line
     // (SerialCwKey).  The host drives tx[0].cwx / cwx_ptt directly off the
@@ -1346,6 +1397,10 @@ signals:
     // §15.31 — ATT-on-TX operator surface.
     void attOnTxEnabledChanged(bool on);
     void txInhibitChanged(bool on);   // #94
+    void voxEnabledChanged(bool on);  // #91
+    void voxKeyingChanged(bool on);   // #91
+    void voxMicDbfsChanged(double dbfs); // #91 — live mic level for threshold
+    void voxRxDbfsChanged(double dbfs);  // #91 — live RX-audio level for anti-VOX
     void attOnTxDbChanged(int db);
     // #169 — SWR protection.
     void swrProtectEnabledChanged(bool on);
@@ -1392,6 +1447,8 @@ private slots:
     // callback with FSM-side polling per `console.cs`-class
     // PTT consumer pattern.  Opt-in gated by hwPttEnabled_.
     void onHwPttPoll();
+    void onVoxPoll();       // #91 — VOX gate tick (own slot on the HW-PTT timer)
+    void applyVoxParams();  // #91 — push the 5 member params into vox_
     void onFatalError(QString reason);
 
 private:
@@ -1754,6 +1811,22 @@ private:
     // faithful "FSM polls prn->ptt_in on its own clock" posture.
     bool                 lastHwPttLevel_ = false;
     QTimer               hwPttTimer_;
+
+    // ── #91 VOX ── all Qt-main-thread state (onVoxPoll sole owner)
+    // except voxRxRmsLin_ (written by the audio thread → atomic).
+    lyra::tx::VoxDetector vox_;
+    bool                 voxEnabled_       = false;   // operator opt-in
+    bool                 voxOwnsKey_       = false;   // this gate holds the key
+    bool                 voxKeying_        = false;   // mirror for the lamp
+    double               voxMicDbfs_       = -200.0;  // live mic level readout
+    double               voxRxDbfs_        = -200.0;  // live RX-audio (anti-VOX) readout
+    double               voxThresholdDbfs_ = -35.0;
+    double               voxAntiVoxDbfs_   = -45.0;
+    int                  voxOpenMs_        = 10;
+    int                  voxHangMs_        = 300;
+    bool                 voxAntiVoxOn_     = true;
+    std::atomic<double>  voxRxRmsLin_{0.0};           // anti-VOX RX-audio feed (push)
+    std::function<double()> voxRxRmsProvider_;        // anti-VOX pull (main-thread)
 
     // ── TX-1 component 6: SSB I/Q injection (wire-inert default) ──
     // Gate atomic — see Q_PROPERTY decl + setInjectTxIq() doc for

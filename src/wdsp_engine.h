@@ -269,6 +269,13 @@ public:
         return audioDbFs_.load(std::memory_order_relaxed);
     }
 
+    // #91 VOX anti-VOX — latest RMS (linear [0,1)) of the heard RX audio.
+    // Thread-safe (atomic); the HL2Stream VOX poll pulls this to suppress
+    // keying on studio-monitor bleed.
+    double voxRxAudioRmsLin() const {
+        return voxRxRmsLin_.load(std::memory_order_relaxed);
+    }
+
     // In-passband RX signal strength (WDSP RXA_S_PK), in WDSP's raw
     // dBm-ish units — the standard WDSP S-meter source.
     // Returns -200 when the RX channel isn't running.  Safe to call
@@ -924,6 +931,12 @@ private:
     std::vector<double> outBuf_;
     int                 fexErr_ = 0;
     std::atomic<double> audioDbFs_{-200.0};
+    // #91 VOX anti-VOX — running RMS (linear [0,1)) of the RX audio the
+    // operator HEARS (post-EQ mono).  Written by the audio thread in
+    // dispatchAudioFrame; read via voxRxAudioRmsLin() by the Qt-main VOX
+    // poll (HL2Stream, provider-pull).  Studio-monitor bleed into the mic
+    // is suppressed by VOX using this level.
+    std::atomic<double> voxRxRmsLin_{0.0};
     std::atomic<bool>   tciAudioOn_{false};   // TCI audio stream tap on
     std::atomic<bool>   tciIqOn_{false};      // TCI IQ stream tap on
     // 5 Hz UI poll — emits levelsChanged so the QML audioDbFs binding
