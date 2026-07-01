@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.8.0)
+## Features (v0.9.0)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -85,6 +85,12 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   An **external keyer / Winkeyer** works too (its KEY line into the HL2 jack,
   Iambic off), plus an optional **serial CW-key input** for a key wired to a
   COM-port pin.
+* **VOX (voice-operated transmit)** — key up just by talking, with its own
+  Settings tab: adjustable threshold, open-delay + hang times, and
+  **anti-VOX** so your own receiver audio can't trip it.  Two live bar
+  meters (mic level + anti-VOX) make it easy to set; voice-modes only, never
+  overrides a manual/foot-switch key, and an instant kill.  PureSignal-safe
+  (read-only taps, keying decision only).
 * **Native TX DSP rack** — a studio audio chain built into the radio, ahead
   of the modulator: an 8-band parametric EQ with a draggable curve + live
   RTA, a multi-stage Speech section (noise gate, auto-AGC, de-esser), a
@@ -98,10 +104,11 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   calibrates what your drive % means in real watts on each band (measure
   each band into a dummy load and nudge its number), plus an **auto-tuning
   watts-output cap** to protect a low-drive amp: key TUN on a band and Lyra
-  walks the power up *from below* and locks that band exactly at your cap
-  (live green/red "Cap tuned" marks), then holds it in SSB without chasing
-  voice peaks.  Approach-from-below never overshoots — safe for an SS amp.
-  PureSignal-safe.
+  walks the power up *from below* and parks that band on the highest drive
+  step that stays *under* your cap (live green/red "Cap tuned" marks), then
+  holds it in SSB without chasing voice peaks.  Never overshoots — safe for
+  an SS amp.  The on-screen watts are calibrated per band so the meter, the
+  cap, and your external watt-meter all agree.  PureSignal-safe.
 * **TX safety** — ATT-on-TX RX-front-end protection, TR-sequencing for amp
   hot-switch safety, an operator TX time-out, and a hard External TX Inhibit
   lockout (for sharing the antenna/bench with sensitive gear).
@@ -124,7 +131,8 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   and survives a restart; export/import of the full settings profile.
 * **Band switching + per-band memory** — three rows (Ham / BC / Gen),
   returns to each band's last frequency, mode, and panadapter/waterfall dB
-  ranges; optional 11m/CB band with all-40-channel panadapter markers.
+  ranges; optional 11m/CB band with all-40-channel panadapter markers
+  (channel numbers + the fun nicknames — Super Bowl, Emergency, Highway…).
 * **GEN / TIME / Memory** — three general-coverage slots, an HF
   time-station cycle (WWV/WWVH/CHU/BPM/RWM/…, ordered by your callsign),
   and a 20-slot frequency memory bank with CSV import/export.
