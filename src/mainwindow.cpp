@@ -1157,6 +1157,25 @@ void MainWindow::buildMenus() {
                "• TCI server protocol — Expert Electronics public "
                "specification (EESDR).  Lyra implements a TCI server "
                "compatible with the v1.9 / v2.0 spec."
+               "</p>"
+               "<hr style='border-color:#1a2632'>"
+               "<p style='color:#8a9aac;font-size:11px'>"
+               "<b>Disclaimer — use at your own risk.</b>  Lyra is provided "
+               "<b>“as is”</b>, with <b>no warranty</b> of any kind, express "
+               "or implied (see the GPL v3+ for the full terms).  It "
+               "controls a radio transmitter and drives external equipment; "
+               "<b>you, the licensed operator, are solely responsible</b> "
+               "for legal, correct, and safe operation — including staying "
+               "within your licence privileges, band and power limits, and "
+               "RF-exposure rules, and for protecting your amplifier, "
+               "antenna, and other gear.  The authors accept "
+               "<b>no liability</b> for any damage, interference, injury, "
+               "loss, or violation arising from the use, misuse, "
+               "misconfiguration, or malfunction of this software or any "
+               "equipment connected to it.  Amplifier-protection features "
+               "(watts cap, SWR fold, TX timeout, etc.) are aids, "
+               "<b>not guarantees</b> — always verify with a dummy load and "
+               "your own instruments before trusting them on the air."
                "</p>").arg(ver));
         QPushButton *donate =
             box.addButton(tr("☕ Donate via PayPal"), QMessageBox::ActionRole);
@@ -1207,6 +1226,22 @@ void MainWindow::openSettingsTopic(const QString &topic) {
     } else {
         showHelp(topic);
     }
+}
+
+void MainWindow::attachChipHelp(QToolButton *chip, const QString &topic) {
+    // Header toggle chips (CTUN / WF-ID) have no dock title bar, so no "?"
+    // badge.  Give them the same reach: right-click → that feature's
+    // User-Guide section.  Left-click stays the chip's toggle.
+    chip->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(chip, &QWidget::customContextMenuRequested, chip,
+            [this, chip, topic](const QPoint &pos) {
+                auto *menu = new QMenu(chip);
+                menu->setAttribute(Qt::WA_DeleteOnClose);
+                connect(menu->addAction(tr("Help — what does this do?")),
+                        &QAction::triggered, this,
+                        [this, topic]() { showHelp(topic); });
+                menu->popup(chip->mapToGlobal(pos));
+            });
 }
 
 void MainWindow::buildToolbar() {
@@ -1351,8 +1386,9 @@ void MainWindow::buildToolbar() {
             ctun->setToolTip(tr("Center-tune lock — freeze the panadapter "
                                 "centre and tune the VFO within the captured "
                                 "span (no waterfall scroll). Click to engage "
-                                "at the current dial."));
+                                "at the current dial.  Right-click for help."));
             tb->addWidget(ctun);
+            attachChipHelp(ctun, QStringLiteral("ctun"));
             // chip -> stream (engage snaps the locked centre to the dial)
             connect(ctun, &QToolButton::toggled, st,
                     [st](bool on) { st->setCtuneEnabled(on); });
@@ -1423,8 +1459,9 @@ void MainWindow::buildToolbar() {
                                 "min (set interval / Level on the TX panel).  "
                                 "USB/LSB voice only — in digital your call is "
                                 "already in the payload.  Re-arms OFF each "
-                                "session.  Courtesy ID only."));
+                                "session.  Courtesy ID only.  Right-click for help."));
             tb->addWidget(wfid);
+            attachChipHelp(wfid, QStringLiteral("wfid"));
             // chip -> Prefs (arm / disarm the auto-ID cadence)
             connect(wfid, &QToolButton::toggled, prefs_,
                     [this](bool on) { prefs_->setWfIdEnabled(on); });

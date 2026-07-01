@@ -187,6 +187,8 @@ private:
     // Per-panel "?" badge targets (driven by the Help bridge).
     void showHelp(const QString &topic);        // open the User Guide at topic
     void openSettingsTopic(const QString &topic);// Settings tab, or guide fallback
+    // Right-click → guide-section help for header toggle chips with no dock.
+    void attachChipHelp(class QToolButton *chip, const QString &topic);
 
     // Collapsible-panel docks (EqPanel/SpeechPanel etc.): when the QML root's
     // `collapsed` property toggles, shrink the host dock to the title strip

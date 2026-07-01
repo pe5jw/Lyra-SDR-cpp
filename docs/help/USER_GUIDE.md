@@ -447,8 +447,10 @@ just toggle off). Tip: RIT/XIT are session-style fine offsets — for a fixed
 transmit split (a repeater, or working a DX pile-up up/down), use
 **SPLIT** (or the FM **RPT** button) instead.
 
-**CTUN — centre-tune lock.** The **CTUN** chip (top toolbar, in the *RX DSP*
-group next to *RX EQ*) freezes the panadapter / waterfall on its current
+### CTUN — centre-tune lock
+
+The **CTUN** chip (top toolbar, in the **Options** group) freezes the
+panadapter / waterfall on its current
 centre so you can tune the VFO **within** the displayed span without the
 waterfall scrolling. Click it (it lights **green**) and the band stays put
 while the dial marker slides to where you're listening — ideal for watching a
@@ -1215,6 +1217,30 @@ external watt-meter / bias-tune an external amp.
 > [Settings → Hardware → Transmit](#transmit-pa-enable--safety-timeout--hardware-ptt).
 > Default OFF for safety; tick it after a quick bench check on your
 > specific HL2 unit.
+
+---
+
+## Waterfall ID (TX callsign courtesy ID)
+
+Lyra can paint your callsign as a small image in the top of your
+transmitted SSB waterfall — a **courtesy ID** the receiving station can
+read on their own waterfall. It's a visual nicety, not a substitute for
+identifying by voice.
+
+- **Arm it** with the **WF-ID** chip (top toolbar, **Options** group).
+  Armed (amber) = it sends one ID now and then repeats every N minutes.
+- **Set it up** on the **TX panel → Waterfall ID** section: the repeat
+  **interval**, the **Level** (how strong the image is in the passband —
+  keep it low so it doesn't dominate your audio), and a manual **Send**
+  button for a one-shot ID.
+- **USB/LSB voice only.** In digital modes your call is already in the
+  payload, so WF-ID is disabled there.
+- **Safe by design.** It re-arms **OFF** every session (so it can never
+  auto-key on a fresh launch), and any band-edge crossing or mode change
+  disarms it — a courtesy ID can't carry over into a context you didn't
+  intend.
+
+> Right-click the **WF-ID** chip for this help; the same goes for **CTUN**.
 
 ---
 
@@ -2803,7 +2829,7 @@ Per-band TX power calibration and amplifier protection. Two things live
 here: a **PA Gain By Band** table that calibrates what your drive % means
 in watts on each band, and a **Max Output (watts)** cap that protects a
 low-drive amplifier by holding your output at or under a watts ceiling —
-auto-tuned per band so it lands exactly on the cap.
+auto-tuned per band so it parks just *under* the cap (the safe side).
 
 > ⚠ **Calibrate into a dummy load with your amplifier out of line.**
 > Tuning a band walks the power *up from below* to find your cap. Verify
@@ -2821,17 +2847,31 @@ seeds the conservative fallback ceiling and the auto-tune servo.
 
 **Max Output (amp protection).** Tick **Limit TX output to ___ W** and set
 your cap. Then key **TUN** on each band: Lyra walks the power up from below
-and **locks that band exactly at your cap** — the **Cap tuned** column
-shows a green ✓ when locked, a red — when not yet tuned. SSB and the other
-modes then hold each tuned band at the cap automatically, capping voice
-peaks without chasing them. A band you haven't tuned runs *conservatively
-under* the cap until you do. Change the cap → re-key TUN on each band to
-re-learn.
+and **parks that band on the highest drive step that stays *under* your
+cap** — the **Cap tuned** column shows a green ✓ when locked, a red — when
+not yet tuned. SSB and the other modes then hold each tuned band at that
+level automatically, capping voice peaks without chasing them. A band you
+haven't tuned runs *conservatively under* the cap until you do. Change the
+cap → re-key TUN on each band to re-learn.
 
-Because the approach is always *from below*, the output only ever rises
-toward the cap and never overshoots — safe for a solid-state amp where a
+Because the approach is always *from below* and parks on the under-cap
+step, the output never overshoots — safe for a solid-state amp where a
 fraction of a watt over matters. *(This replaces the old "Max TX drive %"
 control — the watts cap supersedes it.)*
+
+**Why a band can land noticeably under the cap.** The Hermes Lite's drive
+control is **coarse** — the on-board DAC has only about **16 hardware
+steps**, and each step is a *different* number of watts on every band. Your
+cap almost always falls **between** two of those steps (for example, one
+step makes 3.0 W and the next jumps to 3.7 W, with nothing available in
+between). Lyra always chooses the step just **under** your cap, so on that
+band a 3.5 W cap holds at ~3.0 W — not because the servo is timid, but
+because that is the closest the radio can get without going *over*. This is
+deliberate: under-is-safer is the right call for amp protection, and the
+level is rock-steady rather than flickering across the gap. Landing exactly
+on the cap would require finer-than-hardware drive control (filling the gaps
+between the coarse steps with the continuous digital gain) — a planned
+future refinement, not something worth rushing into the safety path.
 
 ---
 
@@ -3489,6 +3529,48 @@ the GPL-licensed components it depends on:
 Full license text: `LICENSE` / `NOTICE.md` in the source tree. See
 the **About Lyra** dialog (**Help → About Lyra…**) for the version
 + build date of the running binary.
+
+---
+
+### Disclaimer — use at your own risk
+
+Lyra is provided **"as is"**, with **no warranty** of any kind, express or
+implied — including, without limitation, any warranty of merchantability,
+fitness for a particular purpose, or non-infringement. This is the standard
+GPL v3+ posture; see the `LICENSE` file for the complete legal terms. The
+summary below is written plainly for operators, and does not replace or
+limit that license text.
+
+Lyra controls a **radio transmitter** and drives **external equipment**
+(amplifiers, tuners, antennas, other SDRs, computers, and audio gear).
+Radio transmission carries real risks — RF exposure, high voltage, fire,
+equipment damage, and interference — and is legally regulated.
+
+**You, the licensed operator, are solely responsible for:**
+
+- Operating only within your **licence privileges** and your country's
+  regulations — correct **bands, frequencies, power limits, emission
+  types, and identification**.
+- **RF-safety / exposure** compliance for your station and everyone near
+  it.
+- Protecting your **amplifier, antenna, feedline, and other equipment** —
+  including correct drive levels, SWR, grounding, and switching sequences.
+- **Verifying** Lyra's behaviour on your own station with your own
+  instruments before trusting it on the air.
+
+**The authors and contributors accept no liability** for any damage,
+interference, injury, loss, regulatory violation, or other consequence
+arising from the use, misuse, misconfiguration, or malfunction of this
+software or of any equipment connected to it.
+
+**Protection features are aids, not guarantees.** The amplifier watts cap,
+SWR fold/cut, TX safety timeout, TR-sequencing delays, and similar
+safeguards are designed to *reduce* risk, but they depend on correct
+calibration, working hardware, and accurate readings. They can fail or be
+misconfigured. **Never rely on them as your only line of defence** —
+calibrate into a **dummy load**, confirm with an external watt-meter / SWR
+meter, and keep your amplifier out of line until you have verified every
+band. When in doubt, run less power.
 
 ---
 

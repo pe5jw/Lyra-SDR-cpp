@@ -53,7 +53,6 @@ constexpr auto kKeyMaxOn     = "meter/maxPeakEnabled";
 constexpr auto kKeyMaxHold   = "meter/maxHoldMs";
 constexpr auto kKeyRxSource  = "meter/rxSource"; // operator's RX-state preference
 constexpr auto kKeyTxSource  = "meter/txSource"; // operator's TX-state preference
-constexpr auto kKeyPwrCal    = "meter/pwrCalScale";   // operator cal multiplier
 constexpr auto kKeyPwrRated  = "meter/pwrRatedMaxW";  // rated max (red zone start)
 constexpr auto kKeyTxSecond  = "meter/txSecondary";   // TX secondary readout source
 constexpr auto kKeyTxSecond2 = "meter/txSecondary2";  // TX second secondary readout source
@@ -180,8 +179,6 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     // the derivation rule explicit.
     source_ = (stream_ && (stream_->moxActive() || stream_->cwKeyingActive()))
                   ? txSource_ : rxSource_;
-    pwrCalScale_ = std::clamp(
-        s.value(QString::fromLatin1(kKeyPwrCal), 1.0).toDouble(), 0.05, 20.0);
     pwrRatedMaxW_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPwrRated), 5.0).toDouble(), 0.5, 200.0);
     pwrScaleMaxW_ = pwrRatedMaxW_ * 2.0;
@@ -540,13 +537,13 @@ QString MeterModel::formatSecondaryText(int src) const {
     // underlying stream_ getters; never modifies model state.  Each
     // case mirrors the primary compute's text format so the operator
     // reads identical numbers (e.g. PWR-as-secondary uses the same
-    // pwrCalScale_ trim).  NaN / sentinel values render as "—".
+    // per-band-calibrated watts).  NaN / sentinel values render as "—".
     if (!stream_) return QString();
     switch (src) {
     case PWR: {
-        const double raw = stream_->fwdPowerW();
+        const double raw = stream_->fwdPowerCalW();   // per-band-calibrated
         if (std::isnan(raw) || raw < 0.0) return QStringLiteral("PWR —");
-        const double w = raw * pwrCalScale_;
+        const double w = raw;                          // per-band trim is the cal
         return (w < 10.0)
                    ? QStringLiteral("PWR %1 W").arg(w, 0, 'f', 1)
                    : QStringLiteral("PWR %1 W").arg(std::lround(w));
@@ -644,16 +641,6 @@ QString MeterModel::formatTxAlcGSecondary() const {
     return QStringLiteral("ALC G —");
 }
 
-void MeterModel::setPwrCalScale(double s) {
-    // Wide range covers a wide ADC-to-watt mismatch — operators on
-    // exotic forward-power bridges may need to trim quite far from 1.0.
-    s = std::clamp(s, 0.05, 20.0);
-    if (std::abs(s - pwrCalScale_) < 1e-6) return;
-    pwrCalScale_ = s;
-    QSettings().setValue(QString::fromLatin1(kKeyPwrCal), pwrCalScale_);
-    emit pwrCalChanged();
-    if (source_ == PWR) emit updated();
-}
 
 QVariantList MeterModel::tickMarks() const {
     QVariantList out;
@@ -784,9 +771,8 @@ void MeterModel::ladderRowFor(int src, double *level, double *danger) const {
     if (!stream_) return;
     switch (src) {
     case PWR: {
-        const double raw = stream_->fwdPowerW();
-        const double w = (std::isnan(raw) || raw < 0.0) ? 0.0
-                                                        : raw * pwrCalScale_;
+        const double raw = stream_->fwdPowerCalW();
+        const double w = (std::isnan(raw) || raw < 0.0) ? 0.0 : raw;
         *level = std::clamp(w / std::max(pwrScaleMaxW_, 1e-9), 0.0, 1.0);
         *danger = std::clamp(pwrRatedMaxW_ / std::max(pwrScaleMaxW_, 1e-9),
                               0.0, 1.0);
@@ -1079,10 +1065,11 @@ void MeterModel::computeSMeter() {
 }
 
 void MeterModel::computePwr() {
-    // PWR — forward TX power in watts.  Reads HL2Stream::fwdPowerW
-    // (provisional ADC → W formula in hl2_stream.cpp; operator's
-    // pwrCalScale_ trims it against an external watt-meter anchor) and
-    // maps it onto a 0..pwrScaleMaxW_ scale.  Renderer's "danger zone"
+    // PWR — forward TX power in watts.  Reads HL2Stream::fwdPowerCalW
+    // (raw ADC → W formula x the operator's per-band trim, so it already
+    // matches the external watt-meter — the same value the watts cap
+    // servo uses) and maps it onto a 0..pwrScaleMaxW_ scale.  Renderer's
+    // "danger zone"
     // (the historical normAtS9 binding the QML uses for the red zone)
     // lands at the operator's rated max (pwrRatedMaxW_, default 5 W
     // for a bare HL2+ on-board PA — pwrScaleMaxW_ is 2× that).
@@ -1090,7 +1077,7 @@ void MeterModel::computePwr() {
     // No noise floor / SNR concept — those are RX-specific.  The text
     // readouts are "X.X W" / "X.XX W peak" so the operator can read
     // the watt-meter without crunching the scale.
-    const double raw = stream_ ? stream_->fwdPowerW()
+    const double raw = stream_ ? stream_->fwdPowerCalW()
                                 : std::numeric_limits<double>::quiet_NaN();
     // Telemetry sentinel: NaN means the slot hasn't arrived yet (stream
     // not running, or pre-first-statsChanged).  Display zero state so
@@ -1098,7 +1085,7 @@ void MeterModel::computePwr() {
     // source's history.
     const double w = (std::isnan(raw) || raw < 0.0)
                           ? 0.0
-                          : raw * pwrCalScale_;
+                          : raw;
 
     // PWR ballistic — one of three modes the operator picks in
     // Settings → Meter:

@@ -3061,8 +3061,9 @@ QWidget *SettingsDialog::buildMeterTab() {
         form->addRow(tr("TX source (on MOX):"), txCb);
 
         // §15.28 — switch to the second group (Power Calibration).
-        // The next ~140 lines of operator controls (PWR rated max,
-        // TX secondary readouts, PWR cal scale) live here.
+        // The next ~120 lines of operator controls (PWR rated max,
+        // TX secondary readouts) live here.  Per-band watt calibration
+        // lives on the PA Gain tab, not here.
         auto *grpPwrCal = new QGroupBox(tr("Power Calibration"), page);
         auto *formPwrCal = new QFormLayout(grpPwrCal);
         root->addWidget(grpPwrCal);
@@ -3075,11 +3076,8 @@ QWidget *SettingsDialog::buildMeterTab() {
         //     meter face — set it to your expected max forward power
         //     (e.g. ~5 W for a bare HL2+ on-board PA; 100 W with a
         //     typical amp; up to 200 W for legal-limit).
-        //   * "Cal scale" trims Lyra's provisional watts reading
-        //     against an external watt-meter.  Procedure: TUN into a
-        //     known load, read the external meter (e.g. Palstar shows
-        //     5.0 W) and the Lyra meter (e.g. 3.2 W), divide to get
-        //     the scale (5.0 / 3.2 = 1.5625).  Enter that here.
+        // Matching the displayed watts to an external watt-meter is done
+        // per-band on the PA Gain tab ("PWR meter calibration").
         auto *ratedMax = new QDoubleSpinBox(page);
         ratedMax->setRange(0.5, 200.0);
         ratedMax->setDecimals(1);
@@ -3184,26 +3182,12 @@ QWidget *SettingsDialog::buildMeterTab() {
             if (meter_) meter_->setTxSecondary2(txSec2->currentData().toInt());
         });
         form->addRow(tr("TX secondary readout #2:"), txSec2);
-
-        auto *calScale = new QDoubleSpinBox(page);
-        calScale->setRange(0.05, 20.0);
-        calScale->setDecimals(3);
-        calScale->setSingleStep(0.01);
-        calScale->setValue(meter_->pwrCalScale());
-        calScale->setToolTip(tr(
-            "Multiplier applied to the provisional fwd_power → W "
-            "calculation in hl2_stream.cpp, so the displayed watts "
-            "match your external watt-meter.\n\n"
-            "Calibration procedure: TUN into a known load (dummy load + "
-            "Palstar / similar), read both meters, set this to "
-            "(external W) / (Lyra W).  Default 1.0 = use the "
-            "provisional formula as-is.  Future polish: 3-point per-"
-            "band cal — for now a single global scale covers v0.2.x."));
-        connect(calScale, &QDoubleSpinBox::valueChanged, this,
-                [this](double v) {
-            if (meter_) meter_->setPwrCalScale(v);
-        });
-        form->addRow(tr("PWR cal scale:"), calScale);
+        // NOTE: the old global "PWR cal scale" knob was removed here.
+        // Per-band PWR-meter calibration (Settings → PA Gain → "PWR
+        // meter calibration") is now the single calibration mechanism;
+        // a global scale on top of it double-scaled the reading (e.g.
+        // a 3.5 W cap showing ~3.9 W).  The per-band trim already
+        // matches every band to your external watt-meter.
     }
 
     // §15.28 — switch to the third group (Display Behaviour).  S-meter
@@ -3896,6 +3880,18 @@ QWidget *SettingsDialog::buildPaGainTab() {
     intro->setWordWrap(true);
     root->addWidget(intro);
 
+    // 2-column body — LEFT: PWR meter calibration (do this FIRST);  RIGHT:
+    // PA Gain By Band + Max Output.  Left→right follows the workflow order,
+    // and the two tall per-band tables side by side keep the tab from
+    // scrolling.
+    auto *body     = new QHBoxLayout();
+    body->setSpacing(16);
+    auto *leftCol  = new QVBoxLayout();
+    auto *rightCol = new QVBoxLayout();
+    body->addLayout(leftCol,  1);
+    body->addLayout(rightCol, 1);
+    root->addLayout(body);
+
     auto *grp  = new QGroupBox(tr("PA Gain By Band"), page);
     auto *grid = new QGridLayout(grp);
     // Compact, left-aligned columns — the spinboxes hold "100.0", they
@@ -3951,7 +3947,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
         tunedLabels->append(tuned);
         grid->addWidget(tuned, i + 1, 3);
     }
-    root->addWidget(grp);
+    rightCol->addWidget(grp);
 
     // Stage B — the watts Max cap.  One number; the TUN servo walks each
     // band's drive ceiling up to it and locks it, so it's band-correct +
@@ -3990,16 +3986,31 @@ QWidget *SettingsDialog::buildPaGainTab() {
            "1.  Enter each band's Full Output (W) above — key TUN at full "
            "drive and read the PWR meter.\n"
            "2.  Tick this box and set your cap.\n"
-           "3.  Key TUN on each band — Lyra walks the power up and locks it "
-           "right at your cap (the band shows ✓).  Do every band you "
+           "3.  Key TUN on each band — Lyra walks the power up and parks it "
+           "just UNDER your cap (the band shows ✓).  Do every band you "
            "use.\n"
-           "SSB and the other modes then hold each tuned band at your cap "
+           "SSB and the other modes then hold each tuned band at that level "
            "automatically (it caps voice peaks without chasing them).  An "
            "un-tuned band runs conservatively UNDER the cap until you tune "
            "it.  Change the cap → re-key TUN on each band to re-learn."),
         capGrp);
     capNote->setWordWrap(true);
     capForm->addRow(capNote);
+
+    // Coarse-DAC note — the cap deliberately lands UNDER the set value.
+    auto *capUnder = new QLabel(
+        tr("Why it lands a little under:  the Hermes Lite's drive control is "
+           "coarse (≈16 hardware steps), and each step is a different number "
+           "of watts on each band.  Your cap usually falls BETWEEN two steps "
+           "(e.g. 3.0 W and 3.7 W with nothing in between), so Lyra always "
+           "picks the step just UNDER your cap — the safe side for your amp.  "
+           "A band may therefore sit noticeably below the number you set; that "
+           "is intentional protection, not an error.  Landing exactly on the "
+           "cap needs finer-than-hardware drive control (a planned future "
+           "option)."),
+        capGrp);
+    capUnder->setWordWrap(true);
+    capForm->addRow(capUnder);
 
     auto pushCap = [this, capChk, capSpin]() {
         if (stream_)
@@ -4009,7 +4020,146 @@ QWidget *SettingsDialog::buildPaGainTab() {
             [capSpin, pushCap](bool on) { capSpin->setEnabled(on); pushCap(); });
     connect(capSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
             [pushCap](double) { pushCap(); });
-    root->addWidget(capGrp);
+    rightCol->addWidget(capGrp);
+    rightCol->addStretch(1);
+
+    // ── PWR meter calibration (per band) ─────────────────────────────
+    // Corrects the DISPLAYED watts to an external watt-meter, per band.
+    // Does NOT change transmitted power (that's PA Gain By Band above) —
+    // purely a reading fix.  Calibrate mid-band, at normal power.
+    if (stream_) {
+        auto *mcGrp = new QGroupBox(tr("PWR meter calibration (per band)"), page);
+        auto *mcBox = new QVBoxLayout(mcGrp);
+
+        auto *mcIntro = new QLabel(
+            tr("Makes the on-screen watts match your external watt-meter, "
+               "band by band.  This does NOT change your transmitted power "
+               "(use PA Gain By Band above for that) — it only corrects what "
+               "the PWR meter reads.  Do this FIRST, then PA Gain."),
+            mcGrp);
+        mcIntro->setWordWrap(true);
+        mcBox->addWidget(mcIntro);
+
+        auto *mcWarn = new QLabel(
+            tr("⚠  Calibrate each band MID-BAND and at your NORMAL power — "
+               "into a dummy load, amp out of line.\n"
+               "•  Mid-band: the coupler reads a little differently across a "
+               "band, so the middle is the most representative single point "
+               "(both edges then sit equally close).\n"
+               "•  NOT a low-power setting: the detector diode is non-linear "
+               "at low power, so calibrating there makes every higher level "
+               "read wrong.  Use roughly your usual output."),
+            mcGrp);
+        mcWarn->setWordWrap(true);
+        mcWarn->setProperty("lyraWarn", true);
+        mcBox->addWidget(mcWarn);
+
+        auto *mcLive = new QLabel(mcGrp);
+        mcLive->setWordWrap(true);
+        mcBox->addWidget(mcLive);
+
+        auto *mcRow  = new QHBoxLayout();
+        mcRow->addWidget(new QLabel(tr("Your watt-meter reads:"), mcGrp));
+        auto *mcSpin = new QDoubleSpinBox(mcGrp);
+        mcSpin->setRange(0.1, 200.0);
+        mcSpin->setDecimals(1);
+        mcSpin->setSingleStep(0.1);
+        mcSpin->setSuffix(tr(" W"));
+        mcSpin->setFixedWidth(110);
+        mcSpin->setValue(5.0);
+        mcRow->addWidget(mcSpin);
+        auto *mcBtn = new QPushButton(tr("Calibrate this band"), mcGrp);
+        mcRow->addWidget(mcBtn);
+        mcRow->addStretch(1);
+        mcBox->addLayout(mcRow);
+
+        auto *mcGrid = new QGridLayout();
+        mcGrid->setHorizontalSpacing(16);
+        mcGrid->setColumnStretch(4, 1);
+        mcGrid->addWidget(new QLabel(tr("Band"),     mcGrp), 0, 0);
+        mcGrid->addWidget(new QLabel(tr("Mid-band"), mcGrp), 0, 1);
+        mcGrid->addWidget(new QLabel(tr("Trim"),     mcGrp), 0, 2);
+        const auto &pbands = lyra::amateurBands();
+        const int   pn     = static_cast<int>(pbands.size());
+        auto *trimLabels = new QVector<QLabel *>();
+        for (int i = 0; i < pn; ++i) {
+            mcGrid->addWidget(
+                new QLabel(QString::fromUtf8(pbands[i].name), mcGrp), i + 1, 0);
+            const double midMHz = (pbands[i].low + pbands[i].high) / 2.0 / 1e6;
+            mcGrid->addWidget(
+                new QLabel(QStringLiteral("%1 MHz").arg(midMHz, 0, 'f', 3), mcGrp),
+                i + 1, 1);
+            auto *tl = new QLabel(mcGrp);
+            tl->setMinimumWidth(96);
+            trimLabels->append(tl);
+            mcGrid->addWidget(tl, i + 1, 2);
+            auto *clr = new QPushButton(tr("Clear"), mcGrp);
+            clr->setFixedWidth(64);
+            connect(clr, &QPushButton::clicked, this,
+                    [this, i]() { if (stream_) stream_->setPwrTrimForBand(i, 1.0); });
+            mcGrid->addWidget(clr, i + 1, 3);
+        }
+        mcBox->addLayout(mcGrid);
+        leftCol->addWidget(mcGrp);
+        leftCol->addStretch(1);
+
+        // Capture the live raw formula-watts on the band we're keyed on and
+        // store scale = your-meter ÷ raw.
+        connect(mcBtn, &QPushButton::clicked, this, [this, mcSpin, mcLive]() {
+            if (!stream_) return;
+            const int    b   = lyra::bandIndexForFreq(
+                                   static_cast<int>(stream_->rx1FreqHz()));
+            const double raw = stream_->fwdPowerW();   // un-trimmed formula W
+            if (b < 0) {
+                mcLive->setText(tr("Tune to an amateur band first."));
+                return;
+            }
+            if (std::isnan(raw) || raw < 0.25) {
+                mcLive->setText(tr("No RF — key a steady carrier on this "
+                                   "band (mid-band, normal power) first."));
+                return;
+            }
+            stream_->setPwrTrimForBand(b, mcSpin->value() / raw);
+        });
+
+        auto mcRefresh = [this, mcLive, trimLabels]() {
+            if (!stream_) return;
+            const int    b     = lyra::bandIndexForFreq(
+                                     static_cast<int>(stream_->rx1FreqHz()));
+            const bool   keyed = stream_->moxActive() || stream_->cwKeyingActive();
+            const double raw   = stream_->fwdPowerW();
+            const auto  &bs    = lyra::amateurBands();
+            if (b >= 0 && keyed && !std::isnan(raw))
+                mcLive->setText(
+                    tr("Transmitting on %1 — Lyra reads %2 W (raw formula).")
+                        .arg(QString::fromUtf8(bs[b].name))
+                        .arg(raw, 0, 'f', 1));
+            else if (b >= 0)
+                mcLive->setText(
+                    tr("On %1 — key a steady carrier (mid-band) to read power.")
+                        .arg(QString::fromUtf8(bs[b].name)));
+            else
+                mcLive->setText(
+                    tr("Tune to an amateur band, key a carrier, then Calibrate."));
+            for (int i = 0; i < trimLabels->size(); ++i) {
+                const double t   = stream_->pwrTrimForBand(i);
+                QLabel      *lab = (*trimLabels)[i];
+                if (std::abs(t - 1.0) < 1e-3) {
+                    lab->setText(tr("—"));
+                    lab->setStyleSheet(QString());
+                } else {
+                    lab->setText(QStringLiteral("×%1 ✓").arg(t, 0, 'f', 3));
+                    lab->setStyleSheet(QStringLiteral("color:#4ccf6b;"));
+                }
+            }
+        };
+        mcRefresh();
+        auto *mcTimer = new QTimer(page);
+        mcTimer->setInterval(500);
+        connect(mcTimer, &QTimer::timeout, page, mcRefresh);
+        mcTimer->start();
+        connect(page, &QObject::destroyed, [trimLabels]() { delete trimLabels; });
+    }
 
     root->addStretch(1);
 

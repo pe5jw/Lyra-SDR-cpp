@@ -752,6 +752,11 @@ public:
     double  hl2SupplyV() const;
     double  paCurrentA() const;
     double  fwdPowerW()  const;
+    // Forward power in watts AFTER the per-band PWR-meter trim — the single
+    // calibrated watts source used by BOTH the displayed PWR meter and the
+    // watts-cap servo, so "5 W cap" == "5 W on the meter".  (fwdPowerW stays
+    // RAW for the SWR ratio + CW-keying detect, where a trim would be wrong.)
+    double  fwdPowerCalW() const;
     double  revPowerW()  const;
     // TX-0c-fsm — true while the radio is wire-level keyed (post-keydown
     // settle, pre-keyup-clear).  Read by the UI red-on-air indicator.
@@ -802,6 +807,11 @@ public:
     // preserved and moving to a less-restrictive band restores power.
     double  fullOutputForBand(int idx) const;
     void    setFullOutputForBand(int idx, double watts);
+    // Per-band PWR-meter trim (1.0 = raw formula).  Corrects displayed +
+    // cap-servo watts to an external watt-meter; see fwdPowerCalW().
+    // Persisted meter/pwrTrim/<idx>.
+    double  pwrTrimForBand(int idx) const;
+    void    setPwrTrimForBand(int idx, double scale);
     double  maxOutputW() const { return maxOutputW_.load(std::memory_order_relaxed); }
     void    setMaxOutputW(double watts);
     // Stage B — has this band been auto-tuned (TUN servo locked) for the
@@ -1769,6 +1779,15 @@ private:
     // cap on every band.  QSettings pa_gain/<band>/capCeilRaw + capCeilCapW.
     std::atomic<int>     capCeilRaw_[kNumPaGainBands];
     std::atomic<double>  capCeilCapW_[kNumPaGainBands];
+    // Stage B — "parked on the step just under the cap" latch (coarse-DAC
+    // straddle).  Once the servo steps down off an over-cap reading it sets
+    // this so it won't climb back over the cap; cleared on a cap change or a
+    // reading that falls well under the cap.  QSettings pa_gain/<band>/capSettled.
+    std::atomic<bool>    capServoSettled_[kNumPaGainBands];
+    // Per-band PWR-meter trim (1.0 = raw formula, no correction).  Applied
+    // by fwdPowerCalW() so the displayed watts + the cap servo share ONE
+    // calibrated basis.  QSettings meter/pwrTrim/<idx>.
+    std::atomic<double>  pwrTrimByBand_[kNumPaGainBands];
     int                  capServoTicks_ = 0;   // throttle (let the meter settle)
     static constexpr int    kCapServoStepTicks = 3;    // step every 3 ticks (150 ms)
     static constexpr int    kCapServoStepRaw   = 3;    // ~1.2 % drive per step

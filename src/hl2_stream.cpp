@@ -407,6 +407,19 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                 s.value(QStringLiteral("pa_gain/%1/capCeilCapW").arg(band),
                         -1.0).toDouble(),
                 std::memory_order_relaxed);
+            // Stage B — "settled under the cap" latch.  The HL2 drive DAC is
+            // coarse (16 steps); a cap can fall BETWEEN two hardware steps, so
+            // the servo parks on the step just UNDER the cap and stops hunting.
+            // Persisted so a converged band never blips over the cap again.
+            capServoSettled_[i].store(
+                s.value(QStringLiteral("pa_gain/%1/capSettled").arg(band),
+                        false).toBool(),
+                std::memory_order_relaxed);
+            // Per-band PWR-meter trim (index-keyed; 1.0 = raw formula).
+            pwrTrimByBand_[i].store(
+                std::clamp(s.value(QStringLiteral("meter/pwrTrim/%1").arg(i),
+                                   1.0).toDouble(), 0.1, 10.0),
+                std::memory_order_relaxed);
         }
         // Stage 3b — the single watts Max cap (0 = off).
         maxOutputW_.store(
@@ -1523,6 +1536,30 @@ double HL2Stream::revPowerW() const {
     const double v = (raw - 6.0) / 4095.0 * 3.3;
     return (v > 0.0) ? (v * v) / 1.5 : 0.0;
 }
+double HL2Stream::fwdPowerCalW() const {
+    // Raw formula watts × the current TX band's PWR-meter trim.  This is the
+    // ONE calibrated watts value shared by the meter display and the watts
+    // cap, so a "5 W" cap lands where the meter reads 5 W.  Band from the TX
+    // freq (== RX freq in simplex).  No band / no trim -> raw.
+    const double raw = fwdPowerW();
+    if (std::isnan(raw)) return raw;
+    const int band = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    const double t = (band >= 0 && band < kNumPaGainBands)
+                         ? pwrTrimByBand_[band].load(std::memory_order_relaxed)
+                         : 1.0;
+    return raw * t;
+}
+double HL2Stream::pwrTrimForBand(int idx) const {
+    return (idx >= 0 && idx < kNumPaGainBands)
+               ? pwrTrimByBand_[idx].load(std::memory_order_relaxed) : 1.0;
+}
+void HL2Stream::setPwrTrimForBand(int idx, double scale) {
+    if (idx < 0 || idx >= kNumPaGainBands) return;
+    scale = std::clamp(scale, 0.1, 10.0);
+    pwrTrimByBand_[idx].store(scale, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("meter/pwrTrim/%1").arg(idx), scale);
+}
 
 // ----------------------------------------------------------------
 // Stage 2b2 (operator-locked 2026-06-07, "do as the reference does
@@ -1922,6 +1959,8 @@ void HL2Stream::tickCapServo_(double fwdW) {
                    capCeilRaw_[band].load(std::memory_order_relaxed));
         s.setValue(QStringLiteral("pa_gain/%1/capCeilCapW").arg(b),
                    capCeilCapW_[band].load(std::memory_order_relaxed));
+        s.setValue(QStringLiteral("pa_gain/%1/capSettled").arg(b),
+                   capServoSettled_[band].load(std::memory_order_relaxed));
     };
 
     // Fresh (never learned, or the cap changed): seed from the conservative
@@ -1931,6 +1970,7 @@ void HL2Stream::tickCapServo_(double fwdW) {
         capCeilRaw_[band].store(wattsFallbackCeilingRaw_(band, capW),
                                 std::memory_order_relaxed);
         capCeilCapW_[band].store(capW, std::memory_order_relaxed);
+        capServoSettled_[band].store(false, std::memory_order_relaxed);
         capServoTicks_ = 0;
         persist();
         applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
@@ -1947,18 +1987,35 @@ void HL2Stream::tickCapServo_(double fwdW) {
     const int hardMax = static_cast<int>(std::lround(
         255.0 * std::cbrt(capW / fullW)));
     int ceil = capCeilRaw_[band].load(std::memory_order_relaxed);
-    if (fwdW < capW * 0.97 && ceil < hardMax) {
+    const bool settled = capServoSettled_[band].load(std::memory_order_relaxed);
+    // Coarse-DAC straddle: the HL2 drive DAC has ~16 steps, so one servo step
+    // can swing the output ~0.5 W.  A cap can fall BETWEEN two hardware steps
+    // (e.g. 3.35 W under / 3.93 W over a 3.5 W cap) — chasing the exact cap
+    // then just hunts across the gap and the meter shows the over-cap peaks.
+    // Rule: OVER the cap → step down AND latch "settled" so we PARK on the
+    // step just under the cap and never climb back over it.  Only climb while
+    // genuinely below the cap and NOT yet settled.  Re-arm the climb if the
+    // reading falls well under the cap (a real change — band/thermal/drive),
+    // so a legitimately under-driven band can still reach the cap.
+    if (fwdW > capW && ceil > 1) {
+        capCeilRaw_[band].store(std::max(1, ceil - kCapServoStepRaw),
+                                std::memory_order_relaxed);
+        capServoSettled_[band].store(true, std::memory_order_relaxed);
+        persist();
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+    } else if (fwdW < capW * 0.80 && settled) {
+        // Fell well under the cap after settling → conditions changed; unlatch
+        // so the climb below can re-converge to the new under-cap step.
+        capServoSettled_[band].store(false, std::memory_order_relaxed);
+        persist();
+    } else if (fwdW < capW * 0.97 && ceil < hardMax && !settled) {
         capCeilRaw_[band].store(std::min(hardMax, ceil + kCapServoStepRaw),
                                 std::memory_order_relaxed);
         persist();
         applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
-    } else if (fwdW > capW && ceil > 1) {
-        capCeilRaw_[band].store(std::max(1, ceil - kCapServoStepRaw),
-                                std::memory_order_relaxed);
-        persist();
-        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
     }
-    // else: in [cap·0.97, cap] (or pinned at hardMax) — locked at the cap.
+    // else: parked on the highest step at/under the cap (settled), or already
+    // in [cap·0.97, cap], or pinned at hardMax — locked.
 }
 
 void HL2Stream::applyTxPower_(int requestedRaw) {
@@ -3948,7 +4005,8 @@ void HL2Stream::evalSwrProtect() {
     // Applies to both the watts cap and SWR checks.
     ++swrTicks_;
     if (swrTicks_ * kSwrEvalIntervalMs < swrBlankMs_) return;
-    const double fwd = fwdPowerW();
+    const double fwd    = fwdPowerW();      // RAW — SWR ratio (below) + guards
+    const double fwdCal = fwdPowerCalW();   // CALIBRATED — the watts cap
 
     // Stage 3b-2 — REACTIVE watts cap (GROSS backstop to the predictive
     // cap).  Runs on EVERY band, even during a deliberate tune (TUN is the
@@ -3962,9 +4020,9 @@ void HL2Stream::evalSwrProtect() {
     // unmeasured band / a wildly-wrong Full Output, NOT a fine limiter.
     constexpr double kWattsCapMargin = 1.30;
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
-    if (capW > 0.0 && fwd >= swrFwdFloorW_ && fwd > capW * kWattsCapMargin) {
+    if (capW > 0.0 && fwdCal >= swrFwdFloorW_ && fwdCal > capW * kWattsCapMargin) {
         if (++wattsOverTicks_ * kSwrEvalIntervalMs >= swrDwellMs_) {
-            foldWattsProtect(fwd, capW);
+            foldWattsProtect(fwdCal, capW);
             return;
         }
     } else {
@@ -3976,7 +4034,7 @@ void HL2Stream::evalSwrProtect() {
     // the locked ceiling statically); the reactive fold above stays dormant
     // because the servo keeps fwd at/under the cap, well below cap·1.30.
     if (capW > 0.0 && tuneEnabled_.load(std::memory_order_relaxed))
-        tickCapServo_(fwd);
+        tickCapServo_(fwdCal);
 
     // #169 SWR protect — operator opt-out for a deliberate ATU tune carrier
     // (default protects during tune), and gated on the SWR-protect enable

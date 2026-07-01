@@ -95,9 +95,8 @@ public:
 
     // PWR meter ballistic — three named modes the operator picks
     // from Settings → Meter.  All three share the same underlying
-    // fwd_power → watts conversion (and the operator's pwrCalScale_
-    // trim); they differ in the post-conversion smoothing /
-    // peak-detection wired into level_:
+    // per-band-calibrated fwd_power → watts conversion; they differ in
+    // the post-conversion smoothing / peak-detection wired into level_:
     //
     //   PEP   — sliding-window MAX, FIXED 500 ms hold (10 samples ×
     //           50 ms tick).  Tight, snappy ballistic — each voice
@@ -187,15 +186,13 @@ private:
     // takes effect on the next computePwr() tick (≤50 ms).  Persisted.
     Q_PROPERTY(int pwrBallistic READ pwrBallistic WRITE setPwrBallistic
                NOTIFY pwrBallisticChanged)
-    // PWR calibration knobs (task #34).  pwrRatedMaxW sets where the
+    // PWR calibration knob (task #34).  pwrRatedMaxW sets where the
     // red zone starts on the meter face (== operator's expected max
     // forward power: ~5 W for a bare HL2+ on-board PA, ~100 W or more
-    // with an external amp).  pwrCalScale multiplies the provisional
-    // fwd_power ADC→W formula in HL2Stream so the displayed watts can
-    // be trimmed against an external watt-meter reading.  Both persisted.
+    // with an external amp).  Matching the displayed watts to an
+    // external watt-meter is done per-band in HL2Stream (the PA Gain
+    // tab's "PWR meter calibration"), not by a global scale here.
     Q_PROPERTY(double pwrRatedMaxW READ pwrRatedMaxW WRITE setPwrRatedMaxW
-               NOTIFY pwrCalChanged)
-    Q_PROPERTY(double pwrCalScale  READ pwrCalScale  WRITE setPwrCalScale
                NOTIFY pwrCalChanged)
     // TX secondary digital readout (task #36).  When a TX source (PWR
     // / SWR / ALC / etc.) is the primary, the operator can pick a
@@ -293,9 +290,7 @@ public:
     void setRxSource(int s);
     void setTxSource(int s);
     double pwrRatedMaxW() const { return pwrRatedMaxW_; }
-    double pwrCalScale()  const { return pwrCalScale_; }
     void setPwrRatedMaxW(double w);
-    void setPwrCalScale(double s);
     int  txSecondary() const { return txSecondary_; }
     void setTxSecondary(int s);
     int  txSecondary2() const { return txSecondary2_; }
@@ -410,13 +405,12 @@ private:
     double normForDbm(double dbm) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // standard HF dBm→S-unit table
-    // PWR cal: operator's reference anchor (10m / dummy / full TUN
-    // reading on a known watt-meter) maps the provisional fwd_power ADC
-    // -> watts curve to a true scalar.  Single global cal for v0.2.x
-    // (per-band 3-point cal is a polish item).  Persisted under
-    // meter/pwrCalScale (default 1.0 = use the provisional formula
-    // as-is) + meter/pwrRatedMaxW (default 5.0 W = HL2+ on-board PA).
-    double pwrCalScale_  = 1.0;     // applied to fwdPowerW() output
+    // PWR cal: per-band watt calibration lives in HL2Stream
+    // (fwdPowerCalW() = raw ADC->W formula x the per-band trim the
+    // operator sets on the PA Gain tab).  The meter displays that
+    // calibrated value directly, so the meter, the watts cap and the
+    // operator's external watt-meter all agree.  Persisted under
+    // meter/pwrRatedMaxW (default 5.0 W = HL2+ on-board PA).
     double pwrRatedMaxW_ = 5.0;     // danger-zone (red) starts here
     double pwrScaleMaxW_ = 10.0;    // full-scale watts (== 2 * rated max)
     int    txSecondary_  = -1;      // -1 = hide; else Source enum value
