@@ -61,6 +61,7 @@ not programmers — if you can click a menu, you can use this.
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
 - [Settings → DSP (filter type)](#settings--dsp-filter-type)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
+- [Settings → VOX (voice-operated transmit)](#settings--vox-voice-operated-transmit)
 - [Settings → PA Gain (per-band power calibration + watts cap)](#settings--pa-gain)
 - [Settings → Network (TCI)](#settings--network-tci)
   - [CW keying over TCI](#cw-keying-over-tci)
@@ -1125,8 +1126,14 @@ The operating-time TX controls — a single strip across one of the
 docks. Layout (left → right):
 
 ```
-[TX]    Drive ──●── 25 %   Mic ──●── +10 dB              [ TUN ]  [ MOX ]
+[TX]  Drive ──●── 25 %  Mic ──●── +10 dB     [ VOX ] [ Tune ] [ MOX ]
 ```
+
+(The full button cluster also carries **ATT** and **Prot** lamps — see
+[ATT on TX](#att-on-tx-rx-adc-protection) and
+[SWR protection](#swr-protection--tx-power-limiting). All five buttons
+share one tidy size, and each lamp always reflects the true on/off state
+no matter where you changed it — front panel or Settings.)
 
 - **TX Drive** (slider, 0–100 %, default 0) — how hard the HL2
   drives its on-board PA. **0 % = no carrier even with PA enabled
@@ -1147,7 +1154,18 @@ docks. Layout (left → right):
   Watch the **ALC meter** as you raise — back off when ALC engages
   hard (more than ~3 dB of gain reduction means you're driving past
   the limiter ceiling and creating splatter risk).
-- **TUN button** — single-click gesture: arms a 1 kHz **tune carrier**
+- **VOX button** (labelled **VOX off** / **VOX** / **VOX ●**) — arms
+  **voice-operated transmit**: when armed, speaking into the mic keys
+  TX and TX drops after your voice stops (see
+  [Settings → VOX](#settings--vox-voice-operated-transmit) for the
+  threshold / timing / anti-VOX knobs). Gray = off; **green = armed**
+  (listening to your mic); **red ●** = keying right now on your voice.
+  Click to arm / disarm — bidirectional with the Settings → VOX tab.
+  VOX keys **voice modes only** (never CW), and **never overrides a
+  manual or foot-switch key**. Clicking it off is an **instant kill**:
+  it drops a VOX-held transmission immediately. Default OFF.
+- **Tune button** (labelled **Tune**) — single-click gesture: arms a
+  1 kHz **tune carrier**
   AND keys MOX in one click. Click again to release MOX; the carrier
   auto-disarms on the next MOX-off edge for any reason (your click,
   the safety timeout, the FSM unwinding). When armed the button
@@ -2700,6 +2718,82 @@ your voice-TX setting. Only the spinner the active mode uses is enabled.
 > typical workflow: set a low tune level (e.g. 25 % into a dummy / tuner)
 > and a higher voice-TX drive, and TUN tunes safe while your QSO drive is
 > untouched.
+
+---
+
+## Settings → VOX (voice-operated transmit)
+
+**VOX** keys the radio when you speak and drops it after your voice
+stops — hands-free SSB, no PTT. It has its own Settings tab (kept off
+the TX tab to keep that one uncluttered), and an arm/disarm button on
+the [TX panel](#tx-panel).
+
+VOX is a **keying decision only** — it watches your mic and RX audio and
+decides when to key. It adds **zero** DSP to your transmit signal, so it
+can't colour your audio and is safe alongside every TX feature. It keys
+**voice modes only** (never CW), and **never overrides a manual or
+foot-switch key** — a hardware key always wins, and VOX only ever
+releases the key it took itself. Default **OFF**.
+
+### Arming
+
+Tick **Enable VOX** here, or click the **VOX** button on the TX panel —
+the two stay in sync. Green = armed (listening); red **●** = keying now.
+To stop instantly, click the button off (or in Settings untick Enable):
+that drops a VOX-held transmission the same moment, without waiting for
+the timing to run out. A foot-switch or MOX press also overrides VOX at
+any time.
+
+### The two level meters (dial against these)
+
+dBFS threshold numbers are hard to guess, so the tab shows two live
+colour bars — green at low level rising through yellow to red — with a
+**cyan marker** on each showing the level you've set. They're live even
+when VOX is off, so you can set everything up before arming.
+
+- **Mic level** — your live mic level. The cyan marker is your
+  **Threshold**. Speak normally and watch where your voice peaks; set
+  Threshold **just below** those peaks but **above** where the bar sits
+  when you're silent (desk / room noise).
+- **RX level** — your live received-audio level (what you hear on the
+  speaker). The cyan marker is the **Anti-VOX level**. This meter greys
+  out when Anti-VOX is off.
+
+### The knobs
+
+- **Threshold** (dBFS, default −35) — how loud your voice must be to key
+  TX. Higher (toward 0) = you must speak up / desk noise won't trip it;
+  lower = more sensitive. Set it with the Mic-level bar (above).
+- **Open delay** (ms, default 10) — how long your voice must stay above
+  the threshold before VOX keys. Rejects clicks, thumps and short
+  noises. Raise it if stray sounds key you; keep it small so speech
+  onset isn't clipped.
+- **Hang time** (ms, default 300) — how long TX is held after your voice
+  drops below the threshold. Bridges the gaps between words so VOX
+  doesn't chatter mid-sentence. Raise it if VOX drops between words;
+  lower it to release faster at the end of a transmission.
+- **Anti-VOX** (toggle + level, default ON / −45 dBFS) — stops your own
+  **received audio** from keying VOX. Essential if you run open speakers
+  instead of headphones (speaker audio bleeds into the mic). When the RX
+  audio is above the Anti-VOX level, VOX won't key. Set the level with
+  the RX-level bar: put the marker **just above** where the bar sits when
+  the radio is receiving voice. On headphones you can leave Anti-VOX off.
+
+### Quick setup
+
+1. Untick Anti-VOX for a moment (or use headphones) and watch the
+   **Mic level** bar while speaking normally.
+2. Set **Threshold** a few dB below your speech peaks, above the silent
+   noise floor.
+3. Talk a normal sentence: if VOX drops between words, raise **Hang
+   time**; if stray desk noise keys you, raise **Threshold** or **Open
+   delay**.
+4. On open speakers, turn **Anti-VOX** on and set its level just above
+   where the **RX level** bar sits on received voice.
+5. Arm the **VOX** button and go — the button lamp shows armed (green)
+   and keying (red) at a glance.
+
+All settings persist across sessions.
 
 ---
 

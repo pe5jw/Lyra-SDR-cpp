@@ -5523,11 +5523,13 @@ QWidget *SettingsDialog::buildVoxTab() {
     return page;
 }
 
-void SettingsDialog::selectTopic(const QString &topic) {
-    // Map a panel help topic -> the Settings tab that owns it.  Only the
-    // Visuals tab exists today; panadapter/visuals land there.  As Radio
-    // / Audio / DSP tabs are added, extend this map (and find the tab by
-    // its title so indices stay robust).
+bool SettingsDialog::selectTopic(const QString &topic) {
+    // Map a panel help topic -> the Settings tab that owns it.  ONLY topics
+    // whose panel genuinely has a Settings home appear here; a panel whose
+    // controls live purely on the front panel (Filters, Tuning, the TX
+    // DSP-rack docks, the CW decoder, Solar) is deliberately absent -> we
+    // return false and the caller sends the operator to that panel's guide
+    // section instead.  Tabs are found by title so indices stay robust.
     static const QHash<QString, QString> kTabFor = {
         {QStringLiteral("panadapter"), QStringLiteral("Visuals")},
         {QStringLiteral("visuals"),    QStringLiteral("Visuals")},
@@ -5535,20 +5537,25 @@ void SettingsDialog::selectTopic(const QString &topic) {
         {QStringLiteral("hardware"),   QStringLiteral("Hardware")},
         {QStringLiteral("radio"),      QStringLiteral("Hardware")},
         {QStringLiteral("audio"),      QStringLiteral("Audio")},
+        {QStringLiteral("tx"),         QStringLiteral("TX")},
+        {QStringLiteral("vox"),        QStringLiteral("VOX")},
+        {QStringLiteral("cwconsole"),  QStringLiteral("CW")},
+        {QStringLiteral("tuner"),      QStringLiteral("Tuner")},
+        {QStringLiteral("profiles"),   QStringLiteral("Profiles")},
+        {QStringLiteral("meter"),      QStringLiteral("Meter")},
+        {QStringLiteral("band"),       QStringLiteral("Bands")},
         {QStringLiteral("memory"),     QStringLiteral("Bands")},
         {QStringLiteral("bands"),      QStringLiteral("Bands")},
-        // tuning has no dedicated tab yet -> falls through to the first
-        // tab so the dialog still opens somewhere sensible.
     };
     const QString want = kTabFor.value(topic);
-    if (!want.isEmpty()) {
-        for (int i = 0; i < tabs_->count(); ++i) {
-            if (tabs_->tabText(i) == want) {
-                tabs_->setCurrentIndex(i);
-                break;
-            }
+    if (want.isEmpty()) return false;
+    for (int i = 0; i < tabs_->count(); ++i) {
+        if (tabs_->tabText(i) == want) {
+            tabs_->setCurrentIndex(i);
+            return true;
         }
     }
+    return false;   // mapped tab isn't present (gated off) -> fall back
 }
 
 QWidget *SettingsDialog::buildVisualsTab() {

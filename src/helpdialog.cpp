@@ -39,12 +39,33 @@ const QHash<QString, QString> &topicHeads() {
          QStringLiteral("The panadapter (spectrum display)")},
         {QStringLiteral("visuals"),   QStringLiteral("Settings → Visuals")},
         {QStringLiteral("tuning"),    QStringLiteral("Tuning panel")},
+        {QStringLiteral("modes-filters"), QStringLiteral("Filters panel")},
         {QStringLiteral("audio"),     QStringLiteral("Audio panel")},
         {QStringLiteral("display"),   QStringLiteral("Display panel")},
         {QStringLiteral("meter"),     QStringLiteral("Meter panel")},
         {QStringLiteral("band"),      QStringLiteral("Band panel")},
         {QStringLiteral("propagation"),
          QStringLiteral("Solar / Propagation panel")},
+        // TX front panel + the TX DSP-rack docks (each jumps to its own
+        // guide subsection so "?" = fast "what does this do?").
+        {QStringLiteral("tx"),        QStringLiteral("TX panel")},
+        {QStringLiteral("txeq"),      QStringLiteral("TX EQ — 10-band parametric")},
+        {QStringLiteral("rxeq"),      QStringLiteral("RX EQ — receive parametric EQ")},
+        {QStringLiteral("txspeech"),
+         QStringLiteral("TX Speech — Noise Gate → Auto-AGC → De-esser")},
+        {QStringLiteral("txcombinator"),
+         QStringLiteral("TX Combinator — 5-band multiband compressor")},
+        {QStringLiteral("txplate"),
+         QStringLiteral("TX Plating — plate reverb (ESSB air)")},
+        {QStringLiteral("vox"),
+         QStringLiteral("Settings → VOX (voice-operated transmit)")},
+        {QStringLiteral("cwconsole"),
+         QStringLiteral("CW operating (paddle, keyboard, TCI)")},
+        {QStringLiteral("cwdecoder"),
+         QStringLiteral("Reading CW — the RX decoder")},
+        {QStringLiteral("tuner"),     QStringLiteral("Tuner (manual ATU memory)")},
+        {QStringLiteral("profiles"),
+         QStringLiteral("Profiles (TX/RX chain presets)")},
     };
     return m;
 }

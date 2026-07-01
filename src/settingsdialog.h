@@ -54,7 +54,9 @@ public:
                    QWidget *parent = nullptr);
 
     // Raise the tab that owns <topic> (from a panel's "?" → Settings).
-    void selectTopic(const QString &topic);
+    // Returns true if a tab owns this topic (and was raised); false if
+    // the panel has no Settings home (caller falls back to the guide).
+    bool selectTopic(const QString &topic);
 
 private:
     QWidget *buildVisualsTab();

@@ -972,7 +972,7 @@ void MainWindow::buildDocks() {
     // WdspEngine cwDecode* surface.
     addQuickDock(QStringLiteral("cwdecoder"), tr("CW Decoder"),
                  QStringLiteral("CwDecoderPanel.qml"),
-                 QStringLiteral("cwconsole"), Qt::BottomDockWidgetArea,
+                 QStringLiteral("cwdecoder"), Qt::BottomDockWidgetArea,
                  /*resizable=*/true);
     if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
         d->setFloating(true);
@@ -1168,7 +1168,7 @@ void MainWindow::buildMenus() {
     });
 }
 
-void MainWindow::openSettings() {
+void MainWindow::ensureSettingsDialog() {
     if (!settingsDlg_) {
         settingsDlg_ = new SettingsDialog(
             prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
@@ -1177,6 +1177,10 @@ void MainWindow::openSettings() {
             wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
             profiles_, companion_, serialPtt_, serialCwKey_, catServers_, this);
     }
+}
+
+void MainWindow::openSettings() {
+    ensureSettingsDialog();
     settingsDlg_->show();
     settingsDlg_->raise();
     settingsDlg_->activateWindow();
@@ -1190,8 +1194,19 @@ void MainWindow::showHelp(const QString &topic) {
 }
 
 void MainWindow::openSettingsTopic(const QString &topic) {
-    openSettings();
-    settingsDlg_->selectTopic(topic);   // jump to the matching tab
+    // A panel's "?" → Settings.  If a Settings tab owns this panel, jump
+    // there.  If not (Filters, Tuning, the TX DSP-rack docks, CW decoder,
+    // Solar — front-panel-only controls with no Settings home), fall back
+    // to that panel's User-Guide section so the "?" always lands somewhere
+    // useful instead of a dead / wrong tab.
+    ensureSettingsDialog();
+    if (settingsDlg_->selectTopic(topic)) {
+        settingsDlg_->show();
+        settingsDlg_->raise();
+        settingsDlg_->activateWindow();
+    } else {
+        showHelp(topic);
+    }
 }
 
 void MainWindow::buildToolbar() {

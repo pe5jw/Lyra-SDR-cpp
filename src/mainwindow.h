@@ -182,10 +182,11 @@ private:
     // (graphics backend) are deliberately NOT carried.
     void exportSettings();
     void importSettings();
+    void ensureSettingsDialog();   // construct settingsDlg_ if needed (no show)
     void openSettings();
     // Per-panel "?" badge targets (driven by the Help bridge).
     void showHelp(const QString &topic);        // open the User Guide at topic
-    void openSettingsTopic(const QString &topic);// Settings, on topic's tab
+    void openSettingsTopic(const QString &topic);// Settings tab, or guide fallback
 
     // Collapsible-panel docks (EqPanel/SpeechPanel etc.): when the QML root's
     // `collapsed` property toggles, shrink the host dock to the title strip
