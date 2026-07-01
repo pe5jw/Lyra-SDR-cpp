@@ -1020,9 +1020,9 @@ style/color, noise floor — live in **Settings → Visuals**.
 
 ## Meter panel
 
-A GPU-drawn **RX signal-strength meter** with two looks — pick whichever
-you like with the small **Arc | Bar** toggle in the panel's top-right
-corner (your choice is remembered):
+A GPU-drawn **RX signal-strength meter** with three looks — pick whichever
+you like with the small **Arc | Bar | Ladder** toggle in the panel's
+top-right corner (your choice is remembered):
 
 - **Horizon Arc** (default) — a sweep dial against a fixed, calibrated
   S-scale. The fill climbs through colour zones (cyan → green → amber →
@@ -1034,6 +1034,10 @@ corner (your choice is remembered):
 - **Plasma Bar** — a continuous level bar through the same colour zones,
   with a bright leading edge, peak-hold cap, a glass reflection beneath,
   and the readout (S-units / dBm / SNR) along the top.
+- **Vertical Ladder** — a compact multi-source column that shows several
+  readouts at once as labelled bars (e.g. PWR / SWR / ALC together on
+  transmit) instead of one big primary readout — handy when you want to
+  watch the whole picture at a glance.
 
 Both styles also carry an optional **max-peak marker** — a second, **red**
 "high-water mark" that latches the highest level reached and falls back
@@ -1045,6 +1049,15 @@ In **[Meter panel](#meter-panel)** you can tune both timings:
 **peak-hold** (how long the fast pip hangs before falling, default 800 ms)
 and the **max-peak marker** (on/off + its own hold time, default 3 s)
 before its gentle decay.
+
+**Separate RX / TX style (optional).** By default one style is used for
+both receive and transmit. Tick **Separate RX / TX meter style** in
+**Settings → Meter** to use a different look on each — for example
+**Horizon Arc** while receiving and **Vertical Ladder** for a clean
+PWR/SWR read on transmit. Just like the source swap below, the style then
+changes automatically the instant you key up and back on unkey. The header
+**Arc | Bar | Ladder** buttons stay a live override for whichever state is
+showing at that moment.
 
 What the meter shows:
 
