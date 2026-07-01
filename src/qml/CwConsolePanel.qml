@@ -21,7 +21,7 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     implicitWidth: 460
-    implicitHeight: collapsed ? 40 : (body.implicitHeight + 12)
+    implicitHeight: collapsed ? 40 : (body.implicitHeight + sendBar.implicitHeight + 18)
     color: "#0d141b"
     border.color: "#2a4a5a"
 
@@ -197,10 +197,21 @@ Rectangle {
 
     // Scrollable so the macros / token tags / option rows stay reachable
     // even when the operator shrinks the console below its natural height.
-    ScrollView {
-        id: bodyScroll
+    // Outer column: a scrollable body on top, and the keyboard-send bar
+    // PINNED at the bottom.  The free-hand type-and-send line must stay
+    // reachable no matter how short the (floating) dock is — the host uses
+    // QQuickWidget::SizeRootObjectToView, which ignores QML implicitHeight,
+    // so a scroll-buried field simply clips off the bottom and reads as
+    // "the free-hand input is missing."
+    ColumnLayout {
         anchors.fill: parent
         anchors.margins: 6
+        spacing: 6
+
+    ScrollView {
+        id: bodyScroll
+        Layout.fillWidth: true
+        Layout.fillHeight: true
         clip: true
         contentWidth: availableWidth          // no horizontal scroll
         ScrollBar.vertical.policy: root.collapsed ? ScrollBar.AlwaysOff
@@ -504,45 +515,63 @@ Rectangle {
             }
         }
 
-        // ── Keyboard send ───────────────────────────────────────────────
-        RowLayout {
-            visible: !root.collapsed
-            Layout.fillWidth: true
-            spacing: 6
-            opacity: root.cwActive ? 1.0 : 0.5
-            TextField {
-                id: sendField
-                Layout.fillWidth: true
-                enabled: root.cwActive
-                placeholderText: qsTr("type, Enter sends — Esc stops")
-                color: root.cText
-                font.family: "Consolas"; font.pixelSize: 14
-                selectByMouse: true
-                background: Rectangle {
-                    radius: 4; color: "#0b141b"
-                    border.color: sendField.activeFocus ? root.cAccent : "#2a4a5a"
-                }
-                onAccepted: {
-                    if (text.length > 0) { Stream.sendCw(text); text = "" }
-                }
-                onActiveFocusChanged: if (activeFocus) root.insertTarget = sendField
-                Keys.onEscapePressed: CwMacros.stop()
-            }
-            Button {
-                text: qsTr("Send")
-                enabled: root.cwActive && sendField.text.length > 0
-                onClicked: { Stream.sendCw(sendField.text); sendField.text = "" }
-                background: Rectangle { radius: 4
-                    color: enabled ? "#1c3a44" : "#16202a"
-                    border.color: enabled ? root.cAccent : "#2a3a44" }
-                contentItem: Text { text: parent.text
-                    color: parent.enabled ? root.cAccent : root.cMuted
-                    font.bold: true; font.pixelSize: 12
-                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-            }
-        }
         // (RX decoder lives in its own "CW Dec" panel — #173 CW-5b — so it can
         // run independently of this keyer/macro console.)
     }   // body ColumnLayout
     }   // bodyScroll ScrollView
+
+        // ── Keyboard send — PINNED (always visible; never scroll-buried) ──
+        // Lives OUTSIDE the ScrollView so the free-hand type-and-send line
+        // stays on screen at any dock height (Enter sends, Esc/Stop aborts).
+        ColumnLayout {
+            id: sendBar
+            visible: !root.collapsed
+            Layout.fillWidth: true
+            spacing: 3
+            opacity: root.cwActive ? 1.0 : 0.5
+
+            Label {
+                text: qsTr("Free-hand text")
+                color: "#b5f36a"
+                font.pixelSize: 11; font.bold: true
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                TextField {
+                    id: sendField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+                    enabled: root.cwActive
+                    placeholderText: qsTr("type, Enter sends — Esc stops")
+                    color: root.cText
+                    font.family: "Consolas"; font.pixelSize: 14
+                    selectByMouse: true
+                    background: Rectangle {
+                        radius: 4; color: "#17262f"
+                        border.color: sendField.activeFocus ? "#c9f59a" : "#8fdc5a"
+                        border.width: 1
+                    }
+                    onAccepted: {
+                        if (text.length > 0) { Stream.sendCw(text); text = "" }
+                    }
+                    onActiveFocusChanged: if (activeFocus) root.insertTarget = sendField
+                    Keys.onEscapePressed: CwMacros.stop()
+                }
+                Button {
+                    text: qsTr("Send")
+                    Layout.preferredHeight: 36
+                    enabled: root.cwActive && sendField.text.length > 0
+                    onClicked: { Stream.sendCw(sendField.text); sendField.text = "" }
+                    background: Rectangle { radius: 4
+                        color: enabled ? "#1c3a44" : "#16202a"
+                        border.color: enabled ? root.cAccent : "#2a3a44" }
+                    contentItem: Text { text: parent.text
+                        color: parent.enabled ? root.cAccent : root.cMuted
+                        font.bold: true; font.pixelSize: 12
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+        }
+    }   // outer ColumnLayout
 }
