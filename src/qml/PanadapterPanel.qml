@@ -1306,6 +1306,18 @@ Item {
                             font.pixelSize: 11; font.bold: true
                             style: Text.Outline; styleColor: "#cc000000"
                         }
+                        // The fun nicknames (Super Bowl / Emergency / Calling
+                        // / Highway / SSB…) shown ON the panadapter for the
+                        // tagged channels — visible regardless of the tooltip
+                        // setting, in a warm gold to stand out from the Ch#.
+                        Text {
+                            visible: cbItem.modelData.note !== ""
+                            x: cbItem.cx - width / 2; y: 22
+                            text: cbItem.modelData.note
+                            color: "#ffcf6b"
+                            font.pixelSize: 9; font.bold: true
+                            style: Text.Outline; styleColor: "#cc000000"
+                        }
                         MouseArea {
                             x: cbItem.cx - 11; y: 8; width: 22; height: 20
                             hoverEnabled: true
