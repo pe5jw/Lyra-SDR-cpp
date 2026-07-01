@@ -3060,6 +3060,50 @@ QWidget *SettingsDialog::buildMeterTab() {
             "takes effect on the next ~50 ms tick."));
         form->addRow(tr("TX source (on MOX):"), txCb);
 
+        // Separate RX/TX meter STYLE (Arc/Bar/Ladder per state) — auto-swaps
+        // on the MOX edge, mirroring the panadapter dB-range swap.  The
+        // header Arc|Bar|Ladder buttons stay a live quick override.
+        auto *sepStyle = new QCheckBox(tr("Separate RX / TX meter style"), page);
+        sepStyle->setChecked(meter_->separateStyle());
+        sepStyle->setToolTip(tr(
+            "When on, the meter uses a different visual style on transmit "
+            "than on receive (e.g. Horizon Arc on RX, Vertical Ladder for a "
+            "PWR/SWR read on TX) and swaps automatically the moment you key "
+            "up / unkey.  When off, one style is used for both."));
+        form->addRow(sepStyle);
+
+        auto buildStyleCombo = [page](int cur) {
+            auto *cb = new QComboBox(page);
+            cb->addItem(tr("Horizon Arc"),     0);
+            cb->addItem(tr("Plasma Bar"),      1);
+            cb->addItem(tr("Vertical Ladder"), 2);
+            cb->setCurrentIndex(std::clamp(cur, 0, 2));
+            return cb;
+        };
+        auto *rxStyleCb = buildStyleCombo(meter_->style());
+        auto *txStyleCb = buildStyleCombo(meter_->txStyle());
+        txStyleCb->setEnabled(meter_->separateStyle());
+        rxStyleCb->setToolTip(tr("Visual style used on receive (and for both "
+                                 "when 'Separate' is off)."));
+        txStyleCb->setToolTip(tr("Visual style used on transmit when "
+                                 "'Separate RX / TX meter style' is on."));
+        form->addRow(tr("RX meter style:"), rxStyleCb);
+        form->addRow(tr("TX meter style:"), txStyleCb);
+
+        connect(sepStyle, &QCheckBox::toggled, this,
+                [this, txStyleCb](bool on) {
+            if (meter_) meter_->setSeparateStyle(on);
+            txStyleCb->setEnabled(on);
+        });
+        connect(rxStyleCb, &QComboBox::currentIndexChanged, this,
+                [this, rxStyleCb](int) {
+            if (meter_) meter_->setStyle(rxStyleCb->currentData().toInt());
+        });
+        connect(txStyleCb, &QComboBox::currentIndexChanged, this,
+                [this, txStyleCb](int) {
+            if (meter_) meter_->setTxStyle(txStyleCb->currentData().toInt());
+        });
+
         // §15.28 — switch to the second group (Power Calibration).
         // The next ~120 lines of operator controls (PWR rated max,
         // TX secondary readouts) live here.  Per-band watt calibration
@@ -4203,44 +4247,43 @@ QWidget *SettingsDialog::buildTxTab() {
     // span both columns at the bottom (root-level layout below the
     // body row).
     {
+        // §15.28 — 3-column header row (see the column assignment below).
         auto *colHeaders = new QHBoxLayout();
         colHeaders->setSpacing(14);
-
-        // LEFT column header — TIMING (set once).
-        auto *leftHeaderBox = new QVBoxLayout();
-        leftHeaderBox->setSpacing(0);
-        auto *leftHeader = new QLabel(tr("TIMING"), page);
-        leftHeader->setProperty("lyraColHeader", true);
-        leftHeaderBox->addWidget(leftHeader);
-        auto *leftSub = new QLabel(tr("set once for your amp + station"),
-                                   page);
-        leftSub->setProperty("lyraColSubtitle", true);
-        leftHeaderBox->addWidget(leftSub);
-        colHeaders->addLayout(leftHeaderBox, 1);
-
-        // RIGHT column header — AUDIO + GAIN (operating).
-        auto *rightHeaderBox = new QVBoxLayout();
-        rightHeaderBox->setSpacing(0);
-        auto *rightHeader = new QLabel(tr("AUDIO + GAIN"), page);
-        rightHeader->setProperty("lyraColHeader", true);
-        rightHeaderBox->addWidget(rightHeader);
-        auto *rightSub = new QLabel(tr("operating gain stages"), page);
-        rightSub->setProperty("lyraColSubtitle", true);
-        rightHeaderBox->addWidget(rightSub);
-        colHeaders->addLayout(rightHeaderBox, 1);
-
+        auto addHeader = [page, colHeaders](const QString &title,
+                                            const QString &sub) {
+            auto *box = new QVBoxLayout();
+            box->setSpacing(0);
+            auto *h = new QLabel(title, page);
+            h->setProperty("lyraColHeader", true);
+            box->addWidget(h);
+            auto *s = new QLabel(sub, page);
+            s->setProperty("lyraColSubtitle", true);
+            box->addWidget(s);
+            colHeaders->addLayout(box, 1);
+        };
+        addHeader(tr("TIMING + SAFETY"), tr("set once for your amp + station"));
+        addHeader(tr("AUDIO + GAIN"),    tr("operating gain stages"));
+        addHeader(tr("TUNE + MODES"),    tr("tune + per-mode settings"));
         root->addLayout(colHeaders);
     }
 
-    // 2-column body: groups added to leftCol / rightCol below.
+    // §15.28 — 3-column body.  col1 = TIMING + SAFETY (set-once: TR
+    // sequencing, ATT-on-TX, external inhibit, SWR protect); col2 =
+    // AUDIO + GAIN (mic + ALC, leveler, PHROT); col3 = TUNE + MODES
+    // (tune, WF-ID, AM carrier, FM).  `leftCol`/`rightCol` names kept so
+    // the col1/col2 groups didn't have to move.
     auto *bodyRow  = new QHBoxLayout();
     bodyRow->setSpacing(14);
-    auto *leftCol  = new QVBoxLayout();
-    auto *rightCol = new QVBoxLayout();
+    auto *leftCol  = new QVBoxLayout();   // col 1
+    auto *rightCol = new QVBoxLayout();   // col 2
+    auto *col3     = new QVBoxLayout();   // col 3
     leftCol->setSpacing(10);
     rightCol->setSpacing(10);
+    col3->setSpacing(10);
     bodyRow->addLayout(leftCol,  1);
     bodyRow->addLayout(rightCol, 1);
+    bodyRow->addLayout(col3,     1);
     root->addLayout(bodyRow);
 
     // Common spin-box bounds — match HL2Stream::kMin/kMaxFsmDelayMs
@@ -4486,7 +4529,7 @@ QWidget *SettingsDialog::buildTxTab() {
             });
         }
 
-        leftCol->addWidget(grp);   // §15.28 — TIMING column (Tune)
+        col3->addWidget(grp);      // §15.28 — TUNE + MODES column (Tune)
     }
 
     // ── Mic + ALC (TXA input/output gain stages) group ───────────
@@ -4951,7 +4994,7 @@ QWidget *SettingsDialog::buildTxTab() {
         note->setWordWrap(true);
         form->addRow(note);
 
-        rightCol->addWidget(grp);   // #175 — AUDIO + GAIN column
+        col3->addWidget(grp);      // #175 — TUNE + MODES column (WF-ID)
     }
 
     // ── AM Carrier (AM / SAM modulation) group ───────────────────
@@ -4984,7 +5027,7 @@ QWidget *SettingsDialog::buildTxTab() {
                     if (carSpin->value() != v) carSpin->setValue(v);
                 });
         form->addRow(tr("Carrier:"), carSpin);
-        rightCol->addWidget(grp);   // #93 — AUDIO + GAIN column (AM Carrier)
+        col3->addWidget(grp);      // #93 — TUNE + MODES column (AM Carrier)
     }
 
     // ── FM (deviation + CTCSS) group ─────────────────────────────
@@ -5102,7 +5145,7 @@ QWidget *SettingsDialog::buildTxTab() {
                 });
         form->addRow(tr("Tone:"), toneCombo);
 
-        rightCol->addWidget(grp);   // #107 — AUDIO + GAIN column (FM)
+        col3->addWidget(grp);      // #107 — TUNE + MODES column (FM)
     }
 
     // ── ATT on TX (RX-ADC protection) group ──────────────────────
@@ -5337,6 +5380,7 @@ QWidget *SettingsDialog::buildTxTab() {
     // produce uneven vertical spacing.
     leftCol->addStretch(1);
     rightCol->addStretch(1);
+    col3->addStretch(1);
 
     // ── Restore hot-switch-safe defaults button ──────────────────
     auto *restoreBtn = new QPushButton(
@@ -5383,6 +5427,13 @@ QWidget *SettingsDialog::buildTxTab() {
     root->addWidget(hint);
 
     root->addStretch(1);
+
+    // Cap every spin box on this tab to a compact width (operator prefers
+    // short spin boxes — the value + unit suffix never needs more).  One
+    // sweep covers QSpinBox + QDoubleSpinBox without touching each site.
+    for (auto *sb : page->findChildren<QAbstractSpinBox *>())
+        sb->setMaximumWidth(92);
+
     return page;
 }
 

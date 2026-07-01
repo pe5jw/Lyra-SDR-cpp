@@ -42,7 +42,7 @@ Rectangle {
             ]
             delegate: Rectangle {
                 width: 44; height: 18
-                readonly property bool sel: Meter.style === modelData.s
+                readonly property bool sel: Meter.activeStyle === modelData.s
                 color: sel ? "#15435a" : "#0c1218"
                 border.color: sel ? "#00e5ff" : "#2a4a5a"
                 border.width: 1
@@ -56,7 +56,9 @@ Rectangle {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: Meter.style = modelData.s
+                    // Overrides the style of whatever state is showing now
+                    // (TX style on TX when Separate RX/TX style is on).
+                    onClicked: Meter.setActiveStyle(modelData.s)
                 }
             }
         }
@@ -68,7 +70,7 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: 6
         sourceComponent: {
-            switch (Meter.style) {
+            switch (Meter.activeStyle) {
             case 1:  return barFace
             case 2:  return ladderFace
             default: return arcFace
@@ -100,7 +102,7 @@ Rectangle {
         // Disabled on the Ladder style — Multi shows all sources at
         // once, so there's no primary to cycle.  Operator picks per-
         // state preference from Settings → Meter as usual.
-        enabled: Meter.style !== 2
+        enabled: Meter.activeStyle !== 2
         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
         acceptedButtons: Qt.LeftButton
         property var sourceCycle: [0, 1, 2]  // RX_SMETER, PWR, SWR

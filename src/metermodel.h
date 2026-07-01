@@ -151,8 +151,16 @@ private:
     // The normalized position of the S9 boundary — renderers paint the
     // over-S9 region red.  Tracks the HF/VHF scale (S9 shifts at 30 MHz).
     Q_PROPERTY(double normAtS9 READ normAtS9 NOTIFY updated)
-    // Operator-selectable visual style: 0 = Horizon Arc (default), 1 = Plasma Bar.
+    // Operator-selectable visual style: 0 = Horizon Arc (default),
+    // 1 = Plasma Bar, 2 = Vertical Ladder.  `style` is the RX (default)
+    // style; `txStyle` is used on TX when `separateStyle` is on.  The
+    // renderer + header toggle read `activeStyle`, which swaps on the MOX
+    // edge (mirrors the panadapter dB-range swap).
     Q_PROPERTY(int style READ style WRITE setStyle NOTIFY styleChanged)
+    Q_PROPERTY(int txStyle READ txStyle WRITE setTxStyle NOTIFY txStyleChanged)
+    Q_PROPERTY(bool separateStyle READ separateStyle WRITE setSeparateStyle
+               NOTIFY separateStyleChanged)
+    Q_PROPERTY(int activeStyle READ activeStyle NOTIFY activeStyleChanged)
     // dBFS→dBm calibration trim (operator-tunable; persisted).
     Q_PROPERTY(double calDb READ calDb WRITE setCalDb NOTIFY calChanged)
     // Peak-hold dwell time in ms before the peak marker starts to decay
@@ -275,6 +283,16 @@ public:
 
     int  style() const { return style_; }
     void setStyle(int s);
+    int  txStyle() const { return txStyle_; }
+    void setTxStyle(int s);
+    bool separateStyle() const { return separateStyle_; }
+    void setSeparateStyle(bool on);
+    // The style the renderer + header toggle actually use: txStyle on TX
+    // (when separateStyle is on), else style.  Swaps on the MOX edge.
+    int  activeStyle() const;
+    // Header Arc/Bar/Ladder buttons: set the style of whatever state is
+    // showing NOW (TX style if separate+keyed, else the RX/default style).
+    Q_INVOKABLE void setActiveStyle(int s);
     double calDb() const { return calDb_; }
     void setCalDb(double d);
     int  peakHoldMs() const { return peakHoldMs_; }
@@ -304,6 +322,9 @@ public:
 signals:
     void updated();
     void styleChanged();
+    void txStyleChanged();
+    void separateStyleChanged();
+    void activeStyleChanged();
     void calChanged();
     void peakHoldChanged();
     void pwrPeakHoldMsChanged();
@@ -507,7 +528,9 @@ private:
     bool    maxPeakEnabled_ = true; // show the max-hold high-water marker
     int     maxHoldMs_      = 3000; // max-hold dwell (operator-tunable)
     int     maxHoldTicks_   = 60;   // = maxHoldMs_ / tick interval
-    int     style_ = 0;
+    int     style_ = 0;              // RX / default visual style (Arc/Bar/Ladder)
+    int     txStyle_ = 0;            // TX visual style (used when separateStyle_)
+    bool    separateStyle_ = false;  // swap style on the MOX edge?
     Source  source_ = RX_SMETER;     // currently-displayed source (derived)
     Source  rxSource_ = RX_SMETER;   // RX-state preference (persisted)
     Source  txSource_ = PWR;         // TX-state preference (persisted)

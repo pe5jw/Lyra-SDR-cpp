@@ -45,6 +45,8 @@ constexpr double kSmooth        = 0.55;
 constexpr int    kHistory       = 90;     // ~4.5 s trail
 
 constexpr auto kKeyStyle    = "meter/style";
+constexpr auto kKeyTxStyle  = "meter/txStyle";     // TX visual style
+constexpr auto kKeySepStyle = "meter/separateStyle"; // swap style on MOX
 constexpr auto kKeyCal      = "meter/calDb";
 constexpr auto kKeyPeakHold    = "meter/peakHoldMs";
 constexpr auto kKeyPwrPeakHold = "meter/pwrPeakHoldMs";
@@ -106,6 +108,9 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
     QSettings s;
     style_ = std::clamp(s.value(QString::fromLatin1(kKeyStyle), 0).toInt(),
                         0, 2);
+    txStyle_ = std::clamp(s.value(QString::fromLatin1(kKeyTxStyle), 0).toInt(),
+                          0, 2);
+    separateStyle_ = s.value(QString::fromLatin1(kKeySepStyle), false).toBool();
     calDb_ = s.value(QString::fromLatin1(kKeyCal), 0.0).toDouble();
     peakHoldMs_ = std::clamp(
         s.value(QString::fromLatin1(kKeyPeakHold), 800).toInt(), 100, 5000);
@@ -231,6 +236,13 @@ MeterModel::MeterModel(lyra::ipc::HL2Stream *stream,
 void MeterModel::applyKeyStateSource() {
     if (!stream_) return;
     const bool keyed = stream_->moxActive() || stream_->cwKeyingActive();
+    // Separate RX/TX meter STYLE — swap the visual style on the MOX edge
+    // (independent of whether the source also changed; a mode where RX and
+    // TX share a source still wants the style to flip).
+    if (separateStyle_ && style_ != txStyle_) {
+        if (activeStyle() == 2) buildLadderRows(); else ladderRows_.clear();
+        emit activeStyleChanged();
+    }
     const Source target = keyed ? txSource_ : rxSource_;
     if (target == source_) return;
     // Swap WITHOUT touching meter/source persistence — rxSource/txSource
@@ -290,21 +302,58 @@ QString MeterModel::sLabel(double dbm) const {
     return QStringLiteral("S9+60");
 }
 
+int MeterModel::activeStyle() const {
+    // The style the renderer actually shows: the TX style on TX (when the
+    // operator has enabled a separate TX style), else the RX/default style.
+    const bool keyed = stream_ &&
+        (stream_->moxActive() || stream_->cwKeyingActive());
+    return (separateStyle_ && keyed) ? txStyle_ : style_;
+}
+
 void MeterModel::setStyle(int s) {
     // 0=HorizonArc (default), 1=PlasmaBar, 2=VerticalLadder (Multi).
+    // This is the RX / default style.
     s = std::clamp(s, 0, 2);
     if (s == style_) return;
+    const int prevActive = activeStyle();
     style_ = s;
     QSettings().setValue(QString::fromLatin1(kKeyStyle), style_);
-    if (style_ == 2) {
-        // Populate immediately so the renderer paints real rows on the
-        // first frame instead of waiting for the next tick.
-        buildLadderRows();
-    } else {
-        ladderRows_.clear();
-    }
+    // Populate/clear the Ladder rows for whatever style is showing NOW.
+    if (activeStyle() == 2) buildLadderRows(); else ladderRows_.clear();
     emit styleChanged();
+    if (activeStyle() != prevActive) emit activeStyleChanged();
     emit updated();
+}
+
+void MeterModel::setTxStyle(int s) {
+    s = std::clamp(s, 0, 2);
+    if (s == txStyle_) return;
+    const int prevActive = activeStyle();
+    txStyle_ = s;
+    QSettings().setValue(QString::fromLatin1(kKeyTxStyle), txStyle_);
+    if (activeStyle() == 2) buildLadderRows(); else ladderRows_.clear();
+    emit txStyleChanged();
+    if (activeStyle() != prevActive) emit activeStyleChanged();
+    emit updated();
+}
+
+void MeterModel::setSeparateStyle(bool on) {
+    if (on == separateStyle_) return;
+    const int prevActive = activeStyle();
+    separateStyle_ = on;
+    QSettings().setValue(QString::fromLatin1(kKeySepStyle), separateStyle_);
+    if (activeStyle() == 2) buildLadderRows(); else ladderRows_.clear();
+    emit separateStyleChanged();
+    if (activeStyle() != prevActive) emit activeStyleChanged();
+    emit updated();
+}
+
+void MeterModel::setActiveStyle(int s) {
+    // The header Arc/Bar/Ladder buttons: override whatever state is showing.
+    const bool keyed = stream_ &&
+        (stream_->moxActive() || stream_->cwKeyingActive());
+    if (separateStyle_ && keyed) setTxStyle(s);
+    else                         setStyle(s);
 }
 
 void MeterModel::setCalDb(double d) {
@@ -1060,7 +1109,7 @@ void MeterModel::computeSMeter() {
     text_ = sLabel(dispDbm_);
     dbmText_ = QStringLiteral("%1 dBm").arg(dispDbm_, 0, 'f', 0);
 
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1197,7 +1246,7 @@ void MeterModel::computePwr() {
                 : QStringLiteral("%1 W").arg(std::lround(dispW));
     dbmText_.clear();
 
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1306,7 +1355,7 @@ void MeterModel::computeSwr() {
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
 
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1392,7 +1441,7 @@ void MeterModel::computePaCurrent() {
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1433,7 +1482,7 @@ void MeterModel::computePaVolts() {
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1474,7 +1523,7 @@ void MeterModel::computeTemp() {
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1570,7 +1619,7 @@ void MeterModel::computeLevelMeterFromDb(double rawDb,
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
@@ -1623,7 +1672,7 @@ void MeterModel::computeGainMeterFromDb(double rawDb,
     hist_.push_back(n);
     if (int(hist_.size()) > kHistory) hist_.pop_front();
     for (int i = 0; i < kHistory; ++i) history_[i] = hist_[i];
-    if (style_ == 2) buildLadderRows();
+    if (activeStyle() == 2) buildLadderRows();
     emit updated();
 }
 
