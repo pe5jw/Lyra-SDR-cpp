@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.7.0
+    VERSION 0.8.0
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -250,6 +250,8 @@ qt_add_executable(lyra
     # serial server.  See docs/architecture/com_port_design.md.
     src/cat/SerialPtt.h
     src/cat/SerialPtt.cpp
+    src/cat/SerialCwKey.h
+    src/cat/SerialCwKey.cpp
     src/cat/CatServer.h
     src/cat/CatServer.cpp
     # TX/RX operator Profiles (Stage 0 — model/store/manager; UI wires

@@ -31,7 +31,7 @@ class QSystemTrayIcon;
 namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
-namespace lyra::cat { class SerialPtt; class CatServer; }
+namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
 namespace lyra::ui {
 
 class ProfileUi;
@@ -266,6 +266,7 @@ private:
     DxClusterFeeder            *dxCluster_ = nullptr; // DX-cluster telnet spot source
     TciServer                  *tci_   = nullptr;     // TCI server (logger/cluster)
     lyra::cat::SerialPtt       *serialPtt_ = nullptr; // serial PTT input (WSJT-X/VarAC keys Lyra)
+    lyra::cat::SerialCwKey     *serialCwKey_ = nullptr; // #171 serial CW key input
     QList<lyra::cat::CatServer *> catServers_;        // Kenwood CAT serial servers (cat1..catN)
     MeterModel                 *meter_ = nullptr;     // RX S-meter (Horizon Arc / Plasma Bar)
     EqModel                    *eqModel_ = nullptr;   // #50 TX parametric EQ (EqPanel.qml)

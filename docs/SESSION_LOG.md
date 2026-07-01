@@ -4,6 +4,53 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-06-30 — RELEASED v0.8.0 (companion-app launch + CW external/serial keyer + the post-v0.7.0 batch)
+
+Cut **v0.8.0** bundling everything on `main` since v0.7.0 + today's work.
+
+### Today's work (this session)
+- **#193 Companion-app launch on profile pick — `40afa46`, operator-confirmed
+  ("bingo") with VarAC + MSHV.** New `ProfileManager::loadByUser()`/`userLoaded`
+  distinguish an explicit pick from the silent auto-recall; new
+  `src/profile/CompanionLauncher.{h,cpp}` (Enable / name / command+args /
+  start-delay; `startDetached`, .bat via `cmd.exe /c`; already-running skip; no
+  auto-kill). **Per-machine QSettings `profileLaunch/*`, filtered by
+  `isMachineSpecificKey` → never in the portable profile/.lyra.** Fires on the
+  front `ProfilePanel` combo (`loadByUser`) + the Settings Load button; the
+  auto-recall combos still call `load()`. Profiles tab reworked (companion group
+  + width-capped 2-col auto-recall grid).
+- **#159 DSP Options — CLOSED-AS-SCOPED.** Filter-type-only tab is at parity for
+  what modern-HW/Qt6 can trade; added a one-line note cross-referencing
+  Audio→VAC as the one tunable latency. Rationale in memory.
+- **#186 CW keyer settings — CLOSED-AS-AT-PARITY (no code).** Diffed the actual
+  Thetis CW screen + the `_cw` wire struct: every gateware-honorable knob is
+  already in Settings→CW; the two not-present items (Auto Mode Switch, Software
+  sidetone) are host-only with no wire field → inert on HL2, deliberately not
+  ported.
+- **#171 External CW keyer / Winkeyer — BUILT (default-OFF, bench pending).**
+  Gateware verify (HL2+ ak4951v4 `CW=2`) settled it: KEY-jack keys the carrier
+  autonomously (= the shipped CW-2 path). **Piece A** = WKmini→HL2 jack, Iambic
+  OFF (a Settings→CW note). **Piece B** = new `src/cat/SerialCwKey.{h,cpp}`
+  (sibling of SerialPtt): polls a COM port CTS/DSR pin → `HL2Stream::
+  requestCwKeyFromSerial()` → the #105 cwx/cwx_ptt path, holds cwx_ptt across
+  the break-in hang; NO host iambic. Settings→CW "CW key over COM port" group,
+  default-OFF, per-machine QSettings. Ported Lyra-native from Thetis
+  `Console/cwkeyer.cs` (open attribution). Awaiting operator on-air bench.
+- **#194 logged (come-back-to): CWX/console CW wrong above ~27-29 WPM.** Not a
+  clamp — two compounding timing causes: `cwDitMs` integer truncation
+  (`1200/wpm`) + the wire `cwx` bit only moving at the ~2.6 ms EP2-datagram
+  cadence (inherent to host CWX; high-speed CW → paddle/keyer in the KEY jack).
+  Easy fix = round the timing; wire floor is structural. See task #194.
+
+### Release
+- Version 0.7.0→0.8.0 (CMakeLists + lyra.iss), README features, USER_GUIDE
+  (companion launch + CW external/serial keyer), `docs/releases/v0.8.0.md`.
+- Bundle also carries the earlier unreleased `main` commits: #188 tuner-delete
+  trashcan (`103c5fe`), docking-feel smoothing (`f31375a`), #191 CAT virtual-COM
+  enumeration (`732b753`), #189 layout save/recall fidelity (`11dbed8`), #190
+  USB-BCD cable lifecycle (`27b7287`), #158 VAC latency (`dc9c4c2`), docs
+  (`e199993`).
+
 ## 2026-06-29 (EOD) — Post-v0.7.0: docs + VAC latency posture (VarAC turnaround)
 
 All on `main`, unreleased (after v0.7.0). A doc pass + one operator feature.

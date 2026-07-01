@@ -1080,6 +1080,16 @@ public slots:
     Q_INVOKABLE void requestMoxFromTci(bool on);
     Q_INVOKABLE void requestMoxFromSerialPtt(bool on);   // serial PTT input
 
+    // #171 — straight-key / external-keyer key edge from a serial COM line
+    // (SerialCwKey).  The host drives tx[0].cwx / cwx_ptt directly off the
+    // operator's (or the keyer's) own timing — NO host iambic — mirroring the
+    // #105 CWX path; cwx_ptt is held across the CW break-in hang on key-up so
+    // inter-element gaps don't drop TX.  CW mode only.  Reference posture:
+    // Thetis cwkeyer.cs reads a key on a COM port's CTS/DSR and feeds the
+    // keyer; on HL2 a serial key can't reach the gateware key jack, so the
+    // host keys via cwx (the HL2 KEY jack stays the lower-jitter path).
+    Q_INVOKABLE void requestCwKeyFromSerial(bool down);
+
     // #175 bench (increment 2a) — render `callsign` as a waterfall-ID raster
     // (lyra::dsp::WaterfallId, 48 kHz to match the TXA in-rate), clear + push
     // it into the TCI TX-audio bridge as the SOLE TX source, and return the
@@ -2084,6 +2094,10 @@ private:
     void   updateTxDisplayActive();
     void   ensureCwKeyer();
     std::unique_ptr<lyra::tx::CwKeyer> cwKeyer_;
+    // #171 — break-in hang for the serial straight-key path: on key-up we
+    // drop tx[0].cwx immediately but hold cwx_ptt for cwHangDelayMs_ so
+    // inter-element gaps don't drop TX (lazy-created, single-shot, main thread).
+    QTimer *serialCwHangTimer_ = nullptr;
     // #93/#106 — AM/SAM carrier level, % of standard carrier POWER
     // (100 % = standard AM = WDSP c_level 0.5 = 25 % of PEP).  Maps via
     // c = sqrt(pct/100)*0.5 to match the reference's AM carrier control.

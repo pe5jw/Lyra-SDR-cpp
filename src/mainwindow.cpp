@@ -19,6 +19,7 @@
 // rebuilt from empty files per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
 #include "tci_server.h"
 #include "cat/SerialPtt.h"
+#include "cat/SerialCwKey.h" // #171 serial CW key input
 #include "cat/CatServer.h"
 #include "metermodel.h"
 #include "tunermemory.h"
@@ -479,6 +480,15 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     serialPtt_ = new lyra::cat::SerialPtt(
         qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
     connect(serialPtt_, &lyra::cat::SerialPtt::statusMessage, this,
+            [this](const QString &msg) { statusBar()->showMessage(msg, 4000); });
+
+    // #171 — serial CW key input: a straight key / bug / external keyer's KEY
+    // output wired to a COM port's CTS/DSR → keys Lyra's CW (host drives cwx).
+    // Default-OFF; configured in Settings → CW.  (The HL2 KEY jack stays the
+    // lower-jitter route for a paddle — gateware iambic.)
+    serialCwKey_ = new lyra::cat::SerialCwKey(
+        qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+    connect(serialCwKey_, &lyra::cat::SerialCwKey::statusMessage, this,
             [this](const QString &msg) { statusBar()->showMessage(msg, 4000); });
 
     // Kenwood CAT serial servers (logger / digital-mode rig control over
@@ -1165,7 +1175,7 @@ void MainWindow::openSettings() {
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
             wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
-            profiles_, companion_, serialPtt_, catServers_, this);
+            profiles_, companion_, serialPtt_, serialCwKey_, catServers_, this);
     }
     settingsDlg_->show();
     settingsDlg_->raise();

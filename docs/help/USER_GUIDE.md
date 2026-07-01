@@ -1371,7 +1371,20 @@ tells it when to key. There are **three ways to key**:
 built-in iambic keyer reads your paddle and keys the carrier + sidetone
 on its own — the host stays out of the timing, so it's crisp regardless
 of PC load. Speed, weight, iambic A/B, and reverse are in **Settings →
-CW**.
+CW**. This is also where an **external keyer or Winkeyer** goes: plug its
+**KEY output** into the HL2 KEY jack and turn **Iambic OFF** in Settings →
+CW — the keyer already does its own timing, so the radio passes the key
+straight through (leaving Iambic ON would re-key it as a paddle). A
+Winkeyer's USB/COM port is for its own config app (WK3tools, your logger),
+not Lyra.
+
+**1b — CW key over a COM port.** If your straight key, bug, or external
+keyer's key line is wired to a **serial port pin** instead of the KEY jack,
+turn on **Settings → CW → "CW key over COM port"**, pick the port and the
+key line (**CTS** or **DSR**), and it keys Lyra's CW. It's off by default.
+Because a host-polled serial line adds a little timing jitter, the KEY jack
+above is the better route for a paddle or high-speed sending — this option
+is best for a straight key or a keyer that times itself.
 
 **2 — Keyboard + macros (the CW console).** Click the **CW** chip on the
 top toolbar to pop open the floating **CW Console** (it floats by default
@@ -1644,6 +1657,18 @@ The complete manager lives in **Settings → Profiles**:
   **CWU/CWL → CW**, **DIGU/DIGL → Digital** (the chain is identical
   regardless of sideband), while AM / SAM / DSB / FM each stand alone. Set
   a family to **(none)** to disable auto-recall for it.
+- **Companion app** — optionally launch a digital-mode program (VarAC,
+  MSHV, WSJT-X, …) when you **explicitly select** this profile from the
+  front dock or the **Load** button. Tick **Launch a program when this
+  profile is selected**, set a friendly **name**, **Browse** to the
+  `.exe`/`.bat`/`.cmd`, add any command-line **arguments**, and a **start
+  delay** (a couple of seconds lets Lyra's CAT server and VAC come up
+  first). **Test launch** tries it now. It fires *only* on an explicit pick
+  — never on the mode-family auto-recall above, and never at startup — and
+  it never closes the app for you when you switch away (close it yourself).
+  This binding is **per-PC only**: it lives on your machine, is never
+  written into the profile, and is never exported in a shared `.lyra` — a
+  shared profile carries the DSP chain only, never "run this program."
 
 ### Good to know
 

@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.7.0)
+## Features (v0.8.0)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -82,13 +82,18 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   palette, and a Repeat caller.  QSK / semi / manual break-in, adjustable
   sidetone.  The meter shows forward power and the VFO goes red on-air
   while you send CW — console keyer *and* a paddle / key into the radio.
+  An **external keyer / Winkeyer** works too (its KEY line into the HL2 jack,
+  Iambic off), plus an optional **serial CW-key input** for a key wired to a
+  COM-port pin.
 * **Native TX DSP rack** — a studio audio chain built into the radio, ahead
   of the modulator: an 8-band parametric EQ with a draggable curve + live
   RTA, a multi-stage Speech section (noise gate, auto-AGC, de-esser), a
   5-band Combinator multiband compressor, and a Plate reverb for ESSB air.
 * **TX profiles & metering** — save/recall the whole transmit chain as named
   profiles; multimeter (PO / SWR / MIC / COMP / ALC / PA current); hot-mic
-  monitor (HL2 jack, a PC device, or over TCI).
+  monitor (HL2 jack, a PC device, or over TCI).  A profile can optionally
+  **launch its companion digital-mode app** (VarAC / MSHV / WSJT-X) when you
+  pick it — a per-PC binding that's never part of the shared profile.
 * **Per-band TX power (PA Gain tab)** — a per-band **PA Gain** table that
   calibrates what your drive % means in real watts on each band (measure
   each band into a dummy load and nudge its number), plus an **auto-tuning
@@ -138,7 +143,8 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   a **COM port** *or* **TCP** (no com0com needed for TCP); two independent,
   labelled CAT instances run side-by-side.  Plus a **serial-PTT input** so a
   digital app (WSJT-X, VarAC, fldigi) keys Lyra over an RTS/DTR line.  All
-  under **Settings → CAT / Serial**.
+  under **Settings → CAT / Serial**, which now auto-lists **virtual COM
+  ports** (com0com, VSPManager) the way the reference does.
 * **DX-cluster spots** — TCI cluster spots painted on the panadapter
   (country-tagged, CW-pitch-aware placement), with show/max/lifetime
   controls, own-callsign highlight + color, a toast when you're spotted

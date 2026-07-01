@@ -2352,6 +2352,40 @@ void HL2Stream::requestMoxFromSerialPtt(bool on) {
     requestMox(on, PttSource::Serial);
 }
 
+// #171 — serial straight-key / external-keyer edge.  Drives the #105 CWX
+// wire path (tx[0].cwx + cwx_ptt) directly off the incoming key state — no
+// host iambic, the operator/keyer owns the timing.  cwx_ptt is held across
+// the CW break-in hang on key-up so quick inter-element gaps don't drop TX.
+void HL2Stream::requestCwKeyFromSerial(bool down) {
+    const int tm = txMode_.load(std::memory_order_relaxed);
+    if (!(tm == 3 || tm == 4)) {            // CW mode only (cw_enable gate)
+        if (!down) {                        // mode left CW mid-key → make safe
+            if (serialCwHangTimer_) serialCwHangTimer_->stop();
+            setCwxKey(false);
+            setCwxPtt(false);
+            setCwKeyingActive(false);
+        }
+        return;
+    }
+    if (down) {
+        if (serialCwHangTimer_) serialCwHangTimer_->stop();   // cancel pending drop
+        setCwxPtt(true);          // hold TX (message level)
+        setCwxKey(true);          // key the element
+        setCwKeyingActive(true);  // UI display flip (meter RX↔TX)
+    } else {
+        setCwxKey(false);         // unkey the element
+        if (!serialCwHangTimer_) {
+            serialCwHangTimer_ = new QTimer(this);
+            serialCwHangTimer_->setSingleShot(true);
+            connect(serialCwHangTimer_, &QTimer::timeout, this, [this] {
+                setCwxPtt(false);          // hang expired → drop TX to RX
+                setCwKeyingActive(false);
+            });
+        }
+        serialCwHangTimer_->start(std::max(0, cwHangDelayMs_));
+    }
+}
+
 int HL2Stream::pushWaterfallIdAudio(const QString &callsign, double level,
                                     bool lsb) {
     // #175 bench (increment 2a).  Render the call → a 48 kHz mono raster

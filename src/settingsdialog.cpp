@@ -60,6 +60,7 @@
 #include "eibistore.h"
 #include "tci_server.h"
 #include "cat/SerialPtt.h"
+#include "cat/SerialCwKey.h"   // #171
 #include "cat/CatServer.h"
 #include <QSerialPortInfo>
 #include "spotstore.h"
@@ -94,6 +95,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::profile::ProfileManager *profiles,
                                lyra::profile::CompanionLauncher *companion,
                                lyra::cat::SerialPtt *serialPtt,
+                               lyra::cat::SerialCwKey *serialCwKey,
                                const QList<lyra::cat::CatServer *> &catServers,
                                QWidget *parent)
     : QDialog(parent), prefs_(prefs), stream_(stream),
@@ -101,6 +103,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
       meter_(meter), tuner_(tuner), profiles_(profiles), companion_(companion),
+      serialCwKey_(serialCwKey),
       serialPtt_(serialPtt), catServers_(catServers) {
     setWindowTitle(tr("Lyra — Settings"));
     // Open big enough to show a full tab — the widest tabs are 2-column
@@ -3752,6 +3755,115 @@ QWidget *SettingsDialog::buildCwTab() {
         root->addWidget(grp);
     }
 
+    // #171 — external keyer / Winkeyer note (Piece A: the HL2 KEY jack path).
+    {
+        auto *note = new QLabel(
+            tr("<b>External keyer / Winkeyer (paddle):</b> connect its KEY "
+               "output to the HL2 <b>KEY jack</b> and turn <b>Iambic OFF</b> "
+               "above — the keyer does its own timing, so the radio passes the "
+               "key straight through (Iambic ON would re-key it as a paddle).  "
+               "A Winkeyer's USB/COM port is for its own config app (WK3tools, "
+               "your logger), not Lyra."), page);
+        note->setWordWrap(true);
+        note->setStyleSheet("color: palette(mid);");
+        root->addWidget(note);
+    }
+
+    // #171 Piece B — serial CW key input (straight key / bug / external keyer's
+    // KEY output wired to a COM port pin → host drives cwx).  Lyra's
+    // equivalent of the reference CW "Connections" COM-port option.
+    if (serialCwKey_) {
+        auto *grp  = new QGroupBox(tr("CW key over COM port"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *en = new QCheckBox(
+            tr("Key Lyra's CW from a serial key line"), grp);
+        en->setChecked(serialCwKey_->enabled());
+        en->setToolTip(tr(
+            "A straight key, bug, or external keyer's KEY output wired to a "
+            "COM port's CTS or DSR pin keys Lyra's CW (the host keys via CWX).  "
+            "CW mode only.  For the tightest timing on a paddle, prefer the HL2 "
+            "KEY jack above — a host-polled serial line adds a little jitter."));
+        form->addRow(en);
+
+        auto *portCombo = new QComboBox(grp);
+        portCombo->setEditable(true);
+        portCombo->setInsertPolicy(QComboBox::NoInsert);
+        portCombo->lineEdit()->setPlaceholderText(
+            tr("type COMx if not listed"));
+        portCombo->setMaximumWidth(380);
+        auto repopulate = [this, portCombo]() {
+            const QString cur = serialCwKey_->portName();
+            QSignalBlocker b(portCombo);
+            portCombo->clear();
+            portCombo->addItem(tr("(none)"), QString());
+            for (const auto &p : enumComPorts())
+                portCombo->addItem(p.second.isEmpty()
+                                       ? p.first
+                                       : QStringLiteral("%1 — %2")
+                                             .arg(p.first, p.second),
+                                   p.first);
+            if (!cur.isEmpty() && portCombo->findData(cur) < 0)
+                portCombo->addItem(tr("%1 (not present)").arg(cur), cur);
+            const int idx = portCombo->findData(cur);
+            portCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+        };
+        repopulate();
+        form->addRow(tr("COM port:"), portCombo);
+
+        // Resolve the chosen port from the editable combo: prefer the item's
+        // stored port name, else the typed text (strip any " — desc" suffix).
+        auto resolvePort = [portCombo]() -> QString {
+            const QVariant d = portCombo->currentData();
+            if (d.isValid() && !d.toString().isEmpty()) return d.toString();
+            return portCombo->currentText().section(QStringLiteral(" — "), 0, 0)
+                       .trimmed();
+        };
+        auto applyPort = [this, resolvePort]() {
+            serialCwKey_->setPortName(resolvePort());
+        };
+        connect(portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                serialCwKey_, applyPort);
+        connect(portCombo->lineEdit(), &QLineEdit::editingFinished,
+                serialCwKey_, applyPort);
+
+        auto *rescan = new QPushButton(tr("Rescan ports"), grp);
+        connect(rescan, &QPushButton::clicked, grp,
+                [repopulate]() { repopulate(); });
+        form->addRow(QString(), rescan);
+
+        auto *lineCombo = new QComboBox(grp);
+        lineCombo->addItem(tr("CTS"), int(lyra::cat::SerialCwKey::Line::Cts));
+        lineCombo->addItem(tr("DSR"), int(lyra::cat::SerialCwKey::Line::Dsr));
+        lineCombo->setCurrentIndex(int(serialCwKey_->watchLine()));
+        lineCombo->setToolTip(tr(
+            "Which COM-port input pin the key is wired to (asserted = key "
+            "down).  The reference reads dot on DSR / dash on CTS; for a single "
+            "straight-key line pick whichever your cable uses."));
+        connect(lineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                serialCwKey_, [this, lineCombo](int) {
+            serialCwKey_->setWatchLine(static_cast<lyra::cat::SerialCwKey::Line>(
+                lineCombo->currentData().toInt()));
+        });
+        form->addRow(tr("Key line:"), lineCombo);
+
+        auto *inv = new QCheckBox(tr("Invert  (key is active-low)"), grp);
+        inv->setChecked(serialCwKey_->invert());
+        inv->setToolTip(tr("Flip the sense if your key/keyer pulls the line "
+                           "low to key."));
+        form->addRow(inv);
+        connect(inv, &QCheckBox::toggled, serialCwKey_,
+                [this](bool on) { serialCwKey_->setInvert(on); });
+
+        connect(en, &QCheckBox::toggled, serialCwKey_,
+                [this](bool on) { serialCwKey_->setEnabled(on); });
+        connect(serialCwKey_, &lyra::cat::SerialCwKey::enabledChanged, en,
+                [en](bool on) { if (en->isChecked() != on) {
+                    QSignalBlocker s(en); en->setChecked(on); } });
+
+        root->addWidget(grp);
+    }
+
     root->addStretch(1);
     return page;
 }
@@ -6214,7 +6326,11 @@ QWidget *SettingsDialog::buildDspTab() {
            "latency and the sharp filters at once. The only knob that still "
            "changes the <i>sound/feel</i> on fast machines is filter "
            "<i>type</i> (group delay), which is what this page exposes. "
-           "Everything else Thetis made you tune is handled automatically."));
+           "Everything else Thetis made you tune is handled automatically."
+           "<br><br>The one latency that <i>is</i> yours to tune is the "
+           "digital-mode audio bridge to apps like VarAC / WSJT-X — that "
+           "lives on the <b>Audio → VAC</b> page (buffer size + ring "
+           "latency), not here."));
     why->setWordWrap(true);
     why->setStyleSheet("color: palette(mid);");
     outer->addWidget(why);

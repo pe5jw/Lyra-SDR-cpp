@@ -17,7 +17,7 @@ namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
 namespace lyra::wx  { class WxService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
-namespace lyra::cat { class SerialPtt; class CatServer; }
+namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
 
 namespace lyra::ui {
 
@@ -49,6 +49,7 @@ public:
                    lyra::profile::ProfileManager *profiles,
                    lyra::profile::CompanionLauncher *companion,
                    lyra::cat::SerialPtt *serialPtt,
+                   lyra::cat::SerialCwKey *serialCwKey,
                    const QList<lyra::cat::CatServer *> &catServers,
                    QWidget *parent = nullptr);
 
@@ -94,6 +95,7 @@ private:
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::profile::CompanionLauncher *companion_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;
+    lyra::cat::SerialCwKey *serialCwKey_ = nullptr;   // #171
     QList<lyra::cat::CatServer *> catServers_;
     QTabWidget             *tabs_      = nullptr;
 };
