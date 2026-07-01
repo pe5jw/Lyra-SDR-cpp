@@ -43,13 +43,18 @@ const char* lookup(char up) noexcept {
 
 int cwDitMs(int wpm) noexcept {
     wpm = std::clamp(wpm, 5, 100);
-    return 1200 / wpm;
+    return static_cast<int>(1200.0 / wpm + 0.5);       // rounded, not truncated
+}
+
+int cwDitUs(int wpm) noexcept {
+    wpm = std::clamp(wpm, 5, 100);
+    return static_cast<int>(1200000.0 / wpm + 0.5);    // dit in microseconds
 }
 
 std::vector<CwElement> cwTextToElements(const std::string& text,
                                         int wpm,
                                         int weightPct) {
-    const int dit = cwDitMs(wpm);
+    const int dit = cwDitUs(wpm);   // dit unit in microseconds (#194)
     weightPct = std::clamp(weightPct, 10, 90);
 
     // Weight scales mark + intra-element gap around 50 % neutral;
@@ -72,7 +77,7 @@ std::vector<CwElement> cwTextToElements(const std::string& text,
             // wider inter-word gap. Leading/duplicate spaces are no-ops.
             if (prevWasChar) {
                 if (!out.empty() && !out.back().key)
-                    out.back().durationMs = wordGap;  // upgrade char→word gap
+                    out.back().durationUs = wordGap;  // upgrade char→word gap
                 else
                     out.push_back({false, wordGap});
                 prevWasChar = false;

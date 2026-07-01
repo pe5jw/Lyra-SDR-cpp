@@ -81,7 +81,7 @@ void CwKeyer::run() {
             keyFn_(e.key);                  // cwx = mark/space
             lk.lock();
 
-            deadline += std::chrono::milliseconds(e.durationMs);
+            deadline += std::chrono::microseconds(e.durationUs);
             // Interruptible hold until this element's deadline.
             cv_.wait_until(lk, deadline, [this] { return abort_ || stop_; });
         }

@@ -26,12 +26,13 @@
 namespace lyra::tx {
 
 // One keying element: hold the CW carrier on (mark) or off (space)
-// for `durationMs` milliseconds. The keyer thread translates a `mark`
+// for `durationUs` MICROSECONDS. The keyer thread translates a `mark`
 // to cwx=1 and a `space` to cwx=0 (cwx_ptt held across the whole
-// list).
+// list). Microsecond resolution (not whole ms) so dit/dah timing
+// carries no truncation bias at high WPM (#194).
 struct CwElement {
     bool key;          // true = mark (carrier on), false = space (off)
-    int  durationMs;
+    int  durationUs;   // element length in microseconds
 };
 
 // Translate ASCII `text` to a flat keying-element list at `wpm`
@@ -44,9 +45,11 @@ std::vector<CwElement> cwTextToElements(const std::string& text,
                                         int wpm,
                                         int weightPct = 50);
 
-// The dit unit in ms for a given WPM (PARIS): 1200 / wpm, clamped to
-// a sane 5..100 WPM range. Exposed for the keyer's spacing-hang math
-// and for tests.
+// The dit unit for a given WPM (PARIS): 1200 / wpm, clamped to a sane
+// 5..100 WPM range. cwDitMs() rounds to whole ms (spacing-hang math /
+// tests); cwDitUs() is the microsecond value the element builder uses,
+// so high-WPM timing is not truncated (#194).
 int cwDitMs(int wpm) noexcept;
+int cwDitUs(int wpm) noexcept;
 
 }  // namespace lyra::tx
