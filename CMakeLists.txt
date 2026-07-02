@@ -243,6 +243,8 @@ qt_add_executable(lyra
     src/tx/ClipRecorderPlayer.cpp
     src/tx/WavIo.h
     src/tx/WavIo.cpp
+    src/tx/ClipBank.h
+    src/tx/ClipBank.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -651,6 +653,23 @@ add_executable(test_wav_io EXCLUDE_FROM_ALL
 target_include_directories(test_wav_io PRIVATE src)
 if(MSVC)
     target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #89 Stage B (B3) — clip bank + persistence unit test (ClipBank).  Qt-based
+# (QSettings + QStandardPaths, isolated via test mode); EXCLUDE_FROM_ALL.
+# Build + run:  cmake --build build --target test_clip_bank
+add_executable(test_clip_bank EXCLUDE_FROM_ALL
+    scratch/test_clip_bank.cpp
+    src/tx/ClipBank.h
+    src/tx/ClipBank.cpp
+    src/tx/WavIo.h
+    src/tx/WavIo.cpp
+)
+target_include_directories(test_clip_bank PRIVATE src)
+target_link_libraries(test_clip_bank PRIVATE Qt6::Core)
+set_target_properties(test_clip_bank PROPERTIES AUTOMOC ON)
+if(MSVC)
+    target_compile_options(test_clip_bank PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #158 DL-5 — the test_ivac_audio target retired with src/ivac_audio.{h,cpp}
