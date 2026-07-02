@@ -167,15 +167,13 @@ Rectangle {
                     }
                 }
 
-                // Delete (edit mode only)
-                Button {
+                // Delete (edit mode only) — trashcan + confirm, matches the
+                // Tuner + Voice Keyer panels.
+                TrashCan {
                     visible: root.editMode
                     Layout.alignment: Qt.AlignTop
-                    implicitWidth: 24; implicitHeight: 24
-                    onClicked: CwMacros.removeMacro(modelData.index)
-                    background: Rectangle { radius: 4; color: "#3a1c1c"; border.color: "#c0504d" }
-                    contentItem: Text { text: "✕"; color: "#ff8a80"
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    tip: qsTr("Delete this macro")
+                    onConfirmed: CwMacros.removeMacro(modelData.index)
                 }
             }
 
@@ -459,12 +457,9 @@ Rectangle {
                             border.color: tokVal.activeFocus ? root.cAccent : "#2a4a5a" }
                         onEditingFinished: CwMacros.setToken(modelData.index, tokName.text, text)
                     }
-                    Button {
-                        implicitWidth: 24; implicitHeight: 24
-                        onClicked: CwMacros.removeToken(modelData.index)
-                        background: Rectangle { radius: 4; color: "#3a1c1c"; border.color: "#c0504d" }
-                        contentItem: Text { text: "✕"; color: "#ff8a80"
-                            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    TrashCan {
+                        tip: qsTr("Delete this token")
+                        onConfirmed: CwMacros.removeToken(modelData.index)
                     }
                 }
             }

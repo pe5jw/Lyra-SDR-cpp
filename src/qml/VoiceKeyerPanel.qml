@@ -183,14 +183,11 @@ Rectangle {
                         font.pixelSize: 11
                         horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
-                Button {
+                TrashCan {
                     visible: root.editMode
                     Layout.alignment: Qt.AlignVCenter
-                    implicitWidth: 26; implicitHeight: 26
-                    onClicked: Clips.remove(modelData.id)
-                    background: Rectangle { radius: 4; color: "#3a1c1c"; border.color: "#c0504d" }
-                    contentItem: Text { text: "✕"; color: "#ff8a80"
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    tip: qsTr("Delete this clip")
+                    onConfirmed: Clips.remove(modelData.id)
                 }
             }
 
