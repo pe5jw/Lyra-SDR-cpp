@@ -35,6 +35,7 @@ class QTimer;
 namespace lyra::tx {
 
 class ClipBank;
+class ClipRecorder;
 class ClipRecorderPlayer;
 
 class VoiceKeyer : public QObject {
@@ -44,6 +45,7 @@ class VoiceKeyer : public QObject {
     Q_PROPERTY(bool    reviewing  READ reviewing  NOTIFY playingChanged)
     Q_PROPERTY(double  progress   READ progress   NOTIFY progressChanged)
     Q_PROPERTY(bool    recording  READ recording  NOTIFY recordingChanged)
+    Q_PROPERTY(int     recordMs   READ recordMs   NOTIFY recordMsChanged)
     Q_PROPERTY(bool    reviewReady READ reviewReady CONSTANT)
     Q_PROPERTY(double  gainDb     READ gainDb     WRITE setGainDb     NOTIFY gainDbChanged)
     Q_PROPERTY(bool    bypassDsp  READ bypassDsp  WRITE setBypassDsp  NOTIFY bypassDspChanged)
@@ -56,6 +58,7 @@ public:
     bool    reviewing() const { return !playingId_.isEmpty() && !ota_; }
     double  progress()  const;
     bool    recording() const { return recording_; }
+    int     recordMs()  const;
     // Local (no-key) Review needs its own monitor path — it does NOT go through
     // the TX injection hook (that would feed a parked TXA + risk leaving stale
     // clip audio in the TX ring for a later manual keydown).  Lands in Stage C
@@ -94,12 +97,16 @@ public:
     // The injector — B1 wires player()->fillBlock() into the mic funnel + sets
     // its KeyFn/BlockedFn seams (MainWindow, once, before the Ep6 thread runs).
     ClipRecorderPlayer *player() const { return player_.get(); }
+    // The recorder — MainWindow wires the Ep6 mic tap (+ the RX tap in C2) to
+    // its feed*() methods, once, before the Ep6 thread runs.
+    ClipRecorder *recorder() const { return recorder_.get(); }
 
 signals:
     void liveChanged();
     void playingChanged();
     void progressChanged();
     void recordingChanged();
+    void recordMsChanged();
     void gainDbChanged();
     void bypassDspChanged();
 
@@ -111,6 +118,7 @@ private:
 
     ClipBank                            *bank_ = nullptr;
     std::unique_ptr<ClipRecorderPlayer>  player_;
+    std::unique_ptr<ClipRecorder>        recorder_;
     QTimer                              *poll_ = nullptr;
     bool     live_      = false;
     bool     recording_ = false;

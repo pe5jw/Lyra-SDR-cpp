@@ -357,6 +357,11 @@ void Ep6RecvThread::set_tx_clip_source(Ep6TxClipSource src) {
     tx_clip_source_ = std::move(src);
 }
 
+void Ep6RecvThread::set_mic_record_tap(Ep6MicRecordTap tap) {
+    assert_not_running(running_);
+    mic_record_tap_ = std::move(tap);
+}
+
 // Stage 2b2-fix-v2: set_hw_ptt_sink retired — see Ep6RecvThread.h
 // `Ep6HwPttSink` comment.  Reference has no wire-side sink; the
 // FSM consumer polls prn->ptt_in directly on its own clock.
@@ -881,6 +886,12 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
     // mic_sink_ → Hl2Ep6MicSource indirection is orphaned by this direct
     // call — retired with the legacy TX path in the piece-6 sweep.)
     //
+    // #89 recorder — tap the REAL harvested mic (before any injection below
+    // overwrites the scratch) so a voice-message record captures the operator,
+    // not a clip.  Lock-free no-op unless the operator is recording.
+    if (mic_record_tap_ && mic_sample_count > 0) {
+        mic_record_tap_(mic_sample_count, prn->TxReadBufp);
+    }
     // #89 voice keyer — clip injection.  If a clip is transmitting, the injector
     // OVERWRITES prn->TxReadBufp IN PLACE (same {I,Q}-pair shape) with clip
     // samples so the clip flows into the TX ring INSTEAD of the live mic — the

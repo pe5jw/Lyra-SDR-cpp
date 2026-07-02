@@ -97,6 +97,13 @@ using Ep6MicSink = std::function<void(int n_samples,
 // live-mic VOX RMS (computed from the real mic before this fires).
 using Ep6TxClipSource = std::function<bool(int n_pairs, double* iq_pairs)>;
 
+// #89 recorder — read-only tap of the harvested REAL mic (before any clip
+// injection overwrites the scratch), delivered once per EP6 datagram as
+// interleaved {I=mic, Q} pairs.  Feeds the ClipRecorder while the operator
+// records a voice-keyer message; a lock-free no-op otherwise.  Set once
+// before the Ep6 thread starts (same set-once-before-start contract).
+using Ep6MicRecordTap = std::function<void(int n_pairs, const double* iq_pairs)>;
+
 // Sink for the I2C-readback overlay (when C0 bit 7 is set per
 // `MetisReadThreadMainLoop_HL2:500-508`).  Inert on this build
 // until I2C consumers register.
@@ -179,6 +186,8 @@ public:
     // #89 voice keyer — install the clip-injection source (set once before
     // the Ep6 thread starts).  Pass {} to clear.
     void set_tx_clip_source(Ep6TxClipSource src);
+    // #89 recorder — install the read-only mic-record tap (same contract).
+    void set_mic_record_tap(Ep6MicRecordTap tap);
     // Stage 2b2-fix-v2: set_hw_ptt_sink retired — see Ep6HwPttSink
     // comment above.  HW PTT consumer now polls prn->ptt_in
     // directly via HL2Stream::onHwPttPoll() (reference posture).
@@ -245,6 +254,7 @@ private:
     Ep6MicSink                      mic_sink_;
     Ep6I2cSink                      i2c_sink_;
     Ep6TxClipSource                 tx_clip_source_;   // #89 voice-keyer injector
+    Ep6MicRecordTap                 mic_record_tap_;   // #89 recorder mic tap
     // Stage 2b2-fix-v2: hw_ptt_sink_ member retired (Ep6HwPttSink
     // type retired alongside).  Reference has no wire-side sink.
     Router*                         router_     = nullptr;

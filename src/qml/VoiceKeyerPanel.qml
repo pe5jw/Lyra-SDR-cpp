@@ -293,18 +293,30 @@ Rectangle {
             visible: !root.collapsed
             Layout.fillWidth: true
             spacing: 8
+            // REC records the MIC into a new Voice clip (no transmit) — gated on
+            // the stream being connected, NOT the TX opt-in. Click to start,
+            // click again to stop + save (auto-named; rename in Edit).
             Button {
-                implicitHeight: 28; implicitWidth: 64
-                enabled: VoiceKeyer.live
-                text: qsTr("● REC")
+                implicitHeight: 28; implicitWidth: VoiceKeyer.recording ? 96 : 64
+                enabled: Stream.running || VoiceKeyer.recording
+                text: VoiceKeyer.recording
+                      ? ("■ " + root.fmtDur(VoiceKeyer.recordMs))
+                      : qsTr("● REC")
                 ToolTip.visible: hovered && !enabled
-                ToolTip.text: qsTr("Recording activates in the next build")
-                onClicked: VoiceKeyer.startRecord(0)
+                ToolTip.text: qsTr("Connect the radio to record a voice message")
+                onClicked: VoiceKeyer.recording ? VoiceKeyer.stopRecord("")
+                                                 : VoiceKeyer.startRecord(0)
                 background: Rectangle { radius: 5
                     color: VoiceKeyer.recording ? "#5a1414"
                            : (parent.enabled ? "#2a1414" : "#16202a")
                     border.color: VoiceKeyer.recording ? "#ff6a6a"
-                           : (parent.enabled ? "#c0504d" : "#2a3a44") }
+                           : (parent.enabled ? "#c0504d" : "#2a3a44")
+                    SequentialAnimation on opacity {
+                        running: VoiceKeyer.recording; loops: Animation.Infinite
+                        NumberAnimation { from: 1.0; to: 0.55; duration: 500 }
+                        NumberAnimation { from: 0.55; to: 1.0; duration: 500 }
+                    }
+                }
                 contentItem: Text { text: parent.text
                     color: parent.enabled ? "#ff8a80" : root.cMuted
                     font.bold: true; font.pixelSize: 11

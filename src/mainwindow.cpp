@@ -40,6 +40,7 @@
 #include "prefs.h"
 #include "CwMacroModel.h"
 #include "tx/ClipBank.h"
+#include "tx/ClipRecorder.h"         // #89 C1 — recorder() mic-record tap feed
 #include "tx/ClipRecorderPlayer.h"   // #89 B1 — player() seams (KeyFn/BlockedFn/fillBlock)
 #include "tx/VoiceKeyer.h"
 #include "wire/Ep6RecvThread.h"       // #89 B1 — ep6Thread().set_tx_clip_source(...)
@@ -427,6 +428,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                 if (!player->active()) return false;   // no lock on the idle path
                 return player->fillBlock(n, buf);
             });
+        // #89 Stage C — mic-record tap: read-only observer of the real mic
+        // (before injection), feeds the recorder while a voice message records.
+        auto *recorder = voiceKeyer_->recorder();
+        st->ep6Thread().set_mic_record_tap(
+            [recorder](int n, const double *iq) { recorder->feedMicPairs(iq, n); });
     }
 
     // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context

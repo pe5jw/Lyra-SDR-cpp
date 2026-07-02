@@ -3,6 +3,7 @@
 #include "tx/VoiceKeyer.h"
 
 #include "tx/ClipBank.h"
+#include "tx/ClipRecorder.h"
 #include "tx/ClipRecorderPlayer.h"
 
 #include <QDesktopServices>
@@ -20,15 +21,21 @@ namespace lyra::tx {
 
 VoiceKeyer::VoiceKeyer(ClipBank *bank, QObject *parent)
     : QObject(parent), bank_(bank),
-      player_(std::make_unique<ClipRecorderPlayer>()) {
+      player_(std::make_unique<ClipRecorderPlayer>()),
+      recorder_(std::make_unique<ClipRecorder>()) {
     load();
     poll_ = new QTimer(this);
-    poll_->setInterval(80);   // progress + end-of-clip poll while playing
+    poll_->setInterval(80);   // progress / record-elapsed poll while active
     connect(poll_, &QTimer::timeout, this, &VoiceKeyer::onPollTick);
+}
+
+int VoiceKeyer::recordMs() const {
+    return recorder_ ? recorder_->durationMs() : 0;
 }
 
 VoiceKeyer::~VoiceKeyer() {
     if (player_) player_->stop();
+    if (recorder_ && recorder_->recording()) recorder_->stop();
 }
 
 double VoiceKeyer::progress() const {
@@ -88,20 +95,43 @@ void VoiceKeyer::stop() {
 }
 
 void VoiceKeyer::onPollTick() {
-    if (!player_) return;
-    if (!player_->playing()) {          // clip finished / drained on its own
-        poll_->stop();
+    bool active = false;
+    if (recording_) { emit recordMsChanged(); active = true; }
+    if (player_ && player_->playing()) { emit progressChanged(); active = true; }
+    else if (!playingId_.isEmpty()) {   // clip finished / drained on its own
         playingId_.clear();
         emit playingChanged();
         emit progressChanged();
-        return;
     }
-    emit progressChanged();
+    if (!active) poll_->stop();
 }
 
-// ── Record — Stage C.  Inert stubs so the panel binds them now. ──
-void VoiceKeyer::startRecord(int /*kind*/) { /* Stage C: mic/RX capture */ }
-void VoiceKeyer::stopRecord(const QString & /*label*/) { /* Stage C */ }
+// ── Record (Stage C).  kind 0 = Voice (mic), 1 = RX (needs the RX tap, C2). ──
+void VoiceKeyer::startRecord(int kind) {
+    if (!recorder_ || recording_) return;
+    recorder_->start(kind == 1 ? ClipRecorder::Source::Rx : ClipRecorder::Source::Mic);
+    recording_ = true;
+    poll_->start();
+    emit recordingChanged();
+    emit recordMsChanged();
+}
+
+void VoiceKeyer::stopRecord(const QString &label) {
+    if (!recorder_ || !recording_) return;
+    const ClipRecorder::Source src = recorder_->source();
+    std::vector<float> samples = recorder_->stop();
+    recording_ = false;
+    if (player_ && !player_->playing()) poll_->stop();
+    if (!samples.empty() && bank_) {
+        const int kind = (src == ClipRecorder::Source::Rx) ? ClipBank::Rx : ClipBank::Voice;
+        QString lbl = label.trimmed();
+        if (lbl.isEmpty())
+            lbl = tr("Message %1").arg(bank_->clips().size() + 1);
+        bank_->addFromSamples(lbl, kind, samples);
+    }
+    emit recordingChanged();
+    emit recordMsChanged();
+}
 
 // ── Clip-management dialogs (GUI thread) ──
 void VoiceKeyer::importClipDialog() {

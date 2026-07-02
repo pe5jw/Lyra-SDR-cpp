@@ -247,6 +247,8 @@ qt_add_executable(lyra
     src/tx/ClipBank.cpp
     src/tx/VoiceKeyer.h
     src/tx/VoiceKeyer.cpp
+    src/tx/ClipRecorder.h
+    src/tx/ClipRecorder.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -656,6 +658,18 @@ add_executable(test_wav_io EXCLUDE_FROM_ALL
 target_include_directories(test_wav_io PRIVATE src)
 if(MSVC)
     target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #89 Stage C — recorder capture-core unit test (ClipRecorder).  Qt-free;
+# EXCLUDE_FROM_ALL.  Build + run:  cmake --build build --target test_clip_recorder
+add_executable(test_clip_recorder EXCLUDE_FROM_ALL
+    scratch/test_clip_recorder.cpp
+    src/tx/ClipRecorder.h
+    src/tx/ClipRecorder.cpp
+)
+target_include_directories(test_clip_recorder PRIVATE src)
+if(MSVC)
+    target_compile_options(test_clip_recorder PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #89 Stage B (B3) — clip bank + persistence unit test (ClipBank).  Qt-based
