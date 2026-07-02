@@ -336,6 +336,20 @@ Rectangle {
                     font.bold: true; font.pixelSize: 11
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
+            // Max record length — recording auto-stops + saves at this many
+            // seconds (applies to both Mic and RX capture).
+            Label { text: qsTr("max"); color: root.cMuted; font.pixelSize: 10 }
+            SpinBox {
+                from: 5; to: 300; stepSize: 5
+                value: VoiceKeyer.recordMaxSec
+                onValueModified: VoiceKeyer.recordMaxSec = value
+                enabled: !VoiceKeyer.recording
+                implicitHeight: 26; implicitWidth: 88
+                textFromValue: function (v) { return v + " s" }
+                valueFromText: function (t) { return parseInt(t) }
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Recording auto-stops + saves at this length (Mic + RX)")
+            }
             Button {
                 implicitHeight: 28
                 checkable: true

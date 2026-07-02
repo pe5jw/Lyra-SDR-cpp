@@ -61,6 +61,11 @@ void VoiceKeyer::setGainDb(double db) {
     if (std::abs(db - gainDb_) < 1e-9) return;
     gainDb_ = db;
     save();
+    // Ride an in-progress OTA transmission live (not just on the next play).
+    if (player_ && player_->playing() && !playingId_.isEmpty()) {
+        const double clip = bank_ ? bank_->gainDbOf(playingId_) : 0.0;
+        player_->setGain(std::pow(10.0, (gainDb_ + clip) / 20.0));
+    }
     emit gainDbChanged();
 }
 
@@ -69,6 +74,14 @@ void VoiceKeyer::setBypassDsp(bool on) {
     bypassDsp_ = on;
     save();
     emit bypassDspChanged();
+}
+
+void VoiceKeyer::setRecordMaxSec(int s) {
+    s = std::clamp(s, 5, 300);
+    if (s == recordMaxSec_) return;
+    recordMaxSec_ = s;
+    save();
+    emit recordMaxSecChanged();
 }
 
 void VoiceKeyer::setLive(bool on) {
@@ -109,6 +122,11 @@ void VoiceKeyer::stop() {
 }
 
 void VoiceKeyer::onPollTick() {
+    // Auto-stop + save when the capture hits the operator's max-record length.
+    if (recording_ && recorder_ && recorder_->full()) {
+        stopRecord(QString());
+        return;
+    }
     bool active = false;
     if (recording_) { emit recordMsChanged(); active = true; }
     if (reviewSink_ && !reviewingId_.isEmpty()) { emit progressChanged(); active = true; }
@@ -189,7 +207,9 @@ void VoiceKeyer::stopReview() {
 // ── Record (Stage C).  kind 0 = Voice (mic), 1 = RX (needs the RX tap, C2). ──
 void VoiceKeyer::startRecord(int kind) {
     if (!recorder_ || recording_) return;
-    recorder_->start(kind == 1 ? ClipRecorder::Source::Rx : ClipRecorder::Source::Mic);
+    const int maxSamples = recordMaxSec_ * ClipRecorder::sampleRate();
+    recorder_->start(kind == 1 ? ClipRecorder::Source::Rx : ClipRecorder::Source::Mic,
+                     maxSamples);
     recording_ = true;
     poll_->start();
     emit recordingChanged();
@@ -251,6 +271,7 @@ void VoiceKeyer::load() {
                             -40.0, 20.0);
     bypassDsp_ = s.value(QStringLiteral("bypassDsp"), false).toBool();
     live_      = s.value(QStringLiteral("txEnabled"), false).toBool();   // opt-in, default OFF
+    recordMaxSec_ = std::clamp(s.value(QStringLiteral("recordMaxSec"), 60).toInt(), 5, 300);
     s.endGroup();
 }
 
@@ -260,6 +281,7 @@ void VoiceKeyer::save() const {
     s.setValue(QStringLiteral("playbackGainDb"), gainDb_);
     s.setValue(QStringLiteral("bypassDsp"), bypassDsp_);
     s.setValue(QStringLiteral("txEnabled"), live_);
+    s.setValue(QStringLiteral("recordMaxSec"), recordMaxSec_);
     s.endGroup();
 }
 

@@ -76,6 +76,11 @@ public:
     // from any thread.
     void stop();
 
+    // Live playback gain (linear) — fillBlock reads this EACH block, so the
+    // operator can ride the level up/down DURING an OTA transmission (not just
+    // at play() time).  play() seeds it from PlayOptions::gainLin.  Lock-free.
+    void setGain(double lin) { gainLin_.store(lin, std::memory_order_relaxed); }
+
     bool playing() const { std::lock_guard<std::mutex> lk(mtx_); return state_ != State::Idle; }
     // Lock-free "a clip is active" hint for the TX-funnel injection adapter's
     // hot path (Ep6 thread): lets it skip the mutex + fillBlock() entirely on
@@ -119,7 +124,8 @@ private:
     std::size_t drainLeft_  = 0;    // silence samples remaining in the drain
     PlayOptions opt_{};
     bool        keyHeld_ = false;
-    std::atomic<bool> active_{false};   // Playing || Draining (lock-free hint)
+    std::atomic<bool>   active_{false};   // Playing || Draining (lock-free hint)
+    std::atomic<double> gainLin_{1.0};    // live playback gain (rideable during OTA)
     KeyFn       keyFn_;
     BlockedFn   blockedFn_;
 };

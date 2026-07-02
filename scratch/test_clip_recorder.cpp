@@ -78,7 +78,14 @@ int main() {
         CHECK(clip.size() == 1, "restart clears the prior buffer");
     }
 
-    // ── length cap ──
+    // ── explicit length limit + full() ──
+    rec.start(Source::Rx, 5);                   // cap at 5 samples
+    CHECK(!rec.full(), "not full at start");
+    { std::vector<float> r = {1, 2, 3, 4, 5, 6, 7}; rec.feedRxMono(r.data(), 7); }
+    CHECK(rec.full(), "full at the explicit limit");
+    { auto clip = rec.stop(); CHECK(static_cast<int>(clip.size()) == 5, "capped at explicit limit 5"); }
+
+    // ── hard length cap ──
     rec.start(Source::Rx);
     std::vector<float> big(ClipRecorder::kMaxSamples + 5000, 0.0f);
     rec.feedRxMono(big.data(), static_cast<int>(big.size()));

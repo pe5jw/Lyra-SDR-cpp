@@ -53,6 +53,7 @@ class VoiceKeyer : public QObject {
     Q_PROPERTY(double  progress   READ progress   NOTIFY progressChanged)
     Q_PROPERTY(bool    recording  READ recording  NOTIFY recordingChanged)
     Q_PROPERTY(int     recordMs   READ recordMs   NOTIFY recordMsChanged)
+    Q_PROPERTY(int     recordMaxSec READ recordMaxSec WRITE setRecordMaxSec NOTIFY recordMaxSecChanged)
     Q_PROPERTY(bool    reviewReady READ reviewReady CONSTANT)
     Q_PROPERTY(double  gainDb     READ gainDb     WRITE setGainDb     NOTIFY gainDbChanged)
     Q_PROPERTY(bool    bypassDsp  READ bypassDsp  WRITE setBypassDsp  NOTIFY bypassDspChanged)
@@ -67,6 +68,8 @@ public:
     double  progress()  const;
     bool    recording() const { return recording_; }
     int     recordMs()  const;
+    int     recordMaxSec() const { return recordMaxSec_; }   // max record length (s)
+    void    setRecordMaxSec(int s);
     // C3: local Review plays a clip through a QAudioSink (default output), no
     // key / no TX / no injector — so it never touches the wire TX ring.
     bool    reviewReady() const { return true; }
@@ -113,6 +116,7 @@ signals:
     void progressChanged();
     void recordingChanged();
     void recordMsChanged();
+    void recordMaxSecChanged();
     void gainDbChanged();
     void bypassDspChanged();
 
@@ -137,6 +141,7 @@ private:
     QString  playingId_;
     double   gainDb_    = 0.0;    // global playback gain (dB)
     bool     bypassDsp_ = false;  // the voice keyer's single Bypass-TX-DSP toggle
+    int      recordMaxSec_ = 60;  // max record length (s), 5..300
 };
 
 } // namespace lyra::tx

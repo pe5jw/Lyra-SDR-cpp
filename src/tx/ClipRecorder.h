@@ -33,9 +33,10 @@ public:
 
     ClipRecorder() = default;
 
-    // Begin capturing from `src`.  Clears any prior buffer.  Idempotent-safe:
-    // a start() while already recording restarts from empty.
-    void start(Source src);
+    // Begin capturing from `src`, capped at `maxSamples` (clamped to the hard
+    // ceiling kMaxSamples).  Clears any prior buffer.  Idempotent-safe: a
+    // start() while already recording restarts from empty.
+    void start(Source src, int maxSamples = kMaxSamples);
 
     // Producer-thread feeds.  Each is a no-op unless recording AND the active
     // source matches — and the lock-free recording gate is checked first so
@@ -56,16 +57,23 @@ public:
     bool recording() const noexcept { return recording_.load(std::memory_order_acquire); }
     Source source()  const noexcept { return source_; }
 
+    // True once the capture hit its length limit — the controller polls this to
+    // auto-stop + save at the operator's max-record time.  Lock-free.
+    bool full() const noexcept {
+        return size_.load(std::memory_order_acquire) >= limit_.load(std::memory_order_relaxed);
+    }
+
     // Samples captured so far (approx; lock-free read of the size hint).
     int durationMs() const;
 
     static constexpr int sampleRate()  { return 48000; }
-    static constexpr int kMaxSamples   = 48000 * 120;   // 120 s hard cap
+    static constexpr int kMaxSamples   = 48000 * 300;   // 5 min hard ceiling (memory guard)
 
 private:
     mutable std::mutex mtx_;
     std::atomic<bool>  recording_{false};
     std::atomic<int>   size_{0};        // lock-free size hint for durationMs()
+    std::atomic<int>   limit_{kMaxSamples};
     Source             source_ = Source::Mic;
     std::vector<float> buf_;
 };

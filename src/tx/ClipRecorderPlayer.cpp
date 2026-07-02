@@ -22,6 +22,7 @@ bool ClipRecorderPlayer::play(std::shared_ptr<const std::vector<float>> mono,
         pos_       = 0;
         drainLeft_ = 0;
         opt_       = opt;
+        gainLin_.store(opt.gainLin, std::memory_order_relaxed);   // seed live gain
         state_     = State::Playing;
         active_.store(true, std::memory_order_release);
         keyHeld_   = false;
@@ -90,7 +91,7 @@ bool ClipRecorderPlayer::fillBlock(int n_pairs, double *out_iq_pairs) {
         }
 
         if (state_ == State::Playing) {
-            const double g = opt_.gainLin;
+            const double g = gainLin_.load(std::memory_order_relaxed);   // live (rideable)
             const std::size_t sz = clip_ ? clip_->size() : 0;
             int i = 0;
             for (; i < n_pairs && pos_ < sz; ++i, ++pos_) {
