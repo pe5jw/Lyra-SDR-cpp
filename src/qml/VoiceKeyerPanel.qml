@@ -172,8 +172,8 @@ Rectangle {
                     implicitHeight: 30; implicitWidth: 66
                     enabled: VoiceKeyer.reviewReady
                     text: qsTr("▶ Review")
-                    ToolTip.visible: hovered && !enabled
-                    ToolTip.text: qsTr("Local review (no transmit) lands with the recorder")
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Play locally on this PC (default output) — no transmit")
                     onClicked: VoiceKeyer.playReview(modelData.id)
                     background: Rectangle { radius: 5
                         color: parent.enabled ? "#16301f" : "#16202a"

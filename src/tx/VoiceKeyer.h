@@ -38,6 +38,13 @@ class ClipBank;
 class ClipRecorder;
 class ClipRecorderPlayer;
 
+} // namespace lyra::tx
+
+class QAudioSink;
+class QBuffer;
+
+namespace lyra::tx {
+
 class VoiceKeyer : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool    live       READ live       WRITE setLive  NOTIFY liveChanged)
@@ -54,16 +61,15 @@ public:
     ~VoiceKeyer() override;
 
     bool    live()      const { return live_; }
-    QString playingId() const { return playingId_; }
-    bool    reviewing() const { return !playingId_.isEmpty() && !ota_; }
+    // The active clip id (Review takes precedence, then OTA).  "" when idle.
+    QString playingId() const { return !reviewingId_.isEmpty() ? reviewingId_ : playingId_; }
+    bool    reviewing() const { return !reviewingId_.isEmpty(); }
     double  progress()  const;
     bool    recording() const { return recording_; }
     int     recordMs()  const;
-    // Local (no-key) Review needs its own monitor path — it does NOT go through
-    // the TX injection hook (that would feed a parked TXA + risk leaving stale
-    // clip audio in the TX ring for a later manual keydown).  Lands in Stage C
-    // with the RX recorder / monitor; false at B1.
-    bool    reviewReady() const { return false; }
+    // C3: local Review plays a clip through a QAudioSink (default output), no
+    // key / no TX / no injector — so it never touches the wire TX ring.
+    bool    reviewReady() const { return true; }
     double  gainDb()    const { return gainDb_; }
     bool    bypassDsp() const { return bypassDsp_; }
 
@@ -72,7 +78,7 @@ public:
 
     // Operate (no-op until live; the panel disables the triggers meanwhile).
     Q_INVOKABLE void playOta(const QString &id)    { play(id, /*ota=*/true); }
-    Q_INVOKABLE void playReview(const QString &id) { play(id, /*ota=*/false); }
+    Q_INVOKABLE void playReview(const QString &id) { reviewLocal(id); }
     Q_INVOKABLE void stop();
 
     // Record — Stage C.  Present so the panel binds them; inert until then.
@@ -112,6 +118,8 @@ signals:
 
 private:
     void play(const QString &id, bool ota);
+    void reviewLocal(const QString &id);   // C3 — QAudioSink local playback
+    void stopReview();
     void onPollTick();
     void load();
     void save() const;
@@ -120,6 +128,9 @@ private:
     std::unique_ptr<ClipRecorderPlayer>  player_;
     std::unique_ptr<ClipRecorder>        recorder_;
     QTimer                              *poll_ = nullptr;
+    QAudioSink                          *reviewSink_ = nullptr;   // C3 local monitor
+    QBuffer                             *reviewBuf_  = nullptr;
+    QString  reviewingId_;
     bool     live_      = false;
     bool     recording_ = false;
     bool     ota_       = false;

@@ -6,10 +6,16 @@
 #include "tx/ClipRecorder.h"
 #include "tx/ClipRecorderPlayer.h"
 
+#include <QAudioDevice>
+#include <QAudioFormat>
+#include <QAudioSink>
+#include <QBuffer>
+#include <QByteArray>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QMediaDevices>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
@@ -36,9 +42,17 @@ int VoiceKeyer::recordMs() const {
 VoiceKeyer::~VoiceKeyer() {
     if (player_) player_->stop();
     if (recorder_ && recorder_->recording()) recorder_->stop();
+    if (reviewSink_) reviewSink_->stop();   // sink + buffer are this-parented
 }
 
 double VoiceKeyer::progress() const {
+    if (reviewSink_ && reviewBuf_ && !reviewingId_.isEmpty()) {
+        const qint64 totalSamples = reviewBuf_->size() / 2;   // int16 mono
+        const double totalUs = static_cast<double>(totalSamples) * 1e6 / 48000.0;
+        if (totalUs <= 0.0) return 0.0;
+        return std::clamp(static_cast<double>(reviewSink_->processedUSecs()) / totalUs,
+                          0.0, 1.0);
+    }
     return player_ ? player_->progress() : 0.0;
 }
 
@@ -86,17 +100,18 @@ void VoiceKeyer::play(const QString &id, bool ota) {
 
 void VoiceKeyer::stop() {
     if (player_) player_->stop();
-    if (poll_) poll_->stop();
     if (!playingId_.isEmpty()) {
         playingId_.clear();
         emit playingChanged();
     }
+    stopReview();          // stops the local sink + clears reviewingId_ + manages poll
     emit progressChanged();
 }
 
 void VoiceKeyer::onPollTick() {
     bool active = false;
     if (recording_) { emit recordMsChanged(); active = true; }
+    if (reviewSink_ && !reviewingId_.isEmpty()) { emit progressChanged(); active = true; }
     if (player_ && player_->playing()) { emit progressChanged(); active = true; }
     else if (!playingId_.isEmpty()) {   // clip finished / drained on its own
         playingId_.clear();
@@ -104,6 +119,71 @@ void VoiceKeyer::onPollTick() {
         emit progressChanged();
     }
     if (!active) poll_->stop();
+}
+
+// ── C3 — local Review: play a clip through a QAudioSink (default output).  No
+// key, no TX, no injector — so it never touches the wire TX ring.  Applies the
+// same global + per-clip gain as OTA. ──
+void VoiceKeyer::reviewLocal(const QString &id) {
+    if (!bank_) return;
+    stopReview();                                 // restart cleanly if re-clicked
+    auto samples = bank_->loadSamples(id);
+    if (!samples || samples->empty()) return;
+
+    const double gainLin = std::pow(10.0, (gainDb_ + bank_->gainDbOf(id)) / 20.0);
+
+    // 48 kHz mono, 16-bit PCM.
+    QByteArray pcm;
+    pcm.resize(static_cast<int>(samples->size()) * 2);
+    auto *out = reinterpret_cast<qint16 *>(pcm.data());
+    for (std::size_t i = 0; i < samples->size(); ++i) {
+        const double s = std::clamp(static_cast<double>((*samples)[i]) * gainLin, -1.0, 1.0);
+        out[i] = static_cast<qint16>(s * 32767.0);
+    }
+
+    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+    if (dev.isNull()) return;
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(48000);
+    fmt.setChannelCount(1);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    reviewBuf_ = new QBuffer(this);
+    reviewBuf_->setData(pcm);
+    reviewBuf_->open(QIODevice::ReadOnly);
+
+    reviewSink_ = new QAudioSink(dev, fmt, this);
+    connect(reviewSink_, &QAudioSink::stateChanged, this, [this](QAudio::State st) {
+        // Clip finished (Idle) or the device errored/stopped → tear down.
+        if (st == QAudio::IdleState || st == QAudio::StoppedState)
+            stopReview();
+    });
+
+    reviewingId_ = id;
+    reviewSink_->start(reviewBuf_);
+    poll_->start();
+    emit playingChanged();
+    emit progressChanged();
+}
+
+void VoiceKeyer::stopReview() {
+    if (reviewSink_) {
+        auto *s = reviewSink_;
+        reviewSink_ = nullptr;                    // null first so re-entry is safe
+        s->disconnect(this);                      // no stateChanged re-trigger on stop
+        s->stop();
+        s->deleteLater();
+    }
+    if (reviewBuf_) {
+        reviewBuf_->close();
+        reviewBuf_->deleteLater();
+        reviewBuf_ = nullptr;
+    }
+    bool was = !reviewingId_.isEmpty();
+    reviewingId_.clear();
+    if (player_ && !player_->playing() && !recording_) poll_->stop();
+    if (was) { emit playingChanged(); emit progressChanged(); }
 }
 
 // ── Record (Stage C).  kind 0 = Voice (mic), 1 = RX (needs the RX tap, C2). ──
