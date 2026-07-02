@@ -40,7 +40,9 @@
 #include "prefs.h"
 #include "CwMacroModel.h"
 #include "tx/ClipBank.h"
+#include "tx/ClipRecorderPlayer.h"   // #89 B1 — player() seams (KeyFn/BlockedFn/fillBlock)
 #include "tx/VoiceKeyer.h"
+#include "wire/Ep6RecvThread.h"       // #89 B1 — ep6Thread().set_tx_clip_source(...)
 #include "settingsdialog.h"
 #include "dockdragcontroller.h"
 #include "usb_bcd.h"
@@ -397,6 +399,35 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // live mic funnel (voiceKeyer_->setLive(true)).
     clipBank_   = new lyra::tx::ClipBank(this);
     voiceKeyer_ = new lyra::tx::VoiceKeyer(clipBank_, this);
+
+    // #89 B1 — wire the injector into the live TX path.  Done ONCE here, in the
+    // ctor, which runs before any connect starts the Ep6 reader thread, so
+    // Ep6RecvThread::set_tx_clip_source satisfies its set-once-before-start
+    // contract (the sink persists across reconnects; never cleared).  All three
+    // seams are ALWAYS installed — but nothing keys until the operator opts in
+    // (VoiceKeyer.live, default OFF) AND deliberately triggers OTA / an F-key.
+    if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        auto *player = voiceKeyer_->player();
+        using PttSource = lyra::ipc::HL2Stream::PttSource;
+        // Key via PttSource::Keyer — own-key discipline (same posture as VOX):
+        // OTA asserts/releases only ITS key; a manual key / Stop aborts.
+        player->setKeyFn([st](bool on) { st->requestMox(on, PttSource::Keyer); });
+        // Never key over — and never drop — a higher-priority (Manual / HW-PTT /
+        // TCI / Serial) key: blocked when the radio is already keyed by a
+        // non-Keyer source.
+        player->setBlockedFn([st]() {
+            return st->moxActive() && st->pttSource() != PttSource::Keyer;
+        });
+        // Mic-funnel injection: while a clip transmits, feed its samples in
+        // place of the live mic at the reference's mic→TX hand-off, so the clip
+        // runs the full TXA chain (PS-safe).  Idle → the lock-free gate returns
+        // false and the live mic flows unchanged (RX byte-identical to pre-#89).
+        st->ep6Thread().set_tx_clip_source(
+            [player](int n, double *buf) -> bool {
+                if (!player->active()) return false;   // no lock on the idle path
+                return player->fillBlock(n, buf);
+            });
+    }
 
     // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context
     // property).  The RX twin of the TX EQ — same engine, shaped on the

@@ -169,10 +169,10 @@ Rectangle {
                 Button {
                     visible: !root.editMode
                     implicitHeight: 30; implicitWidth: 66
-                    enabled: VoiceKeyer.live
+                    enabled: VoiceKeyer.reviewReady
                     text: qsTr("▶ Review")
                     ToolTip.visible: hovered && !enabled
-                    ToolTip.text: qsTr("Local review activates in the next build")
+                    ToolTip.text: qsTr("Local review (no transmit) lands with the recorder")
                     onClicked: VoiceKeyer.playReview(modelData.id)
                     background: Rectangle { radius: 5
                         color: parent.enabled ? "#16301f" : "#16202a"
@@ -228,6 +228,27 @@ Rectangle {
             spacing: 10
             Label { text: qsTr("Voice Keyer"); color: root.cAccent
                     font.bold: true; font.pixelSize: 14 }
+            // Operator opt-in for TRANSMIT (default OFF, persisted). Off = the
+            // keyer builds/manages clips only; On = ▶ OTA / F-keys actually key.
+            // Amber "armed" accent so an enabled keyer reads at a glance.
+            Button {
+                implicitHeight: 22
+                visible: !root.collapsed
+                checkable: true
+                checked: VoiceKeyer.live
+                text: VoiceKeyer.live ? qsTr("TX ● on") : qsTr("Enable TX")
+                onToggled: VoiceKeyer.live = checked
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Enable voice-keyer transmit. Verify on a dummy load "
+                                   + "first. Off = build/manage clips only.")
+                background: Rectangle { radius: 4
+                    color: VoiceKeyer.live ? "#5a4410" : "#1f2a35"
+                    border.color: VoiceKeyer.live ? "#e0b040" : "#3a5060" }
+                contentItem: Text { text: parent.text
+                    color: VoiceKeyer.live ? "#ffd070" : root.cMuted
+                    font.pixelSize: 11; font.bold: VoiceKeyer.live
+                    leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter }
+            }
             Item { Layout.fillWidth: true }
             Button {
                 implicitWidth: 60; implicitHeight: 22
@@ -260,9 +281,9 @@ Rectangle {
                 id: bannerTxt
                 anchors.fill: parent; anchors.margins: 6
                 wrapMode: Text.WordWrap
-                text: qsTr("Recording & transmit go live in the next build. "
-                           + "Build your bank now — Import a WAV, rename, set F-keys "
-                           + "and per-clip gain.")
+                text: qsTr("Transmit is off. Tick “Enable TX” above (verify on a dummy "
+                           + "load first) to key clips. You can build the bank now — "
+                           + "Import a WAV, rename, set F-keys and per-clip gain.")
                 color: "#e0b060"; font.pixelSize: 11
             }
         }

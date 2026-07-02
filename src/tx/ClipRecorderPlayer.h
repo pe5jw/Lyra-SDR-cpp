@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -76,6 +77,12 @@ public:
     void stop();
 
     bool playing() const { std::lock_guard<std::mutex> lk(mtx_); return state_ != State::Idle; }
+    // Lock-free "a clip is active" hint for the TX-funnel injection adapter's
+    // hot path (Ep6 thread): lets it skip the mutex + fillBlock() entirely on
+    // every datagram while idle (the common case).  Authoritative state is
+    // still state_ (mutex-guarded); this only gates whether fillBlock is worth
+    // calling.  True while Playing OR Draining, false when Idle.
+    bool active() const noexcept { return active_.load(std::memory_order_acquire); }
     // True while we hold the wire key (OTA transmit in progress).
     bool keyed()   const { std::lock_guard<std::mutex> lk(mtx_); return keyHeld_; }
     // Playback position in [0, 1]; 0 when idle.
@@ -112,6 +119,7 @@ private:
     std::size_t drainLeft_  = 0;    // silence samples remaining in the drain
     PlayOptions opt_{};
     bool        keyHeld_ = false;
+    std::atomic<bool> active_{false};   // Playing || Draining (lock-free hint)
     KeyFn       keyFn_;
     BlockedFn   blockedFn_;
 };

@@ -23,6 +23,7 @@ bool ClipRecorderPlayer::play(std::shared_ptr<const std::vector<float>> mono,
         drainLeft_ = 0;
         opt_       = opt;
         state_     = State::Playing;
+        active_.store(true, std::memory_order_release);
         keyHeld_   = false;
 
         if (opt_.ota) {
@@ -42,6 +43,7 @@ void ClipRecorderPlayer::stop() {
         std::lock_guard<std::mutex> lk(mtx_);
         if (state_ == State::Idle) return;                 // idempotent
         state_ = State::Idle;
+        active_.store(false, std::memory_order_release);
         clip_.reset();
         pos_ = 0;
         drainLeft_ = 0;
@@ -80,6 +82,7 @@ bool ClipRecorderPlayer::fillBlock(int n_pairs, double *out_iq_pairs) {
         // Manual-key edge; this is the belt-and-suspenders net.)
         if (blockedFn_ && blockedFn_()) {
             state_ = State::Idle;
+            active_.store(false, std::memory_order_release);
             clip_.reset();
             pos_ = 0; drainLeft_ = 0; keyHeld_ = false;
             std::fill(out_iq_pairs, out_iq_pairs + 2 * n_pairs, 0.0);
@@ -111,7 +114,11 @@ bool ClipRecorderPlayer::fillBlock(int n_pairs, double *out_iq_pairs) {
             std::fill(out_iq_pairs, out_iq_pairs + 2 * n_pairs, 0.0);
             const std::size_t np = static_cast<std::size_t>(n_pairs);
             drainLeft_ = (drainLeft_ > np) ? (drainLeft_ - np) : 0;
-            if (drainLeft_ == 0) { state_ = State::Idle; clip_.reset(); pos_ = 0; }
+            if (drainLeft_ == 0) {
+                state_ = State::Idle;
+                active_.store(false, std::memory_order_release);
+                clip_.reset(); pos_ = 0;
+            }
             ret = true;   // this block's silence is valid; adapter reverts next tick
         }
     }

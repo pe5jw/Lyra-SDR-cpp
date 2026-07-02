@@ -39,11 +39,12 @@ class ClipRecorderPlayer;
 
 class VoiceKeyer : public QObject {
     Q_OBJECT
-    Q_PROPERTY(bool    live       READ live       NOTIFY liveChanged)
+    Q_PROPERTY(bool    live       READ live       WRITE setLive  NOTIFY liveChanged)
     Q_PROPERTY(QString playingId  READ playingId  NOTIFY playingChanged)
     Q_PROPERTY(bool    reviewing  READ reviewing  NOTIFY playingChanged)
     Q_PROPERTY(double  progress   READ progress   NOTIFY progressChanged)
     Q_PROPERTY(bool    recording  READ recording  NOTIFY recordingChanged)
+    Q_PROPERTY(bool    reviewReady READ reviewReady CONSTANT)
     Q_PROPERTY(double  gainDb     READ gainDb     WRITE setGainDb     NOTIFY gainDbChanged)
     Q_PROPERTY(bool    bypassDsp  READ bypassDsp  WRITE setBypassDsp  NOTIFY bypassDspChanged)
 public:
@@ -55,6 +56,11 @@ public:
     bool    reviewing() const { return !playingId_.isEmpty() && !ota_; }
     double  progress()  const;
     bool    recording() const { return recording_; }
+    // Local (no-key) Review needs its own monitor path — it does NOT go through
+    // the TX injection hook (that would feed a parked TXA + risk leaving stale
+    // clip audio in the TX ring for a later manual keydown).  Lands in Stage C
+    // with the RX recorder / monitor; false at B1.
+    bool    reviewReady() const { return false; }
     double  gainDb()    const { return gainDb_; }
     bool    bypassDsp() const { return bypassDsp_; }
 
@@ -78,9 +84,16 @@ public:
     // Voice-mode F1..F12 accelerator (MainWindow::keyPressEvent).  fn = 1..12.
     void playByFkey(int fn);
 
-    // ── B1 seam ──
-    ClipRecorderPlayer *player() const { return player_.get(); }
+    // Operator opt-in for voice-keyer TRANSMIT (default OFF, persisted).  The
+    // injector + keying seams are always wired (B1); this gate is what lets a
+    // deliberate OTA / F-key actually key — the disabled-until-bench-verified
+    // posture (cf. the HW-PTT-input opt-in, hl2_stream `ff5f128`).  The panel
+    // disables Transmit / Review / Record while it is off.
     void setLive(bool on);
+
+    // The injector — B1 wires player()->fillBlock() into the mic funnel + sets
+    // its KeyFn/BlockedFn seams (MainWindow, once, before the Ep6 thread runs).
+    ClipRecorderPlayer *player() const { return player_.get(); }
 
 signals:
     void liveChanged();

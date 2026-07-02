@@ -53,11 +53,13 @@ void VoiceKeyer::setBypassDsp(bool on) {
 void VoiceKeyer::setLive(bool on) {
     if (on == live_) return;
     live_ = on;
+    save();
     emit liveChanged();
 }
 
 void VoiceKeyer::play(const QString &id, bool ota) {
-    if (!live_ || !bank_ || !player_) return;   // triggers disabled until B1
+    if (!live_ || !bank_ || !player_) return;   // gated on the operator opt-in
+    if (!ota && !reviewReady()) return;         // local Review lands in Stage C
     auto samples = bank_->loadSamples(id);
     if (!samples || samples->empty()) return;
 
@@ -138,6 +140,7 @@ void VoiceKeyer::load() {
     gainDb_    = std::clamp(s.value(QStringLiteral("playbackGainDb"), 0.0).toDouble(),
                             -40.0, 20.0);
     bypassDsp_ = s.value(QStringLiteral("bypassDsp"), false).toBool();
+    live_      = s.value(QStringLiteral("txEnabled"), false).toBool();   // opt-in, default OFF
     s.endGroup();
 }
 
@@ -146,6 +149,7 @@ void VoiceKeyer::save() const {
     s.beginGroup(QStringLiteral("clips"));
     s.setValue(QStringLiteral("playbackGainDb"), gainDb_);
     s.setValue(QStringLiteral("bypassDsp"), bypassDsp_);
+    s.setValue(QStringLiteral("txEnabled"), live_);
     s.endGroup();
 }
 

@@ -352,6 +352,11 @@ void Ep6RecvThread::set_i2c_sink(Ep6I2cSink sink) {
     i2c_sink_ = std::move(sink);
 }
 
+void Ep6RecvThread::set_tx_clip_source(Ep6TxClipSource src) {
+    assert_not_running(running_);
+    tx_clip_source_ = std::move(src);
+}
+
 // Stage 2b2-fix-v2: set_hw_ptt_sink retired — see Ep6RecvThread.h
 // `Ep6HwPttSink` comment.  Reference has no wire-side sink; the
 // FSM consumer polls prn->ptt_in directly on its own clock.
@@ -875,6 +880,20 @@ void Ep6RecvThread::process_usb_frame(const uint8_t* frame) {
     // pacing leg that releases the writer's hsendIQSem.  (The OLD
     // mic_sink_ → Hl2Ep6MicSource indirection is orphaned by this direct
     // call — retired with the legacy TX path in the piece-6 sweep.)
+    //
+    // #89 voice keyer — clip injection.  If a clip is transmitting, the injector
+    // OVERWRITES prn->TxReadBufp IN PLACE (same {I,Q}-pair shape) with clip
+    // samples so the clip flows into the TX ring INSTEAD of the live mic — the
+    // reference plays a recorded clip at the mic input, so it runs the full TXA
+    // chain (EQ/Comp/Combinator/PHROT/Leveler/ALC/modulator) and PureSignal taps
+    // it post-gain (design §5).  Idle (the common case) → the injector's
+    // lock-free gate returns false immediately and the live mic flows unchanged
+    // (byte-identical to pre-#89).  VOX RMS above was already computed from the
+    // REAL mic, so injection never trips VOX.  Only fires while a clip actually
+    // plays, which requires the operator opt-in + a deliberate OTA trigger.
+    if (tx_clip_source_ && mic_sample_count > 0) {
+        tx_clip_source_(mic_sample_count, prn->TxReadBufp);
+    }
     Inbound(inid(1, 0), mic_sample_count, prn->TxReadBufp);
 }
 
