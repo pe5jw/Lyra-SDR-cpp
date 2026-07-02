@@ -239,6 +239,8 @@ qt_add_executable(lyra
     # delay + hang + anti-VOX); HL2Stream owns the taps + PttSource::Vox.
     src/tx/VoxDetector.h
     src/tx/VoxDetector.cpp
+    src/tx/ClipRecorderPlayer.h
+    src/tx/ClipRecorderPlayer.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -622,6 +624,19 @@ target_include_directories(test_ivac PRIVATE src)
 target_link_libraries(test_ivac PRIVATE Qt6::Core)
 if(MSVC)
     target_compile_options(test_ivac PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #89 Stage A — voice-keyer injector core unit test (ClipRecorderPlayer).
+# Qt-free / DSP-free by design; EXCLUDE_FROM_ALL so the normal `lyra` build is
+# untouched.  Build + run:  cmake --build build --target test_clip_player
+add_executable(test_clip_player EXCLUDE_FROM_ALL
+    scratch/test_clip_player.cpp
+    src/tx/ClipRecorderPlayer.h
+    src/tx/ClipRecorderPlayer.cpp
+)
+target_include_directories(test_clip_player PRIVATE src)
+if(MSVC)
+    target_compile_options(test_clip_player PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #158 DL-5 — the test_ivac_audio target retired with src/ivac_audio.{h,cpp}

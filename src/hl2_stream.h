@@ -1129,6 +1129,11 @@ public:
         Vox    = 4,   // #91 voice-operated TX — the VoxDetector mic-RMS gate
                       // keys through this source (never overrides a Manual /
                       // HwPtt key; releases only its own key).
+        Keyer  = 5,   // #89 voice keyer / clip playback-OTA — ClipRecorderPlayer
+                      // keys through this source while a clip transmits (same
+                      // own-key discipline as Vox: never overrides a Manual /
+                      // HwPtt key; releases only its own key; a manual key or
+                      // Stop aborts the clip).
         // Forward-compat: Cw lands with its subsystem, same pattern.
     };
     void requestMox(bool on, PttSource source);     // explicit
