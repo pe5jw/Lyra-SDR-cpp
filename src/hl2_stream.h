@@ -196,6 +196,16 @@ class HL2Stream : public QObject {
     // instead of moxActive so they flip during CW too.  NOT a wire signal.
     Q_PROPERTY(bool txDisplayActive READ txDisplayActive
                NOTIFY txDisplayActiveChanged)
+    // Amp watts-cap live status, for the TX-panel CAP chip.  Recomputed on
+    // the ACTIVE TX band inside applyTxPower_ (the one chokepoint every
+    // drive / PA-gain / band / cap change routes through).  0 = cap off, or
+    // on but not actively limiting → chip hidden.  1 = cap ON and holding a
+    // CALIBRATED band at the set watts.  2 = cap ON but this band is NOT
+    // calibrated, so TX is clamped to the conservative ~30 % fallback (the
+    // "cap set to 6 W but the radio only makes 3 W" trap Pierre HS0ZRT hit).
+    // capLimitW is the set cap in watts (for the chip's "CAP nW" text).
+    Q_PROPERTY(int    capStatus READ capStatus NOTIFY capStatusChanged)
+    Q_PROPERTY(double capLimitW READ maxOutputW NOTIFY maxOutputWChanged)
     // TX-0c-pa-debug — host-side TX safety timeout.  Auto-clears MOX
     // (via requestMox(false)) if the radio stays keyed continuously
     // past txTimeoutSec seconds.  Persisted (tx/timeoutSeconds in
@@ -814,6 +824,9 @@ public:
     void    setPwrTrimForBand(int idx, double scale);
     double  maxOutputW() const { return maxOutputW_.load(std::memory_order_relaxed); }
     void    setMaxOutputW(double watts);
+    // Amp-cap live indicator status (see the capStatus Q_PROPERTY): 0 hidden,
+    // 1 holding a calibrated band, 2 uncalibrated → ~30 % fallback clamp.
+    int     capStatus() const { return capStatus_.load(std::memory_order_relaxed); }
     // Stage B — has this band been auto-tuned (TUN servo locked) for the
     // CURRENT cap?  For the PA Gain tab's per-band "tuned" indicator.
     bool    capTunedForBand(int idx) const;
@@ -1422,6 +1435,7 @@ signals:
     void foldMinDrivePctChanged(int pct);
     void maxDrivePctChanged(int pct);
     void maxOutputWChanged(double watts);   // Stage 3b — watts Max cap
+    void capStatusChanged();                // TX-panel CAP chip (0/1/2)
     // Fires once per auto-cut (distinct from txTimeoutFired) so the UI
     // can toast "TX cut: SWR x.x:1".
     void swrProtectCut(const QString& reason);
@@ -1769,6 +1783,10 @@ private:
     // off).  QSettings tx/maxOutputW.
     std::atomic<double>  fullOutputWByBand_[kNumPaGainBands];
     std::atomic<double>  maxOutputW_{0.0};
+    // TX-panel CAP chip status computed in applyTxPower_ (0/1/2 — see the
+    // capStatus Q_PROPERTY).  Recomputed at the drive chokepoint so it
+    // tracks every drive / PA-gain / band / cap change with no extra timer.
+    std::atomic<int>     capStatus_{0};
     // Stage B — per-band AUTO-LEARNED drive ceiling for the watts cap.
     // The TUN servo walks this UP from the conservative fallback until the
     // PWR meter reaches the cap, then locks it (approach-from-below = never

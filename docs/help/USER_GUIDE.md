@@ -2886,6 +2886,19 @@ on the cap would require finer-than-hardware drive control (filling the gaps
 between the coarse steps with the continuous digital gain) — a planned
 future refinement, not something worth rushing into the safety path.
 
+> **⚠ Cap on but not calibrated? Your power will read LOW.** If you tick
+> **Limit TX output to** *without* first measuring **Full Output** and keying
+> **TUN** on each band (so **Cap tuned** shows ✓), Lyra has no per‑band
+> reference and falls back to a deliberately safe **~30 % drive** on every
+> band — so a "6 W cap" can deliver only ~3 W. That is the safety fallback,
+> not a fault. Either **calibrate each band** (enter Full Output + key TUN),
+> or — if you don't run an amplifier — **leave the cap unticked** and Lyra
+> transmits at full drive. Settings → PA Gain shows a warning under the cap
+> box while it's enabled but uncalibrated, and when the cap is actively
+> holding power down a **CAP** chip appears on the TX panel: amber
+> **CAP ~30%** = the uncalibrated fallback (power is low), cyan **CAP nW** =
+> holding a calibrated band at your set limit.
+
 ---
 
 ## Settings → Network (TCI)

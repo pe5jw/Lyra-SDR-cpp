@@ -3952,6 +3952,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
     const auto &bands = lyra::amateurBands();
     const int n = static_cast<int>(bands.size());
     auto *tunedLabels = new QVector<QLabel *>();   // Stage B — live "tuned" marks
+    auto *fullSpins   = new QVector<QDoubleSpinBox *>();  // for the cap-uncalibrated warning
     for (int i = 0; i < n; ++i) {
         grid->addWidget(
             new QLabel(QString::fromUtf8(bands[i].name), grp), i + 1, 0);
@@ -3982,6 +3983,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
                 this, [this, i](double v) {
                     if (stream_) stream_->setFullOutputForBand(i, v);
                 });
+        fullSpins->append(fullSpin);
 
         // Stage B — per-band "is the cap auto-tuned for the current cap?"
         // indicator; refreshed live so the operator watches each band turn
@@ -4056,6 +4058,34 @@ QWidget *SettingsDialog::buildPaGainTab() {
     capUnder->setWordWrap(true);
     capForm->addRow(capUnder);
 
+    // Live warning for the exact trap Pierre HS0ZRT hit: cap ON but no band
+    // has a Full Output reference, so every band falls back to the
+    // conservative ~30 % drive clamp → TX runs LOW ("6 W cap, only 3 W out").
+    auto *capUncal = new QLabel(
+        tr("⚠  Cap enabled, but no band is calibrated.  Until you set Full "
+           "Output + TUN each band (steps 1 & 3 above), Lyra limits TX to a "
+           "safe ~30% drive — power reads LOW on every band.  If you don't "
+           "run an amplifier, just leave this box unticked."),
+        capGrp);
+    capUncal->setWordWrap(true);
+    capUncal->setProperty("lyraWarn", true);
+    capForm->addRow(capUncal);
+
+    // Operator-requested: explain the "Cap tuned" marks so "my ticks
+    // disappeared" (usually after nudging the cap value, which correctly
+    // clears them) stops confusing users.
+    auto *capTicks = new QLabel(
+        tr("“Cap tuned” marks:  green ✓ = this band is locked to your cap; "
+           "red — = not tuned for the current cap yet.  Note that changing "
+           "the cap value clears every ✓ — re-key TUN on each band to "
+           "re-learn (that is expected, not lost calibration).  While you "
+           "transmit, the TX panel also shows a live CAP chip (amber = "
+           "uncalibrated ~30% fallback, cyan = holding a tuned band at your "
+           "cap), so you can see the cap's state at a glance."),
+        capGrp);
+    capTicks->setWordWrap(true);
+    capForm->addRow(capTicks);
+
     auto pushCap = [this, capChk, capSpin]() {
         if (stream_)
             stream_->setMaxOutputW(capChk->isChecked() ? capSpin->value() : 0.0);
@@ -4064,6 +4094,23 @@ QWidget *SettingsDialog::buildPaGainTab() {
             [capSpin, pushCap](bool on) { capSpin->setEnabled(on); pushCap(); });
     connect(capSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
             [pushCap](double) { pushCap(); });
+
+    // Show the "cap on but uncalibrated" warning only when it applies: cap
+    // ticked AND no band has a Full Output reference yet.  (Each connect
+    // lambda copies refreshCapUncal, which itself only holds long-lived
+    // widget pointers — safe for the dialog's lifetime.)
+    auto refreshCapUncal = [capChk, capUncal, fullSpins]() {
+        bool anyMeasured = false;
+        for (auto *fs : *fullSpins)
+            if (fs->value() > 0.0) { anyMeasured = true; break; }
+        capUncal->setVisible(capChk->isChecked() && !anyMeasured);
+    };
+    refreshCapUncal();
+    connect(capChk, &QCheckBox::toggled, this,
+            [refreshCapUncal](bool) { refreshCapUncal(); });
+    for (auto *fs : *fullSpins)
+        connect(fs, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [refreshCapUncal](double) { refreshCapUncal(); });
     rightCol->addWidget(capGrp);
     rightCol->addStretch(1);
 

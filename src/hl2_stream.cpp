@@ -2031,12 +2031,29 @@ void HL2Stream::applyTxPower_(int requestedRaw) {
     // Stage 3b — apply the per-band watts ceiling here (NOT at the stored
     // setpoint), so the operator's drive is preserved + moving to a
     // less-restrictive band restores power.
-    const int    capped = std::min(requestedRaw, wattsDriveCeilingRaw_());
+    const int    ceiling = wattsDriveCeilingRaw_();
+    const int    capped = std::min(requestedRaw, ceiling);
     const double rv  = radioVolumeFor_(capped);
     const int    byte = static_cast<int>(std::lround(255.0 * rv));
     if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(byte);
     lyra::wire::SetTXFixedGainRun(0, 1);
     lyra::wire::SetTXFixedGain(0, rv, rv);
+
+    // Amp-cap live indicator for the TX-panel CAP chip.  Recomputed here
+    // because this is the one chokepoint every drive / PA-gain / band / cap
+    // change flows through.  Only "actively limiting" (ceiling below the
+    // requested drive) shows a chip: 2 = cap ON but this band is NOT
+    // TUN-calibrated → clamped to the conservative ~30 % fallback (LOW power,
+    // the trap); 1 = cap ON and holding a calibrated band at the set watts.
+    int newCapStatus = 0;
+    const double capW = maxOutputW_.load(std::memory_order_relaxed);
+    if (capW > 0.0 && ceiling < requestedRaw) {
+        const int cband = lyra::bandIndexForFreq(
+            static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+        newCapStatus = capTunedFor_(cband, capW) ? 1 : 2;
+    }
+    if (capStatus_.exchange(newCapStatus, std::memory_order_relaxed) != newCapStatus)
+        emit capStatusChanged();
 }
 
 double HL2Stream::paGainForBand(int idx) const {

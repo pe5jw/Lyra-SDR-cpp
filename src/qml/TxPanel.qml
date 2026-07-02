@@ -106,7 +106,7 @@ Rectangle {
         }
         Slider {
             id: driveSlider
-            Layout.preferredWidth: 110   // operator-shrunk (#91 VOX room) — gesture room enough; saves panel width for the button cluster
+            Layout.preferredWidth: 90    // shortened to reclaim panel width for the CAP chip + button cluster
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
             value: root.rawToPct(Stream.txDriveLevel)
             onMoved: Stream.setTxDriveLevel(root.pctToRaw(value))
@@ -154,7 +154,7 @@ Rectangle {
         }
         Slider {
             id: micGainSlider
-            Layout.preferredWidth: 110   // matches driveSlider — front-panel sliders kept short
+            Layout.preferredWidth: 90    // matches driveSlider — front-panel sliders kept short
             // Range matches the verified reference's Default TX profile
             // (Max +40, Min -90) so the operator's full reference-style
             // travel is preserved.  Live value bidirectionally binds
@@ -185,7 +185,9 @@ Rectangle {
             Layout.preferredWidth: 52
         }
 
-        Item { Layout.fillWidth: true }   // left half of the gap
+        // (No left spacer: the ATT/PROT/CAP lamp cluster sits tight after
+        // the Mic readout; the single fill spacer below keeps TUN + MOX
+        // pinned to the right edge.)
 
         // ── ATT-on-TX lamp (§15.31) ─────────────────────────────────
         // Operator-flagged: no visible confirmation that the RX front
@@ -315,6 +317,47 @@ Rectangle {
                       .arg(Stream.swrProtectLimit.toFixed(1))
             ToolTip.delay: 1000
             ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
+        }
+
+        // ── Amp-cap (Max Output) active indicator ───────────────────
+        // Sibling of the ATT/PROT lamps, but VISIBLE ONLY when the watts
+        // cap is actively holding TX power down on the current band — an
+        // invisible Layout item takes zero space, so the panel stays clean
+        // the rest of the time.  Amber "CAP ~30%" = the trap: cap on but
+        // this band isn't TUN-calibrated, so Lyra clamps to a safe ~30 %
+        // drive and power reads LOW (Pierre HS0ZRT's 6 W-cap-but-3 W-out).
+        // Cyan "CAP nW" = cap holding a calibrated band at the set watts
+        // (working as intended).  Purely informational (not a toggle) —
+        // the cap lives in Settings → PA Gain.
+        Rectangle {
+            id: capChip
+            visible: Stream.capStatus > 0
+            readonly property bool uncal: Stream.capStatus === 2
+            Layout.preferredWidth: 68    // sized to match the ATT/PROT lamps
+            Layout.preferredHeight: 26
+            radius: 4
+            color: uncal ? "#3a2a10" : "#12252e"
+            border.color: uncal ? "#ffb020" : root.cAccent
+            border.width: 2
+            Text {
+                anchors.centerIn: parent
+                text: capChip.uncal ? qsTr("CAP ~30%")
+                                    : qsTr("CAP %1W").arg(Math.round(Stream.capLimitW))
+                color: capChip.uncal ? "#ffcf6b" : root.cAccent
+                font.bold: true
+                font.pixelSize: 12
+            }
+            HoverHandler { id: capHov }
+            ToolTip.visible: capHov.hovered && Prefs.tooltipsEnabled
+            ToolTip.delay: 800
+            ToolTip.text: capChip.uncal
+                ? qsTr("Max Output cap is ON but this band isn't calibrated, "
+                       + "so TX is limited to a safe ~30% drive — your power "
+                       + "reads LOW.  Fix: Settings → PA Gain → measure Full "
+                       + "Output + TUN each band, or turn the cap off there.")
+                : qsTr("Max Output cap is holding this band at your set limit "
+                       + "(%1 W).  Adjust or disable in Settings → PA Gain.")
+                      .arg(Math.round(Stream.capLimitW))
         }
 
         Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
