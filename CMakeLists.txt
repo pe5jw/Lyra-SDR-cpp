@@ -241,6 +241,8 @@ qt_add_executable(lyra
     src/tx/VoxDetector.cpp
     src/tx/ClipRecorderPlayer.h
     src/tx/ClipRecorderPlayer.cpp
+    src/tx/WavIo.h
+    src/tx/WavIo.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -637,6 +639,18 @@ add_executable(test_clip_player EXCLUDE_FROM_ALL
 target_include_directories(test_clip_player PRIVATE src)
 if(MSVC)
     target_compile_options(test_clip_player PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #89 Stage B — WAV I/O unit test (WavIo).  Qt-free; EXCLUDE_FROM_ALL.
+# Build + run:  cmake --build build --target test_wav_io
+add_executable(test_wav_io EXCLUDE_FROM_ALL
+    scratch/test_wav_io.cpp
+    src/tx/WavIo.h
+    src/tx/WavIo.cpp
+)
+target_include_directories(test_wav_io PRIVATE src)
+if(MSVC)
+    target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #158 DL-5 — the test_ivac_audio target retired with src/ivac_audio.{h,cpp}
