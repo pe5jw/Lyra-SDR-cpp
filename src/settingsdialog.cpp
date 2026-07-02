@@ -70,6 +70,7 @@
 #include "dxcluster_feeder.h"
 #include "metermodel.h"
 #include "tunermemory.h"
+#include "tx/VoiceKeyer.h"   // #89 recording options
 #include "profile/ProfileManager.h"
 #include "profile/CompanionLauncher.h"
 #include <QDesktopServices>
@@ -94,6 +95,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                SpotStore *spots, SpotHoleFeeder *spotHole,
                                DxClusterFeeder *dxCluster, MeterModel *meter,
                                TunerMemory *tuner,
+                               lyra::tx::VoiceKeyer *voiceKeyer,
                                lyra::profile::ProfileManager *profiles,
                                lyra::profile::CompanionLauncher *companion,
                                lyra::cat::SerialPtt *serialPtt,
@@ -104,7 +106,8 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       discovery_(discovery), bcd_(bcd), engine_(engine), wx_(wx),
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
-      meter_(meter), tuner_(tuner), profiles_(profiles), companion_(companion),
+      meter_(meter), tuner_(tuner), voiceKeyer_(voiceKeyer),
+      profiles_(profiles), companion_(companion),
       serialCwKey_(serialCwKey),
       serialPtt_(serialPtt), catServers_(catServers) {
     setWindowTitle(tr("Lyra — Settings"));
@@ -564,6 +567,48 @@ QWidget *SettingsDialog::buildAudioTab() {
         vnote->setWordWrap(true);
         vnote->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
         vf->addRow(vnote);
+
+        form->addRow(grp);
+    }
+
+    // ── #89 — Voice keyer recording options ──────────────────────────
+    if (voiceKeyer_) {
+        auto *grp = new QGroupBox(tr("Voice keyer recording"), page);
+        auto *gf  = new QFormLayout(grp);
+
+        auto *maxSpin = new QSpinBox(grp);
+        maxSpin->setRange(5, 300);
+        maxSpin->setSingleStep(5);
+        maxSpin->setSuffix(tr(" s"));
+        maxSpin->setValue(voiceKeyer_->recordMaxSec());
+        maxSpin->setToolTip(tr("Recording auto-stops and saves at this length "
+                               "(applies to both Mic messages and RX recordings). "
+                               "Up to 5 minutes."));
+        connect(maxSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int v) { voiceKeyer_->setRecordMaxSec(v); });
+        connect(voiceKeyer_, &lyra::tx::VoiceKeyer::recordMaxSecChanged, maxSpin,
+                [this, maxSpin]() {
+                    if (maxSpin->value() != voiceKeyer_->recordMaxSec())
+                        maxSpin->setValue(voiceKeyer_->recordMaxSec());
+                });
+        gf->addRow(tr("Max recorded length"), maxSpin);
+
+        auto *delayCombo = new QComboBox(grp);
+        delayCombo->addItem(tr("Off — record immediately"), 0);
+        delayCombo->addItem(tr("5 s countdown"),  5);
+        delayCombo->addItem(tr("10 s countdown"), 10);
+        {
+            const int idx = delayCombo->findData(voiceKeyer_->recordDelaySec());
+            delayCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+        }
+        delayCombo->setToolTip(tr("A “get set” countdown before recording starts, "
+                                  "so you can position the mic / take a breath. The "
+                                  "countdown shows on the Voice Keyer panel."));
+        connect(delayCombo, qOverload<int>(&QComboBox::activated), this,
+                [this, delayCombo](int) {
+                    voiceKeyer_->setRecordDelaySec(delayCombo->currentData().toInt());
+                });
+        gf->addRow(tr("Record countdown"), delayCombo);
 
         form->addRow(grp);
     }

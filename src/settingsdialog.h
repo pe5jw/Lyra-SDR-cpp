@@ -18,6 +18,7 @@ namespace lyra::dsp { class WdspEngine; }
 namespace lyra::wx  { class WxService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
+namespace lyra::tx  { class VoiceKeyer; }
 
 namespace lyra::ui {
 
@@ -46,6 +47,7 @@ public:
                    EibiStore *eibi, TciServer *tci, SpotStore *spots,
                    SpotHoleFeeder *spotHole, DxClusterFeeder *dxCluster,
                    MeterModel *meter, TunerMemory *tuner,
+                   lyra::tx::VoiceKeyer *voiceKeyer,
                    lyra::profile::ProfileManager *profiles,
                    lyra::profile::CompanionLauncher *companion,
                    lyra::cat::SerialPtt *serialPtt,
@@ -95,6 +97,7 @@ private:
     DxClusterFeeder        *dxCluster_ = nullptr;
     MeterModel             *meter_     = nullptr;
     TunerMemory            *tuner_     = nullptr;
+    lyra::tx::VoiceKeyer   *voiceKeyer_ = nullptr;   // #89 recording options
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::profile::CompanionLauncher *companion_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;

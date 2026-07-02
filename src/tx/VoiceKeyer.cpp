@@ -33,6 +33,10 @@ VoiceKeyer::VoiceKeyer(ClipBank *bank, QObject *parent)
     poll_ = new QTimer(this);
     poll_->setInterval(80);   // progress / record-elapsed poll while active
     connect(poll_, &QTimer::timeout, this, &VoiceKeyer::onPollTick);
+
+    countdown_ = new QTimer(this);
+    countdown_->setInterval(1000);   // 1 Hz pre-record "get set" countdown
+    connect(countdown_, &QTimer::timeout, this, &VoiceKeyer::onCountdownTick);
 }
 
 int VoiceKeyer::recordMs() const {
@@ -82,6 +86,14 @@ void VoiceKeyer::setRecordMaxSec(int s) {
     recordMaxSec_ = s;
     save();
     emit recordMaxSecChanged();
+}
+
+void VoiceKeyer::setRecordDelaySec(int s) {
+    s = std::clamp(s, 0, 30);
+    if (s == recordDelaySec_) return;
+    recordDelaySec_ = s;
+    save();
+    emit recordDelaySecChanged();
 }
 
 void VoiceKeyer::setLive(bool on) {
@@ -205,7 +217,24 @@ void VoiceKeyer::stopReview() {
 }
 
 // ── Record (Stage C).  kind 0 = Voice (mic), 1 = RX (needs the RX tap, C2). ──
+// Runs the optional get-set countdown first; a second call while counting
+// cancels it (the panel routes that here).
 void VoiceKeyer::startRecord(int kind) {
+    if (!recorder_ || recording_) return;
+    if (counting_) { cancelCountdown(); return; }
+    if (recordDelaySec_ > 0) {
+        pendingKind_  = kind;
+        countdownSec_ = recordDelaySec_;
+        counting_     = true;
+        countdown_->start();
+        emit countingChanged();
+        emit countdownChanged();
+        return;
+    }
+    startRecordNow(kind);
+}
+
+void VoiceKeyer::startRecordNow(int kind) {
     if (!recorder_ || recording_) return;
     const int maxSamples = recordMaxSec_ * ClipRecorder::sampleRate();
     recorder_->start(kind == 1 ? ClipRecorder::Source::Rx : ClipRecorder::Source::Mic,
@@ -214,6 +243,28 @@ void VoiceKeyer::startRecord(int kind) {
     poll_->start();
     emit recordingChanged();
     emit recordMsChanged();
+}
+
+void VoiceKeyer::onCountdownTick() {
+    if (!counting_) return;
+    if (--countdownSec_ <= 0) {
+        countdown_->stop();
+        counting_ = false;
+        emit countingChanged();
+        emit countdownChanged();
+        startRecordNow(pendingKind_);
+    } else {
+        emit countdownChanged();
+    }
+}
+
+void VoiceKeyer::cancelCountdown() {
+    if (!counting_) return;
+    countdown_->stop();
+    counting_     = false;
+    countdownSec_ = 0;
+    emit countingChanged();
+    emit countdownChanged();
 }
 
 void VoiceKeyer::stopRecord(const QString &label) {
@@ -271,7 +322,8 @@ void VoiceKeyer::load() {
                             -40.0, 20.0);
     bypassDsp_ = s.value(QStringLiteral("bypassDsp"), false).toBool();
     live_      = s.value(QStringLiteral("txEnabled"), false).toBool();   // opt-in, default OFF
-    recordMaxSec_ = std::clamp(s.value(QStringLiteral("recordMaxSec"), 60).toInt(), 5, 300);
+    recordMaxSec_ = std::clamp(s.value(QStringLiteral("recordMaxSec"), 300).toInt(), 5, 300);
+    recordDelaySec_ = std::clamp(s.value(QStringLiteral("recordDelaySec"), 0).toInt(), 0, 30);
     s.endGroup();
 }
 
@@ -282,6 +334,7 @@ void VoiceKeyer::save() const {
     s.setValue(QStringLiteral("bypassDsp"), bypassDsp_);
     s.setValue(QStringLiteral("txEnabled"), live_);
     s.setValue(QStringLiteral("recordMaxSec"), recordMaxSec_);
+    s.setValue(QStringLiteral("recordDelaySec"), recordDelaySec_);
     s.endGroup();
 }
 

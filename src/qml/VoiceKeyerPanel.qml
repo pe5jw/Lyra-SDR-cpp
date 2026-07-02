@@ -295,7 +295,7 @@ Rectangle {
             // Locked while recording.
             Button {
                 implicitHeight: 28; implicitWidth: 52
-                enabled: !VoiceKeyer.recording
+                enabled: !VoiceKeyer.recording && !VoiceKeyer.counting
                 text: root.recSrc === 1 ? qsTr("RX") : qsTr("Mic")
                 onClicked: root.recSrc = (root.recSrc === 1 ? 0 : 1)
                 ToolTip.visible: hovered
@@ -311,44 +311,40 @@ Rectangle {
             // gated on the stream being connected, NOT the TX opt-in. Click to
             // start, click again to stop + save (auto-named; rename in Edit).
             Button {
-                implicitHeight: 28; implicitWidth: VoiceKeyer.recording ? 96 : 64
-                enabled: Stream.running || VoiceKeyer.recording
-                text: VoiceKeyer.recording
-                      ? ("■ " + root.fmtDur(VoiceKeyer.recordMs))
-                      : qsTr("● REC")
+                implicitHeight: 28
+                implicitWidth: (VoiceKeyer.recording || VoiceKeyer.counting) ? 100 : 64
+                enabled: Stream.running || VoiceKeyer.recording || VoiceKeyer.counting
+                text: VoiceKeyer.counting
+                      ? ("⏱ " + VoiceKeyer.countdownSec + "…")   // get-set countdown (click to cancel)
+                      : (VoiceKeyer.recording
+                         ? ("■ " + root.fmtDur(VoiceKeyer.recordMs))
+                         : qsTr("● REC"))
                 ToolTip.visible: hovered && !enabled
                 ToolTip.text: qsTr("Connect the radio to record")
-                onClicked: VoiceKeyer.recording ? VoiceKeyer.stopRecord("")
-                                                 : VoiceKeyer.startRecord(root.recSrc)
+                onClicked: {
+                    if (VoiceKeyer.recording) VoiceKeyer.stopRecord("")
+                    else if (VoiceKeyer.counting) VoiceKeyer.cancelCountdown()
+                    else VoiceKeyer.startRecord(root.recSrc)
+                }
                 background: Rectangle { radius: 5
                     color: VoiceKeyer.recording ? "#5a1414"
-                           : (parent.enabled ? "#2a1414" : "#16202a")
+                           : (VoiceKeyer.counting ? "#3a2a10"
+                              : (parent.enabled ? "#2a1414" : "#16202a"))
                     border.color: VoiceKeyer.recording ? "#ff6a6a"
-                           : (parent.enabled ? "#c0504d" : "#2a3a44")
+                           : (VoiceKeyer.counting ? "#e0b040"
+                              : (parent.enabled ? "#c0504d" : "#2a3a44"))
                     SequentialAnimation on opacity {
-                        running: VoiceKeyer.recording; loops: Animation.Infinite
+                        running: VoiceKeyer.recording || VoiceKeyer.counting
+                        loops: Animation.Infinite
                         NumberAnimation { from: 1.0; to: 0.55; duration: 500 }
                         NumberAnimation { from: 0.55; to: 1.0; duration: 500 }
                     }
                 }
                 contentItem: Text { text: parent.text
-                    color: parent.enabled ? "#ff8a80" : root.cMuted
+                    color: VoiceKeyer.counting ? "#ffd070"
+                           : (parent.enabled ? "#ff8a80" : root.cMuted)
                     font.bold: true; font.pixelSize: 11
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-            }
-            // Max record length — recording auto-stops + saves at this many
-            // seconds (applies to both Mic and RX capture).
-            Label { text: qsTr("max"); color: root.cMuted; font.pixelSize: 10 }
-            SpinBox {
-                from: 5; to: 300; stepSize: 5
-                value: VoiceKeyer.recordMaxSec
-                onValueModified: VoiceKeyer.recordMaxSec = value
-                enabled: !VoiceKeyer.recording
-                implicitHeight: 26; implicitWidth: 88
-                textFromValue: function (v) { return v + " s" }
-                valueFromText: function (t) { return parseInt(t) }
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("Recording auto-stops + saves at this length (Mic + RX)")
             }
             Button {
                 implicitHeight: 28

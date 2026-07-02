@@ -1265,6 +1265,7 @@ void MainWindow::ensureSettingsDialog() {
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
             wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
+            voiceKeyer_,
             profiles_, companion_, serialPtt_, serialCwKey_, catServers_, this);
     }
 }

@@ -54,6 +54,9 @@ class VoiceKeyer : public QObject {
     Q_PROPERTY(bool    recording  READ recording  NOTIFY recordingChanged)
     Q_PROPERTY(int     recordMs   READ recordMs   NOTIFY recordMsChanged)
     Q_PROPERTY(int     recordMaxSec READ recordMaxSec WRITE setRecordMaxSec NOTIFY recordMaxSecChanged)
+    Q_PROPERTY(int     recordDelaySec READ recordDelaySec WRITE setRecordDelaySec NOTIFY recordDelaySecChanged)
+    Q_PROPERTY(bool    counting     READ counting     NOTIFY countingChanged)
+    Q_PROPERTY(int     countdownSec READ countdownSec NOTIFY countdownChanged)
     Q_PROPERTY(bool    reviewReady READ reviewReady CONSTANT)
     Q_PROPERTY(double  gainDb     READ gainDb     WRITE setGainDb     NOTIFY gainDbChanged)
     Q_PROPERTY(bool    bypassDsp  READ bypassDsp  WRITE setBypassDsp  NOTIFY bypassDspChanged)
@@ -70,6 +73,10 @@ public:
     int     recordMs()  const;
     int     recordMaxSec() const { return recordMaxSec_; }   // max record length (s)
     void    setRecordMaxSec(int s);
+    int     recordDelaySec() const { return recordDelaySec_; }  // "get-set" countdown before REC (0/5/10)
+    void    setRecordDelaySec(int s);
+    bool    counting()     const { return counting_; }        // in the pre-record countdown
+    int     countdownSec() const { return countdownSec_; }    // seconds left in the countdown
     // C3: local Review plays a clip through a QAudioSink (default output), no
     // key / no TX / no injector — so it never touches the wire TX ring.
     bool    reviewReady() const { return true; }
@@ -84,9 +91,11 @@ public:
     Q_INVOKABLE void playReview(const QString &id) { reviewLocal(id); }
     Q_INVOKABLE void stop();
 
-    // Record — Stage C.  Present so the panel binds them; inert until then.
+    // Record (Stage C).  startRecord runs the optional get-set countdown first
+    // (recordDelaySec), then captures; a second call while counting cancels.
     Q_INVOKABLE void startRecord(int kind);
     Q_INVOKABLE void stopRecord(const QString &label);
+    Q_INVOKABLE void cancelCountdown();
 
     // Clip-management dialogs (GUI thread; the panel calls these).
     Q_INVOKABLE void importClipDialog();
@@ -117,6 +126,9 @@ signals:
     void recordingChanged();
     void recordMsChanged();
     void recordMaxSecChanged();
+    void recordDelaySecChanged();
+    void countingChanged();
+    void countdownChanged();
     void gainDbChanged();
     void bypassDspChanged();
 
@@ -124,6 +136,8 @@ private:
     void play(const QString &id, bool ota);
     void reviewLocal(const QString &id);   // C3 — QAudioSink local playback
     void stopReview();
+    void startRecordNow(int kind);         // begin capture (post-countdown)
+    void onCountdownTick();
     void onPollTick();
     void load();
     void save() const;
@@ -132,6 +146,7 @@ private:
     std::unique_ptr<ClipRecorderPlayer>  player_;
     std::unique_ptr<ClipRecorder>        recorder_;
     QTimer                              *poll_ = nullptr;
+    QTimer                              *countdown_ = nullptr;   // pre-record "get set" tick
     QAudioSink                          *reviewSink_ = nullptr;   // C3 local monitor
     QBuffer                             *reviewBuf_  = nullptr;
     QString  reviewingId_;
@@ -141,7 +156,11 @@ private:
     QString  playingId_;
     double   gainDb_    = 0.0;    // global playback gain (dB)
     bool     bypassDsp_ = false;  // the voice keyer's single Bypass-TX-DSP toggle
-    int      recordMaxSec_ = 60;  // max record length (s), 5..300
+    int      recordMaxSec_ = 300; // max record length (s), 5..300 (default 5 min)
+    int      recordDelaySec_ = 0;  // get-set countdown before REC (0/5/10)
+    int      countdownSec_ = 0;
+    bool     counting_     = false;
+    int      pendingKind_  = 0;    // record source captured when the countdown began
 };
 
 } // namespace lyra::tx
