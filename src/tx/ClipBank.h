@@ -72,6 +72,10 @@ public:
     // F-key lookup for the voice-keyer trigger (fn = 1..12).  "" if unassigned.
     QString idForFkey(int fkey) const;
 
+    // Per-clip trims (for the player at play time).  0 / false if unknown.
+    double gainDbOf(const QString &id) const;
+    bool   bypassDspOf(const QString &id) const;
+
     // True if a clip with this id exists.
     Q_INVOKABLE bool contains(const QString &id) const;
 

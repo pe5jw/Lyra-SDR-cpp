@@ -245,6 +245,8 @@ qt_add_executable(lyra
     src/tx/WavIo.cpp
     src/tx/ClipBank.h
     src/tx/ClipBank.cpp
+    src/tx/VoiceKeyer.h
+    src/tx/VoiceKeyer.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -404,6 +406,7 @@ qt_add_qml_module(lyra
         src/qml/SpeechPanel.qml
         src/qml/CwConsolePanel.qml
         src/qml/CwDecoderPanel.qml
+        src/qml/VoiceKeyerPanel.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
         src/qml/ProfilePanel.qml

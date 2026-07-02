@@ -39,6 +39,8 @@
 #include "wdsp_engine.h"
 #include "prefs.h"
 #include "CwMacroModel.h"
+#include "tx/ClipBank.h"
+#include "tx/VoiceKeyer.h"
 #include "settingsdialog.h"
 #include "dockdragcontroller.h"
 #include "usb_bcd.h"
@@ -203,6 +205,7 @@ inline bool isChipSummonedPanel(const QString &objectName) {
         || objectName == QLatin1String("rxeq")
         || objectName == QLatin1String("cwconsole")
         || objectName == QLatin1String("cwdecoder")
+        || objectName == QLatin1String("voicekeyer")
         || objectName == QLatin1String("tuner");
 }
 
@@ -386,6 +389,14 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // macros + the "current contact" row + token expansion + send-via-keyer.
     cwMacros_ = new CwMacroModel(
         prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_), this);
+
+    // #89 Voice keyer (Build 1) — the clip bank (Clips) + the panel controller
+    // (VoiceKeyer) behind VoiceKeyerPanel.qml + the voice-mode F1-F12 keys.
+    // Management (import / rename / gain / F-key / delete / folder) is live now;
+    // Transmit / Review / Record light up when B1 wires the injector into the
+    // live mic funnel (voiceKeyer_->setLive(true)).
+    clipBank_   = new lyra::tx::ClipBank(this);
+    voiceKeyer_ = new lyra::tx::VoiceKeyer(clipBank_, this);
 
     // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context
     // property).  The RX twin of the TX EQ — same engine, shaped on the
@@ -681,6 +692,10 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Plate"), plateModel_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("CwMacros"), cwMacros_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Clips"), clipBank_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("VoiceKeyer"), voiceKeyer_);
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -975,6 +990,17 @@ void MainWindow::buildDocks() {
                  QStringLiteral("cwdecoder"), Qt::BottomDockWidgetArea,
                  /*resizable=*/true);
     if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
+        d->setFloating(true);
+        d->hide();
+    }
+    // Voice Keyer (#89 Build 1) — floating clip-message panel (labelled clips,
+    // ▶ OTA / ▶ Review / F-keys), chip-summoned like the CW console.  Own dock;
+    // floats + hidden by default so the front panel stays clean.
+    addQuickDock(QStringLiteral("voicekeyer"), tr("Voice Keyer"),
+                 QStringLiteral("VoiceKeyerPanel.qml"),
+                 QStringLiteral("voicekeyer"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
+    if (QDockWidget *d = docks_.value(QStringLiteral("voicekeyer"))) {
         d->setFloating(true);
         d->hide();
     }
@@ -1426,6 +1452,17 @@ void MainWindow::buildToolbar() {
         if (QDockWidget *d = docks_.value(QStringLiteral("cwdecoder"))) {
             QAction *act = d->toggleViewAction();
             act->setText(tr("CW Dec"));
+            tb->addAction(act);
+            if (auto *btn = qobject_cast<QToolButton *>(
+                    tb->widgetForAction(act))) {
+                btn->setObjectName(QStringLiteral("txDspChip"));
+                btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            }
+        }
+        // Voice Keyer launcher (#89 Build 1) — floating clip-message panel.
+        if (QDockWidget *d = docks_.value(QStringLiteral("voicekeyer"))) {
+            QAction *act = d->toggleViewAction();
+            act->setText(tr("Voice Keyer"));
             tb->addAction(act);
             if (auto *btn = qobject_cast<QToolButton *>(
                     tb->widgetForAction(act))) {
@@ -2460,9 +2497,23 @@ void MainWindow::keyPressEvent(QKeyEvent *event) {
     if (cwMacros_ && prefs_ && !event->isAutoRepeat()
         && event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F12) {
         const QString m = prefs_->mode().toUpper();
+        const int fn = event->key() - Qt::Key_F1 + 1;
         if ((m == QLatin1String("CWU") || m == QLatin1String("CWL"))
             && !isEditableFocus(QApplication::focusWidget())) {
-            cwMacros_->sendByFkey(event->key() - Qt::Key_F1 + 1);
+            cwMacros_->sendByFkey(fn);
+            event->accept();
+            return;
+        }
+        // #89 — in a VOICE mode, F1..F12 fire the assigned voice-keyer clip
+        // (same global-accelerator idiom as the CW macros; no collision since
+        // it's mode-gated).  Only when the keyer is live (B1 wired the injector)
+        // and not while typing in a field.
+        const bool voiceMode = (m == QLatin1String("USB") || m == QLatin1String("LSB")
+            || m == QLatin1String("AM") || m == QLatin1String("SAM")
+            || m == QLatin1String("DSB") || m == QLatin1String("FM"));
+        if (voiceKeyer_ && voiceMode && voiceKeyer_->live()
+            && !isEditableFocus(QApplication::focusWidget())) {
+            voiceKeyer_->playByFkey(fn);
             event->accept();
             return;
         }

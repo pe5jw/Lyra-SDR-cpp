@@ -32,6 +32,7 @@ namespace lyra::wx { class WxService; }
 namespace lyra::solar { class SolarService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
+namespace lyra::tx { class ClipBank; class VoiceKeyer; }
 namespace lyra::ui {
 
 class ProfileUi;
@@ -275,6 +276,8 @@ private:
     EqModel                    *eqModel_ = nullptr;   // #50 TX parametric EQ (EqPanel.qml)
     EqModel                    *rxEqModel_ = nullptr; // #59 RX parametric EQ (RxEqPanel.qml)
     CwMacroModel               *cwMacros_ = nullptr;  // #176 CW macro bank (CwConsolePanel.qml + F-keys)
+    lyra::tx::ClipBank         *clipBank_ = nullptr;  // #89 voice-keyer clip bank (Clips ctx prop)
+    lyra::tx::VoiceKeyer       *voiceKeyer_ = nullptr;// #89 voice keyer controller (VoiceKeyerPanel.qml + F-keys)
     SpeechModel                *speechModel_ = nullptr; // #88 speech rack (SpeechPanel.qml)
     CombinatorModel            *combinatorModel_ = nullptr; // #51 combinator (CombinatorPanel.qml)
     PlateModel                 *plateModel_ = nullptr;     // #52 plate reverb (PlatePanel.qml)

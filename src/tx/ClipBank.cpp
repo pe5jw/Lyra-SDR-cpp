@@ -68,6 +68,15 @@ const ClipBank::Entry *ClipBank::find(const QString &id) const {
 
 bool ClipBank::contains(const QString &id) const { return find(id) != nullptr; }
 
+double ClipBank::gainDbOf(const QString &id) const {
+    const Entry *e = find(id);
+    return e ? e->gainDb : 0.0;
+}
+bool ClipBank::bypassDspOf(const QString &id) const {
+    const Entry *e = find(id);
+    return e ? e->bypassDsp : false;
+}
+
 QString ClipBank::makeId() {
     return QStringLiteral("clip_%1").arg(nextSeq_++, 5, 10, QChar('0'));
 }
