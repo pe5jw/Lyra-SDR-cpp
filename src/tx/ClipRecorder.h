@@ -45,6 +45,9 @@ public:
     void feedMicPairs(const double *iq_pairs, int n_pairs);
     //   RX: mono float samples (Stage C2).
     void feedRxMono(const float *mono, int n);
+    //   RX (engine shape): interleaved mono-dup {L, R==L} doubles as produced
+    //   by WdspEngine::dispatchAudioFrame at 48 kHz; the L sample is recorded.
+    void feedRxStereoDup(const double *audio, int nframes);
 
     // Stop + hand back the captured samples (moved out; the recorder empties).
     // Returns empty if nothing was captured.

@@ -433,6 +433,14 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         auto *recorder = voiceKeyer_->recorder();
         st->ep6Thread().set_mic_record_tap(
             [recorder](int n, const double *iq) { recorder->feedMicPairs(iq, n); });
+        // #89 C2 — RX-record tap: the post-RX-DSP "what you heard" audio feeds
+        // the recorder while an RX clip records (lock-free no-op otherwise).
+        if (auto *we = qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_)) {
+            we->setRxRecordTap(
+                [recorder](const double *audio, int n) {
+                    recorder->feedRxStereoDup(audio, n);
+                });
+        }
     }
 
     // #59 RX parametric EQ model (drives RxEqPanel.qml, "RxEq" context

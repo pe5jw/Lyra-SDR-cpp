@@ -35,6 +35,7 @@ Rectangle {
 
     property bool collapsed: false
     property bool editMode: false
+    property int  recSrc: 0        // REC source: 0 = Mic (voice message), 1 = RX audio
 
     readonly property bool voiceMode: {
         var m = WdspEngine.mode.toUpperCase()
@@ -293,9 +294,25 @@ Rectangle {
             visible: !root.collapsed
             Layout.fillWidth: true
             spacing: 8
-            // REC records the MIC into a new Voice clip (no transmit) — gated on
-            // the stream being connected, NOT the TX opt-in. Click to start,
-            // click again to stop + save (auto-named; rename in Edit).
+            // REC source: Mic (a voice message) or RX (record what you hear).
+            // Locked while recording.
+            Button {
+                implicitHeight: 28; implicitWidth: 52
+                enabled: !VoiceKeyer.recording
+                text: root.recSrc === 1 ? qsTr("RX") : qsTr("Mic")
+                onClicked: root.recSrc = (root.recSrc === 1 ? 0 : 1)
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("What REC captures: Mic = a voice message; RX = the receive audio.")
+                background: Rectangle { radius: 5; color: "#1c252b"
+                    border.color: root.recSrc === 1 ? "#7ee081" : "#3a4750" }
+                contentItem: Text { text: parent.text
+                    color: parent.enabled ? (root.recSrc === 1 ? root.cReview : root.cText) : root.cMuted
+                    font.pixelSize: 11
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            }
+            // REC records the selected source into a new clip (no transmit) —
+            // gated on the stream being connected, NOT the TX opt-in. Click to
+            // start, click again to stop + save (auto-named; rename in Edit).
             Button {
                 implicitHeight: 28; implicitWidth: VoiceKeyer.recording ? 96 : 64
                 enabled: Stream.running || VoiceKeyer.recording
@@ -303,9 +320,9 @@ Rectangle {
                       ? ("■ " + root.fmtDur(VoiceKeyer.recordMs))
                       : qsTr("● REC")
                 ToolTip.visible: hovered && !enabled
-                ToolTip.text: qsTr("Connect the radio to record a voice message")
+                ToolTip.text: qsTr("Connect the radio to record")
                 onClicked: VoiceKeyer.recording ? VoiceKeyer.stopRecord("")
-                                                 : VoiceKeyer.startRecord(0)
+                                                 : VoiceKeyer.startRecord(root.recSrc)
                 background: Rectangle { radius: 5
                     color: VoiceKeyer.recording ? "#5a1414"
                            : (parent.enabled ? "#2a1414" : "#16202a")

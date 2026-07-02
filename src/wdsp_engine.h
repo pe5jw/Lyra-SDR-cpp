@@ -693,6 +693,13 @@ public:
     // a digital (DIGU/DIGL) mode.  The analyzer is fed pre/post for the panel.
     void setRxEqEngine(ParamEq *eng, EqAnalyzer *analyzer);
 
+    // #89 Stage C2 — RX recorder tap.  Installed once (before the audio thread
+    // starts) with the interleaved mono-dup RX audio (post-RX-DSP "what you
+    // heard", 48 kHz) that dispatchAudioFrame produces, AFTER the RX-EQ block.
+    // The ClipRecorder feed it points at is a lock-free no-op unless the
+    // operator is recording an RX clip, so it costs nothing otherwise.
+    void setRxRecordTap(std::function<void(const double *audio, int nframes)> tap);
+
     // Step 3d: feed interleaved baseband IQ — (I,Q,I,Q,…) doubles
     // already normalized to [-1,1) — from the RX worker thread.
     // Accumulates into in_size blocks; each full block runs
@@ -1168,6 +1175,7 @@ private:
     std::atomic<lyra::dsp::ParamEq *>    rxEq_{nullptr};
     std::atomic<lyra::dsp::EqAnalyzer *> rxEqAnalyzer_{nullptr};
     std::atomic<bool>                    rxEqModeBypass_{false};
+    std::function<void(const double *, int)> rxRecordTap_;   // #89 C2 RX recorder tap
     std::vector<double>                  rxEqBuf_;
 
     // #173 CW-5a — RX CW decoder.  Fed from the TOP of dispatchAudioFrame

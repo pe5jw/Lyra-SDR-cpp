@@ -33,6 +33,16 @@ void ClipRecorder::feedRxMono(const float *mono, int n) {
     size_.store(static_cast<int>(buf_.size()), std::memory_order_relaxed);
 }
 
+void ClipRecorder::feedRxStereoDup(const double *audio, int nframes) {
+    if (!recording_.load(std::memory_order_acquire) || source_ != Source::Rx) return;
+    if (!audio || nframes <= 0) return;
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!recording_.load(std::memory_order_relaxed) || source_ != Source::Rx) return;
+    for (int f = 0; f < nframes && buf_.size() < static_cast<std::size_t>(kMaxSamples); ++f)
+        buf_.push_back(static_cast<float>(audio[2 * f]));   // L (== R, mono-dup)
+    size_.store(static_cast<int>(buf_.size()), std::memory_order_relaxed);
+}
+
 std::vector<float> ClipRecorder::stop() {
     std::lock_guard<std::mutex> lk(mtx_);
     recording_.store(false, std::memory_order_release);

@@ -3439,6 +3439,12 @@ void WdspEngine::setRxEqEngine(lyra::dsp::ParamEq *eng,
     rxEq_.store(eng, std::memory_order_release);
 }
 
+void WdspEngine::setRxRecordTap(std::function<void(const double *, int)> tap)
+{
+    // Set once before the audio thread runs (MainWindow ctor) — no lock needed.
+    rxRecordTap_ = std::move(tap);
+}
+
 namespace {
 // #187 — passive WAV capture of the EXACT mono audio fed to the CW decoder, for
 // offline filter tuning against a real off-air signal.  Armed only when the env
@@ -3549,6 +3555,13 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             rxeq->processMonoDup(rxEqBuf_.data(), nframes);
         }
         audio = rxEqBuf_.data();   // every tee below now reads the EQ'd audio
+    }
+
+    // #89 Stage C2 — RX recorder tap.  `audio` is now the post-RX-DSP audio the
+    // operator HEARS (post-EQ, mono-dup).  Feeds the ClipRecorder while an RX
+    // clip records; a lock-free no-op otherwise (one relaxed bool read).
+    if (rxRecordTap_ && nframes > 0) {
+        rxRecordTap_(audio, nframes);
     }
 
     // #91 VOX anti-VOX — running RMS of the RX audio the operator HEARS

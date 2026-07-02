@@ -56,6 +56,18 @@ int main() {
         CHECK(std::fabs(clip[1] + 0.5f) < 1e-6f, "RX values recorded");
     }
 
+    // ── RX stereo-dup (engine shape): L recorded, R ignored ──
+    rec.start(Source::Rx);
+    { double sd[6] = {0.7, 0.7, -0.3, -0.3, 0.2, 0.2}; rec.feedRxStereoDup(sd, 3); }
+    rec.feedMicPairs(pairs, 4);                 // wrong-source feed ignored
+    {
+        auto clip = rec.stop();
+        CHECK(clip.size() == 3, "3 RX stereo-dup samples (mic feed ignored)");
+        bool ok = clip.size() == 3
+               && std::fabs(clip[0] - 0.7f) < 1e-6f && std::fabs(clip[1] + 0.3f) < 1e-6f;
+        CHECK(ok, "RX stereo-dup L values recorded");
+    }
+
     // ── restart clears the prior buffer ──
     rec.start(Source::Mic);
     rec.feedMicPairs(pairs, 2);
