@@ -38,6 +38,7 @@ not programmers — if you can click a menu, you can use this.
 - [Meter panel](#meter-panel)
 - [TX panel](#tx-panel)
 - [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
+- [Voice keyer & recording](#voice-keyer--recording)
 - [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
   - [Reading CW — the RX decoder](#reading-cw--the-rx-decoder)
 - [Tuner (manual ATU memory)](#tuner-manual-atu-memory)
@@ -1412,6 +1413,62 @@ washing out the voice. **Default OFF.** Bandplan-constrained operators
 
 It sits before the always-on ALC limiter, so the reverb tail is caught by
 the limiter; it auto-bypasses in DIGU/DIGL with the rest of the rack.
+
+---
+
+## Voice keyer & recording
+
+The voice keyer is the phone-mode counterpart to the CW macro bank: record
+your standard messages once — a CQ call, a contest exchange, a "please stand
+by" — and send them on the air from a labelled button or an **F-key**. It
+also doubles as a recorder for **what you hear** (RX), so you can grab a
+weak signal or an odd bit of traffic to a WAV file.
+
+Open it from the **Voice Keyer** chip in the header **Options** group — it's
+a floating panel you can dock or leave floating, laid out like the CW
+console's macro chips.
+
+**Recording a message**
+
+1. Pick the source with the **Mic / RX** toggle — **Mic** records your voice
+   through the mic (for a keyer clip), **RX** records the receiver audio
+   you're listening to.
+2. Press **REC**. If you set a **record countdown** (see Settings below), the
+   button shows **⏱ 5… ⏱ 4…** so you can get set before capture starts —
+   click it again to cancel.
+3. Press **Stop**. The clip is saved, auto-named ("Message 1"…), and appears
+   as a labelled row.
+
+**Managing clips** — each row has an edit mode (rename, assign an **F-key**,
+set a per-clip **gain** trim, or **delete** with the trash-can). **Import
+WAV** pulls in a clip you recorded elsewhere; the footer shows the storage
+folder (clips live as 48 kHz WAV in `%APPDATA%\Lyra\clips\`).
+
+**Playing a clip two ways**
+
+- **▶ Review** plays the clip **locally** through your speakers — it does
+  **not** transmit. Use it to check a recording before you send it.
+- **▶ OTA** (or the clip's **F-key** in a voice mode) **transmits** the clip.
+
+**Transmitting on the air (opt-in)** — OTA transmit is gated behind the
+amber **Enable TX** toggle at the top of the panel, **off by default**. Until
+you arm it, the keyer can only Review locally — so you can build and audition
+your clips with no risk of keying up. With it armed, a clip is injected at
+the **mic input with MOX**, so it runs your full TX DSP chain (EQ, speech,
+compression, ALC) and is **PureSignal-safe** exactly like your live voice.
+The **Bypass DSP** toggle sends the clip as-recorded instead. The keyer keys
+with its own priority and **never overrides** a manual, foot-switch, or VOX
+key.
+
+**Gain** is adjustable three ways — a global keyer level, the per-clip trim,
+and the input level while recording — and the OTA level is **live while
+you're transmitting**, so you can ride it up or down mid-message.
+
+**Recording options (Settings → Audio → "Voice keyer recording")**
+
+- **Maximum length** — caps any single recording (default **5 minutes**).
+- **Record countdown** — **Off / 5 s / 10 s**, the "get set" timer shown on
+  the REC button.
 
 ---
 
