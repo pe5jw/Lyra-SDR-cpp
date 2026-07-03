@@ -2160,6 +2160,25 @@ int HL2Stream::capturedDriveForBand(int idx) const {
     return capturedDrive_[idx].load(std::memory_order_relaxed);
 }
 
+void HL2Stream::clearCapLearnForBand(int idx) {
+    if (idx < 0 || idx >= kNumPaGainBands) return;
+    capCeilRaw_[idx].store(-1, std::memory_order_relaxed);
+    capCeilCapW_[idx].store(-1.0, std::memory_order_relaxed);
+    capServoSettled_[idx].store(false, std::memory_order_relaxed);
+    const auto &bands = lyra::amateurBands();
+    const QString b = idx < int(bands.size())
+        ? QString::fromUtf8(bands[idx].name) : QString::number(idx);
+    QSettings s;
+    s.setValue(QStringLiteral("pa_gain/%1/capCeilRaw").arg(b), -1);
+    s.setValue(QStringLiteral("pa_gain/%1/capCeilCapW").arg(b), -1.0);
+    s.setValue(QStringLiteral("pa_gain/%1/capSettled").arg(b), false);
+    // Re-apply if this band is live so a stale locked ceiling stops biting now.
+    const int cur = lyra::bandIndexForFreq(
+        static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+    if (cur == idx)
+        applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+}
+
 void HL2Stream::setTxDriveLevel(int level) {
     // Lands C1 of slot 10 (frame 0x12) — the drive DAC level.  Gateware
     // uses the top 4 bits → 16 coarse steps; wire 0..255 maps the

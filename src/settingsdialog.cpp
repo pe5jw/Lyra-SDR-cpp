@@ -140,6 +140,18 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         sa->setWidgetResizable(true);
         sa->setFrameShape(QFrame::NoFrame);
         sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        // The theme leaves scrollbars unstyled (near-invisible), so a tab with
+        // content below the fold gave no clue there was more.  Give the tab
+        // scroll area a clearly-visible Lyra-cyan scrollbar — when it appears
+        // it obviously signals "scroll down for more" (operator ask 2026-07-03).
+        sa->setStyleSheet(QStringLiteral(
+            "QScrollBar:vertical{background:rgb(17,22,32);width:13px;margin:0;}"
+            "QScrollBar::handle:vertical{background:rgba(0,229,255,150);"
+            "min-height:36px;border-radius:5px;margin:2px;}"
+            "QScrollBar::handle:vertical:hover{background:rgb(0,229,255);}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
+            "background:transparent;}"));
         return sa;
     };
 
@@ -3959,6 +3971,18 @@ QWidget *SettingsDialog::buildPaGainTab() {
     auto *page = new QWidget(this);
     auto *root = new QVBoxLayout(page);
 
+    // Readability (operator ask 2026-07-03): lift the muted body text to the
+    // bright foreground colour and make the ⚠ warnings amber (the theme's
+    // base QLabel colour is a low-contrast grey on the dark bg, and the
+    // lyraWarn property has no rule of its own).  ONLY the directions text is
+    // enlarged (via the `paDir` property on each explanatory paragraph) — the
+    // band grid / spin boxes / buttons stay native so the tab matches the
+    // other panels.
+    page->setStyleSheet(QStringLiteral(
+        "QLabel { color: rgb(205,217,229); }"
+        "QLabel[lyraWarn=\"true\"] { color: rgb(242,183,73); }"
+        "QLabel[paDir=\"true\"] { font-size: 10pt; }"));
+
     auto *intro = new QLabel(
         tr("Per-band TX PA gain.  100 = neutral.  Key each band into a "
            "dummy load, watch the PWR meter, and nudge its number until "
@@ -3967,6 +3991,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
            "means in watts on each band."),
         page);
     intro->setWordWrap(true);
+    intro->setProperty("paDir", true);
     root->addWidget(intro);
 
     // 2-column body — LEFT: PWR meter calibration (do this FIRST);  RIGHT:
@@ -3987,7 +4012,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
     // don't need to span the panel.  A trailing stretch column soaks up
     // the slack so the table hugs the left.
     grid->setHorizontalSpacing(16);
-    grid->setColumnStretch(4, 1);
+    grid->setColumnStretch(5, 1);
     grid->addWidget(new QLabel(tr("Band"),            grp), 0, 0);
     grid->addWidget(new QLabel(tr("PA Gain"),         grp), 0, 1);
     grid->addWidget(new QLabel(tr("Full Output (W)"), grp), 0, 2);
@@ -4037,6 +4062,20 @@ QWidget *SettingsDialog::buildPaGainTab() {
         tuned->setMinimumWidth(56);
         tunedLabels->append(tuned);
         grid->addWidget(tuned, i + 1, 3);
+
+        // Per-row Clear (operator ask 2026-07-03) — wipe this band's PA-Gain
+        // calibration: PA Gain → 100, Full Output → 0 (which also drops the
+        // arm-enable if it was the only calibrated band), and un-learn the
+        // TUN cap ceiling so it re-tunes clean.
+        auto *clrPa = new QPushButton(tr("Clear"), grp);
+        clrPa->setFixedWidth(64);
+        connect(clrPa, &QPushButton::clicked, this,
+                [this, i, gainSpin, fullSpin]() {
+                    if (gainSpin) gainSpin->setValue(100.0);
+                    if (fullSpin) fullSpin->setValue(0.0);
+                    if (stream_)  stream_->clearCapLearnForBand(i);
+                });
+        grid->addWidget(clrPa, i + 1, 4);
     }
     rightCol->addWidget(grp);
 
@@ -4090,6 +4129,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
         capGrp);
     warn->setWordWrap(true);
     warn->setProperty("lyraWarn", true);
+    warn->setProperty("paDir", true);
     capForm->addRow(warn);
 
     auto *capNote = new QLabel(
@@ -4109,7 +4149,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
            "it.  Change the cap → re-key TUN on each band to re-learn."),
         capGrp);
     capNote->setWordWrap(true);
-    capForm->addRow(capNote);
+    capNote->setProperty("paDir", true);
 
     // Coarse-DAC note — the cap deliberately lands UNDER the set value.
     auto *capUnder = new QLabel(
@@ -4124,7 +4164,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
            "option)."),
         capGrp);
     capUnder->setWordWrap(true);
-    capForm->addRow(capUnder);
+    capUnder->setProperty("paDir", true);
 
     // Live warning for the exact trap Pierre HS0ZRT hit: cap ON but no band
     // has a Full Output reference, so every band falls back to the
@@ -4138,6 +4178,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
         capGrp);
     capUncal->setWordWrap(true);
     capUncal->setProperty("lyraWarn", true);
+    capUncal->setProperty("paDir", true);
     capForm->addRow(capUncal);
 
     // Operator-requested: explain the "Cap tuned" marks so "my ticks
@@ -4153,7 +4194,17 @@ QWidget *SettingsDialog::buildPaGainTab() {
            "cap), so you can see the cap's state at a glance."),
         capGrp);
     capTicks->setWordWrap(true);
-    capForm->addRow(capTicks);
+    capTicks->setProperty("paDir", true);
+    // The three reference blocks (set-up steps · why-it-lands-under ·
+    // cap-tuned marks) side by side, so this section stays SHORT and the whole
+    // tab fits a normal window — all text still visible on open, no scrolling
+    // or oversized window needed (operator ask 2026-07-03).
+    auto *capText = new QHBoxLayout();
+    capText->setSpacing(24);
+    capText->addWidget(capNote,  1, Qt::AlignTop);
+    capText->addWidget(capUnder, 1, Qt::AlignTop);
+    capText->addWidget(capTicks, 1, Qt::AlignTop);
+    capForm->addRow(capText);
 
     auto pushCap = [this, capChk, capSpin]() {
         if (stream_)
@@ -4189,8 +4240,11 @@ QWidget *SettingsDialog::buildPaGainTab() {
     for (auto *fs : *fullSpins)
         connect(fs, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [refreshCapUncal](double) { refreshCapUncal(); });
-    rightCol->addWidget(capGrp);
     rightCol->addStretch(1);
+    // Max Output spans the FULL width UNDER the two columns (operator ask
+    // 2026-07-03 — balances the page vs stacking it under the right column).
+    // Added to root after the body so it sits below both per-band tables.
+    root->addWidget(capGrp);
 
     // ── PWR meter calibration (per band) ─────────────────────────────
     // Corrects the DISPLAYED watts to an external watt-meter, per band.
@@ -4207,6 +4261,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
                "the PWR meter reads.  Do this FIRST, then PA Gain."),
             mcGrp);
         mcIntro->setWordWrap(true);
+        mcIntro->setProperty("paDir", true);
         mcBox->addWidget(mcIntro);
 
         auto *mcWarn = new QLabel(
@@ -4222,6 +4277,7 @@ QWidget *SettingsDialog::buildPaGainTab() {
             mcGrp);
         mcWarn->setWordWrap(true);
         mcWarn->setProperty("lyraWarn", true);
+        mcWarn->setProperty("paDir", true);
         mcBox->addWidget(mcWarn);
 
         auto *mcLive = new QLabel(mcGrp);

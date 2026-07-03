@@ -852,6 +852,11 @@ public:
     // Stage B — has this band been auto-tuned (TUN servo locked) for the
     // CURRENT cap?  For the PA Gain tab's per-band "tuned" indicator.
     bool    capTunedForBand(int idx) const;
+    // Reset one band's PA-Gain calibration (PA Gain tab per-row Clear): the
+    // caller resets the PA-Gain + Full-Output spin boxes; this clears the
+    // TUN-learned cap ceiling those spins don't own, so the cap re-learns
+    // cleanly instead of holding a stale locked ceiling.
+    void    clearCapLearnForBand(int idx);
     // TX-0c-tune — tune-tone armed (Q_PROPERTY getter).  Reads the
     // wire atomic.  True means "emit a 1 kHz complex tone in TX I/Q
     // whenever MOX is active"; auto-clears on the next MOX-off edge.
