@@ -3505,8 +3505,44 @@ private:
 };
 } // namespace
 
+void WdspEngine::setFreqCalMeasuring(bool on)
+{
+    if (on) {
+        // Search a wide, comfortable audio window (~100 Hz .. 2.3 kHz) so the
+        // operator can place the time-station carrier anywhere in the SSB
+        // passband.  8192-sample windows at the audio rate settle in ~1-2 s.
+        freqCal_.setSampleRate(static_cast<double>(cfg_.outRate));
+        freqCal_.setTarget(1200.0, 1100.0);
+        freqCal_.setSnrGateDb(10.0);
+        freqCal_.start();
+        fcalLastWin_ = -1;
+        freqCalOn_.store(true, std::memory_order_relaxed);
+    } else {
+        freqCalOn_.store(false, std::memory_order_relaxed);
+    }
+}
+
 void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
 {
+    // Frequency calibration (Stage 3b) — feed the SAME pre-EQ RX audio to the
+    // carrier-tone estimator while a measurement is armed.  Independent of CW
+    // mode; off = one relaxed bool read (zero impact).  Emits one
+    // freqCalUpdated per analysis window so the UI ticks live even on a weak
+    // carrier (windows()=strong-only would go silent on a dead band).
+    if (freqCalOn_.load(std::memory_order_relaxed) && nframes > 0) {
+        if (static_cast<int>(fcalMono_.size()) != nframes)
+            fcalMono_.assign(static_cast<size_t>(nframes), 0.0f);
+        for (int f = 0; f < nframes; ++f)
+            fcalMono_[static_cast<size_t>(f)] = static_cast<float>(audio[2 * f]);
+        freqCal_.process(fcalMono_.data(), nframes);
+        const int an = freqCal_.analyzed();
+        if (an != fcalLastWin_) {
+            fcalLastWin_ = an;
+            emit freqCalUpdated(freqCal_.measuredHz(), freqCal_.snrDb(),
+                                freqCal_.windows());
+        }
+    }
+
     // #173 CW-5a — RX CW decoder tap.  The FIRST consumer of the post-demod
     // RX audio, taken BEFORE the RX-EQ block below repoints `audio` — so a
     // user's CW-mode EQ curve can't distort the decode.  Gated to CW mode +

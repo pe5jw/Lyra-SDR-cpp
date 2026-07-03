@@ -17,7 +17,9 @@
 #include "wire/RadioNet.h"
 #include "wire/RbpFilter.h"
 
+#include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -74,6 +76,23 @@ constexpr int kEp2Endpoint = 0x02;
 // `metis_write_frame()` before sendto).  Sized + zeroed lazily
 // on first `write_main_loop_hl2` call.
 std::vector<std::uint8_t> g_fpga_write_bufp;
+
+// Frequency-calibration factor.  Mirror of the reference file-scope
+// static `NetworkIO._freq_correction_factor` (default 1.0).  Atomic so
+// the operator-facing setter and the freq-write path stay race-free even
+// though the reference tolerates a plain double under its single-thread
+// I/O contract.  See FrameComposer.h / freq_calibration_design.md.
+std::atomic<double> g_freq_correction{1.0};
+
+// Apply the ppm trim to a frequency the instant before it is stored to
+// `prn`.  Exact `== 1.0` fast path → default output is byte-identical to
+// pre-calibration (a bit-exact no-op), so a fresh install / Reset tunes
+// exactly as before.  Mirror of `VFOfreq`: `f_freq = f * factor`.
+int corrected_freq(int freq_hz) {
+    const double f = g_freq_correction.load(std::memory_order_relaxed);
+    if (f == 1.0) return freq_hz;
+    return static_cast<int>(std::llround(static_cast<double>(freq_hz) * f));
+}
 }  // namespace
 
 // =================== §4a setters =====================================
@@ -89,12 +108,23 @@ std::vector<std::uint8_t> g_fpga_write_bufp;
 // period."
 
 void set_rx_freq(int rx_idx, int freq_hz) {
-    prn->rx[rx_idx].frequency = freq_hz;
+    prn->rx[rx_idx].frequency = corrected_freq(freq_hz);
 }
 
 // §4b-1.8 — TX NCO freq for case 1.
 void set_tx_freq(int freq_hz) {
-    prn->tx[0].frequency = freq_hz;
+    prn->tx[0].frequency = corrected_freq(freq_hz);
+}
+
+// Frequency-calibration factor accessors (see FrameComposer.h).  The
+// factor multiplies inside the two setters above, so it covers every
+// tune path uniformly and `prn->..[].frequency` always holds the
+// corrected wire value — mirror of the reference command-struct state.
+void set_freq_correction(double factor) {
+    g_freq_correction.store(factor, std::memory_order_relaxed);
+}
+double freq_correction() {
+    return g_freq_correction.load(std::memory_order_relaxed);
 }
 
 // =================== §4b-2.5 setters =================================

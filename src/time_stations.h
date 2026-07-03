@@ -48,6 +48,13 @@ public:
     //   { header:false, text:"   5.000 MHz AM", station:0, freq:1 }
     Q_INVOKABLE QVariantList menuEntries() const;
 
+    // Flat list of tunable carriers for the frequency-calibration picker:
+    //   { label:"WWV 10", freqHz:10000000, continent:"NA" }
+    // one per (station, frequency), operator-country-first order.  `region`
+    // is the Prefs band-plan region (US / IARU_R1 / IARU_R3 / NONE); it filters
+    // to stations that region would actually hear (empty / NONE = show all).
+    Q_INVOKABLE QVariantList calStations(const QString &region = QString()) const;
+
 private:
     struct Station {
         QString id, name, country, continent, mode, notes;

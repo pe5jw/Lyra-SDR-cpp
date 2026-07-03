@@ -124,6 +124,8 @@ class HL2Stream : public QObject {
     // WDSP audioDbFs is the reference-faithful S-meter path).
     // RX1 (DDC0) receive frequency, Hz — tuning from C++ (Step 4)
     Q_PROPERTY(quint32 rx1FreqHz            READ rx1FreqHz            NOTIFY rx1FreqChanged)
+    // Frequency-calibration factor — live-bindable for the calibration UI.
+    Q_PROPERTY(double  freqCorrection       READ freqCorrection       NOTIFY freqCorrectionChanged)
     // SPLIT — TX on VFO B while RX stays on VFO A (same-band cross-freq
     // TX; also the engine repeater offsets ride on).  PureSignal-SAFE BY
     // CONSTRUCTION: the split TX freq drives the SINGLE txFreqHz_ ->
@@ -1000,6 +1002,16 @@ public slots:
     // writer encodes into the 0x14 C&C register; persisted.  Thread-safe.
     void setLnaGainDb(int db);
 
+    // Frequency calibration — the global crystal/TCXO ppm trim applied to
+    // every RX/TX freq before it reaches the wire (wire::set_freq_correction).
+    // 1.0 = none (default; fresh install / Reset tunes exactly as today).
+    // Clamped to a sane ±1000 ppm; NaN → 1.0.  Persisted (cal/freqCorrection),
+    // and re-pushes RX+TX so a change takes effect immediately (mirror of the
+    // reference's FreqCorrectionChanged re-applying to all VFOs).  Mirrors the
+    // setRx1FreqHz threading contract.
+    void setFreqCorrection(double factor);
+    double freqCorrection() const;
+
     // Auto-LNA controls (main thread).  setAutoLna(false) restores the
     // operator's persisted manual gain; setAutoLna(true) hands the LNA
     // to the overload-protection loop.  Undo + hold time are persisted.
@@ -1377,6 +1389,7 @@ signals:
     void xitChanged();   // XIT enable and/or offset
     void ctuneChanged();           // #174 CTUNE engage / locked-centre changed
     void rxShiftHzChanged(double hz);  // #174 WDSP RX demod shift (-> WdspEngine)
+    void freqCorrectionChanged(double factor);  // freq-cal ppm trim (2026-07-03)
     void lnaGainChanged();
     // Emitted ONLY by the manual setLnaGainDb() path (operator slider /
     // wheel / per-band restore) — NOT by Auto-LNA's roaming.  Lets
@@ -1712,6 +1725,9 @@ private:
     // each send.  Default 7.074 MHz (40m FT8) so first launch lands on
     // a known-active spot.  std::atomic<quint32> is lock-free on x86_64.
     std::atomic<quint32> rx1FreqHz_{7074000};
+    // Frequency-calibration factor (crystal ppm trim).  Authoritative copy;
+    // the wire-side value lives in wire::g_freq_correction.  1.0 = none.
+    std::atomic<double> freqCorrection_{1.0};
     // RX1 LNA gain (dB, −12…+48).  Read by the EP2 writer each cadence
     // tick.  Default +31 dB — old Lyra's practical-max set point: a
     // strong starting gain that's still below the +48 hardware ceiling,

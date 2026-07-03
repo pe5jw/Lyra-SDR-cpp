@@ -70,6 +70,8 @@ const QHash<QString, QString> &topicHeads() {
         {QStringLiteral("ctun"),      QStringLiteral("CTUN — centre-tune lock")},
         {QStringLiteral("wfid"),
          QStringLiteral("Waterfall ID (TX callsign courtesy ID)")},
+        {QStringLiteral("freqcal"),
+         QStringLiteral("Frequency calibration (WWV / time station)")},
     };
     return m;
 }

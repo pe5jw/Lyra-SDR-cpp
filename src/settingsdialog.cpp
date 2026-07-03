@@ -7,6 +7,7 @@
 #include "hl2_stream.h"
 #include "palettes.h"
 #include "prefs.h"
+#include "time_stations.h"
 #include "logdialog.h"
 
 #include <functional>
@@ -184,6 +185,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         // #105 — CW is its own operating mode (RX pitch + TX keyer);
         // give it a dedicated tab rather than a TX-tab subgroup.
         tabs_->addTab(wrapScroll(buildCwTab()), tr("CW"));
+        // Frequency calibration (WWV/time-station ppm trim) — writes the
+        // correction through HL2Stream, so it lives behind the stream guard.
+        tabs_->addTab(wrapScroll(buildCalibrationTab()), tr("Calibration"));
     }
     if (profiles_) {
         tabs_->addTab(wrapScroll(buildProfilesTab()), tr("Profiles"));
@@ -3487,6 +3491,297 @@ QWidget *SettingsDialog::buildMeterTab() {
 // rename, and the match window (how close a stored point counts as an
 // "exact" green match).  Pure UI + the model's QSettings; RF-safe.
 // ─────────────────────────────────────────────────────────────────
+QWidget *SettingsDialog::buildCalibrationTab() {
+    // Frequency calibration (WWV / time-station).  Stage 2 of the
+    // freq_calibration_design.md build: the persisted-factor home + the
+    // full recall safety net (manual entry + Reset + Restore previous).
+    // The guided A+B visual instrument (Stage 4) launches from here later.
+    auto *page = new QWidget(this);
+    // Readable directions, matching the PA Gain tab: bright body text,
+    // amber warnings, directions paragraphs a touch larger.
+    page->setStyleSheet(QStringLiteral(
+        "QLabel { color: rgb(205,217,229); }"
+        "QLabel[lyraWarn=\"true\"] { color: rgb(242,183,73); }"
+        "QLabel[calDir=\"true\"] { font-size: 10pt; }"));
+    auto *root = new QVBoxLayout(page);
+    root->setSpacing(10);
+
+    auto *intro = new QLabel(tr(
+        "Your radio's reference oscillator is a hair off, so a signal on a "
+        "known frequency lands a few hertz from where the dial says. "
+        "Frequency calibration nudges every RX and TX frequency by a tiny "
+        "factor so the dial reads true. "
+        "<b>1.00000000 = no correction</b> — exactly how the radio tunes "
+        "today."), page);
+    intro->setWordWrap(true);
+    intro->setProperty("calDir", true);
+    root->addWidget(intro);
+
+    auto *grp  = new QGroupBox(tr("Frequency correction"), page);
+    auto *form = new QFormLayout(grp);
+    root->addWidget(grp);
+
+    const double cur = stream_ ? stream_->freqCorrection() : 1.0;
+
+    // ppm = (factor − 1) × 1e6.  Shown alongside the raw factor so the
+    // number means something to the operator.
+    auto fmtReadout = [](double f) -> QString {
+        const double ppm = (f - 1.0) * 1.0e6;
+        return QStringLiteral(
+                   "<span style='font-size:15pt; font-weight:500;'>%1</span>"
+                   "&nbsp;&nbsp;<span style='color:rgb(138,154,172);'>"
+                   "%2%3 ppm</span>")
+            .arg(f, 0, 'f', 8)
+            .arg(ppm >= 0 ? QStringLiteral("+") : QString())
+            .arg(ppm, 0, 'f', 2);
+    };
+
+    auto *readout = new QLabel(fmtReadout(cur), page);
+    readout->setTextFormat(Qt::RichText);
+    form->addRow(tr("Current:"), readout);
+
+    auto *spin = new QDoubleSpinBox(page);
+    spin->setDecimals(8);
+    spin->setRange(0.999, 1.001);          // ±1000 ppm — see HL2Stream clamp
+    spin->setSingleStep(0.0000001);        // arrow nudge = 0.1 ppm
+    spin->setKeyboardTracking(false);      // apply on Enter / focus-out only
+    spin->setValue(cur);
+    spin->setToolTip(tr(
+        "Type a factor by hand — e.g. copy the working value from another "
+        "app's calibration as a known-good starting point."));
+    spin->setMaximumWidth(200);   // don't stretch the whole form width
+    form->addRow(tr("Set correction:"), spin);
+
+    auto *btnRow   = new QHBoxLayout();
+    auto *resetBtn = new QPushButton(tr("Reset to 1.0 (no correction)"), page);
+    auto *prevBtn  = new QPushButton(tr("Restore previous"), page);
+    btnRow->addWidget(resetBtn);
+    btnRow->addWidget(prevBtn);
+    btnRow->addStretch(1);
+    form->addRow(btnRow);
+
+    if (stream_) {
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) { stream_->setFreqCorrection(v); });
+        connect(resetBtn, &QPushButton::clicked, this,
+                [this] { stream_->setFreqCorrection(1.0); });
+        connect(prevBtn, &QPushButton::clicked, this, [this] {
+            const double prev = QSettings()
+                .value(QStringLiteral("cal/freqCorrectionPrev"), 1.0).toDouble();
+            stream_->setFreqCorrection(prev);
+        });
+        // Keep the spin + readout in sync with any source (manual entry,
+        // Reset, Restore, or the visual instrument once it lands).
+        connect(stream_, &lyra::ipc::HL2Stream::freqCorrectionChanged,
+                spin, [spin, readout, fmtReadout](double f) {
+            spin->blockSignals(true);
+            spin->setValue(f);
+            spin->blockSignals(false);
+            readout->setText(fmtReadout(f));
+        });
+    } else {
+        spin->setEnabled(false);
+        resetBtn->setEnabled(false);
+        prevBtn->setEnabled(false);
+    }
+
+    // ── Measure from a time station (Stage 3b) ──
+    if (stream_ && engine_) {
+        auto *mgrp  = new QGroupBox(tr("Measure from a time station (WWV / CHU)"), page);
+        auto *mform = new QFormLayout(mgrp);
+        root->addWidget(mgrp);
+
+        auto *mdir = new QLabel(tr(
+            "<b>Pick a time station below</b> — Lyra tunes it in USB about 1 kHz "
+            "below the carrier and starts measuring automatically. Let the "
+            "reading settle, then <b>Apply</b>. Press <b>Measure</b> again (or "
+            "close it off) to put the dial and mode back. "
+            "Only stations your region can hear are listed; for anything else, "
+            "type the exact frequency by hand. "
+            "<b>USB is used on every band</b> — even 2.5 / 5 MHz where you'd "
+            "normally run LSB (WWV is AM, and USB keeps the sign consistent). "
+            "This is the same measurement as the floating <b>Freq Cal</b> panel, "
+            "without the visual dial."), page);
+        mdir->setWordWrap(true);
+        mdir->setProperty("calDir", true);
+        mform->addRow(mdir);
+
+        auto *mtip = new QLabel(tr(
+            "Best settings: a normal SSB filter (<b>RX BW ≈ 2.4–4 kHz</b>) so the "
+            "carrier sits well inside the passband — a tight CW filter can clip "
+            "it. <b>Sample rate makes no difference</b>: the measurement reads the "
+            "demodulated audio, not the raw spectrum."), page);
+        mtip->setWordWrap(true);
+        mtip->setProperty("calDir", true);
+        mform->addRow(mtip);
+
+        // One-click station picker — region-filtered like the floating Freq
+        // Cal panel, so a US op sees WWV/WWVH/CHU and not RWM/BPM/HLA.  Built
+        // from the same TimeStations source (a throwaway instance is cheap —
+        // it just holds the prefs+stream pointers).  Picking a station tunes
+        // USB ~1 kHz below the carrier and arms Measure, exactly like the
+        // front panel — this tab is that flow without the A+B visual.
+        auto *stationCombo = new QComboBox(page);
+        stationCombo->setMaximumWidth(200);
+        stationCombo->addItem(tr("— pick a station —"), QVariant());
+        {
+            lyra::ui::TimeStations ts(prefs_, stream_);
+            const QVariantList cals = ts.calStations(
+                prefs_ ? prefs_->bandPlanRegion() : QString());
+            for (const QVariant &v : cals) {
+                const QVariantMap m = v.toMap();
+                stationCombo->addItem(m.value(QStringLiteral("label")).toString(),
+                                      m.value(QStringLiteral("freqHz")));
+            }
+        }
+        mform->addRow(tr("Time station:"), stationCombo);
+
+        auto *stationSpin = new QDoubleSpinBox(page);
+        stationSpin->setDecimals(6);
+        stationSpin->setRange(0.1, 30.0);
+        stationSpin->setSuffix(tr(" MHz"));
+        stationSpin->setValue(
+            QSettings().value(QStringLiteral("cal/stationMHz"), 10.0).toDouble());
+        stationSpin->setMaximumWidth(200);
+        mform->addRow(tr("or exact frequency:"), stationSpin);
+
+        auto *measureBtn = new QPushButton(tr("Measure"), page);
+        measureBtn->setCheckable(true);
+        mform->addRow(measureBtn);
+
+        // Auto-tune snapshot so we can put the dial + mode back on Stop.
+        auto savedFreq = std::make_shared<quint32>(0);
+        auto savedMode = std::make_shared<QString>();
+        auto autoTuned = std::make_shared<bool>(false);
+
+        auto *live = new QLabel(tr("— idle —"), page);
+        live->setTextFormat(Qt::RichText);
+        mform->addRow(tr("Carrier:"), live);
+
+        auto *suggestLbl = new QLabel(tr("—"), page);
+        suggestLbl->setTextFormat(Qt::RichText);
+        mform->addRow(tr("Suggested:"), suggestLbl);
+
+        auto *applyBtn = new QPushButton(tr("Apply suggested correction"), page);
+        applyBtn->setEnabled(false);
+        mform->addRow(applyBtn);
+
+        auto suggested = std::make_shared<double>(1.0);
+        auto valid     = std::make_shared<bool>(false);
+
+        // Pick a station → fill the exact frequency, tune USB ~1 kHz below the
+        // carrier, and arm Measure.  Freq first then mode (so the per-band mode
+        // memory can't override USB — same order the front panel uses).
+        connect(stationCombo, &QComboBox::activated, this,
+                [this, stationCombo, stationSpin, measureBtn,
+                 savedFreq, savedMode, autoTuned](int idx) {
+            const QVariant data = stationCombo->itemData(idx);
+            if (!data.isValid()) return;               // "— pick a station —"
+            const double freqHz = data.toDouble();
+            if (!*autoTuned) {                          // snapshot once
+                *savedFreq = stream_->rx1FreqHz();
+                *savedMode = prefs_ ? prefs_->mode() : QString();
+                *autoTuned = true;
+            }
+            stationSpin->setValue(freqHz / 1.0e6);
+            stream_->setRx1FreqHz(static_cast<quint32>(freqHz - 1000.0));
+            if (prefs_) prefs_->setMode(QStringLiteral("USB"));
+            measureBtn->setChecked(true);               // arm measuring
+        });
+
+        connect(measureBtn, &QPushButton::toggled, this,
+                [this, stationSpin, stationCombo, savedFreq, savedMode, autoTuned]
+                (bool on) {
+            QSettings().setValue(QStringLiteral("cal/stationMHz"), stationSpin->value());
+            engine_->setFreqCalMeasuring(on);
+            if (!on && *autoTuned) {                    // Stop → put the dial back
+                stream_->setRx1FreqHz(*savedFreq);
+                if (prefs_ && !savedMode->isEmpty()) prefs_->setMode(*savedMode);
+                *autoTuned = false;
+                stationCombo->setCurrentIndex(0);
+            }
+        });
+
+        connect(engine_, &lyra::dsp::WdspEngine::freqCalUpdated, live,
+                [this, stationSpin, live, suggestLbl, applyBtn, suggested, valid]
+                (double measuredHz, double snrDb, int windows) {
+            const double D        = static_cast<double>(stream_->rx1FreqHz());
+            const double station  = stationSpin->value() * 1.0e6;
+            const double expected = station - D;   // USB: carrier tone = RF − dial
+            const bool   strong   = snrDb >= 10.0 && measuredHz > 50.0;
+            const QString snrCol  = strong ? QStringLiteral("rgb(120,210,140)")
+                                           : QStringLiteral("rgb(138,154,172)");
+            live->setText(tr("<span style='font-size:14pt; font-weight:500;'>%1 Hz</span>"
+                             "&nbsp;&nbsp;<span style='color:%2;'>SNR %3 dB %4</span>"
+                             "&nbsp;&nbsp;<span style='color:rgb(138,154,172);'>%5 win</span>")
+                .arg(measuredHz, 0, 'f', 1)
+                .arg(snrCol)
+                .arg(snrDb, 0, 'f', 1)
+                .arg(strong ? QStringLiteral("✓") : QStringLiteral("·"))
+                .arg(windows));
+
+            // Sanity: the tone must land near where a (station − dial) carrier
+            // should be, so a wrong station/dial can't produce a nonsense factor.
+            const bool sane = expected > 100.0 && expected < 3000.0
+                              && std::abs(measuredHz - expected) < 500.0;
+            if (strong && sane && D > 1.0e6) {
+                // ── SIGN GATE (Stage 3c, freq_calibration_design.md) ──
+                // Magnitude is certain; the sign depends on the USB / spectral
+                // convention.  Verify on live WWV: Measure -> Apply -> the tone
+                // should snap toward the expected pitch.  If it moves the WRONG
+                // way, flip kMeasureSign to -1.0 and rebuild.
+                constexpr double kMeasureSign = +1.0;
+                const double e_hw   = kMeasureSign * (station - D - measuredHz) / D;
+                const double fDelta = 1.0 / (1.0 + e_hw);
+                // Compose onto the correction already in effect: the measured
+                // tone already reflects the active factor, so fDelta is the
+                // *additional* nudge.  Multiplying makes a re-calibration from
+                // any non-1.0 factor exact in one shot — no Reset-first needed.
+                // (From 1.0, f == fDelta, so first-time cal is unchanged.)
+                const double f = stream_->freqCorrection() * fDelta;
+                *suggested = f; *valid = true;
+                applyBtn->setEnabled(true);
+                const double ppm = (f - 1.0) * 1.0e6;
+                const double ae  = std::abs(measuredHz - expected);   // how far off
+                const QString col = ae < 2.0  ? QStringLiteral("rgb(120,210,140)")   // spot on
+                                  : ae < 20.0 ? QStringLiteral("rgb(242,183,73)")    // a bit off
+                                              : QStringLiteral("rgb(230,120,120)");  // notably off
+                suggestLbl->setText(tr("<span style='font-size:14pt; font-weight:500; color:%1;'>%2</span>"
+                                       "&nbsp;&nbsp;<span style='color:rgb(138,154,172);'>%3%4 ppm</span>"
+                                       "&nbsp;&nbsp;<span style='color:%1;'>error %5 Hz</span>")
+                    .arg(col)
+                    .arg(f, 0, 'f', 8)
+                    .arg(ppm >= 0 ? QStringLiteral("+") : QString())
+                    .arg(ppm, 0, 'f', 2)
+                    .arg(measuredHz - expected, 0, 'f', 1));
+            } else {
+                *valid = false;
+                applyBtn->setEnabled(false);
+                suggestLbl->setText(strong
+                    ? tr("— tune ~1 kHz below the station in USB —")
+                    : tr("— waiting for a strong carrier —"));
+            }
+        });
+
+        connect(applyBtn, &QPushButton::clicked, this, [this, suggested, valid] {
+            if (*valid) stream_->setFreqCorrection(*suggested);
+        });
+    }
+
+    auto *note = new QLabel(tr(
+        "<b>Reset</b> always returns to exactly how the radio tunes today, so "
+        "you can never get stuck. <b>Restore previous</b> undoes the last "
+        "change. Prefer a visual? The floating <b>Freq Cal</b> panel (its chip "
+        "is in the header) shows the carrier walking to a centre null as you "
+        "tune — same measurement, guided."), page);
+    note->setWordWrap(true);
+    note->setProperty("calDir", true);
+    root->addWidget(note);
+
+    root->addStretch(1);
+    return page;
+}
+
 QWidget *SettingsDialog::buildTunerTab() {
     auto *page = new QWidget(this);
     auto *root = new QVBoxLayout(page);

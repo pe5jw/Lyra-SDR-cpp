@@ -42,6 +42,7 @@ not programmers — if you can click a menu, you can use this.
 - [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
   - [Reading CW — the RX decoder](#reading-cw--the-rx-decoder)
 - [Tuner (manual ATU memory)](#tuner-manual-atu-memory)
+- [Frequency calibration (WWV / time station)](#frequency-calibration-wwv--time-station)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
@@ -1698,6 +1699,74 @@ match tiles for a compact at-a-glance reminder.
 > The match is by **dial (carrier) frequency** — it reads the same in USB or
 > LSB, which is correct: an antenna tuner matches the RF frequency, not the
 > sideband.
+
+---
+
+## Frequency calibration (WWV / time station)
+
+Your radio's reference oscillator (the HL2's TCXO) is a hair off, so a signal
+on a *known* frequency lands a few hertz from where the dial says. Frequency
+calibration measures that error against a rock-solid reference — a time
+station like **WWV**, **WWVH** or **CHU** — and nudges every RX **and** TX
+frequency by a tiny factor so the dial reads true.
+
+> **`1.00000000 = no correction`** — exactly how the radio tunes out of the
+> box. You can always get back there, so you can't paint yourself into a
+> corner. Most HL2 boards are within a hertz or two on the HF bands and never
+> need this; it's here for the operator who wants the dial spot-on, or who
+> works a mode where a few Hz matters.
+
+There are two ways in, and they run the **same measurement** — pick whichever
+you like:
+
+### The guided panel (Freq Cal chip)
+
+Open **Options: → Freq Cal** in the header. A floating instrument appears:
+
+1. **Tap a time station chip** (only the ones your region can actually hear
+   are shown — see [Band plan (Region)](#band-plan-region)). Lyra saves your
+   current dial and mode, switches to **USB**, and tunes about 1 kHz below the
+   carrier so you hear it as a steady ~1 kHz tone.
+2. Watch the **hero readout**: the carrier marker walks across a centre-null
+   scale and the big **"Hz off"** number colours green as the error nulls
+   toward zero. `SNR ✓` means the carrier is strong enough to trust.
+3. Press **Apply** to take the suggested correction. **Stop** (or closing the
+   panel) puts your dial and mode back exactly where they were.
+
+### Settings → Calibration (no visual)
+
+Same flow without the moving dial, plus the manual controls:
+
+- **Time station** dropdown — pick one and Lyra auto-tunes USB and starts
+  measuring, just like the panel. Or type an **exact frequency** by hand for a
+  station that isn't listed.
+- **Measure** arms/disarms; **Apply suggested correction** takes the reading.
+- **Set correction** — type a factor by hand (e.g. copy a known-good value
+  from another app as a starting point).
+- **Reset to 1.0** — always returns to how the radio tunes today.
+- **Restore previous** — one-level undo of the last change.
+
+### Good to know
+
+- **USB on every band.** Use USB even on 2.5 / 5 MHz where you'd normally run
+  LSB. WWV is AM, and calibrating in USB on every band keeps the sign of the
+  correction consistent.
+- **Filter and sample rate.** Use a normal SSB filter (**RX BW ≈ 2.4–4 kHz**)
+  so the ~1 kHz carrier sits well inside the passband — a tight CW filter can
+  clip it. **Sample rate makes no difference**: the measurement reads the
+  demodulated audio, not the raw spectrum.
+- **No Reset needed to re-calibrate.** Apply *composes* onto whatever
+  correction is already in effect, so measuring again from a non-1.0 factor is
+  exact in one shot — it won't push you back toward 1.0.
+- **Restore previous holds one level.** It remembers the single value in effect
+  before your last change. Reset moves your current correction *into* that slot
+  (it doesn't erase it), so Reset then Restore-previous brings it back — but a
+  Reset followed by a fresh Apply overwrites the slot with 1.0.
+- **The correction is stored per install** and applied inside the one frequency
+  choke point every tune path funnels through, so RIT/XIT, CTUN, split and
+  PureSignal all track it automatically.
+
+> Right-click the **Freq Cal** chip for this help.
 
 ---
 

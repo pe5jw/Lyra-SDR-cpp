@@ -1061,6 +1061,18 @@ void MainWindow::buildDocks() {
         d->setFloating(true);
         d->hide();
     }
+    // Frequency Calibration — chip-launched floating instrument: tap a time
+    // station, it auto-tunes USB + measures the carrier offset and suggests a
+    // ppm correction (freq_calibration_design.md Stage 4).  Own floating dock,
+    // hidden by default so the front panel stays clean.
+    addQuickDock(QStringLiteral("freqcal"), tr("Freq Cal"),
+                 QStringLiteral("CalibrationPanel.qml"),
+                 QStringLiteral("freqcal"), Qt::BottomDockWidgetArea,
+                 /*resizable=*/true);
+    if (QDockWidget *d = docks_.value(QStringLiteral("freqcal"))) {
+        d->setFloating(true);
+        d->hide();
+    }
     // (#175 Waterfall ID controls live inline on the TX panel under a
     // "Waterfall ID" section — no separate dock/chip.)
     // TX DSP launcher default: start each rack stage as a HIDDEN FLOATING
@@ -1515,6 +1527,38 @@ void MainWindow::buildToolbar() {
                 btn->setObjectName(QStringLiteral("txDspChip"));
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
+        }
+        // Frequency Calibration launcher — floating WWV/time-station instrument.
+        // Explicit QToolButton (like WF-ID) rather than the dock's
+        // toggleViewAction: for a brand-new dock the toggle action can be inert
+        // when a saved layout that predates the dock is restored, so drive the
+        // dock's visibility directly.
+        if (QDockWidget *d = docks_.value(QStringLiteral("freqcal"))) {
+            auto *fc = new QToolButton(tb);
+            fc->setText(tr("Freq Cal"));
+            fc->setCheckable(true);
+            fc->setChecked(d->isVisible());
+            fc->setObjectName(QStringLiteral("txDspChip"));
+            fc->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            fc->setToolTip(tr("Frequency calibration — tap a time station "
+                              "(WWV / CHU) and measure your radio's ppm error.  "
+                              "Right-click for help."));
+            tb->addWidget(fc);
+            connect(fc, &QToolButton::toggled, this, [d](bool on) {
+                if (on) {
+                    d->setFloating(true);
+                    d->show();
+                    d->raise();
+                    d->activateWindow();
+                } else {
+                    d->hide();
+                }
+            });
+            connect(d, &QDockWidget::visibilityChanged, fc, [fc](bool vis) {
+                if (fc->isChecked() != vis)
+                    fc->setChecked(vis);
+            });
+            attachChipHelp(fc, QStringLiteral("freqcal"));  // right-click → guide
         }
         // Waterfall ID (#175) ARM chip — NOT a dock, NOT a popup; a state
         // toggle on Prefs.wfIdEnabled.  Armed = the auto-ID is live (fires one

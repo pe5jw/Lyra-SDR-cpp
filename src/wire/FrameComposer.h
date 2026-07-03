@@ -104,6 +104,19 @@ void set_rx_freq(int rx_idx, int freq_hz);
 // (see Q4).
 void set_tx_freq(int freq_hz);
 
+// Frequency-calibration factor — a crystal/TCXO ppm trim applied to
+// EVERY RX/TX frequency inside set_rx_freq / set_tx_freq, i.e. the one
+// choke point every tune path (RIT/XIT/CTUN/PS-feedback/waterfall-ID)
+// funnels through, the instant before the value is written to `prn`.
+// Faithful mirror of the reference's `NetworkIO._freq_correction_factor`,
+// which multiplies the requested freq in `VFOfreq()` (NetworkIO.cs:219)
+// before it reaches the wire — so `prn->..[].frequency` holds the
+// corrected value exactly as the reference's command struct does.
+// Default 1.0 = no correction (exact fast-path, byte-identical output).
+// Thread-safe (atomic); see freq_calibration_design.md.
+void set_freq_correction(double factor);
+double freq_correction();
+
 // Write `prn->tx[0].drive_level` (case 10 C1).  Operator-axis
 // input (the reference's `_tx_attenuator_data` is the same
 // operator-axis value; SWR correction happens at Radio-layer

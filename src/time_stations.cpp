@@ -6,6 +6,7 @@
 #include "prefs.h"
 
 #include <QHash>
+#include <QSet>
 #include <QSettings>
 #include <QVariantMap>
 
@@ -152,6 +153,37 @@ QString TimeStations::tuneEntry(int stationIndex, int freqIndex) {
 }
 
 void TimeStations::resetCycle() { saveIdx(0); }
+
+QVariantList TimeStations::calStations(const QString &region) const {
+    // Every tunable carrier as a flat pick for the calibration instrument,
+    // operator-country-first (same order as the menu).  All are steady
+    // carriers usable for a frequency measure regardless of their voice mode.
+    // Filter by the operator's band-plan region so we don't offer a station
+    // they'd never hear (RWM Moscow to a US op = clutter).  Continent codes:
+    // NA/SA/EU/AF/AS/OC.  Empty set = no filter (NONE / unset → show all).
+    QSet<QString> show;
+    if (region == QLatin1String("US"))               // R2 — Americas + Pacific
+        show = {QStringLiteral("NA"), QStringLiteral("OC")};   // WWV, WWVH, CHU
+    else if (region == QLatin1String("IARU_R1"))     // EU / Africa
+        show = {QStringLiteral("EU"), QStringLiteral("AF")};   // RWM
+    else if (region == QLatin1String("IARU_R3"))     // Asia-Pacific
+        show = {QStringLiteral("AS"), QStringLiteral("OC")};   // BPM, HLA, WWVH
+
+    QVariantList out;
+    const QVector<Station> v = ordered();
+    for (const Station &s : v) {
+        if (!show.isEmpty() && !show.contains(s.continent)) continue;
+        for (int khz : s.freqsKhz) {
+            QVariantMap m;
+            m[QStringLiteral("label")] =
+                QStringLiteral("%1 %2").arg(s.id, QString::number(khz / 1000.0));
+            m[QStringLiteral("freqHz")]    = static_cast<double>(khz) * 1000.0;
+            m[QStringLiteral("continent")] = s.continent;
+            out.append(m);
+        }
+    }
+    return out;
+}
 
 QVariantList TimeStations::menuEntries() const {
     QVariantList out;

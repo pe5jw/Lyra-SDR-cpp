@@ -231,6 +231,15 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     const quint32 persistedRxHz =
         QSettings().value(QStringLiteral("rx/freqHz"), 7074000u).toUInt();
     rx1FreqHz_.store(persistedRxHz, std::memory_order_relaxed);
+    // Frequency calibration — restore the persisted ppm trim and seed the
+    // wire-side factor BEFORE the first freq push (open) so the very first
+    // tune already lands corrected.  Default 1.0 = exact no-op.
+    {
+        const double f =
+            QSettings().value(QStringLiteral("cal/freqCorrection"), 1.0).toDouble();
+        freqCorrection_.store(f, std::memory_order_relaxed);
+        lyra::wire::set_freq_correction(f);
+    }
     // TX-0c-tune — simplex TX follows RX1 from launch (not just on
     // operator dial moves).  Without this, the persistence restore
     // bypasses setRx1FreqHz() so txFreqHz_ sits at its 7,074,000
@@ -1628,6 +1637,34 @@ void HL2Stream::setRx1FreqHz(quint32 hz) {
             // refresh it (pushEffectiveTxFreq isn't called on this path).
             emit txAnalyzerOffsetChanged(txAnalyzerOffsetHz());
     }
+}
+
+double HL2Stream::freqCorrection() const {
+    return freqCorrection_.load(std::memory_order_relaxed);
+}
+
+void HL2Stream::setFreqCorrection(double factor) {
+    // Clamp to ±1000 ppm.  A real HL2 TCXO is well under ±2 ppm; this only
+    // bounds fat-fingered manual entry (and NaN) without blocking any
+    // legitimate value.  (Reset uses exactly 1.0 → the byte-exact no-op.)
+    if (!(factor >= 0.999 && factor <= 1.001)) {
+        if (factor < 0.999)      factor = 0.999;
+        else if (factor > 1.001) factor = 1.001;
+        else                     factor = 1.0;   // NaN → neutral
+    }
+    const double old = freqCorrection_.exchange(factor, std::memory_order_relaxed);
+    if (old == factor)
+        return;
+    lyra::wire::set_freq_correction(factor);
+    QSettings s;
+    // Snapshot the prior value for one-level "Restore previous" undo.
+    s.setValue(QStringLiteral("cal/freqCorrectionPrev"), old);
+    s.setValue(QStringLiteral("cal/freqCorrection"), factor);
+    // Re-tune so the change takes effect immediately — mirror of the
+    // reference's FreqCorrectionChanged re-applying to every VFO.
+    pushEffectiveRxFreq();
+    pushEffectiveTxFreq();
+    emit freqCorrectionChanged(factor);
 }
 
 void HL2Stream::pushEffectiveTxFreq() {

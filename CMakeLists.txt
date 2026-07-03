@@ -212,6 +212,8 @@ qt_add_executable(lyra
     # RX tap; Lyra-native DSP, no Qt in the core.
     src/dsp/CwDecoder.h
     src/dsp/CwDecoder.cpp
+    src/dsp/FreqCalMeasure.h
+    src/dsp/FreqCalMeasure.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -408,6 +410,7 @@ qt_add_qml_module(lyra
         src/qml/SpeechPanel.qml
         src/qml/CwConsolePanel.qml
         src/qml/CwDecoderPanel.qml
+        src/qml/CalibrationPanel.qml
         src/qml/VoiceKeyerPanel.qml
         src/qml/TrashCan.qml
         src/qml/CombinatorPanel.qml

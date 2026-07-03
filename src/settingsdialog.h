@@ -71,6 +71,7 @@ private:
     QWidget *buildNetworkTab();  // TCI server (logger / cluster integration)
     QWidget *buildCatSerialTab();// serial PTT input + Kenwood CAT (COM-port)
     QWidget *buildMeterTab();    // S-meter calibration trim
+    QWidget *buildCalibrationTab(); // WWV/time-station frequency calibration
     QWidget *buildTunerTab();    // manual-ATU memory editor + match window
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
     QWidget *buildVoxTab();      // #91 VOX — voice-operated TX (own tab)

@@ -41,6 +41,7 @@
 
 #include "dsp/MonitorRing.h"   // #90 — TX-monitor SPSC ring (value member)
 #include "dsp/CwDecoder.h"     // #173 CW-5a — RX CW decoder (value member)
+#include "dsp/FreqCalMeasure.h" // freq calibration — carrier tone estimator
 
 class QAudioSink;
 
@@ -542,6 +543,13 @@ public:
     QString mode() const { return mode_; }
     Q_INVOKABLE void setMode(const QString &m);
 
+    // Frequency calibration (Stage 3b) — arm/disarm the carrier-tone
+    // measurement.  While on, the post-demod RX audio is also fed to the
+    // FreqCalMeasure estimator, which reports the dominant tone via
+    // freqCalUpdated(measuredHz, snrDb, windows).  Off = one relaxed bool
+    // read on the audio path (zero impact).  See freq_calibration_design.md.
+    Q_INVOKABLE void setFreqCalMeasuring(bool on);
+
     // #159 slim DSP — per-mode-family filter type (Linear Phase vs Low
     // Latency / minimum phase).  Opt-in: defaults all Linear Phase
     // (mp=false) = byte-identical to legacy behaviour.  Auto-applied on
@@ -756,6 +764,8 @@ signals:
     void cwDecodedChar(QString ch, double confidence);  // char; conf 0..1 (advisory)
     void cwRxWpmChanged(int wpm);            // adaptive RX speed
     void cwAfcLockChanged(bool locked, double hz);
+    // Freq calibration — one emit per analysis window while measuring.
+    void freqCalUpdated(double measuredHz, double snrDb, int windows);
     void nrChanged();        // NR enable / mode / AEPF / NPE
     void agcModeChanged();
     void anfChanged();
@@ -1183,6 +1193,13 @@ private:
     // cwModeActive_ (set in setMode) gates to CWU/CWL; cwDecodeOn_ is the
     // operator enable.  cwMonoBuf_ holds the de-interleaved mono block.
     lyra::dsp::CwDecoder                 cwDecoder_;
+
+    // Freq calibration (Stage 3b) — carrier-tone estimator + arm flag +
+    // de-interleave scratch + last-emitted window counter (throttle).
+    lyra::dsp::FreqCalMeasure            freqCal_;
+    std::atomic<bool>                    freqCalOn_{false};
+    std::vector<float>                   fcalMono_;
+    int                                  fcalLastWin_ = -1;
     std::atomic<bool>                    cwDecodeOn_{false};
     std::atomic<bool>                    cwModeActive_{false};
     std::vector<float>                   cwMonoBuf_;
