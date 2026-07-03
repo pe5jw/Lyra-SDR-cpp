@@ -2942,6 +2942,9 @@ void WdspEngine::setNoiseApply(bool on)
         }
         applyEnabled_.store(on, std::memory_order_relaxed);
     }
+    // Remember the operator's NR-C on/off across restarts (main.cpp restores
+    // it at launch after auto-loading the chosen profile).
+    QSettings().setValue(QStringLiteral("dsp/noiseApplyEnabled"), on);
     emitLog(on ? QStringLiteral("Noise apply: ON")
                : QStringLiteral("Noise apply: OFF"));
     emit noiseApplyChanged();

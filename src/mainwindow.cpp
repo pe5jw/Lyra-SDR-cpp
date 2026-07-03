@@ -1477,10 +1477,14 @@ void MainWindow::buildToolbar() {
             connect(ctun, &QToolButton::toggled, st,
                     [st](bool on) { st->setCtuneEnabled(on); });
             // stream -> chip (auto-re-centre / external toggle keeps it synced)
+            // + remember the on/off across restarts (main.cpp restores it once
+            // the dial is at the persisted frequency).
             connect(st, &lyra::ipc::HL2Stream::ctuneChanged, ctun,
                     [st, ctun]() {
+                        const bool on = st->ctuneEnabled();
                         QSignalBlocker block(ctun);
-                        ctun->setChecked(st->ctuneEnabled());
+                        ctun->setChecked(on);
+                        QSettings().setValue(QStringLiteral("ui/ctunEnabled"), on);
                     });
         }
         // Tuner launcher — manual-ATU memory panel (operating tool, not a DSP

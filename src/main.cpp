@@ -1568,6 +1568,31 @@ int main(int argc, char *argv[])
                 stream->setHwPttEnabled(prefs->hwPttEnabled());
             });
             stream->setHwPttEnabled(prefs->hwPttEnabled());
+
+            // ── Session restore: NR-C + CTUN (tester request 2026-07-03) ──
+            // Both RX-only, so — unlike WF-ID, which we force OFF each launch
+            // for TX safety — there's no reason not to remember them.
+            //  • Auto-load the operator's chosen noise profile (Settings →
+            //    Noise) so NR-C comes up ready instead of an empty field.
+            //    loadNoiseProfile self-guards the sample rate: a stale-rate
+            //    profile loads nothing and NR-C stays off (recapture hint).
+            //  • Re-engage NR-C only if it was on last time AND the profile
+            //    actually loaded.  Re-engage CTUN if it was on — the stream
+            //    restored rx1FreqHz in its ctor, so it locks at the real dial.
+            {
+                QSettings s;
+                const QString autoProf =
+                    s.value(QStringLiteral("dsp/noiseAutoLoadProfile")).toString();
+                if (!autoProf.isEmpty()
+                    && wdspEngine->noiseProfiles().contains(autoProf)
+                    && wdspEngine->loadNoiseProfile(autoProf)
+                    && s.value(QStringLiteral("dsp/noiseApplyEnabled"),
+                               false).toBool()) {
+                    wdspEngine->setNoiseApply(true);
+                }
+                if (s.value(QStringLiteral("ui/ctunEnabled"), false).toBool())
+                    stream->setCtuneEnabled(true);
+            }
         }
 
         // Radio memory: auto-connect to the last radio so the operator

@@ -7279,6 +7279,50 @@ QWidget *SettingsDialog::buildNoiseTab() {
 
     outer->addWidget(grp);
 
+    // ── Auto-load on startup ──
+    // Pick a saved profile to load automatically each launch, so NR-C comes
+    // up ready instead of an empty field.  If NR-C was left on last session
+    // it re-enables too — but only if the chosen profile still matches the
+    // current sample rate (loadNoiseProfile self-guards; a mismatch loads
+    // nothing and leaves NR-C off).  Restore itself lives in main.cpp.
+    auto *autoGrp  = new QGroupBox(tr("Auto-load on startup"), page);
+    auto *autoForm = new QFormLayout(autoGrp);
+    auto *autoCombo = new QComboBox(autoGrp);
+    autoCombo->setMaximumWidth(280);
+
+    auto repopAuto = [this, autoCombo]() {
+        const QString saved = QSettings()
+            .value(QStringLiteral("dsp/noiseAutoLoadProfile")).toString();
+        QSignalBlocker block(autoCombo);
+        autoCombo->clear();
+        autoCombo->addItem(tr("None (start with NR-C off)"), QString());
+        int sel = 0;
+        const QStringList names = engine_->noiseProfiles();
+        for (const QString &n : names) {
+            autoCombo->addItem(n, n);
+            if (n == saved) sel = autoCombo->count() - 1;
+        }
+        autoCombo->setCurrentIndex(sel);
+    };
+    repopAuto();
+    // Keep the picker current as profiles are renamed / deleted / added.
+    connect(engine_, &lyra::dsp::WdspEngine::noiseProfilesChanged,
+            autoCombo, repopAuto);
+    connect(autoCombo, QOverload<int>::of(&QComboBox::activated), autoCombo,
+            [autoCombo](int) {
+        QSettings().setValue(QStringLiteral("dsp/noiseAutoLoadProfile"),
+                             autoCombo->currentData().toString());
+    });
+    autoForm->addRow(tr("Profile:"), autoCombo);
+    auto *autoNote = new QLabel(tr(
+        "Loads this profile at launch and re-enables NR-C if it was on last "
+        "time. Skipped (NR-C stays off) if the profile no longer matches your "
+        "sample rate — recapture it at the new rate."), autoGrp);
+    autoNote->setWordWrap(true);
+    autoNote->setStyleSheet(QStringLiteral("color:#8a9aac; font-size:11px;"));
+    autoForm->addRow(autoNote);
+    outer->addWidget(autoGrp);
+
     auto *path = new QLabel(
         tr("Profiles are stored as .lnp files in:\n%1")
             .arg(engine_->noiseProfilesDir()), page);

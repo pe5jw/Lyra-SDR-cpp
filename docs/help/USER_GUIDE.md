@@ -745,6 +745,14 @@ won't load against a mismatched rate (you'll get a recapture hint).
 **Manage them in Settings → Noise:** the full list with rate/size/date, plus
 **Rename**, multi-select **Delete**, and **Open folder**.
 
+**Auto-load on startup (Settings → Noise).** Pick a saved profile to load
+automatically each launch, so NR-C comes up ready instead of an empty field.
+If you left NR-C **on** last session it re-enables too — unless the chosen
+profile no longer matches your sample rate, in which case it stays off with a
+recapture hint. **CTUN** is remembered the same way (it comes back on if it was
+on). Set the picker to **None**, or turn the toggles off before closing, for a
+clean start.
+
 Notes: NR-C adds about one FFT window of RX latency (≈21 ms at 4096) *only
 while it's on*; off, the path is unchanged. It's independent of the WDSP
 **NR** denoiser — you can run either, both, or neither.
