@@ -5,7 +5,7 @@ for the Hermes Lite 2 / 2+ — full receive *and* transmit — but it isn't
 finished. This page sets expectations so you know what's a real bug versus
 a feature that simply hasn't landed yet. (Pin or link this in Discord.)
 
-Current release: **v0.10.0**. Always grab the latest from the
+Current release: **v0.11.0**. Always grab the latest from the
 [Releases page](https://github.com/N8SDR1/Lyra-SDR-cpp/releases).
 
 > **What already works** (so you don't wonder): full RX DSP, and **transmit
@@ -16,8 +16,8 @@ Current release: **v0.10.0**. Always grab the latest from the
 > speech / combinator / plate), TX profiles, per-band power calibration +
 > an auto-tuning amp watts-cap, waterfall callsign ID, a manual-ATU tuner
 > memory, a **voice keyer** (record phone messages in-app, play them on the
-> air from F-keys) with an **RX/TX recorder**, and TCI server for logging /
-> cluster software.
+> air from F-keys) with an **RX/TX recorder**, **frequency calibration**
+> against WWV / CHU, and TCI server for logging / cluster software.
 
 ---
 
