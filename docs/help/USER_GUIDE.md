@@ -2895,34 +2895,44 @@ All settings persist across sessions.
 
 ## Settings → PA Gain
 
-Per-band TX power calibration and amplifier protection. Two things live
-here: a **PA Gain By Band** table that calibrates what your drive % means
-in watts on each band, and a **Max Output (watts)** cap that protects a
-low-drive amplifier by holding your output at or under a watts ceiling —
-auto-tuned per band so it parks just *under* the cap (the safe side).
+Per-band TX power calibration and amplifier protection, all set from a
+**dummy load with your amplifier out of line** and PA Gain left at **100**.
 
-> ⚠ **Calibrate into a dummy load with your amplifier out of line.**
-> Tuning a band walks the power *up from below* to find your cap. Verify
-> it settles correctly on every band first, **then** put your amp back in.
+> ⚠ **Always calibrate into a dummy load, amp OUT.** Calibrate at **full
+> drive (100 %)**, and **not in CW** — CW won't make a steady tune carrier,
+> so use SSB / AM / FM.
 
-**PA Gain By Band.** One number per band, default **100 = neutral**. Each
-HL2 — and each band — varies, so nothing is computed: key each band into a
-dummy load, watch the PWR meter, and nudge its number until the power
-reads true. Lower tames a hot band, higher pushes a weak one. Drive %
-stays the dial; this calibrates what the dial *means* in watts.
+**Calibrate each band (do this first).** Under **PWR meter calibration**:
+key a **full-drive TUN** carrier, read your **external watt-meter**, type
+that figure into **"Your watt-meter reads:"**, and press **Calibrate this
+band**. You don't have to hold TUN while you type — Lyra captures the
+reading *while you tune*, so you can drop TUN, type, and calibrate. At full
+drive that one press does **two** jobs: it trims the on-screen PWR meter to
+match your external meter, **and** it fills that band's **Full Output (W)**
+(the amp-cap reference) — so you measure each band just once. Repeat for the
+bands you use. (Calibrate below full drive and only the meter trim is set;
+the status line tells you.)
 
-**Full Output (W).** The measured watts each band makes at full drive
-(key TUN at 100 % and read the PWR meter). Shows "—" until measured. It
-seeds the conservative fallback ceiling and the auto-tune servo.
+**PA Gain By Band.** One number per band, default **100 = neutral** — leave
+it at 100 while calibrating. Each HL2, and each band, varies, so nothing is
+computed: it's a per-band trim you can later nudge to tame a hot band or
+push a weak one. Drive % stays the dial; this calibrates what the dial
+*means* in watts.
 
-**Max Output (amp protection).** Tick **Limit TX output to ___ W** and set
-your cap. Then key **TUN** on each band: Lyra walks the power up from below
-and **parks that band on the highest drive step that stays *under* your
-cap** — the **Cap tuned** column shows a green ✓ when locked, a red — when
-not yet tuned. SSB and the other modes then hold each tuned band at that
-level automatically, capping voice peaks without chasing them. A band you
-haven't tuned runs *conservatively under* the cap until you do. Change the
-cap → re-key TUN on each band to re-learn.
+**Full Output (W).** The watts each band makes at full drive — **filled for
+you** when you Calibrate that band at full drive (or type it by hand). Shows
+"—" until measured. It's the reference the watts cap needs.
+
+**Max Output (amp protection).** Once you've calibrated the bands you use:
+tick **Limit TX output to ___ W** and set your cap, then tick **Enable Max
+cap (arm)** — the cap does **nothing until it's armed**, and you can't arm
+it until at least one band is calibrated. Now key **TUN** on each band: Lyra
+walks the power up from below and **parks that band on the highest drive
+step that stays *under* your cap** — the **Cap tuned** column shows a green
+✓ when locked, a red — when not yet tuned. SSB and the other modes then hold
+each tuned band at that level automatically, capping voice peaks without
+chasing them. A band you haven't tuned runs *conservatively under* the cap
+until you do. Change the cap → re-key TUN on each band to re-learn.
 
 Because the approach is always *from below* and parks on the under-cap
 step, the output never overshoots — safe for a solid-state amp where a
@@ -2943,18 +2953,18 @@ on the cap would require finer-than-hardware drive control (filling the gaps
 between the coarse steps with the continuous digital gain) — a planned
 future refinement, not something worth rushing into the safety path.
 
-> **⚠ Cap on but not calibrated? Your power will read LOW.** If you tick
-> **Limit TX output to** *without* first measuring **Full Output** and keying
-> **TUN** on each band (so **Cap tuned** shows ✓), Lyra has no per‑band
-> reference and falls back to a deliberately safe **~30 % drive** on every
-> band — so a "6 W cap" can deliver only ~3 W. That is the safety fallback,
-> not a fault. Either **calibrate each band** (enter Full Output + key TUN),
-> or — if you don't run an amplifier — **leave the cap unticked** and Lyra
-> transmits at full drive. Settings → PA Gain shows a warning under the cap
-> box while it's enabled but uncalibrated, and when the cap is actively
-> holding power down a **CAP** chip appears on the TX panel: amber
-> **CAP ~30%** = the uncalibrated fallback (power is low), cyan **CAP nW** =
-> holding a calibrated band at your set limit.
+> **⚠ The cap won't limit until you arm it.** Ticking **Limit TX output to**
+> only sets the *value* — the cap does nothing until you also tick **Enable
+> Max cap (arm)**, which stays greyed until you've calibrated at least one
+> band. This is deliberate: a cap can never *silently* mis-limit your power.
+> If you arm before a band has a **Full Output** reference, that band runs a
+> safe conservative **~30 % drive** fallback (power reads LOW) until you
+> calibrate it. When the cap is actively holding power down a **CAP** chip
+> shows on the TX panel: amber **CAP ~30%** = uncalibrated fallback (low),
+> cyan **CAP nW** = holding a calibrated band at your set watts. If you don't
+> run an amplifier, just leave the cap unticked and Lyra transmits at full
+> drive. *(Upgrading from an older version keeps an existing cap armed, so
+> you never lose amp protection on update.)*
 
 ---
 

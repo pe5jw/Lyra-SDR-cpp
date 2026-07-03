@@ -824,6 +824,28 @@ public:
     void    setPwrTrimForBand(int idx, double scale);
     double  maxOutputW() const { return maxOutputW_.load(std::memory_order_relaxed); }
     void    setMaxOutputW(double watts);
+    // Cap ARM gate (2026-07-03).  The watts Max cap does NOT limit until it is
+    // armed — the operator arms it explicitly AFTER calibrating Full Output.
+    // This kills the "cap on but uncalibrated → silent ~30 % fallback clamp →
+    // mystery-low power" trap: with no arm, wattsDriveCeilingRaw_ returns
+    // no-clamp regardless of the cap value.  Auto-clears if the cap value goes
+    // to 0.  QSettings tx/capArmed.
+    bool    capArmed() const { return capArmed_.load(std::memory_order_relaxed); }
+    Q_INVOKABLE void setCapArmed(bool on);
+    // Per-band raw-watts capture, latched while a carrier is live (TUN/MOX) so
+    // "Calibrate this band" can compute the trim off a held sample without a
+    // second key ("capture while you tune").  capturedRawWForBand = smoothed
+    // un-trimmed formula watts (0 = no sample this session); capturedDrive =
+    // the drive level (0..255) that sample was taken at (>=255 = full drive,
+    // the condition for the same reading to also set Full Output).
+    double  capturedRawWForBand(int idx) const;
+    int     capturedDriveForBand(int idx) const;
+    // True when the TX mode is CW (WDSP CWL=3 / CWU=4).  CW does not produce a
+    // steady tune carrier, so the PWR calibration refuses in CW.
+    bool    txModeIsCw() const {
+        const int m = txMode_.load(std::memory_order_relaxed);
+        return m == 3 || m == 4;
+    }
     // Amp-cap live indicator status (see the capStatus Q_PROPERTY): 0 hidden,
     // 1 holding a calibrated band, 2 uncalibrated → ~30 % fallback clamp.
     int     capStatus() const { return capStatus_.load(std::memory_order_relaxed); }
@@ -1440,6 +1462,7 @@ signals:
     void foldMinDrivePctChanged(int pct);
     void maxDrivePctChanged(int pct);
     void maxOutputWChanged(double watts);   // Stage 3b — watts Max cap
+    void capArmedChanged(bool on);          // cap arm gate (2026-07-03)
     void capStatusChanged();                // TX-panel CAP chip (0/1/2)
     // Fires once per auto-cut (distinct from txTimeoutFired) so the UI
     // can toast "TX cut: SWR x.x:1".
@@ -1603,6 +1626,12 @@ private:
     // cap, else the conservative fallback (safe-under).  255 when the cap is
     // off.  applyTxPower_ clamps the requested raw to this.
     int    wattsDriveCeilingRaw_() const;
+    // The watts cap only actually LIMITS when a value is set AND it is armed
+    // (arm gate, 2026-07-03).  Every cap-limiting path checks this.
+    bool   capActive_() const {
+        return maxOutputW_.load(std::memory_order_relaxed) > 0.0
+            && capArmed_.load(std::memory_order_relaxed);
+    }
     // Stage B — the conservative (safe-under-the-cap) drive ceiling for an
     // un-tuned band, + the TUN auto-learn servo.
     int    wattsFallbackCeilingRaw_(int band, double capW) const;
@@ -1811,6 +1840,15 @@ private:
     // by fwdPowerCalW() so the displayed watts + the cap servo share ONE
     // calibrated basis.  QSettings meter/pwrTrim/<idx>.
     std::atomic<double>  pwrTrimByBand_[kNumPaGainBands];
+    // Cap ARM gate (2026-07-03) — the cap only limits when armed.  Default
+    // false.  QSettings tx/capArmed.  See capActive_() / capArmed().
+    std::atomic<bool>    capArmed_{false};
+    // Per-band raw-watts capture latch (session-only, NOT persisted).  Updated
+    // every keyed eval tick with steady RF: an EWMA of the un-trimmed formula
+    // watts + the drive level (0..255) it was taken at.  Feeds "Calibrate this
+    // band" (capture-while-you-tune) — 0 = no sample captured this session.
+    std::atomic<double>  capturedRawW_[kNumPaGainBands];
+    std::atomic<int>     capturedDrive_[kNumPaGainBands];
     int                  capServoTicks_ = 0;   // throttle (let the meter settle)
     static constexpr int    kCapServoStepTicks = 3;    // step every 3 ticks (150 ms)
     static constexpr int    kCapServoStepRaw   = 3;    // ~1.2 % drive per step

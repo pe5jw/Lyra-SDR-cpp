@@ -4062,6 +4062,26 @@ QWidget *SettingsDialog::buildPaGainTab() {
     capRow->addStretch(1);
     capForm->addRow(capRow);
 
+    // Cap ARM gate (2026-07-03) — a cap VALUE alone no longer limits.  The
+    // operator arms it as a separate, deliberate step AFTER calibrating each
+    // band's Full Output (in "PWR meter calibration" below), so an
+    // uncalibrated cap can NEVER silently hold power at the ~30 % fallback
+    // (the trap Pierre HS0ZRT hit).  Enabled only once ≥1 band is calibrated.
+    auto *armRow = new QHBoxLayout();
+    auto *armChk = new QCheckBox(tr("Enable Max cap (arm)"), capGrp);
+    armChk->setChecked(stream_ && stream_->capArmed());
+    armRow->addWidget(armChk);
+    armRow->addStretch(1);
+    capForm->addRow(armRow);
+    if (stream_) {
+        connect(armChk, &QCheckBox::toggled, stream_,
+                &lyra::ipc::HL2Stream::setCapArmed);
+        connect(stream_, &lyra::ipc::HL2Stream::capArmedChanged, armChk,
+                [armChk](bool on) {
+                    if (armChk->isChecked() != on) armChk->setChecked(on);
+                });
+    }
+
     auto *warn = new QLabel(
         tr("⚠  Calibrate into a DUMMY LOAD with your amplifier OUT of "
            "line.  Tuning a band walks the power UP from below to find your "
@@ -4073,13 +4093,16 @@ QWidget *SettingsDialog::buildPaGainTab() {
     capForm->addRow(warn);
 
     auto *capNote = new QLabel(
-        tr("Set-up (per band, into a dummy load):\n"
-           "1.  Enter each band's Full Output (W) above — key TUN at full "
-           "drive and read the PWR meter.\n"
-           "2.  Tick this box and set your cap.\n"
-           "3.  Key TUN on each band — Lyra walks the power up and parks it "
-           "just UNDER your cap (the band shows ✓).  Do every band you "
-           "use.\n"
+        tr("Set-up (into a DUMMY LOAD, amp OUT, PA Gain left at 100):\n"
+           "1.  Calibrate each band first — see \"PWR meter calibration\" "
+           "below.  TUN at FULL drive, read your external meter, type it in, "
+           "and press \"Calibrate this band\".  At full drive that one step "
+           "sets the meter trim AND fills the band's Full Output above.\n"
+           "2.  Tick \"Limit TX output to __ W\" and set your cap.\n"
+           "3.  Tick \"Enable Max cap (arm)\" — the cap does nothing until "
+           "you do.\n"
+           "4.  Key TUN on each band — Lyra walks the power up and parks it "
+           "just UNDER your cap (the band shows ✓).  Do every band you use.\n"
            "SSB and the other modes then hold each tuned band at that level "
            "automatically (it caps voice peaks without chasing them).  An "
            "un-tuned band runs conservatively UNDER the cap until you tune "
@@ -4107,10 +4130,11 @@ QWidget *SettingsDialog::buildPaGainTab() {
     // has a Full Output reference, so every band falls back to the
     // conservative ~30 % drive clamp → TX runs LOW ("6 W cap, only 3 W out").
     auto *capUncal = new QLabel(
-        tr("⚠  Cap enabled, but no band is calibrated.  Until you set Full "
-           "Output + TUN each band (steps 1 & 3 above), Lyra limits TX to a "
-           "safe ~30% drive — power reads LOW on every band.  If you don't "
-           "run an amplifier, just leave this box unticked."),
+        tr("⚠  Cap armed, but no band is calibrated — so Lyra limits TX to a "
+           "safe conservative ~30% drive (power reads LOW on every band) until "
+           "you calibrate.  Calibrate each band's Full Output (\"PWR meter "
+           "calibration\" below), then TUN it to lock the cap at your exact "
+           "watts.  If you don't run an amplifier, just untick the cap."),
         capGrp);
     capUncal->setWordWrap(true);
     capUncal->setProperty("lyraWarn", true);
@@ -4144,11 +4168,20 @@ QWidget *SettingsDialog::buildPaGainTab() {
     // ticked AND no band has a Full Output reference yet.  (Each connect
     // lambda copies refreshCapUncal, which itself only holds long-lived
     // widget pointers — safe for the dialog's lifetime.)
-    auto refreshCapUncal = [capChk, capUncal, fullSpins]() {
+    auto refreshCapUncal = [capChk, capUncal, fullSpins, armChk]() {
         bool anyMeasured = false;
         for (auto *fs : *fullSpins)
             if (fs->value() > 0.0) { anyMeasured = true; break; }
-        capUncal->setVisible(capChk->isChecked() && !anyMeasured);
+        const bool capOn = capChk->isChecked();
+        const bool armed = armChk->isChecked();
+        // Arm a FRESH cap only after ≥1 band is calibrated (the foolproof
+        // gate).  An ALREADY-armed cap — including one migrated from a
+        // pre-arm-gate version — stays toggleable, so upgrading never forcibly
+        // disarms an operator's existing amp protection.
+        armChk->setEnabled(capOn && (anyMeasured || armed));
+        // The conservative ~30 % low-power fallback only bites when the cap is
+        // actually limiting (armed) on a band with no Full Output reference.
+        capUncal->setVisible(capOn && armed && !anyMeasured);
     };
     refreshCapUncal();
     connect(capChk, &QCheckBox::toggled, this,
@@ -4177,14 +4210,15 @@ QWidget *SettingsDialog::buildPaGainTab() {
         mcBox->addWidget(mcIntro);
 
         auto *mcWarn = new QLabel(
-            tr("⚠  Calibrate each band MID-BAND and at your NORMAL power — "
-               "into a dummy load, amp out of line.\n"
-               "•  Mid-band: the coupler reads a little differently across a "
-               "band, so the middle is the most representative single point "
-               "(both edges then sit equally close).\n"
-               "•  NOT a low-power setting: the detector diode is non-linear "
-               "at low power, so calibrating there makes every higher level "
-               "read wrong.  Use roughly your usual output."),
+            tr("⚠  Calibrate into a DUMMY LOAD, amp OUT of line, at FULL "
+               "drive (100%), with PA Gain left at 100.\n"
+               "•  Full drive is the coupler's most accurate point AND lets "
+               "this one step also set the band's Full Output for the amp "
+               "cap — so you measure each band just once.\n"
+               "•  Turn the Max cap OFF while calibrating — an armed cap "
+               "holds the drive down and spoils the reading.\n"
+               "•  Not in CW — CW won't make a steady tune carrier; use "
+               "SSB / AM / FM."),
             mcGrp);
         mcWarn->setWordWrap(true);
         mcWarn->setProperty("lyraWarn", true);
@@ -4208,6 +4242,13 @@ QWidget *SettingsDialog::buildPaGainTab() {
         mcRow->addWidget(mcBtn);
         mcRow->addStretch(1);
         mcBox->addLayout(mcRow);
+
+        // Sticky result of the last Calibrate press (the live status line
+        // mcLive above is refreshed by a timer and would otherwise clobber it).
+        auto *mcResult = new QLabel(mcGrp);
+        mcResult->setWordWrap(true);
+        mcResult->setStyleSheet(QStringLiteral("color:#4ccf6b;"));
+        mcBox->addWidget(mcResult);
 
         auto *mcGrid = new QGridLayout();
         mcGrid->setHorizontalSpacing(16);
@@ -4239,23 +4280,64 @@ QWidget *SettingsDialog::buildPaGainTab() {
         leftCol->addWidget(mcGrp);
         leftCol->addStretch(1);
 
-        // Capture the live raw formula-watts on the band we're keyed on and
-        // store scale = your-meter ÷ raw.
-        connect(mcBtn, &QPushButton::clicked, this, [this, mcSpin, mcLive]() {
+        // Capture-while-you-tune: compute trim = your-meter ÷ raw off the
+        // LIVE reading if still keyed, else the last sample Lyra latched while
+        // this band was tuned — so there's no forced second key.  At full
+        // drive the same reading also fills the band's Full Output (amp cap).
+        connect(mcBtn, &QPushButton::clicked, this,
+                [this, mcSpin, mcResult, fullSpins]() {
             if (!stream_) return;
-            const int    b   = lyra::bandIndexForFreq(
-                                   static_cast<int>(stream_->rx1FreqHz()));
-            const double raw = stream_->fwdPowerW();   // un-trimmed formula W
+            // Amber for every refusal below; flipped to green on a real cal.
+            mcResult->setStyleSheet(QStringLiteral("color:#e5a54e;"));
+            const int b = lyra::bandIndexForFreq(
+                              static_cast<int>(stream_->rx1FreqHz()));
             if (b < 0) {
-                mcLive->setText(tr("Tune to an amateur band first."));
+                mcResult->setText(tr("Tune to an amateur band first."));
                 return;
             }
+            // Guard — CW won't make a steady tune carrier.
+            if (stream_->txModeIsCw()) {
+                mcResult->setText(tr("Switch out of CW to calibrate — CW "
+                                     "won't produce the tune carrier."));
+                return;
+            }
+            // Guard — an armed cap holds the drive down → bad reading.
+            if (stream_->capArmed()) {
+                mcResult->setText(tr("Turn the Max cap OFF (un-arm it) to "
+                                     "calibrate."));
+                return;
+            }
+            const bool   keyed = stream_->moxActive() || stream_->cwKeyingActive();
+            const double raw   = keyed ? stream_->fwdPowerW()
+                                       : stream_->capturedRawWForBand(b);
             if (std::isnan(raw) || raw < 0.25) {
-                mcLive->setText(tr("No RF — key a steady carrier on this "
-                                   "band (mid-band, normal power) first."));
+                mcResult->setText(tr("No reading yet — TUN this band at full "
+                                     "drive first, then Calibrate."));
                 return;
             }
-            stream_->setPwrTrimForBand(b, mcSpin->value() / raw);
+            const double entered = mcSpin->value();
+            stream_->setPwrTrimForBand(b, entered / raw);
+            mcResult->setStyleSheet(QStringLiteral("color:#4ccf6b;"));  // success
+            const auto &bs = lyra::amateurBands();
+            const QString bn = b < int(bs.size())
+                ? QString::fromUtf8(bs[b].name) : QString::number(b);
+            // At FULL drive (255) the entered watts IS this band's Full Output
+            // — set it too (feeds the amp cap).  Writing the spin fires its
+            // valueChanged → setFullOutputForBand + the cap-gate refresh.
+            const int drv = keyed ? stream_->txDriveLevel()
+                                  : stream_->capturedDriveForBand(b);
+            if (drv >= 255 && b < fullSpins->size()) {
+                (*fullSpins)[b]->setValue(entered);
+                mcResult->setText(
+                    tr("✓ %1 calibrated — meter set to %2 W, and Full Output "
+                       "set to %2 W (amp-cap reference).")
+                        .arg(bn).arg(entered, 0, 'f', 1));
+            } else {
+                mcResult->setText(
+                    tr("✓ %1 meter calibrated to %2 W.  Full Output NOT set — "
+                       "TUN at FULL (100%) drive to also set the amp-cap "
+                       "reference.").arg(bn).arg(entered, 0, 'f', 1));
+            }
         });
 
         auto mcRefresh = [this, mcLive, trimLabels]() {
@@ -4263,20 +4345,37 @@ QWidget *SettingsDialog::buildPaGainTab() {
             const int    b     = lyra::bandIndexForFreq(
                                      static_cast<int>(stream_->rx1FreqHz()));
             const bool   keyed = stream_->moxActive() || stream_->cwKeyingActive();
-            const double raw   = stream_->fwdPowerW();
             const auto  &bs    = lyra::amateurBands();
-            if (b >= 0 && keyed && !std::isnan(raw))
+            if (b < 0) {
                 mcLive->setText(
-                    tr("Transmitting on %1 — Lyra reads %2 W (raw formula).")
-                        .arg(QString::fromUtf8(bs[b].name))
-                        .arg(raw, 0, 'f', 1));
-            else if (b >= 0)
-                mcLive->setText(
-                    tr("On %1 — key a steady carrier (mid-band) to read power.")
-                        .arg(QString::fromUtf8(bs[b].name)));
-            else
-                mcLive->setText(
-                    tr("Tune to an amateur band, key a carrier, then Calibrate."));
+                    tr("Tune to an amateur band, TUN a full-drive carrier, "
+                       "then Calibrate."));
+            } else {
+                const QString bn   = QString::fromUtf8(bs[b].name);
+                const double  live = stream_->fwdPowerW();
+                if (keyed && !std::isnan(live) && live >= 0.25) {
+                    const bool full = stream_->txDriveLevel() >= 255;
+                    mcLive->setText(
+                        tr("Transmitting on %1 — Lyra reads %2 W raw%3.")
+                            .arg(bn).arg(live, 0, 'f', 1)
+                            .arg(full ? tr(" — full drive ✓")
+                                      : tr(" — go to FULL drive to set Full Output")));
+                } else {
+                    const double cap = stream_->capturedRawWForBand(b);
+                    if (cap > 0.0)
+                        mcLive->setText(
+                            tr("Captured %1 W raw on %2%3 — enter your "
+                               "watt-meter reading and Calibrate.")
+                                .arg(cap, 0, 'f', 1).arg(bn)
+                                .arg(stream_->capturedDriveForBand(b) >= 255
+                                         ? tr(" (full drive ✓)")
+                                         : tr(" (NOT full drive)")));
+                    else
+                        mcLive->setText(
+                            tr("On %1 — TUN a full-drive carrier to capture a "
+                               "reading.").arg(bn));
+                }
+            }
             for (int i = 0; i < trimLabels->size(); ++i) {
                 const double t   = stream_->pwrTrimForBand(i);
                 QLabel      *lab = (*trimLabels)[i];

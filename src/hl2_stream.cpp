@@ -420,11 +420,31 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
                 std::clamp(s.value(QStringLiteral("meter/pwrTrim/%1").arg(i),
                                    1.0).toDouble(), 0.1, 10.0),
                 std::memory_order_relaxed);
+            // Per-band raw-watts capture latch — session-only, start empty
+            // (0 = no sample this session; populated live while transmitting).
+            capturedRawW_[i].store(0.0, std::memory_order_relaxed);
+            capturedDrive_[i].store(0, std::memory_order_relaxed);
         }
         // Stage 3b — the single watts Max cap (0 = off).
         maxOutputW_.store(
             s.value(QStringLiteral("tx/maxOutputW"), 0.0).toDouble(),
             std::memory_order_relaxed);
+        // Cap arm gate (2026-07-03) — persisted; only meaningful with a value.
+        // MIGRATION (safety): a cap set by a pre-arm-gate version has no
+        // "tx/capArmed" key but WAS limiting the amp — treat it as armed so
+        // upgrading never silently drops amp protection (the dangerous
+        // direction = suddenly full power).  A cap value set AFTER the update
+        // starts un-armed (the operator arms it after calibrating Full Output).
+        {
+            const double cap = maxOutputW_.load(std::memory_order_relaxed);
+            const bool hasKey = s.contains(QStringLiteral("tx/capArmed"));
+            const bool armed = hasKey
+                ? (s.value(QStringLiteral("tx/capArmed")).toBool() && cap > 0.0)
+                : (cap > 0.0);                       // migrate existing cap → armed
+            capArmed_.store(armed, std::memory_order_relaxed);
+            if (!hasKey && cap > 0.0)
+                s.setValue(QStringLiteral("tx/capArmed"), true);
+        }
     }
     // TX-1 component 5a — load operator-tuned TR-sequencing + fade
     // durations from QSettings (tx/trSeq/<key>).  Defaults match the
@@ -1924,8 +1944,11 @@ int HL2Stream::wattsDriveCeilingRaw_() const {
     // TUN-auto-learned FOR THIS CAP, use that locked ceiling (exact, landed
     // by the live meter).  Otherwise the conservative fallback (safe-under)
     // until TUN learns it.  255 (no clamp) when the cap is off.
+    // Arm gate (2026-07-03): a cap value alone no longer limits — the operator
+    // must ARM it (after calibrating Full Output).  Un-armed → no clamp, so an
+    // uncalibrated cap can never silently hold power at the ~30 % fallback.
+    if (!capActive_()) return 255;
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
-    if (capW <= 0.0) return 255;
     const int band = lyra::bandIndexForFreq(
         static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
     if (band < 0 || band >= kNumPaGainBands) return 255;
@@ -1942,6 +1965,7 @@ void HL2Stream::tickCapServo_(double fwdW) {
     // locked per-band ceiling is then used statically (incl. SSB), so it
     // caps voice peaks without chasing them.  Requires a Full Output
     // reference (so the start + the runaway bound are sane).
+    if (!capActive_()) return;     // arm gate (2026-07-03)
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
     if (capW <= 0.0) return;
     const int band = lyra::bandIndexForFreq(
@@ -2105,8 +2129,35 @@ void HL2Stream::setMaxOutputW(double watts) {
     maxOutputW_.store(watts, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("tx/maxOutputW"), watts);
     emit maxOutputWChanged(watts);
+    // Clearing the cap value disarms it — an "armed but no value" state is
+    // meaningless, and re-arming after re-setting a value is one explicit
+    // click (2026-07-03).
+    if (watts <= 0.0 && capArmed_.load(std::memory_order_relaxed))
+        setCapArmed(false);
     // The ceiling changed for the live band — re-apply now.
     applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+}
+
+void HL2Stream::setCapArmed(bool on) {
+    if (on == capArmed_.load(std::memory_order_relaxed)) return;
+    // Never arm without a cap value to enforce (defensive — the UI already
+    // gates the arm control, but keep the invariant here too).
+    if (on && maxOutputW_.load(std::memory_order_relaxed) <= 0.0) return;
+    capArmed_.store(on, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("tx/capArmed"), on);
+    emit capArmedChanged(on);
+    // The effective ceiling just changed — re-apply on the live band.
+    applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
+}
+
+double HL2Stream::capturedRawWForBand(int idx) const {
+    if (idx < 0 || idx >= kNumPaGainBands) return 0.0;
+    return capturedRawW_[idx].load(std::memory_order_relaxed);
+}
+
+int HL2Stream::capturedDriveForBand(int idx) const {
+    if (idx < 0 || idx >= kNumPaGainBands) return 0;
+    return capturedDrive_[idx].load(std::memory_order_relaxed);
 }
 
 void HL2Stream::setTxDriveLevel(int level) {
@@ -4002,10 +4053,13 @@ void HL2Stream::armSwrProtect() {
     swrTicks_ = 0;
     swrOverTicks_ = 0;
     wattsOverTicks_ = 0;
-    // Stage 3b-2 — arm the evaluator if EITHER SWR protect OR the watts cap
-    // is active; the reactive watts backstop rides the same eval tick.
-    const bool wattsCapOn = maxOutputW_.load(std::memory_order_relaxed) > 0.0;
-    if ((!swrProtectEnabled_ && !wattsCapOn) || !swrEvalTimer_) return;
+    // Always run the evaluator while transmitting: it drives the SWR check
+    // (gated on swrProtectEnabled_), the watts cap fold + servo (gated on
+    // capActive_ — value set AND armed, 2026-07-03), AND the per-band
+    // raw-watts capture latch that "Calibrate this band" reads (needed on
+    // every TX, cap on or off).  The tick is cheap and every action inside is
+    // individually gated, so running it unconditionally is safe.
+    if (!swrEvalTimer_) return;
     swrEvalTimer_->start(kSwrEvalIntervalMs);
 }
 
@@ -4025,6 +4079,23 @@ void HL2Stream::evalSwrProtect() {
     const double fwd    = fwdPowerW();      // RAW — SWR ratio (below) + guards
     const double fwdCal = fwdPowerCalW();   // CALIBRATED — the watts cap
 
+    // Per-band raw-watts capture latch (2026-07-03) — "capture while you
+    // tune".  While a steady carrier is up, EWMA the RAW (un-trimmed) formula
+    // watts for the live TX band + remember the drive level it was taken at,
+    // so "Calibrate this band" can compute the trim (and, at full drive, set
+    // Full Output) off a held sample without a second key-down.
+    if (fwd >= swrFwdFloorW_) {
+        const int cb = lyra::bandIndexForFreq(
+            static_cast<int>(txFreqHz_.load(std::memory_order_relaxed)));
+        if (cb >= 0 && cb < kNumPaGainBands) {
+            const double prev = capturedRawW_[cb].load(std::memory_order_relaxed);
+            capturedRawW_[cb].store(prev > 0.0 ? prev * 0.7 + fwd * 0.3 : fwd,
+                                    std::memory_order_relaxed);
+            capturedDrive_[cb].store(txDriveLevel_.load(std::memory_order_relaxed),
+                                     std::memory_order_relaxed);
+        }
+    }
+
     // Stage 3b-2 — REACTIVE watts cap (GROSS backstop to the predictive
     // cap).  Runs on EVERY band, even during a deliberate tune (TUN is the
     // over-drive case), independent of the SWR-protect enable: fold the
@@ -4035,9 +4106,11 @@ void HL2Stream::evalSwrProtect() {
     // measured band at the cap never trips; an UNMEASURED band running full
     // (~2× the cap or more) still folds.  This is a coarse net for an
     // unmeasured band / a wildly-wrong Full Output, NOT a fine limiter.
+    // Gated on the arm (2026-07-03): the reactive fold only runs when the cap
+    // is actually engaged, so an un-armed cap value never folds the drive.
     constexpr double kWattsCapMargin = 1.30;
     const double capW = maxOutputW_.load(std::memory_order_relaxed);
-    if (capW > 0.0 && fwdCal >= swrFwdFloorW_ && fwdCal > capW * kWattsCapMargin) {
+    if (capActive_() && fwdCal >= swrFwdFloorW_ && fwdCal > capW * kWattsCapMargin) {
         if (++wattsOverTicks_ * kSwrEvalIntervalMs >= swrDwellMs_) {
             foldWattsProtect(fwdCal, capW);
             return;
@@ -4050,7 +4123,7 @@ void HL2Stream::evalSwrProtect() {
     // (walk it up to the cap from below + lock).  Runs only in tune (SSB uses
     // the locked ceiling statically); the reactive fold above stays dormant
     // because the servo keeps fwd at/under the cap, well below cap·1.30.
-    if (capW > 0.0 && tuneEnabled_.load(std::memory_order_relaxed))
+    if (capActive_() && tuneEnabled_.load(std::memory_order_relaxed))
         tickCapServo_(fwdCal);
 
     // #169 SWR protect — operator opt-out for a deliberate ATU tune carrier
