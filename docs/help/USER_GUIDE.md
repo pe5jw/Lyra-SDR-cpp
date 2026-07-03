@@ -2917,7 +2917,9 @@ the status line tells you.)
 it at 100 while calibrating. Each HL2, and each band, varies, so nothing is
 computed: it's a per-band trim you can later nudge to tame a hot band or
 push a weak one. Drive % stays the dial; this calibrates what the dial
-*means* in watts.
+*means* in watts. Each row's **Clear** button starts that band over — it
+resets **PA Gain → 100**, wipes its **Full Output**, and un-learns any cap
+tuning for the band, so you can re-calibrate it from scratch.
 
 **Full Output (W).** The watts each band makes at full drive — **filled for
 you** when you Calibrate that band at full drive (or type it by hand). Shows
