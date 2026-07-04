@@ -4575,6 +4575,14 @@ QWidget *SettingsDialog::buildPaGainTab() {
         mcWarn->setProperty("paDir", true);
         mcBox->addWidget(mcWarn);
 
+        // Always-visible TX-drive reminder — calibration needs FULL drive, so
+        // surface the current level right here (the "oh, I forgot to set full
+        // power" nudge; a tester at reduced drive got a bad reading).  Amber
+        // below full, green at 100 %.  Refreshed by the mcTimer below.
+        auto *mcDrive = new QLabel(mcGrp);
+        mcDrive->setProperty("paDir", true);
+        mcBox->addWidget(mcDrive);
+
         auto *mcLive = new QLabel(mcGrp);
         mcLive->setWordWrap(true);
         mcBox->addWidget(mcLive);
@@ -4591,6 +4599,12 @@ QWidget *SettingsDialog::buildPaGainTab() {
         mcRow->addWidget(mcSpin);
         auto *mcBtn = new QPushButton(tr("Calibrate this band"), mcGrp);
         mcRow->addWidget(mcBtn);
+        // In-your-face readiness chip, right at the button — testers skip the
+        // text warnings, so poke them here: red "IN CW", amber "NOT FULL",
+        // green "READY".  Bordered box; set live in mcRefresh below.
+        auto *mcChip = new QLabel(mcGrp);
+        mcChip->setAlignment(Qt::AlignCenter);
+        mcRow->addWidget(mcChip);
         mcRow->addStretch(1);
         mcBox->addLayout(mcRow);
 
@@ -4691,8 +4705,62 @@ QWidget *SettingsDialog::buildPaGainTab() {
             }
         });
 
-        auto mcRefresh = [this, mcLive, trimLabels]() {
+        auto mcRefresh = [this, mcLive, mcDrive, mcChip, trimLabels]() {
             if (!stream_) return;
+            {
+                // Cal-readiness — proactively flag the two setup traps that
+                // make a TUN produce no / low RF, BEFORE you key: CW mode (no
+                // tune carrier) and less-than-full drive.  Both a text line
+                // (mcDrive) AND a bordered box next to the button (mcChip, the
+                // in-your-face poke).  Green "ready" only in a voice mode at
+                // full drive.
+                // Calibration is done by TUN, so the drive that matters is the
+                // one TUN will actually key at — which depends on the Tune-drive
+                // mode (Settings → TX): the live TX Drive slider (0), the
+                // per-band Tune slider (1), or the Fixed tune drive (2).
+                // Checking only txDriveLevel missed the Tune-slider / Fixed
+                // cases, so a low Tune slider didn't trigger the notice.
+                const int tdm = prefs_ ? prefs_->tuneDriveMode() : 0;
+                int drvPct; QString drvSrc;
+                if (tdm == 1) {           // TuneDriveTune — per-band Tune slider
+                    drvPct = prefs_ ? prefs_->tuneDrivePct() : 100;
+                    drvSrc = tr("Tune drive");
+                } else if (tdm == 2) {    // TuneDriveFixed
+                    drvPct = prefs_ ? prefs_->fixedTuneDrivePct() : 100;
+                    drvSrc = tr("Fixed tune drive");
+                } else {                  // TuneDriveSlider — live TX Drive
+                    drvPct = (stream_->txDriveLevel() * 100 + 127) / 255;
+                    drvSrc = tr("TX Drive");
+                }
+                const QString amber = QStringLiteral("color:#e5a54e; font-weight:600;");
+                static const char *kChipRed =
+                    "background:#3a1512; border:2px solid #ff5a3c; border-radius:4px;"
+                    "color:#ff9a80; font-weight:700; padding:3px 10px;";
+                static const char *kChipAmber =
+                    "background:#3a2a10; border:2px solid #ffb020; border-radius:4px;"
+                    "color:#ffcf6b; font-weight:700; padding:3px 10px;";
+                static const char *kChipGreen =
+                    "background:#12252e; border:2px solid #4ccf6b; border-radius:4px;"
+                    "color:#4ccf6b; font-weight:700; padding:3px 10px;";
+                if (stream_->txModeIsCw()) {
+                    mcDrive->setText(tr("⚠ You're in CW — switch to SSB / AM / FM "
+                        "to calibrate (CW won't make a steady tune carrier)."));
+                    mcDrive->setStyleSheet(amber);
+                    mcChip->setText(tr("⚠  IN CW — CAN'T TUNE"));
+                    mcChip->setStyleSheet(QString::fromLatin1(kChipRed));
+                } else if (drvPct < 100) {
+                    mcDrive->setText(tr("⚠ %1: %2% — set it to 100% (full) before "
+                        "you calibrate.").arg(drvSrc).arg(drvPct));
+                    mcDrive->setStyleSheet(amber);
+                    mcChip->setText(tr("⚠  %1% — NOT FULL").arg(drvPct));
+                    mcChip->setStyleSheet(QString::fromLatin1(kChipAmber));
+                } else {
+                    mcDrive->setText(tr("%1: 100% — full ✓, ready to calibrate.").arg(drvSrc));
+                    mcDrive->setStyleSheet(QStringLiteral("color:#4ccf6b; font-weight:600;"));
+                    mcChip->setText(tr("READY ✓"));
+                    mcChip->setStyleSheet(QString::fromLatin1(kChipGreen));
+                }
+            }
             const int    b     = lyra::bandIndexForFreq(
                                      static_cast<int>(stream_->rx1FreqHz()));
             const bool   keyed = stream_->moxActive() || stream_->cwKeyingActive();

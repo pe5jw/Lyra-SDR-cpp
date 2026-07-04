@@ -2990,6 +2990,15 @@ match your external meter, **and** it fills that band's **Full Output (W)**
 bands you use. (Calibrate below full drive and only the meter trim is set;
 the status line tells you.)
 
+**Ready-to-calibrate indicator.** A live box sits right beside the
+**Calibrate this band** button so you don't have to remember the two setup
+traps — it's **green "READY ✓"** when you're set, and warns otherwise:
+**red "IN CW — CAN'T TUNE"** if the band is in CW (CW makes no steady tune
+carrier — switch to SSB / AM / FM), or **amber "…% — NOT FULL"** if the drive
+TUN will use isn't at 100 %. It follows the *right* drive automatically — your
+**TX Drive** slider, or the **Tune** slider / **Fixed** tune drive if you've
+set a separate tune drive in **Settings → TX** — and names which one to bump.
+
 **PA Gain By Band.** One number per band, default **100 = neutral** — leave
 it at 100 while calibrating. Each HL2, and each band, varies, so nothing is
 computed: it's a per-band trim you can later nudge to tame a hot band or
