@@ -131,14 +131,14 @@ Rectangle {
                     RowLayout {
                         spacing: 8
                         Label { text: qsTr("F-key"); color: root.cMuted; font.pixelSize: 11 }
-                        SpinBox {
+                        LyraSpinBox {
                             from: 0; to: 12; value: modelData.fkey
                             implicitHeight: 26; implicitWidth: 84
                             textFromValue: function (v) { return v === 0 ? "—" : "F" + v }
                             onValueModified: Clips.setFkey(modelData.id, value)
                         }
                         Label { text: qsTr("Gain"); color: root.cMuted; font.pixelSize: 11 }
-                        SpinBox {
+                        LyraSpinBox {
                             from: -20; to: 20; value: Math.round(modelData.gainDb)
                             implicitHeight: 26; implicitWidth: 96
                             textFromValue: function (v) { return (v > 0 ? "+" : "") + v + " dB" }

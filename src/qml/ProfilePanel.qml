@@ -33,7 +33,7 @@ Rectangle {
 
         Label { text: qsTr("Profile"); color: root.cAccent; font.bold: true }
 
-        ComboBox {
+        LyraComboBox {
             id: profCombo
             // Fixed, sensible width — a long profile name elides in the
             // field but shows in full in the open dropdown list, so we

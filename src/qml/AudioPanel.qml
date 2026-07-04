@@ -531,7 +531,7 @@ Rectangle {
 
             Item { width: 6 }
             Label { text: qsTr("NPE:"); color: root.cText; font.pixelSize: 11 }
-            ComboBox {
+            LyraComboBox {
                 id: npeCombo
                 model: ["OSMS", "MCRA"]
                 currentIndex: WdspEngine.npeMethod
@@ -674,7 +674,7 @@ Rectangle {
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
-            ComboBox {
+            LyraComboBox {
                 id: durCombo
                 implicitHeight: 24; Layout.preferredWidth: 58; font.pixelSize: 11
                 model: ["3 s", "5 s", "10 s"]
@@ -685,7 +685,7 @@ Rectangle {
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 400
             }
 
-            ComboBox {
+            LyraComboBox {
                 id: fftCombo
                 implicitHeight: 24; Layout.preferredWidth: 74; font.pixelSize: 11
                 model: ["2048", "4096", "8192"]
@@ -798,7 +798,7 @@ Rectangle {
                 }
             }
 
-            ComboBox {
+            LyraComboBox {
                 id: profCombo
                 implicitHeight: 24; Layout.preferredWidth: 150; font.pixelSize: 11
                 model: WdspEngine.noiseProfiles

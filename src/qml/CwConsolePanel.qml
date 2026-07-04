@@ -302,7 +302,7 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter }
             }
             Label { text: qsTr("every"); color: root.cMuted; font.pixelSize: 11 }
-            SpinBox {
+            LyraSpinBox {
                 from: 1; to: 60; value: root.repeatSec
                 onValueModified: root.repeatSec = value
                 implicitHeight: 24

@@ -75,7 +75,7 @@ Rectangle {
             Layout.row: 0; Layout.column: 0
             text: qsTr("Zoom"); color: "#cccccc"; font.bold: true
         }
-        ComboBox {
+        LyraComboBox {
             id: zoomCombo
             Layout.row: 0; Layout.column: 1
             Layout.preferredWidth: 64
@@ -114,7 +114,7 @@ Rectangle {
             Layout.row: 1; Layout.column: 0
             text: qsTr("Panafall"); color: "#cccccc"; font.bold: true
         }
-        ComboBox {
+        LyraComboBox {
             id: stepCombo
             Layout.row: 1; Layout.column: 1
             Layout.preferredWidth: 84
@@ -172,7 +172,7 @@ Rectangle {
             Layout.row: 2; Layout.column: 0
             text: qsTr("Peak Hold"); color: "#cccccc"; font.bold: true
         }
-        ComboBox {
+        LyraComboBox {
             id: peakCombo
             Layout.row: 2; Layout.column: 1
             Layout.preferredWidth: 80
@@ -187,7 +187,7 @@ Rectangle {
             Layout.row: 2; Layout.column: 2
             spacing: 6
             Label { text: qsTr("Decay"); color: "#cccccc" }
-            ComboBox {
+            LyraComboBox {
                 id: decayCombo
                 Layout.preferredWidth: 72
                 model: ["Fast", "Med", "Slow"]
