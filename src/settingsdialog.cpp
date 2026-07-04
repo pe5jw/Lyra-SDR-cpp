@@ -35,6 +35,9 @@
 #include <QScreen>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QUrl>
 #include <QColor>
@@ -101,6 +104,62 @@
 #include <iterator>
 
 namespace lyra::ui {
+
+namespace {
+// "Pick one from a list" delegate — draws a radio-button indicator (○ empty /
+// ● filled) in a left gutter plus a strong row highlight, so the selected item
+// is unmistakable on the dark theme (the default selection was a faint blue
+// line).  Honours the item's own ForegroundRole colour (e.g. the Hardware
+// tab's green connected / grey disconnected radios) and its enabled state.
+class PickDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &opt,
+               const QModelIndex &idx) const override {
+        const bool sel     = opt.state & QStyle::State_Selected;
+        const bool hover   = opt.state & QStyle::State_MouseOver;
+        const bool enabled = opt.state & QStyle::State_Enabled;
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        if (sel)        p->fillRect(opt.rect, QColor(0x18, 0x3a, 0x49));
+        else if (hover) p->fillRect(opt.rect, QColor(0x20, 0x2a, 0x31));
+        // Radio indicator.
+        const int d  = 13;
+        const int cx = opt.rect.left() + 8 + d / 2;
+        const int cy = opt.rect.center().y();
+        const QColor ring = sel ? QColor(0x4f, 0xd0, 0xff)
+                                : QColor(0x62, 0x72, 0x7e);
+        p->setPen(QPen(ring, 1.6));
+        p->setBrush(Qt::NoBrush);
+        p->drawEllipse(QPointF(cx, cy), d / 2.0, d / 2.0);
+        if (sel) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(0x4f, 0xd0, 0xff));
+            p->drawEllipse(QPointF(cx, cy), d / 4.0, d / 4.0);
+        }
+        // Text — keep the item's own colour if it set one.
+        QColor fg = !enabled ? QColor(0x6b, 0x76, 0x7e)
+                             : (sel ? QColor(0xff, 0xff, 0xff)
+                                    : QColor(0xcf, 0xd8, 0xdc));
+        const QVariant fgv = idx.data(Qt::ForegroundRole);
+        if (fgv.canConvert<QBrush>()) fg = fgv.value<QBrush>().color();
+        p->setPen(fg);
+        p->setFont(opt.font);
+        const QRect tr = opt.rect.adjusted(8 + d + 8, 0, -6, 0);
+        const QFontMetrics fm(opt.font);
+        p->drawText(tr, Qt::AlignVCenter | Qt::AlignLeft,
+                    fm.elidedText(idx.data(Qt::DisplayRole).toString(),
+                                  Qt::ElideRight, tr.width()));
+        p->restore();
+    }
+    QSize sizeHint(const QStyleOptionViewItem &opt,
+                   const QModelIndex &idx) const override {
+        QSize s = QStyledItemDelegate::sizeHint(opt, idx);
+        s.setHeight(qMax(s.height(), 24));
+        return s;
+    }
+};
+}  // namespace
 
 SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                lyra::ipc::HL2Discovery *discovery,
@@ -2172,6 +2231,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
 
         auto *list = new QListWidget(radioBox);
         list->setMinimumHeight(96);
+        list->setItemDelegate(new PickDelegate(list));   // clear radio-mark selection
         list->setToolTip(tr("Radios found on the LAN. Select one and click "
                             "Open — or double-click — to connect."));
 
@@ -8344,6 +8404,7 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
 
     snapList_ = new QListWidget(snapGrp);
     snapList_->setMinimumHeight(150);
+    snapList_->setItemDelegate(new PickDelegate(snapList_));  // clear selection mark
     snapV->addWidget(snapList_);
 
     // Where the files live — shown + one-click openable so a user who
