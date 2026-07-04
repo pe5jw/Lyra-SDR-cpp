@@ -371,7 +371,7 @@ void WxService::maybeToast(const WxSnapshot &snap) {
         const bool windFire =
             snap.wind == Wind::Extreme &&
             (localExtremeDiag || (snap.windNwsWarning && cfg_.nwsWindToast));
-        qWarning().noquote()
+        qDebug().noquote()   // routine per-poll diagnostic, not a warning
             << QStringLiteral("[wx-diag] wind S=%1 G=%2 mph  thr=%3/%4  +15=%5/%6  "
                               "tier=%7 nwsWarn=%8 nwsToggle=%9  WIND_FIRE=%10  | "
                               "lightning=%11 severe=%12")

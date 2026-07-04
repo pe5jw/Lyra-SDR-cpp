@@ -98,6 +98,7 @@ std::atomic<bool> g_shutdown_complete{false};
 #include <QPalette>
 #include <QSettings>
 #include <QString>
+#include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QSettings>
@@ -286,6 +287,18 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+
+    // Qt Quick Controls style.  Lyra custom-draws every control's
+    // background / contentItem in its QML panels; the platform-default
+    // "native Windows" Controls style REFUSES those customizations (it
+    // renders the plain native widget instead) and logs a
+    // "does not support customization" warning for EVERY such control on
+    // EVERY panel build — hundreds per launch in tester logs.  "Basic" is
+    // the neutral, fully-customizable Controls style: it makes Lyra's
+    // theming actually render AND silences the flood.  Must be set before
+    // the QML engine instantiates any Controls component.
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
+
     // Window / taskbar icon (the embedded .exe icon comes from src/lyra.rc;
     // this sets the running window + taskbar icon from the bundled PNG).
     app.setWindowIcon(QIcon(QStringLiteral(

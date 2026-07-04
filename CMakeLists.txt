@@ -34,7 +34,7 @@ set(CMAKE_AUTOMOC ON)
 # layout, matching the proven Python-Lyra UX), and the Vulkan
 # panadapter/waterfall scene-graph content is embedded INSIDE docks via
 # QQuickWidget.  All native C++ — no Python, no GIL anywhere.
-find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick Network Multimedia Widgets QuickWidgets ShaderTools WebSockets SerialPort)
+find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network Multimedia Widgets QuickWidgets ShaderTools WebSockets SerialPort)
 
 # Vulkan SDK -- optional at compile time (Qt RHI dynamically loads
 # the Vulkan runtime via the loader at app launch), but having the
@@ -467,6 +467,7 @@ target_link_libraries(lyra PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Quick
+    Qt6::QuickControls2
     Qt6::Network
     Qt6::Multimedia
     Qt6::Widgets
