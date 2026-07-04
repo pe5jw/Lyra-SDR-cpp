@@ -22,6 +22,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QVBoxLayout>
@@ -8240,6 +8241,14 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
     auto *page = new QWidget;
     auto *v = new QVBoxLayout(page);
 
+    // Nudge the descriptive text up a point from the app default so the tab
+    // reads a little easier.
+    auto bumpFont = [](QLabel *l) {
+        QFont f = l->font();
+        f.setPointSizeF(f.pointSizeF() + 1.0);
+        l->setFont(f);
+    };
+
     auto *intro = new QLabel(tr(
         "Back up your whole Lyra configuration, keep automatic dated "
         "snapshots, and restore just the parts you choose — the clean way to "
@@ -8247,40 +8256,57 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
         "Backups never include your radio's address or the graphics backend, "
         "so a file is safe to share or carry to another PC."), page);
     intro->setWordWrap(true);
+    bumpFont(intro);
     v->addWidget(intro);
 
     // ── Export ──
     auto *expGrp = new QGroupBox(tr("Export a backup file"), page);
     auto *expV = new QVBoxLayout(expGrp);
-    expV->addWidget(new QLabel(
-        tr("Save everything to a .lyra file you pick."), expGrp));
-    auto *expBtn = new QPushButton(tr("Export all settings to a file…"), expGrp);
-    expV->addWidget(expBtn);
+    auto *expDesc = new QLabel(
+        tr("Save everything to a .lyra file — the button opens a browser so "
+           "you choose the folder and name."), expGrp);
+    expDesc->setWordWrap(true);
+    bumpFont(expDesc);
+    expV->addWidget(expDesc);
+    // Compact, left-aligned button (not a full-width bar).
+    auto *expBtn = new QPushButton(tr("Export to a file…"), expGrp);
+    auto *expRow = new QHBoxLayout();
+    expRow->addWidget(expBtn);
+    expRow->addStretch(1);
+    expV->addLayout(expRow);
     v->addWidget(expGrp);
     connect(expBtn, &QPushButton::clicked, this, [this]() {
-        const QString docs = QStandardPaths::writableLocation(
+        const QString fallback = QStandardPaths::writableLocation(
             QStandardPaths::DocumentsLocation);
+        const QString dir = QSettings().value(
+            QStringLiteral("backup/lastExportDir"), fallback).toString();
         QString path = QFileDialog::getSaveFileName(
             this, tr("Export Lyra settings"),
-            docs + QStringLiteral("/lyra-backup.lyra"),
+            dir + QStringLiteral("/lyra-backup.lyra"),
             tr("Lyra backup (*.lyra)"));
         if (path.isEmpty()) return;
         if (!path.endsWith(QStringLiteral(".lyra"), Qt::CaseInsensitive))
             path += QStringLiteral(".lyra");
-        if (lyra::backup::exportToFile(path))
+        if (lyra::backup::exportToFile(path)) {
+            QSettings().setValue(QStringLiteral("backup/lastExportDir"),
+                                 QFileInfo(path).absolutePath());
             QMessageBox::information(this, tr("Exported"),
                 tr("Saved your settings to:\n%1").arg(path));
-        else
+        } else {
             QMessageBox::warning(this, tr("Export failed"),
                 tr("Couldn't write the file:\n%1").arg(path));
+        }
     });
 
     // ── Snapshots ──
     auto *snapGrp = new QGroupBox(tr("Snapshots"), page);
     auto *snapV = new QVBoxLayout(snapGrp);
-    snapV->addWidget(new QLabel(
+    auto *snapDesc = new QLabel(
         tr("Lyra keeps automatic dated backups plus any you save by hand.  "
-           "Restore one to roll back to a known-good setup."), snapGrp));
+           "Restore one to roll back to a known-good setup."), snapGrp);
+    snapDesc->setWordWrap(true);
+    bumpFont(snapDesc);
+    snapV->addWidget(snapDesc);
 
     auto *cfgRow = new QHBoxLayout();
     auto *everySpin = new QSpinBox(snapGrp);
