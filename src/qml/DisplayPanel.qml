@@ -83,7 +83,7 @@ Rectangle {
             currentIndex: root.zoomIndex(Prefs.zoom)
             onActivated: Prefs.zoom = root.zoomLevels[currentIndex]
         }
-        Slider {
+        LyraSlider {
             id: zoomSlider
             Layout.row: 0; Layout.column: 2
             Layout.preferredWidth: 110
@@ -143,7 +143,7 @@ Rectangle {
             Layout.row: 1; Layout.column: 4
             text: qsTr("Spec"); color: "#cccccc"; font.bold: true
         }
-        Slider {
+        LyraSlider {
             id: fpsSlider
             Layout.row: 1; Layout.column: 5
             Layout.preferredWidth: 140
@@ -210,7 +210,7 @@ Rectangle {
             Layout.row: 2; Layout.column: 4
             text: qsTr("WF"); color: "#cccccc"; font.bold: true
         }
-        Slider {
+        LyraSlider {
             id: wfSlider
             Layout.row: 2; Layout.column: 5
             Layout.preferredWidth: 140

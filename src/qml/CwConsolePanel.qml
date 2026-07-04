@@ -260,7 +260,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 8
             Label { text: qsTr("WPM"); color: root.cText; font.bold: true; font.pixelSize: 12 }
-            Slider {
+            LyraSlider {
                 id: wpm
                 Layout.fillWidth: true
                 from: 5; to: 60; stepSize: 1

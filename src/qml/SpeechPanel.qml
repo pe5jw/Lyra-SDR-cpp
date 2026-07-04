@@ -45,7 +45,7 @@ Rectangle {
         spacing: 8
         Label { text: parent.label; color: root.cText; font.bold: true
                 font.pixelSize: 13; Layout.preferredWidth: 72 }
-        Slider {
+        LyraSlider {
             id: sl
             Layout.fillWidth: true
             from: parent.from; to: parent.to; stepSize: parent.step

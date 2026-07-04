@@ -480,7 +480,7 @@ Rectangle {
                         color: root.cText; font.family: "Consolas"; font.pixelSize: 12
                     }
                 }
-                Slider {
+                LyraSlider {
                     id: squelch
                     Layout.fillWidth: true
                     enabled: !root.autoThreshOn
@@ -504,7 +504,7 @@ Rectangle {
                         color: root.cText; font.family: "Consolas"; font.pixelSize: 12
                     }
                 }
-                Slider {
+                LyraSlider {
                     id: threshold
                     Layout.fillWidth: true
                     enabled: !root.autoThreshOn

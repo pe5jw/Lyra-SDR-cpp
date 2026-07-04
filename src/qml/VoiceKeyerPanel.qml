@@ -382,7 +382,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 8
             Label { text: qsTr("Gain"); color: root.cText; font.bold: true; font.pixelSize: 12 }
-            Slider {
+            LyraSlider {
                 id: gain
                 Layout.fillWidth: true
                 from: -20; to: 10; stepSize: 1

@@ -104,7 +104,7 @@ Rectangle {
                 + "even with PA + MOX.  Start LOW (5–10 %) on a dummy load; raise "
                 + "gradually while watching the watt-meter.  Wheel adjusts (Shift = 5 %).")
         }
-        Slider {
+        LyraSlider {
             id: driveSlider
             Layout.preferredWidth: 90    // shortened to reclaim panel width for the CAP chip + button cluster
             from: 0; to: 100; stepSize: 1; snapMode: Slider.SnapAlways
@@ -152,7 +152,7 @@ Rectangle {
                 + "a typed spin-box for the same value — both surfaces tune "
                 + "the same control bidirectionally.")
         }
-        Slider {
+        LyraSlider {
             id: micGainSlider
             Layout.preferredWidth: 90    // matches driveSlider — front-panel sliders kept short
             // Range matches the verified reference's Default TX profile
@@ -385,7 +385,7 @@ Rectangle {
         // Slider matches the Drive/Mic idiom — drag for fast set,
         // wheel-tunes (Shift = 5 %) for fine, Settings → TX provides
         // typed entry.  Per-band persistence per #74 follow-up.
-        Slider {
+        LyraSlider {
             id: tuneDriveSlider
             visible: Prefs.tuneDriveMode === 1   // TuneDriveTune (live per-band tune slider)
             Layout.preferredWidth: 110
