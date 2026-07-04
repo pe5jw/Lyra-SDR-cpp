@@ -674,6 +674,7 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     buildMenus();      // File / View (dock toggles + Lock) / Help
     buildToolbar();
     restoreLayout();   // geometry + dock state + lock state
+    initLayoutUndo();  // baseline snapshot + hook dock move/float signals
 
     // One-time gentle hint at the panel-arranging UX (answers tester
     // "what is an edge?" confusion).  Shown once ever, then the QSettings
@@ -1157,6 +1158,16 @@ void MainWindow::buildMenus() {
     // the menu opens.
     viewMenu->addSeparator();
     QMenu *layoutsMenu = viewMenu->addMenu(tr("&Layouts"));
+
+    // Layout undo — first item so it's the obvious "oops, put that back".
+    // Disabled until the first dock move creates a snapshot.
+    layoutUndoAct_ = layoutsMenu->addAction(
+        tr("&Undo layout change"), this, &MainWindow::undoLayoutChange);
+    layoutUndoAct_->setEnabled(false);
+    layoutUndoAct_->setToolTip(
+        tr("Move the last dragged panel(s) back where they came from "
+           "(up to a few steps)."));
+    layoutsMenu->addSeparator();
 
     QMenu *recallMenu = layoutsMenu->addMenu(tr("&Recall layout"));
     for (int i = 0; i < 4; ++i) {
@@ -2367,6 +2378,7 @@ void MainWindow::refreshLayoutMenus() {
             layoutRecallActs_[i]->setEnabled(!empty);
         }
     }
+    refreshLayoutUndoAction();
 }
 
 void MainWindow::saveNamedLayout(int slot) {
@@ -2464,6 +2476,88 @@ void MainWindow::applyDefaultLayout() {
     if (prefs_) {
         prefs_->setPanadapterSplit(QVariant());
     }
+}
+
+// ── Layout undo (randol request) ─────────────────────────────────────────
+// Snapshot the whole dock arrangement (saveState) before each change so a
+// mis-dropped panel can be walked back.  Only the dock ARRANGEMENT is
+// captured — not the panadapter/waterfall QML divider (a separate
+// prefs_->panadapterSplit, which restoreState doesn't disturb) — so an undo
+// puts the panels back without touching the spectrum split.  Session-scoped:
+// the stack starts empty each launch (the layout itself is restored from
+// ui/userWindowState as before).
+static constexpr int kLayoutUndoMax = 5;   // a few steps of headroom
+
+void MainWindow::initLayoutUndo() {
+    layoutSnapTimer_ = new QTimer(this);
+    layoutSnapTimer_->setSingleShot(true);
+    layoutSnapTimer_->setInterval(400);   // coalesce one drag's several signals
+    connect(layoutSnapTimer_, &QTimer::timeout,
+            this, &MainWindow::commitLayoutSnapshot);
+    // Hook the two signals a drag-drop actually fires: dockLocationChanged
+    // (moved to a new area / tabified) and topLevelChanged (floated/re-docked).
+    // NOT visibilityChanged — that also fires on tab-clicks and would pollute
+    // the stack with noise that isn't an arrangement change.
+    for (auto *d : std::as_const(docks_)) {
+        connect(d, &QDockWidget::dockLocationChanged,
+                this, &MainWindow::onLayoutMaybeChanged);
+        connect(d, &QDockWidget::topLevelChanged,
+                this, &MainWindow::onLayoutMaybeChanged);
+    }
+    layoutCurrent_ = saveState();   // baseline = the just-restored arrangement
+    refreshLayoutUndoAction();
+}
+
+void MainWindow::onLayoutMaybeChanged() {
+    if (layoutRestoring_) return;   // ignore signals from our own restoreState
+    layoutSnapTimer_->start();      // (re)arm the debounce
+}
+
+void MainWindow::commitLayoutSnapshot() {
+    if (layoutRestoring_) return;
+    const QByteArray now = saveState();
+    if (now == layoutCurrent_) return;             // nothing actually moved
+    layoutUndoStack_.append(layoutCurrent_);       // the PRE-change arrangement
+    while (layoutUndoStack_.size() > kLayoutUndoMax)
+        layoutUndoStack_.removeFirst();            // drop the oldest
+    layoutCurrent_ = now;
+    refreshLayoutUndoAction();
+}
+
+void MainWindow::undoLayoutChange() {
+    if (layoutUndoStack_.isEmpty()) {
+        statusBar()->showMessage(
+            tr("Nothing to undo — the panel layout hasn't changed."), 3000);
+        return;
+    }
+    layoutRestoring_ = true;
+    layoutSnapTimer_->stop();                       // cancel any pending commit
+    const QByteArray prev = layoutUndoStack_.takeLast();
+    restoreState(prev);
+    layoutCurrent_ = prev;
+    // restoreState resets each dock's features — re-apply the lock state, as
+    // recallNamedLayout does.
+    applyPanelLock(
+        QSettings().value(QStringLiteral("ui/panelsLocked"), false).toBool());
+    refreshLayoutUndoAction();
+    const int left = layoutUndoStack_.size();
+    statusBar()->showMessage(
+        left > 0
+            ? tr("Layout undone — %1 more step%2 available.")
+                  .arg(left).arg(left == 1 ? QString() : QStringLiteral("s"))
+            : tr("Layout undone."), 3000);
+    // Clear the guard only AFTER restoreState's settling signals have drained
+    // (they'd otherwise re-arm the debounce and push a spurious snapshot).
+    // 600 ms > the 400 ms debounce, so any deferred dock signals are ignored.
+    QTimer::singleShot(600, this, [this]() { layoutRestoring_ = false; });
+}
+
+void MainWindow::refreshLayoutUndoAction() {
+    if (!layoutUndoAct_) return;
+    const int n = layoutUndoStack_.size();
+    layoutUndoAct_->setEnabled(n > 0);
+    layoutUndoAct_->setText(n > 0 ? tr("&Undo layout change  (%1)").arg(n)
+                                  : tr("&Undo layout change"));
 }
 
 // TX-rip Phase 1 (Q2): setTciMicSource / setTxDspWorker method bodies

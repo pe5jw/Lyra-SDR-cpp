@@ -297,6 +297,12 @@ control panels in a row beneath).
   so you can't disturb your arrangement by accident during operating.
   The move cursor disappears on locked title bars as a reminder.
 
+**Undo a bad drag.** Dropped a panel somewhere you didn't mean to?
+**View → Layouts → Undo layout change** puts it back where it came from.
+It remembers the last few arrangements, so you can step back a couple of
+times. (It starts fresh each launch and only tracks panel *moves* — it
+won't re-open a panel you closed; use the **View** menu for that.)
+
 **Named layouts.** **View → Layouts** gives you **four save-able slots**
 plus the built-in **Lyra default** — five arrangements you can recall in
 one click:

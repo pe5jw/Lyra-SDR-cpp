@@ -184,6 +184,17 @@ private:
     void saveNamedLayout(int slot);
     void recallNamedLayout(int slot);
     void refreshLayoutMenus();         // refresh slot labels on menu open
+    // Layout undo (randol request): snapshot the dock arrangement before each
+    // change so a bad drag-drop can be walked back a step or two (View →
+    // Layouts → Undo layout change).  Session-scoped, NOT persisted.  A dock
+    // move / float / dock arms a debounce that coalesces one drag's several
+    // signals into a single snapshot; undo restores the previous arrangement,
+    // so a mis-dropped panel goes back where it came from.
+    void initLayoutUndo();             // wire signals + baseline (after restore)
+    void onLayoutMaybeChanged();       // a dock moved/floated → arm the debounce
+    void commitLayoutSnapshot();       // debounce fired → push the pre-change state
+    void undoLayoutChange();           // pop + restore one step
+    void refreshLayoutUndoAction();    // enable/relabel the menu action
     // Export/import the full settings profile (layout + all prefs) to a
     // portable .lyra file — backup, transfer to another machine, or
     // instant recovery after layout tinkering.  Machine-specific keys
@@ -237,6 +248,12 @@ private:
     bool                        panelsLocked_ = false;   // gates event() separator block
     QAction                    *layoutRecallActs_[4]{};   // named-layout recall slots
     QAction                    *layoutSaveActs_[4]{};      // named-layout save slots
+    // Layout-undo state (session-scoped; see initLayoutUndo).
+    QAction                    *layoutUndoAct_ = nullptr;   // View → Layouts → Undo
+    QList<QByteArray>           layoutUndoStack_;            // pre-change states, newest last
+    QByteArray                  layoutCurrent_;              // last settled arrangement
+    QTimer                     *layoutSnapTimer_ = nullptr;  // debounce dock-change bursts
+    bool                        layoutRestoring_ = false;    // guard our own restoreState
     QAction                    *startStopAction_ = nullptr;   // header Start/Stop
     QToolButton                *startStopBtn_ = nullptr;      // its backing button (green/red)
     QLabel                     *connStatus_ = nullptr;        // header conn status
