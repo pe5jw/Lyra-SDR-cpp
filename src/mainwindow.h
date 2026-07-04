@@ -248,6 +248,7 @@ private:
     QHash<QString, QDockWidget *> docks_;
     QAction                    *lockAction_ = nullptr;
     bool                        panelsLocked_ = false;   // gates event() separator block
+    bool                        spaceConsumedPress_ = false; // space-PTT: swallow paired release/repeats
     QAction                    *layoutRecallActs_[4]{};   // named-layout recall slots
     QAction                    *layoutSaveActs_[4]{};      // named-layout save slots
     // Layout-undo state (session-scoped; see initLayoutUndo).

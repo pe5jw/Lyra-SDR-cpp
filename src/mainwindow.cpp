@@ -2584,26 +2584,31 @@ void MainWindow::refreshHl2TelemetryStrip() {
 }
 
 // ----------------------------------------------------------------
-// TX-0c-fsm — space-bar momentary PTT.
+// TX-0c-fsm — space-bar TOGGLE PTT (Thetis / conventional-rig behaviour).
 //
-// Press space → Stream.requestMox(true); release → requestMox(false).
-// Auto-repeat is ignored (one edge per actual press; held key keeps
-// MOX on until release).  When a text-entry widget has focus the
-// event passes through unhandled so typing space into a freq overlay
-// or any QLineEdit/QSpinBox/QText* still types a space character.
+// Press space once → TX on; press again → TX off.  This mirrors Thetis
+// (space flips chkMOX.Checked on KeyDown, no KeyUp handling) and every
+// rig with a PTT-lock — so operators need no retraining.  It flips the
+// SAME shared MOX truth the TxPanel MOX button toggles
+// (`Stream.requestMox(!Stream.moxActive)`), so the two are identical:
+// space can un-key a MOX-button transmission and vice-versa.
 //
-// Limitation: QML TextField focus inside the embedded QQuickWidgets
-// is NOT detected (Qt reports the QQuickWidget itself as the focus
-// widget, not the inner QML item).  Mitigation today: the only QML
-// text-entry surface that takes focus is the freq-entry overlay in
-// TuningPanel which is hidden by default and only shown on explicit
-// click — operator-controlled, not accidental.  Refine via a QML
-// focus probe if a tester ever keys MOX while typing.
+// Why toggle over the old momentary press/hold: momentary depended on
+// reliably receiving the KeyRelease — a lost release (window loses
+// focus mid-transmit, a popup opens, focus moves to a field) stranded
+// the radio transmitting.  A toggle has no release dependency, so that
+// whole stuck-carrier class is gone.
 //
-// The MOX button on TuningPanel (toggle on click) and this space-bar
-// momentary path BOTH funnel through Stream.requestMox, so intent
-// stays consistent: the FSM (single source of truth) resolves whether
-// to keydown / keyup / collapse / cancel.
+// Auto-repeat presses (held key) are ignored so a held space doesn't
+// cycle TX/RX.  Turning ON honours the typing/dialog/popup guards so a
+// space still types into a freq overlay / QLineEdit / Settings; turning
+// OFF is UNCONDITIONAL (never strand TX on).  We consume the whole space
+// press/release burst we act on so a focused combo/button never sees it.
+//
+// Limitation (unchanged): QML TextField focus inside the embedded
+// QQuickWidgets is NOT detected (Qt reports the QQuickWidget as the
+// focus widget).  The only such surface is TuningPanel's freq-entry
+// overlay, hidden until an explicit click — operator-controlled.
 
 static bool isEditableFocus(QWidget *fw) {
     if (!fw) return false;
@@ -2628,19 +2633,42 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if ((t == QEvent::KeyPress || t == QEvent::KeyRelease)
         && prefs_ && prefs_->spaceBarPttEnabled()) {
         auto *ke = static_cast<QKeyEvent *>(event);
-        QWidget *fw = QApplication::focusWidget();
-        // Skip when focus lives inside a dialog window (Settings / Help are
-        // shown non-modal, so activeModalWidget() wouldn't catch them) — but
-        // a floating dock's window is a QDockWidget, not a QDialog, so PTT
-        // still works from a torn-off panel.
-        const bool inDialog = fw && qobject_cast<QDialog *>(fw->window());
-        if (ke->key() == Qt::Key_Space && !ke->isAutoRepeat()
-            && !isEditableFocus(fw)      // not while typing (space is a char)
-            && !inDialog                 // not inside Settings/Help
-            && !QApplication::activePopupWidget()) {  // not while a popup is open
+        if (ke->key() == Qt::Key_Space) {
+            // Swallow the paired release + any auto-repeat presses for a space
+            // press we acted on, so a focused button/combo never reacts to the
+            // space at all.  If we passed the initiating press through (typing
+            // into a field), these flow through the same way.
+            if (t == QEvent::KeyRelease) {
+                const bool consume = spaceConsumedPress_;
+                spaceConsumedPress_ = false;
+                if (consume) return true;
+                return QMainWindow::eventFilter(watched, event);
+            }
+            if (ke->isAutoRepeat()) {
+                if (spaceConsumedPress_) return true;  // swallow held-key repeats
+                return QMainWindow::eventFilter(watched, event);
+            }
+            // First (non-repeat) press: toggle MOX exactly as the MOX button
+            // does — flip the one shared wire-MOX truth.
             if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
-                st->requestMox(t == QEvent::KeyPress);
-                return true;   // consume so the combo/button never sees Space
+                if (st->moxActive()) {
+                    st->requestMox(false);       // un-key: ALWAYS allowed
+                    spaceConsumedPress_ = true;
+                    return true;
+                }
+                // Keying ON honours the guards so a space still types into a
+                // field / behaves in a dialog / while a popup is open.  A
+                // floating dock's window is a QDockWidget (not QDialog), so
+                // PTT still keys from a torn-off panel.
+                QWidget *fw = QApplication::focusWidget();
+                const bool inDialog = fw && qobject_cast<QDialog *>(fw->window());
+                if (!isEditableFocus(fw) && !inDialog
+                    && !QApplication::activePopupWidget()) {
+                    st->requestMox(true);        // key ON
+                    spaceConsumedPress_ = true;
+                    return true;
+                }
+                // MOX off + typing context → let the space type a character.
             }
         }
     }
