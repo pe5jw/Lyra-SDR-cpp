@@ -104,13 +104,20 @@ protected:
     // title bar — and with it Qt's native drag-to-dock.  DockDragController
     // (installed as the title bars' event filter) restores drag/float/dock/
     // snap/tabify; double-click float-toggle lives there too.
-    // TX-0c-fsm — space-bar PTT momentary.  Press routes to
-    // stream.requestMox(true), release routes to requestMox(false).
-    // Suppressed when a text-entry widget has focus so typing into
-    // the freq-entry overlay (or any QLineEdit/QSpinBox) doesn't key
-    // the radio.  Auto-repeat is ignored (one edge per press).
+    // #176 CW-macro / #89 voice-keyer F1..F12 global accelerators.  Space-bar
+    // PTT is NOT here — a focused QComboBox / QPushButton consumes Space
+    // (opens its popup / clicks) before keyPressEvent ever runs, so it goes
+    // through the app-wide eventFilter below (previews the key like Thetis's
+    // KeyPreview) instead.  F-keys stay here: widgets don't consume F1..F12,
+    // so they propagate up regardless of focus.
     void keyPressEvent(QKeyEvent *event) override;
-    void keyReleaseEvent(QKeyEvent *event) override;
+
+    // App-wide key preview.  Installed on qApp so space-bar PTT is seen
+    // BEFORE the focused control (combo/button) can swallow it — Press routes
+    // to stream.requestMox(true), release to requestMox(false).  Suppressed
+    // while typing (QLineEdit/QSpinBox/…), while a modal dialog or a combo
+    // popup is open, and when space-bar PTT is disabled; auto-repeat ignored.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     // Build a QQuickWidget that hosts <qmlFile> from the Lyra QML

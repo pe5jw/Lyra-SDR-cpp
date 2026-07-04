@@ -104,6 +104,7 @@
 #include "ncdxffollow.h"
 
 #include <QApplication>
+#include <QDialog>
 #include <QSystemTrayIcon>
 
 #include <utility>
@@ -248,6 +249,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // QWidget tooltip events app-wide when disabled; QML ToolTips honour
     // the same Prefs flag via their visible bindings.
     qApp->installEventFilter(new TooltipGate(prefs_, this));
+
+    // App-wide key preview for space-bar PTT (Thetis KeyPreview equivalent).
+    // MainWindow::eventFilter sees Key_Space BEFORE the focused control, so a
+    // Mode/Step combo or a band button can no longer swallow it (Pierre
+    // HS0ZRT: space sometimes popped the Mode dropdown instead of keying).
+    qApp->installEventFilter(this);
 
     // Full QDockWidget feature set: nested + tabbed docks, animated,
     // grouped-drag handle — the panel-arranging UX the operator wants.
@@ -2581,21 +2588,36 @@ static bool isEditableFocus(QWidget *fw) {
     return false;
 }
 
-void MainWindow::keyPressEvent(QKeyEvent *event) {
-    // Task #157 — space-bar PTT is operator-gated (Settings → Hardware →
-    // Transmit).  When disabled, fall through to default handling so the
-    // operator's accidental space presses no longer key MOX.
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()
+// App-wide key preview (installed on qApp).  The single home for space-bar
+// PTT: it runs BEFORE the focused widget's own key handling, so a focused
+// QComboBox (Mode/Step) or QPushButton (band button) can't consume Space to
+// open its popup / click itself the way keyPressEvent-after-focus allowed
+// (Pierre HS0ZRT report).  This is the Qt equivalent of Thetis's KeyPreview.
+bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    const QEvent::Type t = event->type();
+    if ((t == QEvent::KeyPress || t == QEvent::KeyRelease)
         && prefs_ && prefs_->spaceBarPttEnabled()) {
-        if (!isEditableFocus(QApplication::focusWidget())) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        QWidget *fw = QApplication::focusWidget();
+        // Skip when focus lives inside a dialog window (Settings / Help are
+        // shown non-modal, so activeModalWidget() wouldn't catch them) — but
+        // a floating dock's window is a QDockWidget, not a QDialog, so PTT
+        // still works from a torn-off panel.
+        const bool inDialog = fw && qobject_cast<QDialog *>(fw->window());
+        if (ke->key() == Qt::Key_Space && !ke->isAutoRepeat()
+            && !isEditableFocus(fw)      // not while typing (space is a char)
+            && !inDialog                 // not inside Settings/Help
+            && !QApplication::activePopupWidget()) {  // not while a popup is open
             if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
-                st->requestMox(true);
-                event->accept();
-                return;
+                st->requestMox(t == QEvent::KeyPress);
+                return true;   // consume so the combo/button never sees Space
             }
         }
     }
+    return QMainWindow::eventFilter(watched, event);
+}
 
+void MainWindow::keyPressEvent(QKeyEvent *event) {
     // #176 — F1..F12 fire the assigned CW macro (global accelerator, like a
     // real contest keyer: works regardless of which dock has focus).  Gated to
     // CW modes (the keyer no-ops elsewhere) + not while typing in a field (so
@@ -2626,20 +2648,6 @@ void MainWindow::keyPressEvent(QKeyEvent *event) {
         }
     }
     QMainWindow::keyPressEvent(event);
-}
-
-void MainWindow::keyReleaseEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()
-        && prefs_ && prefs_->spaceBarPttEnabled()) {
-        if (!isEditableFocus(QApplication::focusWidget())) {
-            if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
-                st->requestMox(false);
-                event->accept();
-                return;
-            }
-        }
-    }
-    QMainWindow::keyReleaseEvent(event);
 }
 
 } // namespace lyra::ui
