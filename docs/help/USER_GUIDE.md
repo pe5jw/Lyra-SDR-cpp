@@ -2008,8 +2008,16 @@ Keep it as a backup, or hand it to another operator for your exact setup.
 the cadence and how many to keep on the tab; 0 launches turns auto off).
 *Save snapshot now…* takes one on demand and lets you name it — named
 snapshots are kept until you delete them; automatic ones roll over. Pick one
-from the list and **Restore selected…**, or **Restore from file…** for a
-`.lyra` you exported earlier.
+from the list and **Restore selected…**, **Export selected…** (copy it out to
+a USB stick or cloud folder), or **Restore from file…** for a `.lyra` you
+saved earlier.
+
+Snapshots live in your Windows app-data folder — the tab shows the exact
+path and an **Open folder** button. Crucially, that folder **survives an
+uninstall / reinstall** (and the registry reset), so if Lyra ever gets wiped,
+do a fresh install, go to Backup & Restore → **Restore from file…**, and pick
+your last snapshot out of that folder to get your setup back. (Copying that
+folder somewhere safe now is a good habit.)
 
 **Selective restore — the important part.** Restoring doesn't have to be
 all-or-nothing. When you restore, Lyra shows a **checklist of sections**

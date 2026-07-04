@@ -21,9 +21,13 @@
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QProcess>
+#include <QUrl>
 #include <QStandardPaths>
 #include <QVBoxLayout>
 #include <QGroupBox>
@@ -8342,13 +8346,34 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
     snapList_->setMinimumHeight(150);
     snapV->addWidget(snapList_);
 
+    // Where the files live — shown + one-click openable so a user who
+    // reinstalls Lyra can find their snapshots.  These live in %APPDATA% and
+    // survive an uninstall / reinstall (and the registry-reset), so a fresh
+    // install can Restore-from-file straight out of this folder.
+    auto *pathRow = new QHBoxLayout();
+    auto *pathLbl = new QLabel(
+        tr("Stored in:  %1").arg(
+            QDir::toNativeSeparators(lyra::backup::snapshotDir())), snapGrp);
+    pathLbl->setStyleSheet(QStringLiteral("color:#8a97a0;"));
+    pathLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);   // copyable
+    auto *openBtn = new QPushButton(tr("Open folder"), snapGrp);
+    pathRow->addWidget(pathLbl, 1);
+    pathRow->addWidget(openBtn);
+    snapV->addLayout(pathRow);
+    connect(openBtn, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(lyra::backup::snapshotDir()));
+    });
+
     auto *btnRow = new QHBoxLayout();
     auto *saveNow   = new QPushButton(tr("Save snapshot now…"), snapGrp);
     auto *restoreBtn = new QPushButton(tr("Restore selected…"), snapGrp);
+    auto *exportSel = new QPushButton(tr("Export selected…"), snapGrp);
     auto *delBtn    = new QPushButton(tr("Delete"), snapGrp);
     auto *fileBtn   = new QPushButton(tr("Restore from file…"), snapGrp);
     btnRow->addWidget(saveNow);
     btnRow->addWidget(restoreBtn);
+    btnRow->addWidget(exportSel);
     btnRow->addWidget(delBtn);
     btnRow->addStretch(1);
     btnRow->addWidget(fileBtn);
@@ -8382,6 +8407,44 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
             return;
         }
         restoreBackupInteractive(this, path);
+    });
+    connect(exportSel, &QPushButton::clicked, this, [this]() {
+        auto *item = snapList_->currentItem();
+        const QString src = item ? item->data(Qt::UserRole).toString() : QString();
+        if (src.isEmpty()) {
+            QMessageBox::information(this, tr("Export snapshot"),
+                tr("Select a snapshot in the list first."));
+            return;
+        }
+        // Copy the snapshot file out to a location the operator picks — e.g.
+        // a USB stick / cloud folder before a reinstall.
+        const QString fallback = QSettings().value(
+            QStringLiteral("backup/lastExportDir"),
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
+            .toString();
+        QString dst = QFileDialog::getSaveFileName(
+            this, tr("Export snapshot to a file"),
+            fallback + QLatin1Char('/') + QFileInfo(src).fileName(),
+            tr("Lyra backup (*.lyra)"));
+        if (dst.isEmpty()) return;
+        if (!dst.endsWith(QStringLiteral(".lyra"), Qt::CaseInsensitive))
+            dst += QStringLiteral(".lyra");
+        if (QFileInfo(src).absoluteFilePath() == QFileInfo(dst).absoluteFilePath()) {
+            QMessageBox::information(this, tr("Export snapshot"),
+                tr("That's the snapshot's own location — pick a different "
+                   "folder or name."));
+            return;
+        }
+        QFile::remove(dst);              // QFile::copy won't overwrite
+        if (QFile::copy(src, dst)) {
+            QSettings().setValue(QStringLiteral("backup/lastExportDir"),
+                                 QFileInfo(dst).absolutePath());
+            QMessageBox::information(this, tr("Exported"),
+                tr("Copied the snapshot to:\n%1").arg(dst));
+        } else {
+            QMessageBox::warning(this, tr("Export failed"),
+                tr("Couldn't copy to:\n%1").arg(dst));
+        }
     });
     connect(delBtn, &QPushButton::clicked, this, [this]() {
         auto *item = snapList_->currentItem();
