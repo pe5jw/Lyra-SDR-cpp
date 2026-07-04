@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.12.0)
+## Features (v0.12.1)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -145,6 +145,10 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   many launches (adjustable), stored on disk so they **survive an
   uninstall/reinstall** — a fresh install can restore your old setup from the
   snapshot folder.  Machine-specific keys (IP, graphics backend) never travel.
+  Its **Maintenance & recovery** tools also rebuild the one-time FFT
+  optimization (after a CPU change) and, when all else fails, **reset every
+  setting to factory defaults** — a safety snapshot is taken first so it's
+  undoable.
 * **Crash-safe graphics** — Lyra picks the best graphics backend for your GPU
   (Vulkan / Direct3D / OpenGL, at the bottom of Settings → Visuals).  If a
   launch ever dies during start-up (a flaky GPU driver), the **next** launch
