@@ -53,7 +53,7 @@ up rewrite using the architecture the project should have started with.
 
 **No Python. No GIL. No cffi-on-the-wire-path. No in-process bottleneck.**
 
-## Features (v0.11.5)
+## Features (v0.12.0)
 
 A full receive **and transmit** SDR transceiver for the Hermes Lite 2 / 2+,
 native C++ end to end.  Lyra transmits every voice mode (SSB / AM / DSB /
@@ -118,7 +118,10 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   lockout (for sharing the antenna/bench with sensitive gear).
 * **Waterfall callsign ID** — an optional courtesy ID that paints your
   callsign as a readable image in the SSB passband (USB/LSB), armed from the
-  header — a visual hello on the band (not a replacement for legal ID).
+  header — a visual hello on the band (not a replacement for legal ID).  It's
+  now **locked to amateur bands** for your region — it can't be armed or
+  fired outside a ham allocation (no rastering your call into a broadcast or
+  CB segment).
 * **Tuner memory (manual-ATU reminder)** — a built-in tuning-memory panel
   for manual antenna tuners: three named antennas, each with a
   frequency-keyed Input / Output / Inductor table, live colour-coded SWR,
@@ -132,7 +135,21 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
   where it lands: snap to an edge, split a neighbour, tab behind it, or
   float it free.  Cyan-on-hover resize separators; **four named layout
   slots** + a factory default; **Lock panels** freezes move *and* resize
-  and survives a restart; export/import of the full settings profile.
+  and survives a restart.  Dropped a panel in the wrong spot?  **View →
+  Layouts → Undo layout change** walks the last one or two moves back where
+  they came from.
+* **Backup & Restore** — a dedicated **Settings → Backup & Restore** tab:
+  export your whole config to a `.lyra` file, or **selectively restore** just
+  the section you broke (Radio / Audio / TX / CW / Display / Layout / … — tick
+  what to bring back).  Lyra also keeps **automatic dated snapshots** every so
+  many launches (adjustable), stored on disk so they **survive an
+  uninstall/reinstall** — a fresh install can restore your old setup from the
+  snapshot folder.  Machine-specific keys (IP, graphics backend) never travel.
+* **Crash-safe graphics** — Lyra picks the best graphics backend for your GPU
+  (Vulkan / Direct3D / OpenGL, at the bottom of Settings → Visuals).  If a
+  launch ever dies during start-up (a flaky GPU driver), the **next** launch
+  automatically drops to a safer backend so you're never stuck editing the
+  registry to get back in.
 * **Band switching + per-band memory** — three rows (Ham / BC / Gen),
   returns to each band's last frequency, mode, and panadapter/waterfall dB
   ranges; optional 11m/CB band with all-40-channel panadapter markers
