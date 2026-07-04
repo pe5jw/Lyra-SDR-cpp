@@ -264,7 +264,7 @@ Rectangle {
 
                         Item { Layout.fillWidth: true }
                         Label { text: qsTr("Step"); color: "#cccccc"; font.bold: true }
-                        ComboBox {
+                        LyraComboBox {
                             id: stepCombo
                             Layout.preferredWidth: 78
                             property var stepVals: [1, 10, 100, 1000, 5000, 10000]
@@ -272,7 +272,7 @@ Rectangle {
                             currentIndex: 3   // 1 kHz default
                         }
                         Label { text: qsTr("Mode"); color: "#cccccc"; font.bold: true }
-                        ComboBox {
+                        LyraComboBox {
                             id: modeCombo
                             Layout.preferredWidth: 78
                             model: root.modeList
@@ -399,7 +399,7 @@ Rectangle {
                             spacing: 6
                             Item { Layout.fillWidth: true }
                             Label { text: qsTr("Step"); color: "#cccccc"; font.bold: true }
-                            ComboBox {
+                            LyraComboBox {
                                 id: stepComboB
                                 Layout.preferredWidth: 78
                                 property var stepVals: [1, 10, 100, 1000, 5000, 10000]
@@ -460,7 +460,7 @@ Rectangle {
                 text: qsTr("Dev"); color: "#cccccc"; font.bold: true
                 visible: root.fmMode
             }
-            SpinBox {
+            LyraSpinBox {
                 id: devSpin
                 visible: root.fmMode
                 Layout.preferredWidth: 94
@@ -491,7 +491,7 @@ Rectangle {
                 text: qsTr("Emph"); color: "#cccccc"; font.bold: true
                 visible: root.fmMode
             }
-            ComboBox {
+            LyraComboBox {
                 id: emphCombo
                 visible: root.fmMode
                 Layout.preferredWidth: 88
@@ -555,7 +555,7 @@ Rectangle {
                 ToolTip.text: qsTr("Repeater shift direction"); ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
             // Common repeater offsets.
-            ComboBox {
+            LyraComboBox {
                 id: rptOffsetCombo
                 visible: root.fmMode && Stream.splitEnabled
                 Layout.preferredWidth: 92
@@ -597,7 +597,7 @@ Rectangle {
                 text: qsTr("Tone"); color: "#cccccc"; font.bold: true
                 visible: root.fmMode && Stream.splitEnabled && ctcssBtn.checked
             }
-            ComboBox {
+            LyraComboBox {
                 id: ctcssToneCombo
                 visible: root.fmMode && Stream.splitEnabled && ctcssBtn.checked
                 Layout.preferredWidth: 78
@@ -665,7 +665,7 @@ Rectangle {
                     + "off-frequency station without moving your VFO.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
-            SpinBox {
+            LyraSpinBox {
                 id: ritSpin
                 visible: ritBtn.checked
                 Layout.preferredWidth: 104
@@ -733,7 +733,7 @@ Rectangle {
                     + "tracks the shifted TX automatically.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled; ToolTip.delay: 600
             }
-            SpinBox {
+            LyraSpinBox {
                 id: xitSpin
                 visible: xitBtn.checked
                 Layout.preferredWidth: 104
@@ -775,7 +775,7 @@ Rectangle {
                 color: "#cccccc"; font.bold: true
                 visible: root.cwMode
             }
-            SpinBox {
+            LyraSpinBox {
                 id: pitchSpin
                 visible: root.cwMode
                 Layout.preferredWidth: 110

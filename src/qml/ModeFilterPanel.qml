@@ -124,7 +124,7 @@ Rectangle {
         spacing: 8
 
         Label { text: qsTr("Rate"); color: "#cccccc"; font.bold: true }
-        ComboBox {
+        LyraComboBox {
             id: rateCombo
             Layout.preferredWidth: 76
             model: ["96 k", "192 k", "384 k"]
@@ -140,7 +140,7 @@ Rectangle {
         }
 
         Label { text: qsTr("RX BW"); color: "#cccccc"; font.bold: true }
-        ComboBox {
+        LyraComboBox {
             id: bwCombo
             Layout.preferredWidth: 120
             // Rebuilds on mode change (per-mode presets) AND on bandwidth
@@ -176,7 +176,7 @@ Rectangle {
             text: qsTr("TX BW"); font.bold: true
             color: root.isFm ? "#666666" : "#cccccc"
         }
-        ComboBox {
+        LyraComboBox {
             id: txBwCombo
             Layout.preferredWidth: 120
             enabled: !root.isFm           // FM TX width is auto (deviation-derived)
