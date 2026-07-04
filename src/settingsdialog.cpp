@@ -7323,8 +7323,14 @@ QWidget *SettingsDialog::buildVisualsTab() {
         const int idx = std::max(0, gfx->findData(cur));
         gfx->setCurrentIndex(idx);
         connect(gfx, &QComboBox::currentIndexChanged, gfx, [gfx](int i) {
-            QSettings().setValue(QStringLiteral("ui/graphicsBackend"),
-                                 gfx->itemData(i).toString());
+            QSettings s;
+            s.setValue(QStringLiteral("ui/graphicsBackend"),
+                       gfx->itemData(i).toString());
+            // The operator is taking control, so leave graphics safe mode
+            // (a prior startup crash may have forced OpenGL) — their pick is
+            // honoured next launch.
+            s.remove(QStringLiteral("ui/gfxSafeMode"));
+            s.remove(QStringLiteral("ui/gfxSafeDepth"));
         });
         gh->addWidget(gfx);
 
@@ -7334,6 +7340,17 @@ QWidget *SettingsDialog::buildVisualsTab() {
         gh->addStretch(1);
 
         form->addRow(tr("Graphics backend"), gbox);
+
+        // If a prior startup crash forced graphics safe mode, say so here and
+        // point back to this control (the notice at launch does too).
+        if (QSettings().value(QStringLiteral("ui/gfxSafeMode"), false).toBool()) {
+            auto *sm = new QLabel(
+                tr("⚠  Running in graphics safe mode after a startup problem — "
+                   "pick a backend above (then restart) to leave it."), page);
+            sm->setWordWrap(true);
+            sm->setStyleSheet(QStringLiteral("QLabel{color:#ffb74d;}"));
+            form->addRow(QString(), sm);
+        }
     }
 
     return page;

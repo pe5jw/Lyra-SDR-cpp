@@ -3620,6 +3620,15 @@ know your card prefers one. (If panels ever fail to draw or crash when you
 drag them, set this to **Direct3D 11** or **Auto** and restart.) This
 setting stays on the machine — it isn't carried in an exported profile.
 
+**Graphics safe mode (automatic).** If Lyra ever crashes *while starting up*
+(a bad GPU driver can do this before the window is even up), the **next**
+launch automatically drops to **OpenGL** so Lyra opens instead of crashing
+again — you'll see a one-time notice, and no registry editing is needed. It
+stays in safe mode until you pick a backend here (which clears it). If OpenGL
+still crashes at startup, it steps down again to the **software** renderer
+(slow, but it always works — enough to get in and change settings). If a
+backend keeps crashing, the real fix is usually a **GPU-driver update**.
+
 ---
 
 ## Settings → Weather

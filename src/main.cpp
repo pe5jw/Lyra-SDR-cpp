@@ -112,6 +112,8 @@ std::atomic<bool> g_shutdown_complete{false};
 #include <QSettings>
 #include "logbuffer.h"
 #include "theme.h"
+#include <QMessageBox>
+#include <QPushButton>
 #include <QTimer>
 #include <QtQml>
 
@@ -189,25 +191,64 @@ int main(int argc, char *argv[])
     // backend; restart-to-apply since the API is fixed at startup).
     // "auto" leaves Qt RHI to pick per platform; any explicit value still
     // falls back transparently if that backend is unavailable at runtime.
+    // Set below if this launch entered graphics "safe mode" after detecting
+    // that the previous startup crashed — used to show a one-time notice once
+    // the window is up.  gfxSafeBackend names the backend safe mode forced.
+    bool    gfxCrashRecovered = false;
+    QString gfxSafeBackend;
     {
         using RI = QSGRendererInterface;
+        QSettings s;
         // Resolution order: LYRA_GRAPHICS env var (no-UI escape hatch for
         // testers) -> persisted Settings -> "auto" default.  "auto" leaves
         // the API unpinned so Qt RHI picks the most compatible backend per
         // machine (Direct3D 11 on Windows) and honours QSG_RHI_BACKEND.
-        // This avoids Vulkan being force-pinned on GPUs/drivers where the
-        // QQuickWidget swapchain fails to create OR crashes on dock
-        // float/reparent (both field-reported on tester hardware).  Vulkan
-        // stays fully selectable in Settings -> Visuals.
+        // Vulkan stays fully selectable in Settings -> Visuals.
+        //
+        // Crash-safe fallback ("safe mode after crash"): a "startup pending"
+        // sentinel is set here and cleared ~2 s after the window is up (past
+        // the scene-graph build where a bad GPU driver crashes, ~0.8 s in on
+        // field reports — AMD D3D11 + many QQuickWidget swapchains).  If a
+        // fresh launch finds the sentinel STILL set, the previous launch died
+        // during UI build -> step down to a safer backend (OpenGL, then the
+        // software rasterizer) so a tester never has to touch the registry or
+        // an env var.  Sticky (persisted) until the operator picks a backend
+        // in Settings -> Visuals, which clears it.  An explicit LYRA_GRAPHICS
+        // override is always honoured and never overridden (debug hatch).
+        const bool crashed =
+            s.value(QStringLiteral("ui/gfxStartupPending"), false).toBool();
+        const bool envForced =
+            !qEnvironmentVariable("LYRA_GRAPHICS").trimmed().isEmpty();
+        int safeDepth = s.value(QStringLiteral("ui/gfxSafeDepth"), 0).toInt();
+        if (crashed && !envForced) {
+            safeDepth = std::min(safeDepth + 1, 2);   // 1 = OpenGL, 2 = Software
+            s.setValue(QStringLiteral("ui/gfxSafeDepth"), safeDepth);
+            s.setValue(QStringLiteral("ui/gfxSafeMode"), true);
+            gfxCrashRecovered = true;
+        }
+        s.setValue(QStringLiteral("ui/gfxStartupPending"), true);
+        s.sync();                          // flush to registry before we risk a crash
+
         QString be = qEnvironmentVariable("LYRA_GRAPHICS").trimmed().toLower();
         if (be.isEmpty())
-            be = QSettings().value(QStringLiteral("ui/graphicsBackend"),
-                                   QStringLiteral("auto")).toString().toLower();
-        if      (be == "vulkan") QQuickWindow::setGraphicsApi(RI::Vulkan);
-        else if (be == "opengl") QQuickWindow::setGraphicsApi(RI::OpenGL);
-        else if (be == "d3d11")  QQuickWindow::setGraphicsApi(RI::Direct3D11);
-        else if (be == "d3d12")  QQuickWindow::setGraphicsApi(RI::Direct3D12);
+            be = s.value(QStringLiteral("ui/graphicsBackend"),
+                         QStringLiteral("auto")).toString().toLower();
+        // Safe mode overrides the auto/saved choice (never an env override).
+        if (!envForced && s.value(QStringLiteral("ui/gfxSafeMode"), false).toBool()) {
+            be = (safeDepth >= 2) ? QStringLiteral("software")
+                                  : QStringLiteral("opengl");
+            gfxSafeBackend = be;
+        }
+        if      (be == "vulkan")   QQuickWindow::setGraphicsApi(RI::Vulkan);
+        else if (be == "opengl")   QQuickWindow::setGraphicsApi(RI::OpenGL);
+        else if (be == "d3d11")    QQuickWindow::setGraphicsApi(RI::Direct3D11);
+        else if (be == "d3d12")    QQuickWindow::setGraphicsApi(RI::Direct3D12);
+        else if (be == "software")
+            QQuickWindow::setSceneGraphBackend(QStringLiteral("software"));
         // "auto" (default) -> leave unpinned; Qt RHI auto-selects.
+        if (gfxCrashRecovered)
+            qWarning("[gfx] previous startup did not complete — graphics "
+                     "safe mode (depth %d -> %s)", safeDepth, qPrintable(be));
     }
 
     // Multisample anti-aliasing.  Without this the RHI swapchain runs
@@ -1015,6 +1056,48 @@ int main(int argc, char *argv[])
                                          wdspEngine, prefs, wx, profiles);
     winRef = win;   // populate the aboutToQuit teardown handler's reference
     win->show();
+
+    // Crash-safe graphics fallback (see the RHI block near the top of main):
+    // we survived UI construction — clear the "startup pending" sentinel a
+    // couple of seconds in (after any deferred startup completes).  A crash
+    // during UI build never reaches the event loop, so the sentinel stays set
+    // and the NEXT launch steps down to a safer backend.  Also cleared on a
+    // clean quit; a hard crash reaches neither, which is the whole point.
+    QTimer::singleShot(2000, win, []() {
+        QSettings s;
+        s.setValue(QStringLiteral("ui/gfxStartupPending"), false);
+        s.sync();
+    });
+    QObject::connect(&app, &QApplication::aboutToQuit, []() {
+        QSettings().setValue(QStringLiteral("ui/gfxStartupPending"), false);
+    });
+    // One-time notice if this launch recovered from a startup crash (deferred
+    // so the main window paints first, then the dialog pops over it).
+    if (gfxCrashRecovered) {
+        QTimer::singleShot(500, win, [win, gfxSafeBackend]() {
+            const QString name = (gfxSafeBackend == QStringLiteral("software"))
+                ? QObject::tr("Software (no GPU)") : QObject::tr("OpenGL");
+            QMessageBox box(win);
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle(QObject::tr("Graphics safe mode"));
+            box.setText(QObject::tr(
+                "Lyra didn't start cleanly last time, so graphics were "
+                "switched to <b>%1</b> to get you running.\n\n"
+                "You can change this any time in "
+                "Settings → Visuals → Graphics backend.").arg(name));
+            auto *keep = box.addButton(QObject::tr("Keep safe mode"),
+                                       QMessageBox::AcceptRole);
+            auto *retry = box.addButton(QObject::tr("Use my setting next launch"),
+                                        QMessageBox::RejectRole);
+            box.setDefaultButton(keep);
+            box.exec();
+            if (box.clickedButton() == retry) {
+                QSettings s;
+                s.remove(QStringLiteral("ui/gfxSafeMode"));
+                s.remove(QStringLiteral("ui/gfxSafeDepth"));
+            }
+        });
+    }
 
     // #49 v3 — the TX DSP rack models now exist (MainWindow members).
     // (1) Flag the active profile ● modified when any rack control changes,
