@@ -17,14 +17,19 @@ SpinBox {
     id: control
     editable: true
     implicitHeight: 24
-    font.pixelSize: 12
+    font.pixelSize: 13
     // Reserve the right-hand column for the stacked chevrons.
     rightPadding: 18
+
+    // A few call sites carry their OWN WheelHandler with custom stepping
+    // (e.g. RIT/XIT = 10 Hz wheel / 1 Hz arrows); those set this false so the
+    // component's default stepSize wheel below doesn't fight theirs.
+    property bool wheelStepping: true
 
     contentItem: TextInput {
         text: control.displayText
         font: control.font
-        color: control.enabled ? "#cdd9e5" : "#5a6670"
+        color: control.enabled ? "#f2f8fc" : "#5a6670"
         selectionColor: "#50d0ff"
         selectedTextColor: "#0a0e12"
         horizontalAlignment: Qt.AlignHCenter
@@ -33,6 +38,21 @@ SpinBox {
         readOnly: !control.editable
         validator: control.validator
         inputMethodHints: Qt.ImhFormattedNumbersOnly
+    }
+
+    // Mouse-wheel: scroll up/down to step.  Uses the same plain WheelHandler
+    // idiom the panels' sliders use (which work), stepping value directly and
+    // emitting valueModified so each caller's onValueModified fires.
+    WheelHandler {
+        enabled: control.wheelStepping
+        onWheel: (ev) => {
+            var d = ev.angleDelta.y > 0 ? control.stepSize : -control.stepSize
+            var v = Math.max(control.from, Math.min(control.to, control.value + d))
+            if (v !== control.value) {
+                control.value = v
+                control.valueModified()
+            }
+        }
     }
 
     up.indicator: Rectangle {

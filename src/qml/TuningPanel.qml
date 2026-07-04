@@ -667,6 +667,7 @@ Rectangle {
             }
             LyraSpinBox {
                 id: ritSpin
+                wheelStepping: false   // has its own WheelHandler (10 Hz)
                 visible: ritBtn.checked
                 Layout.preferredWidth: 104
                 from: -9999; to: 9999; stepSize: 1   // ± arrows = 1 Hz
@@ -735,6 +736,7 @@ Rectangle {
             }
             LyraSpinBox {
                 id: xitSpin
+                wheelStepping: false   // has its own WheelHandler (10 Hz)
                 visible: xitBtn.checked
                 Layout.preferredWidth: 104
                 from: -9999; to: 9999; stepSize: 1   // ± arrows = 1 Hz

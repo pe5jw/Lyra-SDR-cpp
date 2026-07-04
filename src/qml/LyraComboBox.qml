@@ -14,7 +14,8 @@ import QtQuick.Controls
 ComboBox {
     id: control
     implicitHeight: 24
-    font.pixelSize: 12
+    font.pixelSize: 13
+    wheelEnabled: true      // mouse-wheel cycles the selection
 
     // Selected-value text.  Leaves room on the right for the chevron.
     contentItem: Text {
@@ -22,7 +23,7 @@ ComboBox {
         rightPadding: 20
         text: control.displayText
         font: control.font
-        color: control.enabled ? "#cdd9e5" : "#5a6670"
+        color: control.enabled ? "#f2f8fc" : "#5a6670"
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
@@ -46,10 +47,11 @@ ComboBox {
         radius: 3
     }
 
-    // Dropdown rows.
+    // Dropdown rows.  Full-width, left-aligned, bright text.
     delegate: ItemDelegate {
         width: ListView.view.width
-        height: 24
+        height: 26
+        padding: 8
         contentItem: Text {
             text: control.textRole
                   ? (Array.isArray(control.model)
@@ -57,9 +59,8 @@ ComboBox {
                         : model[control.textRole])
                   : modelData
             font: control.font
-            color: "#cdd9e5"
+            color: control.currentIndex === index ? "#8fe0ff" : "#eaf2f7"
             verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
         }
         highlighted: control.highlightedIndex === index
         background: Rectangle {
@@ -67,17 +68,24 @@ ComboBox {
         }
     }
 
+    // Popup grows to at least the field width (and a sane floor) so long
+    // labels aren't clipped, sizes its height to the item count, and
+    // scrolls when there are more items than fit.
     popup: Popup {
-        y: control.height
-        width: control.width
-        implicitHeight: Math.min(contentItem.implicitHeight + 2, 260)
+        // Render in a top-level window so the list is NOT clipped by the
+        // dock panel's frame — otherwise items past the panel edge are
+        // hidden + unselectable (Mode, RX BW, … in a narrow panel).
+        popupType: Popup.Window
+        y: control.height - 1
+        width: Math.max(control.width, 130)
+        implicitHeight: Math.min(control.count * 26 + 2, 320)
         padding: 1
         contentItem: ListView {
             clip: true
-            implicitHeight: contentHeight
-            model: control.popup.visible ? control.delegateModel : null
+            model: control.delegateModel
             currentIndex: control.highlightedIndex
-            ScrollIndicator.vertical: ScrollIndicator {}
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { active: true }
         }
         background: Rectangle {
             color: "#12181f"
