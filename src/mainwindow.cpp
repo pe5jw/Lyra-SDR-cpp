@@ -1613,16 +1613,20 @@ void MainWindow::buildToolbar() {
             // SAFE arming (operator-locked): "you want it you must arm it."
             // ANY band-edge crossing OR mode change DISARMS the auto-ID, so a
             // courtesy ID can never carry over to a context the operator didn't
-            // deliberately arm.  Also no ID on 11m/CB ever (legal): the chip is
-            // dead on the CB band even in USB/LSB.  The hard fire-time guard
-            // lives in WaterfallIdController; this greys + disarms the chip.
+            // deliberately arm.  HAM-BANDS-ONLY (legal, region-aware): the chip
+            // is dead anywhere outside an amateur allocation for the operator's
+            // band-plan region — 11m / CB and every other out-of-band segment
+            // (e.g. a US ham who spins onto 7.310 in the 41m broadcast band)
+            // can never raster a callsign.  The hard fire-time guard lives in
+            // WaterfallIdController; this greys + disarms the chip.
             auto *wfStream = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
-            auto on11m = [wfStream]() {
-                return wfStream && lyra::cbBandIndexForFreq(
-                           static_cast<int>(wfStream->rx1FreqHz())) >= 0;
+            auto inHamBand = [this, wfStream]() {
+                return wfStream && lyra::ui::amateurBandContains(
+                           prefs_->bandPlanRegion(), prefs_->bandPlanCountry(),
+                           static_cast<double>(wfStream->rx1FreqHz()));
             };
-            auto armable = [isSsbMode, on11m]() {
-                return isSsbMode() && !on11m();
+            auto armable = [isSsbMode, inHamBand]() {
+                return isSsbMode() && inHamBand();
             };
             auto disarm = [this]() {
                 if (prefs_->wfIdEnabled())
@@ -1651,6 +1655,15 @@ void MainWindow::buildToolbar() {
                             }
                             wfid->setEnabled(armable());
                         });
+            // band-plan region / country change → the ham-band lockout is
+            // region-aware, so a plan switch can move the current freq
+            // out of band: re-grey + disarm if so.
+            auto onPlanChanged = [wfid, armable, disarm]() {
+                if (!armable()) disarm();
+                wfid->setEnabled(armable());
+            };
+            connect(prefs_, &Prefs::bandPlanRegionChanged, wfid, onPlanChanged);
+            connect(prefs_, &Prefs::bandPlanCountryChanged, wfid, onPlanChanged);
         }
     }
 

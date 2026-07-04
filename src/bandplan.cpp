@@ -232,6 +232,21 @@ QVector<Band> bandsFor(const QString &region, const QString &country) {
 
 } // namespace
 
+// #175 waterfall-ID out-of-band lockout — region-aware "is this a ham band".
+// Reuses the same per-region + per-country allocation table the panadapter
+// overlay draws from, testing the whole-band edges so no in-band sub-segment
+// gap ever reads as out-of-band.  Deliberately does NOT early-return on the
+// "NONE" region the way BandPlan::bandContaining does: an operator with no
+// band plan selected should still be kept out of 11m / SW-broadcast, so NONE
+// falls through to bandsFor()'s US/Region-2 default table.
+bool amateurBandContains(const QString &region, const QString &country,
+                         double hz) {
+    const qint64 f = qint64(hz);
+    for (const Band &b : bandsFor(region, country))
+        if (f >= b.lo && f < b.hi) return true;
+    return false;
+}
+
 BandPlan::BandPlan(Prefs *prefs, QObject *parent)
     : QObject(parent), prefs_(prefs) {
     if (prefs_) {

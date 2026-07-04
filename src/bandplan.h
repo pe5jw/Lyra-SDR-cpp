@@ -19,6 +19,16 @@ namespace lyra::ui {
 
 class Prefs;
 
+// True when hz falls inside any amateur allocation for the given band-plan
+// region + country (whole-band edges, so there are no in-band sub-segment
+// gaps).  Region "NONE" falls back to the US / IARU Region-2 table so the
+// test still rejects out-of-band frequencies rather than allowing everything.
+// Used by the #175 waterfall-ID lockout to keep a courtesy ID inside the ham
+// bands: 11m / CB and every other out-of-band segment (e.g. a SW-broadcast
+// slot at 7.310) are rejected because they appear in no amateur table.
+bool amateurBandContains(const QString &region, const QString &country,
+                         double hz);
+
 class BandPlan : public QObject {
     Q_OBJECT
     // Mirrors Prefs.bandPlanRegion; QML overlay bindings depend on this

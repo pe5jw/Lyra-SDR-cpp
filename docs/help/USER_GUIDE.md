@@ -1258,6 +1258,12 @@ identifying by voice.
   button for a one-shot ID.
 - **USB/LSB voice only.** In digital modes your call is already in the
   payload, so WF-ID is disabled there.
+- **Ham bands only.** The chip is dead — and the ID can never fire, from
+  any tune source — anywhere **outside an amateur allocation for your band
+  plan** (Settings → Hardware region). So 11m / CB and, say, a US ham who
+  spins onto **7.310** (the 41m broadcast band) can't raster a callsign
+  where it doesn't belong. The check follows your **region** (US / IARU-R1
+  / R3), so it uses the right band edges.
 - **Safe by design.** It re-arms **OFF** every session (so it can never
   auto-key on a fresh launch), and any band-edge crossing or mode change
   disarms it — a courtesy ID can't carry over into a context you didn't
