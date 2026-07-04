@@ -59,6 +59,19 @@ void LogBuffer::clear() {
 void LogBuffer::handler(QtMsgType type, const QMessageLogContext &ctx,
                         const QString &msg) {
     LogBuffer &self = instance();
+
+    // Drop benign Qt Quick advisory noise that otherwise floods the log
+    // (hundreds of lines per launch) and buries real messages.  Lyra
+    // deliberately custom-draws every control's background / contentItem, so
+    // the native Controls style logs "does not support customization" for each
+    // one — harmless, the customization is honored anyway.  The panadapter /
+    // waterfall `palette` property intentionally shadows the base one, logging
+    // "overrides a member of the base object".  Neither is actionable; hide
+    // both so tester logs stay readable.
+    if (msg.contains(QLatin1String("does not support customization"))
+        || msg.contains(QLatin1String("overrides a member of the base object")))
+        return;
+
     // Format: HH:mm:ss.zzz  LEVEL  [category]  message
     const char *lvl = "INFO ";
     switch (type) {
