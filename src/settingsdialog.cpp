@@ -1193,12 +1193,14 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         connect(baud, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 cat, [cat, baud](int) { cat->setBaud(baud->currentData().toInt()); });
 
-        auto *data = new QComboBox(cg);
-        for (int d : {5, 6, 7, 8}) data->addItem(QString::number(d), d);
-        data->setCurrentIndex(data->findData(cat->dataBits()));
-        cf->addRow(tr("Data bits:"), capW(data, 120));
-        connect(data, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                cat, [cat, data](int) { cat->setDataBits(data->currentData().toInt()); });
+        auto *dataCombo = new QComboBox(cg);
+        for (int d : {5, 6, 7, 8}) dataCombo->addItem(QString::number(d), d);
+        dataCombo->setCurrentIndex(dataCombo->findData(cat->dataBits()));
+        cf->addRow(tr("Data bits:"), capW(dataCombo, 120));
+        connect(dataCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                cat, [cat, dataCombo](int) {
+                    cat->setDataBits(dataCombo->currentData().toInt());
+                });
 
         auto *parity = new QComboBox(cg);
         parity->addItem(tr("None"), 0);
@@ -1271,14 +1273,14 @@ QWidget *SettingsDialog::buildCatSerialTab() {
         // Show only the chosen transport's fields (serial params vs host/port)
         // and spell out exactly what the operator must point their app at —
         // the #1 com0com / COM-vs-TCP trip-up.
-        auto syncTransport = [transport, cport, crescan, baud, data, parity,
+        auto syncTransport = [transport, cport, crescan, baud, dataCombo, parity,
                               stop, host, tcpPort, cf, cguide, cat]() {
             const bool tcp = transport->currentData().toInt()
                              == int(lyra::cat::CatServer::Transport::Tcp);
             cf->setRowVisible(cport,   !tcp);
             cf->setRowVisible(crescan, !tcp);
             cf->setRowVisible(baud,    !tcp);
-            cf->setRowVisible(data,    !tcp);
+            cf->setRowVisible(dataCombo, !tcp);
             cf->setRowVisible(parity,  !tcp);
             cf->setRowVisible(stop,    !tcp);
             cf->setRowVisible(host,    tcp);
