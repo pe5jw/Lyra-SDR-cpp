@@ -15,6 +15,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
@@ -336,6 +337,21 @@ bool wisdomFileExists(const QString &dir) {
 }
 
 }  // namespace
+
+QString WdspNative::wisdomFilePath() {
+    return QDir(wisdomDir()).filePath(QString::fromLatin1(kWisdomFilename));
+}
+
+bool WdspNative::wisdomExists() {
+    return wisdomFileExists(wisdomDir());
+}
+
+bool WdspNative::deleteWisdom() {
+    const QString path = wisdomFilePath();
+    if (!QFileInfo::exists(path))
+        return true;                 // already gone — next launch rebuilds
+    return QFile::remove(path);
+}
 
 int WdspNative::runWisdomBuilderEntryPoint(const QString &targetDir) {
     // Subprocess entry point.  Parent process spawned us with:

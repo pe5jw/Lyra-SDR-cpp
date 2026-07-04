@@ -16,6 +16,7 @@
 #include "wxservice.h"
 
 #include "backup.h"
+#include "wdsp_native.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -8457,7 +8458,92 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
     btnRow->addWidget(fileBtn);
     snapV->addLayout(btnRow);
     v->addWidget(snapGrp);
+
+    // ── Maintenance & recovery ──
+    // Two "when things go sideways" tools that both take effect on the NEXT
+    // launch (deferred, so nothing is torn out from under the running app):
+    //   • rebuild the one-time FFT optimization cache (after a CPU change), and
+    //   • wipe every setting back to factory defaults.
+    auto *recGrp = new QGroupBox(tr("Maintenance & recovery"), page);
+    auto *recV = new QVBoxLayout(recGrp);
+
+    auto *wisdomDesc = new QLabel(
+        tr("On first run Lyra tunes its FFT math to your CPU and caches it, so "
+           "later launches start fast.  If you swap the CPU or move the drive "
+           "to a different machine, rebuild it so it re-tunes to the new "
+           "hardware."), recGrp);
+    wisdomDesc->setWordWrap(true);
+    bumpFont(wisdomDesc);
+    recV->addWidget(wisdomDesc);
+    auto *wisdomRow = new QHBoxLayout();
+    auto *wisdomBtn = new QPushButton(tr("Rebuild FFT optimization on next start"),
+                                      recGrp);
+    wisdomRow->addWidget(wisdomBtn);
+    wisdomRow->addStretch(1);
+    recV->addLayout(wisdomRow);
+    connect(wisdomBtn, &QPushButton::clicked, this, [this]() {
+        if (QMessageBox::question(this, tr("Rebuild FFT optimization"),
+                tr("Delete the cached FFT plans so Lyra rebuilds them the next "
+                   "time you start it?\n\nThe rebuild is a one-time step that "
+                   "can take several minutes, during which the window stays "
+                   "unresponsive — this is normal.")) != QMessageBox::Yes)
+            return;
+        if (lyra::dsp::WdspNative::deleteWisdom()) {
+            QMessageBox::information(this, tr("Rebuild armed"),
+                tr("The FFT optimization will rebuild the next time you start "
+                   "Lyra."));
+        } else {
+            QMessageBox::warning(this, tr("Couldn't clear the cache"),
+                tr("Lyra couldn't delete the cached file:\n%1")
+                    .arg(QDir::toNativeSeparators(
+                        lyra::dsp::WdspNative::wisdomFilePath())));
+        }
+    });
+
+    auto *resetDesc = new QLabel(
+        tr("The panic button: put every Lyra setting back to how a fresh "
+           "install behaves.  A snapshot is saved first, so you can restore "
+           "your old setup from the Snapshots list above if you change your "
+           "mind.  Your saved snapshots and the FFT cache are kept."), recGrp);
+    resetDesc->setWordWrap(true);
+    bumpFont(resetDesc);
+    recV->addWidget(resetDesc);
+    auto *resetRow = new QHBoxLayout();
+    auto *resetBtn = new QPushButton(tr("Reset to factory defaults…"), recGrp);
+    resetRow->addWidget(resetBtn);
+    resetRow->addStretch(1);
+    recV->addLayout(resetRow);
+    v->addWidget(recGrp);
     v->addStretch(1);
+
+    connect(resetBtn, &QPushButton::clicked, this, [this]() {
+        if (QMessageBox::warning(this, tr("Reset to factory defaults"),
+                tr("This puts EVERY Lyra setting back to its default — bands, "
+                   "profiles, calibrations, layout, network, all of it.\n\n"
+                   "A snapshot is saved first so you can undo this from the "
+                   "Snapshots list.  Your saved snapshots and the FFT cache are "
+                   "not touched.\n\nContinue?"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes)
+            return;
+        // Safety net: capture a named snapshot BEFORE arming the wipe (it's a
+        // file, so it survives the QSettings clear on next launch).
+        const int keep = QSettings().value(
+            QLatin1String(lyra::backup::kKeepCount),
+            lyra::backup::kKeepCountDefault).toInt();
+        lyra::backup::saveSnapshot(tr("Before factory reset"),
+                                   /*automatic=*/false, keep);
+        // Arm the next-launch clear (main.cpp reads this before any pref loads).
+        QSettings s;
+        s.setValue(QStringLiteral("app/factoryResetPending"), true);
+        s.sync();
+        QMessageBox::information(this, tr("Reset armed"),
+            tr("Close and reopen Lyra to finish the reset.\n\nEverything comes "
+               "back at factory defaults.  If it wasn't what you wanted, open "
+               "Settings → Backup & Restore and restore the \"Before factory "
+               "reset\" snapshot."));
+        refreshSnapshotList();
+    });
 
     refreshSnapshotList();
 

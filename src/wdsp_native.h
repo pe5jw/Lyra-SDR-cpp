@@ -564,6 +564,19 @@ public:
     // so test code / future Settings UI can read it.
     static QString wisdomDir();
 
+    // Full path to the cached-plans file inside wisdomDir().
+    static QString wisdomFilePath();
+
+    // True when a built wisdom cache exists (next launch will import,
+    // not rebuild).
+    static bool wisdomExists();
+
+    // Delete the cached plans so the NEXT launch rebuilds them from
+    // scratch (used by the Settings "rebuild FFT optimization" button —
+    // e.g. after a CPU change).  Returns true if the file is gone
+    // afterwards (already-absent counts as success).
+    static bool deleteWisdom();
+
 signals:
     void loadedChanged();
     void logLine(QString line);

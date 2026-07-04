@@ -187,6 +187,26 @@ int main(int argc, char *argv[])
     // after the app-data path resolves (org/app name set above), before
     // any service object starts logging.
     lyra::ui::LogBuffer::instance().install();
+
+    // Factory-reset sentinel.  The Settings "Reset to factory defaults"
+    // button can't safely wipe QSettings from inside the running app — the
+    // live UI + docks would just re-persist their state on shutdown.  So it
+    // arms this key and asks for a restart; here, on the NEXT launch (before
+    // ANY pref / layout / graphics value is read), we clear the whole scope
+    // so everything comes up at code defaults.  Same deferred-to-next-launch
+    // idiom as the graphics safe-mode sentinel below and the wisdom rebuild.
+    // Snapshot files (%APPDATA%\…\snapshots) and the FFT wisdom cache are on
+    // disk, not in QSettings, so they deliberately survive — the snapshots
+    // are the safety net if the reset was a mistake.
+    {
+        QSettings s;
+        if (s.value(QStringLiteral("app/factoryResetPending"), false).toBool()) {
+            s.clear();               // also removes the sentinel
+            s.sync();
+            qInfo("[factory-reset] cleared all settings to defaults");
+        }
+    }
+
     // Operator-selectable RHI backend (Settings → Visuals → Graphics
     // backend; restart-to-apply since the API is fixed at startup).
     // "auto" leaves Qt RHI to pick per platform; any explicit value still

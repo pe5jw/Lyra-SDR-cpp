@@ -41,8 +41,9 @@ These are on the roadmap, not broken:
 ## Expected behavior (not bugs)
 
 * **First launch is slow / unresponsive for a minute.** Lyra does a one-time
-  FFT optimization tuned to your machine and caches it; later launches are
-  fast. (Settings → Radio can rebuild this cache if you change hardware.)
+  FFT optimization tuned to your CPU and caches it; later launches are fast.
+  (If you change processors, **Settings → Backup & Restore → Rebuild FFT
+  optimization on next start** re-tunes it to the new hardware.)
 * **The amp watts-cap lands a little *under* the number you set.** The
   Hermes Lite's drive control is coarse (about 16 hardware steps), so your
   cap usually falls *between* two steps. Lyra parks on the highest step that
