@@ -67,7 +67,7 @@ Rectangle {
             Layout.fillWidth: true
 
             Label { text: qsTr("LNA"); color: root.cMuted }
-            Slider {
+            LyraSlider {
                 id: lnaSlider
                 Layout.preferredWidth: 120
                 from: -12; to: 48; stepSize: 1; snapMode: Slider.SnapAlways
@@ -126,7 +126,7 @@ Rectangle {
             Item { width: 12 }
 
             Label { text: qsTr("AF"); color: root.cMuted }
-            Slider {
+            LyraSlider {
                 id: afSlider
                 Layout.preferredWidth: 84
                 from: 0; to: 40; stepSize: 1; snapMode: Slider.SnapAlways
@@ -144,7 +144,7 @@ Rectangle {
 
             // ── Volume + MUTE — LIVE (RX1) ──
             Label { text: qsTr("Vol"); color: root.cMuted }
-            Slider {
+            LyraSlider {
                 id: volSlider
                 Layout.preferredWidth: 150
                 from: 0.0; to: 1.0
@@ -178,7 +178,7 @@ Rectangle {
             Item { width: 10 }
 
             Label { text: qsTr("Bal"); color: root.cMuted }
-            Slider {
+            LyraSlider {
                 id: balSlider
                 Layout.preferredWidth: 84
                 from: -1.0; to: 1.0
@@ -221,7 +221,7 @@ Rectangle {
                     + "(HL2 jack now; a separate PC monitor device comes later.)")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
-            Slider {
+            LyraSlider {
                 id: monSlider
                 Layout.preferredWidth: 96
                 from: 0.0; to: 1.0
@@ -472,7 +472,7 @@ Rectangle {
                     color: root.cMuted; font.pixelSize: 11
                     Layout.alignment: Qt.AlignVCenter
                 }
-                Slider {
+                LyraSlider {
                     id: cwMonSlider
                     Layout.preferredWidth: 96
                     from: 0; to: 127; stepSize: 1
@@ -502,7 +502,7 @@ Rectangle {
             Layout.fillWidth: true
 
             Label { text: qsTr("NR Mode:"); color: root.cText; font.pixelSize: 11 }
-            Slider {
+            LyraSlider {
                 id: nrModeSlider
                 from: 1; to: 4; stepSize: 1; snapMode: Slider.SnapAlways
                 value: WdspEngine.nrMode
@@ -544,7 +544,7 @@ Rectangle {
             Item { width: 8; visible: WdspEngine.lmsEnabled }
             Label { text: qsTr("LMS:"); color: root.cText; font.pixelSize: 11
                     visible: WdspEngine.lmsEnabled }
-            Slider {
+            LyraSlider {
                 id: lmsSlider
                 visible: WdspEngine.lmsEnabled
                 from: 0; to: 100; stepSize: 1
@@ -564,7 +564,7 @@ Rectangle {
             Item { width: 8; visible: WdspEngine.squelchEnabled }
             Label { text: qsTr("SQ:"); color: root.cText; font.pixelSize: 11
                     visible: WdspEngine.squelchEnabled }
-            Slider {
+            LyraSlider {
                 id: sqSlider
                 visible: WdspEngine.squelchEnabled
                 from: 0; to: 100; stepSize: 1
@@ -584,7 +584,7 @@ Rectangle {
             Item { width: 8; visible: WdspEngine.nbEnabled }
             Label { text: qsTr("NB:"); color: root.cText; font.pixelSize: 11
                     visible: WdspEngine.nbEnabled }
-            Slider {
+            LyraSlider {
                 id: nbSlider
                 visible: WdspEngine.nbEnabled
                 from: 0; to: 100; stepSize: 1
@@ -605,7 +605,7 @@ Rectangle {
             Item { width: 8; visible: WdspEngine.apfEnabled }
             Label { text: qsTr("APF:"); color: root.cText; font.pixelSize: 11
                     visible: WdspEngine.apfEnabled }
-            Slider {
+            LyraSlider {
                 id: apfSlider
                 visible: WdspEngine.apfEnabled
                 from: 3; to: 18; stepSize: 3; snapMode: Slider.SnapAlways
@@ -624,7 +624,7 @@ Rectangle {
             Item { width: 8; visible: WdspEngine.binEnabled }
             Label { text: qsTr("BIN:"); color: root.cText; font.pixelSize: 11
                     visible: WdspEngine.binEnabled }
-            Slider {
+            LyraSlider {
                 id: binSlider
                 visible: WdspEngine.binEnabled
                 from: 0; to: 100; stepSize: 5
@@ -758,7 +758,7 @@ Rectangle {
                         RowLayout { spacing: 8; Layout.fillWidth: true
                             Label { text: qsTr("Strength"); color: root.cText
                                     font.pixelSize: 11; Layout.preferredWidth: 68 }
-                            Slider { Layout.fillWidth: true
+                            LyraSlider { Layout.fillWidth: true
                                 from: 1.0; to: 5.0; stepSize: 0.1
                                 value: WdspEngine.noiseStrength
                                 onMoved: WdspEngine.setNoiseStrength(value) }
@@ -769,7 +769,7 @@ Rectangle {
                         RowLayout { spacing: 8; Layout.fillWidth: true
                             Label { text: qsTr("Floor"); color: root.cText
                                     font.pixelSize: 11; Layout.preferredWidth: 68 }
-                            Slider { Layout.fillWidth: true
+                            LyraSlider { Layout.fillWidth: true
                                 from: -30; to: -3; stepSize: 1
                                 value: WdspEngine.noiseFloorDb
                                 onMoved: WdspEngine.setNoiseFloorDb(value) }
@@ -780,7 +780,7 @@ Rectangle {
                         RowLayout { spacing: 8; Layout.fillWidth: true
                             Label { text: qsTr("Smoothing"); color: root.cText
                                     font.pixelSize: 11; Layout.preferredWidth: 68 }
-                            Slider { Layout.fillWidth: true
+                            LyraSlider { Layout.fillWidth: true
                                 from: 0; to: 95; stepSize: 5
                                 value: Math.round(WdspEngine.noiseSmoothing * 100)
                                 onMoved: WdspEngine.setNoiseSmoothing(value / 100.0) }

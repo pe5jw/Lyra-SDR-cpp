@@ -403,6 +403,7 @@ qt_add_qml_module(lyra
     URI Lyra
     VERSION 1.0
     QML_FILES
+        src/qml/LyraSlider.qml
         src/qml/PanadapterPanel.qml
         src/qml/TuningPanel.qml
         src/qml/AudioPanel.qml
