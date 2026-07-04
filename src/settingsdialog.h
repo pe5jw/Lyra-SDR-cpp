@@ -12,6 +12,7 @@
 #include <QList>
 
 class QTabWidget;
+class QListWidget;
 
 namespace lyra::ipc { class HL2Stream; class HL2Discovery; }
 namespace lyra::dsp { class WdspEngine; }
@@ -83,6 +84,10 @@ private:
     QWidget *buildProfilesTab(); // #49 editor: profile list + Save/
                                  // Save As/Load/Rename/Delete/Set-Default
                                  // + per-mode auto-recall bindings
+    QWidget *buildBackupRestoreTab(); // export / dated snapshots / selective
+                                      // restore (lyra::backup engine)
+    void     refreshSnapshotList();   // repopulate the snapshot QListWidget
+    QListWidget *snapList_ = nullptr;   // Backup tab snapshot store view
 
     Prefs                  *prefs_     = nullptr;
     lyra::ipc::HL2Stream   *stream_    = nullptr;
@@ -106,5 +111,11 @@ private:
     QList<lyra::cat::CatServer *> catServers_;
     QTabWidget             *tabs_      = nullptr;
 };
+
+// Interactive selective restore: open <filePath>, ask which sections to bring
+// back (a checklist of the sections the file actually contains), write them to
+// live settings, then offer a restart.  Shared by the File-menu Import and the
+// Backup & Restore tab's Restore buttons.
+void restoreBackupInteractive(QWidget *parent, const QString &filePath);
 
 } // namespace lyra::ui

@@ -173,6 +173,8 @@ private:
     void applyPanelLock(bool locked);
     void saveLayout();                 // session auto-save (on close)
     void restoreLayout();              // session auto-restore (on launch)
+    void flushLayoutToSettings();      // persist live geometry+dock state now
+                                       // (so export/snapshot reflect the screen)
     // Operator-driven layout management (View menu), mirroring old Lyra:
     void saveUserLayout();             // snapshot current as "my default"
     void restoreUserLayout();          // jump back to the saved default

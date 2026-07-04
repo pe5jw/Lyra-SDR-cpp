@@ -1993,19 +1993,36 @@ Lyra checks GitHub for new releases so you don't miss one.
 
 ## Backing up & sharing your settings
 
-Lyra can save your **entire configuration** — panel layout, saved default
-layout, and all your preferences (visuals, mode/bandwidths, weather, etc.)
-— to a single portable file.
+Everything lives on the **Settings → Backup & Restore** tab (the File menu's
+**Export settings…** / **Import settings…** do the same jobs).
 
-- **File → Export settings…** — writes a `.lyra` profile. Keep it as a
-  backup, or hand it to another operator so they get your exact setup.
-- **File → Import settings…** — loads a `.lyra` profile; the layout applies
-  immediately and Lyra offers to restart to apply the rest.
+Lyra can save your **entire configuration** — panel layout, saved layouts,
+and every preference (visuals, mode/bandwidths, TX chain, CW, spots,
+weather…) — to a single portable `.lyra` file, and it keeps **automatic
+dated snapshots** so you always have a known-good setup to fall back to.
 
-This is the easy way to recover if a layout gets scrambled, or to set up a
-second PC the same way. (One thing that intentionally **doesn't** travel in
-a profile: the graphics backend, since that's a per-machine hardware
-choice.)
+**Export** — *Export all settings to a file…* writes a `.lyra` you choose.
+Keep it as a backup, or hand it to another operator for your exact setup.
+
+**Snapshots** — Lyra drops an **automatic snapshot every N launches** (set
+the cadence and how many to keep on the tab; 0 launches turns auto off).
+*Save snapshot now…* takes one on demand and lets you name it — named
+snapshots are kept until you delete them; automatic ones roll over. Pick one
+from the list and **Restore selected…**, or **Restore from file…** for a
+`.lyra` you exported earlier.
+
+**Selective restore — the important part.** Restoring doesn't have to be
+all-or-nothing. When you restore, Lyra shows a **checklist of sections**
+(Audio & VAC, TX audio chain, CW, Calibration & meters, Spots, Display,
+Panel layout, and so on). Tick only the groups you want back; everything
+unticked stays exactly as it is now. So if a change to one subsystem went
+sideways, you can roll back **just that part** without disturbing the rest.
+(Panel layout is unticked by default, since restoring it rearranges your
+window.)
+
+**Safe to share.** A backup never includes your **radio's address** or the
+**graphics backend** — those are per-machine, so a file is always safe to
+move to another PC or send to a friend.
 
 ---
 

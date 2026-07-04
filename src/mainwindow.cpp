@@ -2,6 +2,7 @@
 
 #include "mainwindow.h"
 
+#include "backup.h"
 #include "bands.h"
 #include "bandplan.h"
 #include "statusbus.h"
@@ -675,6 +676,10 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     buildToolbar();
     restoreLayout();   // geometry + dock state + lock state
     initLayoutUndo();  // baseline snapshot + hook dock move/float signals
+    // Backup & Restore — roll an automatic settings snapshot every N launches
+    // (Settings → Backup & Restore).  Reads last session's persisted config,
+    // so this is a genuine "last known good" you can fall back to.
+    lyra::backup::autoSnapshotOnLaunch();
 
     // One-time gentle hint at the panel-arranging UX (answers tester
     // "what is an edge?" confusion).  Shown once ever, then the QSettings
@@ -1302,6 +1307,9 @@ void MainWindow::ensureSettingsDialog() {
 
 void MainWindow::openSettings() {
     ensureSettingsDialog();
+    // Flush the live layout so an export/snapshot from the Backup & Restore
+    // tab captures the current arrangement (not just the last close-save).
+    flushLayoutToSettings();
     settingsDlg_->show();
     settingsDlg_->raise();
     settingsDlg_->activateWindow();
@@ -2235,41 +2243,22 @@ void MainWindow::restoreUserLayout() {
     }
 }
 
-namespace {
-// Keys NOT carried in an exported profile — machine/hardware-specific
-// choices that shouldn't follow a profile to another PC (e.g. the
-// graphics backend: a Vulkan pin must not infect a machine where Vulkan
-// fails — the whole reason the default is "auto").
-bool isMachineSpecificKey(const QString &k) {
-    // Graphics backend: a Vulkan pin must not infect a machine where
-    // Vulkan fails (the whole reason the default is "auto").
-    if (k == QStringLiteral("ui/graphicsBackend")) return true;
-    // Radio CONNECTION IDENTITY is station-specific and must NEVER follow
-    // a shared profile to another PC.  A "defaults" export that carried
-    // the author's radio address would auto-connect the importer to an IP
-    // that doesn't exist on their LAN on next launch -> RX stall / hang.
-    //   radio/lastIp  — the startup auto-connect target (main.cpp)
-    //   lastRadio/*   — the remembered radio record (ip/mac/board/...)
-    // Filtered on BOTH export and import, so this also neutralises an
-    // already-distributed pre-fix export when it's imported.
-    if (k == QStringLiteral("radio/lastIp")) return true;
-    if (k.startsWith(QStringLiteral("lastRadio/"))) return true;
-    // #193 companion-app launch bindings: per-machine exe/bat paths bound to a
-    // profile NAME.  NEVER export/import — a shared profile must carry the DSP
-    // chain only, never "run this exe" (and the path is per-PC anyway).
-    if (k.startsWith(QStringLiteral("profileLaunch/"))) return true;
-    return false;
+// The machine-specific-key filter + the export/restore engine now live in
+// lyra::backup (src/backup.{h,cpp}); the interactive section-picker restore
+// dialog is lyra::ui::restoreBackupInteractive (settingsdialog.cpp).  Both the
+// File menu here and the Settings → Backup & Restore tab route through them.
+
+void MainWindow::flushLayoutToSettings() {
+    // Persist the live dock arrangement + window geometry so an export or
+    // snapshot taken mid-session reflects the current layout (it's otherwise
+    // only written on close).  Cheap; safe to call anytime.
+    QSettings s;
+    s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    s.setValue(QStringLiteral("ui/windowState"), saveState());
 }
-} // namespace
 
 void MainWindow::exportSettings() {
-    // Capture the CURRENT on-screen layout into the session keys so the
-    // exported profile reflects exactly what's showing now.
-    {
-        QSettings s;
-        s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
-        s.setValue(QStringLiteral("ui/windowState"), saveState());
-    }
+    flushLayoutToSettings();   // export reflects what's on screen now
     const QString docs =
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QString path = QFileDialog::getSaveFileName(
@@ -2279,80 +2268,27 @@ void MainWindow::exportSettings() {
     if (path.isEmpty()) return;
     if (!path.endsWith(QStringLiteral(".lyra"), Qt::CaseInsensitive))
         path += QStringLiteral(".lyra");
-
-    QSettings src;                                   // live scope
-    QSettings dst(path, QSettings::IniFormat);
-    dst.clear();
-    int n = 0;
-    for (const QString &k : src.allKeys()) {
-        if (isMachineSpecificKey(k)) continue;
-        dst.setValue(k, src.value(k));
-        ++n;
-    }
-    dst.sync();
-    if (dst.status() != QSettings::NoError) {
+    if (!lyra::backup::exportToFile(path)) {
         QMessageBox::warning(this, tr("Export failed"),
             tr("Couldn't write the profile to:\n%1").arg(path));
         return;
     }
     QMessageBox::information(this, tr("Settings exported"),
-        tr("Saved %1 settings (layout + preferences) to:\n%2")
-            .arg(n).arg(path));
+        tr("Saved your settings (layout + preferences) to:\n%1\n\n"
+           "Your radio address and the graphics backend are left out, so the "
+           "file is safe to share or move to another PC.").arg(path));
 }
 
 void MainWindow::importSettings() {
+    // File-menu Import → the same selective restore the Backup & Restore tab
+    // uses (choose which sections to bring back), then an offered restart.
     const QString docs =
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Import Lyra settings"), docs,
         tr("Lyra profile (*.lyra);;All files (*)"));
     if (path.isEmpty()) return;
-
-    QSettings file(path, QSettings::IniFormat);
-    const QStringList keys = file.allKeys();
-    if (keys.isEmpty() || file.status() != QSettings::NoError) {
-        QMessageBox::warning(this, tr("Import failed"),
-            tr("That file doesn't look like a Lyra profile."));
-        return;
-    }
-    {
-        QSettings live;
-        for (const QString &k : keys) {
-            if (isMachineSpecificKey(k)) continue;   // never import hw choices
-            live.setValue(k, file.value(k));
-        }
-        live.sync();
-    }
-    // Apply the imported layout live NOW so the on-screen arrangement
-    // matches the profile (a later close-save then can't clobber it),
-    // then offer a restart so Prefs re-read the rest cleanly at startup.
-    {
-        QSettings s;
-        const QByteArray geo =
-            s.value(QStringLiteral("ui/geometry")).toByteArray();
-        const QByteArray st =
-            s.value(QStringLiteral("ui/windowState")).toByteArray();
-        if (!geo.isEmpty()) restoreGeometry(geo);
-        if (!st.isEmpty())  restoreState(st);
-        // Trust the imported layout's saved per-dock visibility (no force-show;
-        // see #189).
-        if (prefs_) {
-            const QVariant sp =
-                s.value(QStringLiteral("ui/panadapterSplit"));
-            if (sp.isValid()) prefs_->setPanadapterSplit(sp);
-        }
-    }
-    const auto btn = QMessageBox::question(this, tr("Settings imported"),
-        tr("Imported %1 settings (the layout is applied now).\n\n"
-           "Restart Lyra to apply the rest (visuals, etc.)?\n"
-           "(Graphics backend is left as this machine's own setting.)")
-            .arg(keys.size()),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-    if (btn == QMessageBox::Yes) {
-        QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                QStringList());
-        QCoreApplication::quit();
-    }
+    lyra::ui::restoreBackupInteractive(this, path);
 }
 
 void MainWindow::refreshLayoutMenus() {

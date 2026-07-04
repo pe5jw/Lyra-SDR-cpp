@@ -15,7 +15,16 @@
 #include "wdsp_engine.h"
 #include "wxservice.h"
 
+#include "backup.h"
+
+#include <QApplication>
 #include <QCheckBox>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QVBoxLayout>
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QScreen>
@@ -192,6 +201,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     if (profiles_) {
         tabs_->addTab(wrapScroll(buildProfilesTab()), tr("Profiles"));
     }
+    tabs_->addTab(wrapScroll(buildBackupRestoreTab()), tr("Backup & Restore"));
     if (memory_ || eibi_) {
         tabs_->addTab(wrapScroll(buildBandsTab()), tr("Bands"));
     }
@@ -8105,6 +8115,266 @@ QWidget *SettingsDialog::buildProfilesTab() {
             return;
         }
         companion_->testLaunch(cmd, compArgs->text().trimmed());
+    });
+
+    return page;
+}
+
+// ── Backup & Restore ────────────────────────────────────────────────────────
+
+void restoreBackupInteractive(QWidget *parent, const QString &filePath) {
+    const QSet<QString> present = lyra::backup::sectionsPresentInFile(filePath);
+    if (present.isEmpty()) {
+        QMessageBox::warning(parent, QObject::tr("Restore"),
+            QObject::tr("That file doesn't look like a Lyra backup."));
+        return;
+    }
+
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QObject::tr("Restore settings — choose what to bring back"));
+    dlg.resize(560, 620);
+    auto *v = new QVBoxLayout(&dlg);
+    auto *intro = new QLabel(QObject::tr(
+        "Tick the groups to restore from this backup.  Unticked groups stay "
+        "exactly as they are now — so you can revert just the part you broke.  "
+        "(Your radio address and graphics backend are never touched.)"), &dlg);
+    intro->setWordWrap(true);
+    v->addWidget(intro);
+
+    // Scrollable checklist — one row per section the file actually contains.
+    auto *scroll = new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget(scroll);
+    auto *iv = new QVBoxLayout(inner);
+    QHash<QString, QCheckBox *> boxes;
+    auto addRow = [&](const QString &id, const QString &label,
+                      const QString &desc, bool isLayout) {
+        if (!present.contains(id)) return;
+        auto *cb = new QCheckBox(label, inner);
+        cb->setChecked(!isLayout);   // layout is disruptive → default OFF
+        iv->addWidget(cb);
+        if (!desc.isEmpty()) {
+            auto *d = new QLabel(QStringLiteral("     ") + desc, inner);
+            d->setWordWrap(true);
+            d->setStyleSheet(QStringLiteral("color:#8a97a0;font-size:11px;"
+                                            "margin-bottom:4px;"));
+            iv->addWidget(d);
+        }
+        boxes.insert(id, cb);
+    };
+    for (const lyra::backup::Section &s : lyra::backup::sections())
+        addRow(s.id, s.label, s.desc, s.layout);
+    addRow(lyra::backup::advancedId(),
+           QObject::tr("Everything else (advanced)"),
+           QObject::tr("Update checks, help-window state and any other stray "
+                       "settings not covered above"), false);
+    iv->addStretch(1);
+    scroll->setWidget(inner);
+    v->addWidget(scroll, 1);
+
+    // Select all / none.
+    auto *selRow = new QHBoxLayout();
+    auto *selAll  = new QPushButton(QObject::tr("Select all"), &dlg);
+    auto *selNone = new QPushButton(QObject::tr("Select none"), &dlg);
+    selRow->addWidget(selAll);
+    selRow->addWidget(selNone);
+    selRow->addStretch(1);
+    v->addLayout(selRow);
+    QObject::connect(selAll, &QPushButton::clicked, &dlg, [&boxes]() {
+        for (auto *cb : boxes) cb->setChecked(true);
+    });
+    QObject::connect(selNone, &QPushButton::clicked, &dlg, [&boxes]() {
+        for (auto *cb : boxes) cb->setChecked(false);
+    });
+
+    auto *bb = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    bb->button(QDialogButtonBox::Ok)->setText(QObject::tr("Restore"));
+    v->addWidget(bb);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    QSet<QString> chosen;
+    for (auto it = boxes.constBegin(); it != boxes.constEnd(); ++it)
+        if (it.value()->isChecked()) chosen.insert(it.key());
+    if (chosen.isEmpty()) return;
+
+    bool touchedLayout = false;
+    const int n = lyra::backup::restoreFromFile(filePath, chosen, &touchedLayout);
+
+    const auto btn = QMessageBox::question(parent,
+        QObject::tr("Settings restored"),
+        QObject::tr("Restored %1 setting(s) from the backup.\n\n"
+                    "Restart Lyra now so every change takes effect cleanly?")
+            .arg(n),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (btn == QMessageBox::Yes) {
+        QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                QStringList());
+        QCoreApplication::quit();
+    }
+}
+
+void SettingsDialog::refreshSnapshotList() {
+    if (!snapList_) return;
+    snapList_->clear();
+    const auto snaps = lyra::backup::listSnapshots();
+    for (const lyra::backup::SnapInfo &si : snaps) {
+        QString label = si.when.toString(QStringLiteral("yyyy-MM-dd  HH:mm"))
+                        + QStringLiteral("   ");
+        if (!si.name.isEmpty())    label += si.name;
+        else if (si.automatic)     label += tr("(automatic)");
+        else                       label += tr("(manual)");
+        auto *item = new QListWidgetItem(label, snapList_);
+        item->setData(Qt::UserRole, si.path);
+    }
+    if (snapList_->count() == 0) {
+        auto *item = new QListWidgetItem(tr("(no snapshots yet)"), snapList_);
+        item->setFlags(Qt::NoItemFlags);
+    }
+}
+
+QWidget *SettingsDialog::buildBackupRestoreTab() {
+    auto *page = new QWidget;
+    auto *v = new QVBoxLayout(page);
+
+    auto *intro = new QLabel(tr(
+        "Back up your whole Lyra configuration, keep automatic dated "
+        "snapshots, and restore just the parts you choose — the clean way to "
+        "undo a change that went sideways.\n\n"
+        "Backups never include your radio's address or the graphics backend, "
+        "so a file is safe to share or carry to another PC."), page);
+    intro->setWordWrap(true);
+    v->addWidget(intro);
+
+    // ── Export ──
+    auto *expGrp = new QGroupBox(tr("Export a backup file"), page);
+    auto *expV = new QVBoxLayout(expGrp);
+    expV->addWidget(new QLabel(
+        tr("Save everything to a .lyra file you pick."), expGrp));
+    auto *expBtn = new QPushButton(tr("Export all settings to a file…"), expGrp);
+    expV->addWidget(expBtn);
+    v->addWidget(expGrp);
+    connect(expBtn, &QPushButton::clicked, this, [this]() {
+        const QString docs = QStandardPaths::writableLocation(
+            QStandardPaths::DocumentsLocation);
+        QString path = QFileDialog::getSaveFileName(
+            this, tr("Export Lyra settings"),
+            docs + QStringLiteral("/lyra-backup.lyra"),
+            tr("Lyra backup (*.lyra)"));
+        if (path.isEmpty()) return;
+        if (!path.endsWith(QStringLiteral(".lyra"), Qt::CaseInsensitive))
+            path += QStringLiteral(".lyra");
+        if (lyra::backup::exportToFile(path))
+            QMessageBox::information(this, tr("Exported"),
+                tr("Saved your settings to:\n%1").arg(path));
+        else
+            QMessageBox::warning(this, tr("Export failed"),
+                tr("Couldn't write the file:\n%1").arg(path));
+    });
+
+    // ── Snapshots ──
+    auto *snapGrp = new QGroupBox(tr("Snapshots"), page);
+    auto *snapV = new QVBoxLayout(snapGrp);
+    snapV->addWidget(new QLabel(
+        tr("Lyra keeps automatic dated backups plus any you save by hand.  "
+           "Restore one to roll back to a known-good setup."), snapGrp));
+
+    auto *cfgRow = new QHBoxLayout();
+    auto *everySpin = new QSpinBox(snapGrp);
+    everySpin->setRange(0, 100);
+    everySpin->setSpecialValueText(tr("Off"));   // 0 = disabled
+    everySpin->setValue(QSettings().value(
+        QLatin1String(lyra::backup::kAutoEvery),
+        lyra::backup::kAutoEveryDefault).toInt());
+    everySpin->setToolTip(tr("0 = don't take automatic snapshots"));
+    auto *keepSpin = new QSpinBox(snapGrp);
+    keepSpin->setRange(1, 50);
+    keepSpin->setValue(QSettings().value(
+        QLatin1String(lyra::backup::kKeepCount),
+        lyra::backup::kKeepCountDefault).toInt());
+    keepSpin->setToolTip(tr("Older automatic snapshots beyond this are "
+                            "deleted; snapshots you name are always kept."));
+    cfgRow->addWidget(new QLabel(tr("Auto-snapshot every"), snapGrp));
+    cfgRow->addWidget(everySpin);
+    cfgRow->addWidget(new QLabel(tr("launches, keep the newest"), snapGrp));
+    cfgRow->addWidget(keepSpin);
+    cfgRow->addStretch(1);
+    snapV->addLayout(cfgRow);
+    connect(everySpin, qOverload<int>(&QSpinBox::valueChanged), this,
+            [](int val) {
+                QSettings().setValue(QLatin1String(lyra::backup::kAutoEvery), val);
+            });
+    connect(keepSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+            [](int val) {
+                QSettings().setValue(QLatin1String(lyra::backup::kKeepCount), val);
+            });
+
+    snapList_ = new QListWidget(snapGrp);
+    snapList_->setMinimumHeight(150);
+    snapV->addWidget(snapList_);
+
+    auto *btnRow = new QHBoxLayout();
+    auto *saveNow   = new QPushButton(tr("Save snapshot now…"), snapGrp);
+    auto *restoreBtn = new QPushButton(tr("Restore selected…"), snapGrp);
+    auto *delBtn    = new QPushButton(tr("Delete"), snapGrp);
+    auto *fileBtn   = new QPushButton(tr("Restore from file…"), snapGrp);
+    btnRow->addWidget(saveNow);
+    btnRow->addWidget(restoreBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(fileBtn);
+    snapV->addLayout(btnRow);
+    v->addWidget(snapGrp);
+    v->addStretch(1);
+
+    refreshSnapshotList();
+
+    connect(saveNow, &QPushButton::clicked, this, [this]() {
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Save snapshot"),
+            tr("Name this snapshot (optional):"), QLineEdit::Normal,
+            QString(), &ok).trimmed();
+        if (!ok) return;
+        const int keep = QSettings().value(
+            QLatin1String(lyra::backup::kKeepCount),
+            lyra::backup::kKeepCountDefault).toInt();
+        if (lyra::backup::saveSnapshot(name, /*automatic=*/false, keep).isEmpty())
+            QMessageBox::warning(this, tr("Snapshot"),
+                tr("Couldn't save the snapshot."));
+        refreshSnapshotList();
+    });
+    connect(restoreBtn, &QPushButton::clicked, this, [this]() {
+        auto *item = snapList_->currentItem();
+        const QString path = item ? item->data(Qt::UserRole).toString() : QString();
+        if (path.isEmpty()) {
+            QMessageBox::information(this, tr("Restore"),
+                tr("Select a snapshot in the list first."));
+            return;
+        }
+        restoreBackupInteractive(this, path);
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this]() {
+        auto *item = snapList_->currentItem();
+        const QString path = item ? item->data(Qt::UserRole).toString() : QString();
+        if (path.isEmpty()) return;
+        if (QMessageBox::question(this, tr("Delete snapshot"),
+                tr("Delete this snapshot?\n\n%1").arg(item->text()))
+            == QMessageBox::Yes) {
+            lyra::backup::deleteSnapshot(path);
+            refreshSnapshotList();
+        }
+    });
+    connect(fileBtn, &QPushButton::clicked, this, [this]() {
+        const QString docs = QStandardPaths::writableLocation(
+            QStandardPaths::DocumentsLocation);
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Restore from a backup file"), docs,
+            tr("Lyra backup (*.lyra);;All files (*)"));
+        if (!path.isEmpty()) restoreBackupInteractive(this, path);
     });
 
     return page;

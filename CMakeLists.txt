@@ -334,6 +334,8 @@ qt_add_executable(lyra
     src/timesync.cpp
     src/bandmemory.h
     src/bandmemory.cpp
+    src/backup.h
+    src/backup.cpp
     src/genslots.h
     src/genslots.cpp
     src/time_stations.h
