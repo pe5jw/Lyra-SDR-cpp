@@ -236,62 +236,72 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         return sa;
     };
 
-    tabs_->addTab(wrapScroll(buildVisualsTab()), tr("Visuals"));
+    // Tabs are ordered by operating flow, not by the order features were
+    // built: station setup -> receive -> Filters/BCD (get the band-correct
+    // filters set BEFORE you key) -> transmit + accessories -> integrations
+    // -> set-once utility/cosmetic.  selectTopic() finds tabs by TITLE, so
+    // this order is free to change without touching anything else.
+
+    // --- Station setup (do these first) ---
+    if (stream_ || discovery_ || bcd_) {
+        tabs_->addTab(wrapScroll(buildHardwareTab()), tr("Hardware"));
+    }
+    if (memory_ || eibi_) {
+        tabs_->addTab(wrapScroll(buildBandsTab()), tr("Bands"));
+    }
+
+    // --- Receive ---
     if (engine_) {
         tabs_->addTab(wrapScroll(buildAudioTab()), tr("Audio"));
-        tabs_->addTab(wrapScroll(buildNoiseTab()), tr("Noise"));
         tabs_->addTab(wrapScroll(buildDspTab()), tr("DSP"));  // #159 filter type
+        tabs_->addTab(wrapScroll(buildNoiseTab()), tr("Noise"));
     }
+    // Visuals (panadapter / display appearance) sits with the RX-display group.
+    tabs_->addTab(wrapScroll(buildVisualsTab()), tr("Visuals"));
     if (meter_) {
         tabs_->addTab(wrapScroll(buildMeterTab()), tr("Meter"));
+    }
+
+    // --- Filters BEFORE transmit (#199): band-correct filters must be right
+    // before you key — wrong filter = out-of-band emissions / blown LPF relay.
+    if (stream_ || bcd_) {
+        tabs_->addTab(wrapScroll(buildFiltersBcdTab()), tr("Filters / BCD"));
+    }
+
+    // --- Transmit + accessories ---
+    if (stream_) {
+        tabs_->addTab(wrapScroll(buildTxTab()), tr("TX"));
+        // TX power model Stage 3 — per-band PA Gain table.
+        tabs_->addTab(wrapScroll(buildPaGainTab()), tr("PA Gain"));
     }
     if (tuner_) {
         tabs_->addTab(wrapScroll(buildTunerTab()), tr("Tuner"));
     }
-    if (stream_ || discovery_ || bcd_) {
-        tabs_->addTab(wrapScroll(buildHardwareTab()), tr("Hardware"));
-    }
-    // #199 — external band-following (filter-board OC editor + USB-BCD) on
-    // its own tab; the Hardware tab was full.
-    if (stream_ || bcd_) {
-        tabs_->addTab(wrapScroll(buildFiltersBcdTab()), tr("Filters / BCD"));
-    }
-    // TX-1 component 5b — Settings → TX tab.  Only meaningful when
-    // the stream is connected (everything here writes through
-    // HL2Stream setters).
     if (stream_) {
-        tabs_->addTab(wrapScroll(buildTxTab()), tr("TX"));
-        // #91 — VOX gets its own tab (operator: the TX tab was getting
-        // cluttered).  Sits right after TX, before PA Gain.
+        // #91 — VOX its own tab (the TX tab was getting cluttered).
         tabs_->addTab(wrapScroll(buildVoxTab()), tr("VOX"));
-        // TX power model Stage 3 — per-band PA Gain table on its own tab
-        // (discoverable + self-explanatory, like Thetis's PA-settings area).
-        tabs_->addTab(wrapScroll(buildPaGainTab()), tr("PA Gain"));
-        // #105 — CW is its own operating mode (RX pitch + TX keyer);
-        // give it a dedicated tab rather than a TX-tab subgroup.
+        // #105 — CW is its own operating mode (RX pitch + TX keyer).
         tabs_->addTab(wrapScroll(buildCwTab()), tr("CW"));
-        // Frequency calibration (WWV/time-station ppm trim) — writes the
-        // correction through HL2Stream, so it lives behind the stream guard.
+        // Frequency calibration (WWV/time-station ppm trim).
         tabs_->addTab(wrapScroll(buildCalibrationTab()), tr("Calibration"));
     }
-    if (profiles_) {
-        tabs_->addTab(wrapScroll(buildProfilesTab()), tr("Profiles"));
-    }
-    tabs_->addTab(wrapScroll(buildBackupRestoreTab()), tr("Backup & Restore"));
-    if (memory_ || eibi_) {
-        tabs_->addTab(wrapScroll(buildBandsTab()), tr("Bands"));
-    }
+
+    // --- Integrations ---
     if (tci_) {
         tabs_->addTab(wrapScroll(buildNetworkTab()), tr("Network"));
     }
     if (serialPtt_) {
         tabs_->addTab(wrapScroll(buildCatSerialTab()), tr("CAT / Serial"));
     }
+
+    // --- Set-once utility / cosmetic (rarely revisited) ---
+    if (profiles_) {
+        tabs_->addTab(wrapScroll(buildProfilesTab()), tr("Profiles"));
+    }
+    tabs_->addTab(wrapScroll(buildBackupRestoreTab()), tr("Backup & Restore"));
     if (wx_) {
         tabs_->addTab(wrapScroll(buildWeatherTab()), tr("Weather"));
     }
-    // Further tabs (Radio, Audio, DSP, …) are added as those features
-    // land — deliberately no empty placeholder tabs.
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);

@@ -57,7 +57,9 @@ not programmers — if you can click a menu, you can use this.
   - [Getting help / reporting a bug](#getting-help--reporting-a-bug)
   - [Radio](#radio)
   - [Transmit (PA enable + safety timeout + hardware PTT)](#transmit-pa-enable--safety-timeout--hardware-ptt)
-  - [Filter board (N2ADR / compatible)](#filter-board-n2adr--compatible)
+- [Settings → Filters / BCD](#settings--filters--bcd)
+  - [Filter board — OC Control (J16 pins)](#filter-board--oc-control-j16-pins)
+  - [Transmit pin action + external-PA gating](#transmit-pin-action--external-pa-gating)
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
@@ -2314,39 +2316,10 @@ you touch between QSOs.
 > RF regardless of timing, and the timing knobs are inert when PA
 > is off.
 
-### Filter board (N2ADR / compatible)
+### External band-following (filter board / USB-BCD)
 
-If you have an external band-pass filter board on the HL2's
-open-collector (OC) outputs, tick **Enable external filter board** and
-Lyra switches the OC pins per band so the board follows your tuning —
-front-end protection against strong out-of-band signals (a nearby AM
-broadcaster, say). The live **OC outputs** readout shows which J16 pins
-are currently driven. Leave it off if you don't have a board — harmless
-either way (the pins just drive nothing).
-
-### USB-BCD (linear-amp band switching)
-
-Drives a Yaesu-style **BCD band code** out an FTDI cable so an external
-linear amp's auto-bandswitch follows Lyra's band. Tick **Enable
-USB-BCD**, choose your **BCD cable**, and the **BCD output** readout shows
-the current code. Two bands have no standard BCD code of their own, with an
-option to borrow the adjacent band's filter:
-
-- **60 m uses the 40 m filter (BCD 3)** — sends the 40 m code on 60 m
-  instead of bypassing.
-- **11 m uses the 10 m filter (BCD 9)** — sends the 10 m code on the
-  11 m / CB band (the appropriate adjacent filter) instead of bypassing.
-
-> ⚠ **Operate only within the maximum power and band limits permitted by
-> your country / region's regulations.** This control selects an amp
-> filter; it does not change what you are licensed to transmit.
-
-> ⚠ **Verify before you key.** Confirm the wiring and do a low-power test
-> on each band before transmitting at full power — the wrong code can
-> route TX through the wrong filter.
-
-(If the FTDI driver, `ftd2xx.dll`, isn't installed, this section says so
-instead — install the FTDI D2XX driver to use USB-BCD.)
+The external filter board (OC) and the USB-BCD amp band-code output now
+live on their own tab — see [Settings → Filters / BCD](#settings--filters--bcd).
 
 ### Diagnostics (debug log)
 
@@ -2404,6 +2377,81 @@ To make a report actionable, please include:
   expected instead.
 
 ---
+
+## Settings → Filters / BCD
+
+Everything that makes an **external band-following accessory follow your
+tuning** lives here: an external band-pass **filter board** on the HL2's
+open-collector (OC) outputs, and a **USB-BCD** band code for a linear
+amp. Leave the whole tab alone if you don't have either — nothing here
+does anything until you enable it.
+
+### Filter board — OC Control (J16 pins)
+
+The HL2's **J16 open-collector (OC) pins** can drive an external
+band-pass filter board (N2ADR or compatible) so its filters follow the
+band you're on — front-end protection against strong out-of-band
+signals (a nearby AM broadcaster, say).
+
+- **Enable external filter board (N2ADR / compatible)** — turns the OC
+  band-switching on. Off = the OC pins drive nothing (harmless with no
+  board).
+- **Live pins** (top-right) — the seven cells light to show which J16
+  pins are being driven **right now**, on the wire. They follow the band
+  as you tune and flip to the transmit pattern while you're keyed.
+- **The per-band grid** — one row per band, with a **J16 Receive pins**
+  block (green) and a **J16 Transmit pins** block (red), pins 1–7 each.
+  Tick a pin to drive it on that band for RX and/or TX. Edits apply and
+  save immediately. This is the heart of it: the grid is what tells the
+  board which filter to select on each band.
+- **N2ADR preset** — loads the standard N2ADR filter-board pin map (the
+  default). **Clear all** — blanks every band (start from scratch).
+- **Allow hot switching** — lets transmit-pin edits take effect while
+  you're transmitting. Off (default) is safer — edits apply on the next
+  key.
+
+> ⚠ **Pre-antenna gate.** Before you key RF into a filter board, verify
+> the pins in the grid match your board's physical wiring, at low power,
+> **on every band**. Wrong pins = wrong filter for the band =
+> out-of-band emissions or a blown LPF relay.
+
+### Transmit pin action + external-PA gating
+
+For each of the seven pins you can choose **when** its transmit pattern
+engages, and whether it also gates an external PA:
+
+- **Transmit action** — the condition that counts as "transmit" for that
+  pin: **Mox**, **Tune**, **2-Tone**, or any combination (default
+  **Mox / Tune / 2-Tone** = engage on all three).
+- **PA·RX / PA·TX** — mark a pin as feeding an external power amplifier's
+  enable on receive and/or transmit.
+
+**Split pins (per-VFO)** is reserved — it activates with the second
+receiver (RX2).
+
+### USB-BCD (linear-amp band switching)
+
+Drives a Yaesu-style **BCD band code** out an FTDI cable so an external
+linear amp's auto-bandswitch follows Lyra's band. Tick **Enable
+USB-BCD**, choose your **BCD cable**, and the **BCD output** readout shows
+the current code. Two bands have no standard BCD code of their own, with an
+option to borrow the adjacent band's filter:
+
+- **60 m uses the 40 m filter (BCD 3)** — sends the 40 m code on 60 m
+  instead of bypassing.
+- **11 m uses the 10 m filter (BCD 9)** — sends the 10 m code on the
+  11 m / CB band (the appropriate adjacent filter) instead of bypassing.
+
+> ⚠ **Operate only within the maximum power and band limits permitted by
+> your country / region's regulations.** This control selects an amp
+> filter; it does not change what you are licensed to transmit.
+
+> ⚠ **Verify before you key.** Confirm the wiring and do a low-power test
+> on each band before transmitting at full power — the wrong code can
+> route TX through the wrong filter.
+
+(If the FTDI driver, `ftd2xx.dll`, isn't installed, this section says so
+instead — install the FTDI D2XX driver to use USB-BCD.)
 
 ## Settings → Audio
 
