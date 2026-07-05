@@ -64,6 +64,7 @@ public:
 private:
     QWidget *buildVisualsTab();
     QWidget *buildHardwareTab();
+    QWidget *buildFiltersBcdTab();  // #199 — editable OC table + USB-BCD (moved off Hardware)
     QWidget *buildAudioTab();    // RX audio output device chooser
     QWidget *buildNoiseTab();    // captured-profile manager (list/rename/delete)
     QWidget *buildDspTab();      // #159 per-mode-family filter type (Linear/Low Latency)

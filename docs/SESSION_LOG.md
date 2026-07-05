@@ -4,6 +4,57 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-07-04 — Research: HardRock-50 / Icom AH-4 amp+ATU band-follow = a GATEWARE feature (no Lyra port needed)
+
+Investigation session (no code). Operator asked why the HardRock-50 band-follows
+under Thetis but not Zeus/Lyra with an HL2+ + N2ADR filter board. Ran it to
+ground against **hard sources** (not marketing): the AK4951 V4.1 companion-board
+KiCad schematic (drive PDF "AK4951 V4.1.pdf") + the HL2+ ak4951v4 gateware RTL
+(`Y:\Claude local\_hl2src\control.v` / `hermeslite_core.v` / the variant).
+
+### The finding (definitive)
+- **The AK4951 "Plus" companion board has NO microcontroller** — only U1=TPS730
+  regulator + U2=AK4951 codec + a few MOSFET level-shifters. It is a **passive
+  breakout/level-shifter**. J4 "HR-50/AH4 ATU" carries `ExtAMPTxD`, `EXTTR`,
+  `ATU_START`, `ATU_STATUS`, `PTT` — all produced by the HL2, not the board.
+- **The HardRock CAT stream is generated on-chip by the HL2 gateware** —
+  `control.v` `extamp` module: `extamp(.freq(tx_freq), .ptt(int_tx_on),
+  .uart_txd)` → 9600-baud KX3/FT-817-emulation CAT out the DB9. `tx_freq` is
+  latched from **`cmd_addr 0x01` (wire `C0=0x02`) = the TX frequency register**.
+  The AH-4 is the gateware `exttuner` module (START/KEY/`atu_txinhibit`).
+- Both are compile-time gateware params `UART`/`ATU` (0=none, 1=JI1UDD HR50/ATU);
+  the `hl2b5up_ak4951v4` variant sets **UART=1, ATU=1** → live.
+- ⇒ Band-follow + PTT is **100% automatic in the gateware. NO host enable
+  register, NO I2C, NO CAT generation on the host, NO special mode.** The host's
+  ONLY job = write `C0=0x02` (TX freq) and keep it current with the VFO.
+
+### Root cause of "follows on Thetis, not Zeus/Lyra"
+The amp follows the **TX-freq register**. Thetis rewrites the TX DDS on every
+dial change during RX (independent of MOX) → `C0=0x02` always current → amp
+band-follows as you tune. Lyra/Zeus historically only set the TX freq **around
+keying** (the documented "stale TX NCO 0 Hz, `0x02/0x08/0x0a` lazily registered
+at the MOX edge") → stale/0 during RX → amp doesn't follow until keydown.
+
+### What it means for Lyra (corrects earlier wrong scoping)
+- This is **NOT a feature to build** — no serial code, no I2C, no OC/BCD table.
+  My earlier "editable OC-pin table" scoping was the wrong subsystem entirely.
+- It's a **one-behavior requirement**: keep the TX-freq register (`C0=0x02`)
+  tracking the operating VFO **continuously incl. during RX**, like Thetis.
+  Recent TX-freq registration work (`start()` re-push + eager-register
+  `0x02/0x08/0x0a`) may already do it or be one small change away.
+- **Checkable in Lyra ALONE, no amp needed** — does Lyra emit `C0=0x02 =
+  current VFO` while tuning during RX? Verify in the wire path. The amp is only
+  needed to confirm final on-air behavior. Operator no longer has a HardRock, so
+  on-air verification waits on a tester with HL2+ Plus + HardRock (or re-acquire).
+
+### Next session
+Dig into Lyra's TX-freq behavior: does it keep `C0=0x02` current to the VFO
+during RX, or only around MOX? (Safe desk read of the wire path.) Full detail in
+`THETIS_DIRECT_PORT_PLAN.md` → "HARDROCK-50 / ICOM AH-4" section + memory
+`project_lyra_cpp_hardrock_atu.md`.
+
+---
+
 ## 2026-06-30 — RELEASED v0.8.0 (companion-app launch + CW external/serial keyer + the post-v0.7.0 batch)
 
 Cut **v0.8.0** bundling everything on `main` since v0.7.0 + today's work.

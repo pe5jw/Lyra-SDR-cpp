@@ -91,6 +91,7 @@
 // register_sink() + router_instance(0) calls (the post-rxWorker_
 // IQ-dispatch path).
 #include "wire/Router.h"
+#include "oc/OcControl.h"   // #199 — editable per-band OC table + emit choke
 // #91 VOX — pure mic-RMS gate (hardware-free decision core).
 #include "tx/VoxDetector.h"
 #include <memory>
@@ -756,6 +757,11 @@ public:
     static constexpr int kTuneCwPitchHz = 600;
     bool    filterBoardEnabled() const { return filterBoardEnabled_; }
     int     ocBits()             const { return ocPattern_; }
+    // #199 Stage 4 — the editable OC table for the Settings "Filters / BCD"
+    // tab.  The tab mutates it via OcControl's setters, then calls
+    // applyOcEdit() to persist (oc/*) + re-emit the current-band pattern.
+    lyra::oc::OcControl *ocControl() { return &oc_; }
+    void applyOcEdit();
     // TX-0a telemetry getters — convert the raw 12-bit EP6 ADC slots
     // (written by the RX worker) on the main thread.  Sentinel raw < 0
     // → NaN ("no telemetry yet").  Formulas per the documented HL2
@@ -1665,6 +1671,12 @@ private:
     // the FSM keydown/keyup hooks pass true/false to switch at the
     // right TR-sequenced moments.
     void updateOcPattern(bool transmitting = false);
+    // #199 Stage 2 — OC wire sink (the write-tail of the old updateOcPattern)
+    // + the N2ADR preset seeder for the editable OcControl table.
+    void setOcOutput(quint8 bits);
+    void seedOcN2adr();
+    void loadOcSettings();        // override the N2ADR seed from oc/* if present
+    void saveOcSettings() const;  // persist the editable OC table to oc/*
     // Apply an LNA gain to the live wire value WITHOUT persisting it —
     // used by Auto-LNA so its transient adjustments never overwrite the
     // operator's manual set point in QSettings.  Emits lnaGainChanged
@@ -2001,6 +2013,10 @@ private:
     QTimer              *txSafetyTimer_    = nullptr;
     bool                 filterBoardEnabled_ = false;
     int                  ocPattern_ = 0;   // live 7-bit J16 pattern
+    // #199 — the editable OC table + emit choke (Stage 1 core).  Stage 2
+    // routes updateOcPattern() through it; seeded with the N2ADR preset so
+    // an enabled board reproduces today's per-band pattern byte-for-byte.
+    lyra::oc::OcControl  oc_;
     // Step 3d: DDC0 IQ sink (DSP engine).  Set once before open();
     // read on the RX worker thread.  Default-empty = no DSP wired.
     // Stage 2b2: iqSink_ retired — setIqSink() now registers on

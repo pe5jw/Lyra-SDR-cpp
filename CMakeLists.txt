@@ -327,6 +327,8 @@ qt_add_executable(lyra
     src/palettes.cpp
     src/bands.h
     src/bands.cpp
+    src/oc/OcControl.h
+    src/oc/OcControl.cpp
     src/bandplan.h
     src/bandplan.cpp
     src/statusbus.h
@@ -615,6 +617,23 @@ target_include_directories(test_profile PRIVATE src)
 target_link_libraries(test_profile PRIVATE Qt6::Core)
 if(MSVC)
     target_compile_options(test_profile PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# #199 OC Control Stage 1 — pure compute() + change-gate unit test.
+# EXCLUDE_FROM_ALL; `cmake --build build --target test_oc_control`.  Links
+# OcControl (Q_OBJECT, AUTOMOC) + bands.cpp (amateurBands() band count) +
+# Qt6::Core.  Wire-inert — no HL2Stream, no event loop.
+add_executable(test_oc_control EXCLUDE_FROM_ALL
+    scratch/test_oc_control.cpp
+    src/oc/OcControl.h
+    src/oc/OcControl.cpp
+    src/bands.h
+    src/bands.cpp
+)
+target_include_directories(test_oc_control PRIVATE src)
+target_link_libraries(test_oc_control PRIVATE Qt6::Core)
+if(MSVC)
+    target_compile_options(test_oc_control PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #158 Stage 1 — IVAC direct-port engine unit test (verbatim

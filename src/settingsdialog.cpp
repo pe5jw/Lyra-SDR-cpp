@@ -50,6 +50,12 @@
 #include <QPainter>      // #91 VOX — colored mic-level meter bar
 #include <QPaintEvent>
 #include <QGridLayout>
+#include <QRadioButton>
+#include <QButtonGroup>
+#include <QSignalBlocker>
+#include <QVector>
+#include <QFrame>
+#include "oc/OcControl.h"   // #199 — editable OC table (Filters / BCD tab)
 #include <QHash>
 #include <QHBoxLayout>
 #include <QSettings>
@@ -244,6 +250,11 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     }
     if (stream_ || discovery_ || bcd_) {
         tabs_->addTab(wrapScroll(buildHardwareTab()), tr("Hardware"));
+    }
+    // #199 — external band-following (filter-board OC editor + USB-BCD) on
+    // its own tab; the Hardware tab was full.
+    if (stream_ || bcd_) {
+        tabs_->addTab(wrapScroll(buildFiltersBcdTab()), tr("Filters / BCD"));
     }
     // TX-1 component 5b — Settings → TX tab.  Only meaningful when
     // the stream is connected (everything here writes through
@@ -2461,154 +2472,9 @@ QWidget *SettingsDialog::buildHardwareTab() {
         form->addRow(radioBox);
     }
 
-    // --- External filter board (N2ADR) ---
-    // Drives the HL2 OC outputs (J16) per band so the board's RX
-    // band-pass + 3 MHz HPF relays follow the band — the front-end
-    // protection against strong out-of-band signals (e.g. a nearby AM
-    // broadcaster).  Default OFF; harmless if no board is connected.
-    auto *fb = new QCheckBox(
-        tr("Enable external filter board (N2ADR / compatible)"), page);
-    fb->setChecked(stream_ && stream_->filterBoardEnabled());
-    fb->setToolTip(tr("Switches the HL2 open-collector outputs per band "
-                      "to drive an external band-pass filter board.\n"
-                      "Leave off if you don't have one (harmless either "
-                      "way — the OC pins just drive nothing)."));
-    if (stream_) {
-        connect(fb, &QCheckBox::toggled, stream_,
-                &lyra::ipc::HL2Stream::setFilterBoardEnabled);
-        connect(stream_, &lyra::ipc::HL2Stream::filterBoardChanged, fb,
-                [fb](bool on) { if (fb->isChecked() != on) fb->setChecked(on); });
-    }
-    form->addRow(tr("Filter board"), fb);
+    // #199 — filter-board enable + OC readout + OC editor moved to the
+    // "Filters / BCD" tab (buildFiltersBcdTab); the Hardware tab was full.
 
-    // Live OC-pin readout (which J16 pins are currently driven).
-    // Shows both the live wire pattern (RX bits at rest; flips to TX
-    // bits during MOX) AND the table-predicted RX vs TX patterns for
-    // the current band — operator can spot a mismatch (e.g. an OC pin
-    // that should fire but doesn't because their wiring differs from
-    // the n2adr table) before keying into an antenna.
-    auto *oc = new QLabel(page);
-    auto setOcText = [this, oc](int pattern) {
-        QString live = lyra::ocPatternText(pattern);
-        QString rxPred = QStringLiteral("—");
-        QString txPred = QStringLiteral("—");
-        if (stream_) {
-            const int bi = lyra::bandIndexForFreq(int(stream_->rx1FreqHz()));
-            if (bi >= 0) {
-                rxPred = lyra::ocPatternText(
-                    lyra::n2adrOcPattern(bi, /*transmitting=*/false));
-                txPred = lyra::ocPatternText(
-                    lyra::n2adrOcPattern(bi, /*transmitting=*/true));
-            }
-        }
-        oc->setText(tr("Live: %1   |   Band table — RX: %2   TX: %3")
-                        .arg(live, rxPred, txPred));
-    };
-    setOcText(stream_ ? stream_->ocBits() : 0);
-    oc->setStyleSheet(QStringLiteral(
-        "QLabel{color:#8fa6ba;font-family:Consolas;}"));
-    if (stream_) {
-        connect(stream_, &lyra::ipc::HL2Stream::ocBitsChanged, oc, setOcText);
-        // Re-render the band-predicted columns when the operator tunes
-        // across a band edge (the live wire pattern signal already
-        // covers the band-driven changes, but if the OC bits stay the
-        // same across an edge, the predicted columns still want to
-        // update to reflect the new band's table entry).
-        connect(stream_, &lyra::ipc::HL2Stream::rx1FreqChanged, oc,
-                [this, setOcText]() {
-                    setOcText(stream_ ? stream_->ocBits() : 0);
-                });
-    }
-    form->addRow(tr("OC outputs"), oc);
-
-    // Safety warning + per-band table dialog (task #28).  The OC table
-    // is per-board: an N2ADR board wires pins to specific BPF/LPF
-    // banks, but custom boards may differ.  Operator MUST verify the
-    // table matches their physical wiring before keying into a band.
-    {
-        auto *row = new QWidget(page);
-        auto *h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 0, 0, 0);
-
-        auto *fbWarn = new QLabel(row);
-        fbWarn->setText(tr(
-            "<b style='color:#d11515;'>⚠ Pre-antenna gate:</b>  "
-            "before keying RF into a filter board, open the table "
-            "and verify the predicted RX / TX pins match your "
-            "physical board wiring.  Wrong pins = wrong filter for "
-            "the band = out-of-band emissions / blown LPF relay."));
-        fbWarn->setWordWrap(true);
-        fbWarn->setStyleSheet(QStringLiteral("QLabel{color:#cccccc;}"));
-        h->addWidget(fbWarn, 1);
-
-        auto *tableBtn = new QPushButton(tr("OC patterns…"), row);
-        tableBtn->setToolTip(tr(
-            "Show the per-band RX and TX OC pin patterns the n2adr "
-            "table emits for each amateur band.  Compare against your "
-            "physical filter board's expected pin mapping."));
-        connect(tableBtn, &QPushButton::clicked, page, [this]() {
-            // Build the table HTML on demand.  amateurBands() is small
-            // (~11 entries) so a fresh dialog every click is fine.
-            QString html =
-                QStringLiteral("<style>"
-                               "table{border-collapse:collapse;}"
-                               "th,td{padding:4px 12px;border:1px solid "
-                               "#3a5060;text-align:left;}"
-                               "th{background:#1a2a35;color:#cdd9e5;}"
-                               "td{font-family:Consolas;color:#cdd9e5;}"
-                               "tr.cur td{background:#2a4a3a;font-weight:bold;}"
-                               "</style>"
-                               "<table><tr><th>Band</th><th>Freq (MHz)</th>"
-                               "<th>RX pins</th><th>TX pins</th></tr>");
-            const int curBi = stream_
-                ? lyra::bandIndexForFreq(int(stream_->rx1FreqHz()))
-                : -1;
-            const auto &bands = lyra::amateurBands();
-            for (std::size_t i = 0; i < bands.size(); ++i) {
-                const auto &b = bands[i];
-                const int rxP = lyra::n2adrOcPattern(int(i), false);
-                const int txP = lyra::n2adrOcPattern(int(i), true);
-                const QString cls = (int(i) == curBi)
-                                        ? QStringLiteral(" class='cur'")
-                                        : QString();
-                html += QStringLiteral("<tr%1><td>%2</td><td>%3 – %4</td>"
-                                       "<td>%5</td><td>%6</td></tr>")
-                            .arg(cls,
-                                 QString::fromLatin1(b.name),
-                                 QString::number(b.low / 1.0e6, 'f', 3),
-                                 QString::number(b.high / 1.0e6, 'f', 3),
-                                 lyra::ocPatternText(rxP),
-                                 lyra::ocPatternText(txP));
-            }
-            html += QStringLiteral("</table>");
-
-            auto *dlg = new QDialog(this);
-            dlg->setAttribute(Qt::WA_DeleteOnClose);
-            dlg->setWindowTitle(tr("Filter board — OC patterns by band"));
-            auto *v = new QVBoxLayout(dlg);
-            auto *intro = new QLabel(dlg);
-            intro->setText(tr(
-                "Per-band OC pin patterns driven on the HL2 J16 outputs "
-                "(C2 of frame 0).  The current band is highlighted.  "
-                "TX-side bits engage post-ATT, before the wire MOX bit, "
-                "giving the filter board ~12 ms to settle into TX "
-                "configuration before RF appears."));
-            intro->setWordWrap(true);
-            v->addWidget(intro);
-            auto *table = new QLabel(dlg);
-            table->setTextFormat(Qt::RichText);
-            table->setText(html);
-            v->addWidget(table);
-            auto *close = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
-            connect(close, &QDialogButtonBox::rejected, dlg, &QDialog::close);
-            v->addWidget(close);
-            dlg->resize(560, 480);
-            dlg->show();
-        });
-        h->addWidget(tableBtn, 0, Qt::AlignTop);
-
-        form->addRow(row);
-    }
 
     // --- Auto-LNA (overload-triggered front-end protection) ---
     // On sustained ADC overload the LNA backs off; when the band clears
@@ -2653,89 +2519,8 @@ QWidget *SettingsDialog::buildHardwareTab() {
         form->addRow(tr("Hold time"), hold);
     }
 
-    // --- USB-BCD output (external linear-amp band switching) ---
-    // FTDI cable that outputs the Yaesu BCD band code so an amp's
-    // auto-bandswitch follows Lyra.  Default OFF; ⚠ the wrong code at
-    // power can route TX through the wrong filter — verify per band.
-    if (bcd_) {
-        if (!bcd_->available()) {
-            auto *na = new QLabel(
-                tr("FTDI driver (ftd2xx.dll) not found — install the FTDI "
-                   "D2XX driver to use USB-BCD."), page);
-            na->setWordWrap(true);
-            na->setStyleSheet(QStringLiteral("QLabel{color:#8a9aac;}"));
-            form->addRow(tr("USB-BCD"), na);
-        } else {
-            auto *en = new QCheckBox(
-                tr("Enable USB-BCD amp band output"), page);
-            en->setChecked(bcd_->enabled());
-            en->setToolTip(tr("Outputs the Yaesu BCD band code on an FTDI "
-                              "cable so a linear amp follows the band.\n"
-                              "⚠ Verify wiring + low-power test per band "
-                              "before keying at full power."));
-            connect(en, &QCheckBox::toggled, bcd_, &UsbBcd::setEnabled);
-            connect(bcd_, &UsbBcd::enabledChanged, en, [en](bool on) {
-                if (en->isChecked() != on) en->setChecked(on);
-            });
-            form->addRow(tr("USB-BCD"), en);
-
-            auto *dev = new QComboBox(page);
-            dev->addItem(tr("(none)"), QString());
-            for (const QString &s : bcd_->devices()) {
-                dev->addItem(s, s);
-            }
-            int di = dev->findData(bcd_->serial());
-            dev->setCurrentIndex(di >= 0 ? di : 0);
-            connect(dev, &QComboBox::currentIndexChanged, bcd_, [this, dev](int) {
-                bcd_->setSerial(dev->currentData().toString());
-            });
-            form->addRow(tr("BCD cable"), dev);
-
-            auto *sixty = new QCheckBox(
-                tr("60 m uses the 40 m filter (BCD 3)"), page);
-            sixty->setChecked(bcd_->sixtyAsForty());
-            sixty->setToolTip(tr("60 m has no standard BCD code. On = use "
-                                 "the 40 m code so the amp picks its 40 m "
-                                 "filter; off = bypass."));
-            connect(sixty, &QCheckBox::toggled, bcd_, &UsbBcd::setSixtyAsForty);
-            connect(bcd_, &UsbBcd::sixtyAsFortyChanged, sixty, [sixty](bool on) {
-                if (sixty->isChecked() != on) sixty->setChecked(on);
-            });
-            form->addRow(QString(), sixty);
-
-            auto *eleven = new QCheckBox(
-                tr("11 m uses the 10 m filter (BCD 9)"), page);
-            eleven->setChecked(bcd_->elevenAsTen());
-            eleven->setToolTip(tr("11 m / CB has no standard BCD code. On = "
-                                  "use the 10 m code so the amp picks its "
-                                  "10 m filter (the appropriate adjacent "
-                                  "filter); off = bypass."));
-            connect(eleven, &QCheckBox::toggled, bcd_, &UsbBcd::setElevenAsTen);
-            connect(bcd_, &UsbBcd::elevenAsTenChanged, eleven, [eleven](bool on) {
-                if (eleven->isChecked() != on) eleven->setChecked(on);
-            });
-            form->addRow(QString(), eleven);
-
-            auto *regNote = new QLabel(
-                tr("⚠ Operate only within the maximum power and band limits "
-                   "permitted by your country / region's regulations."),
-                page);
-            regNote->setWordWrap(true);
-            regNote->setStyleSheet(QStringLiteral(
-                "QLabel{color:#c9a23a;}"));   // amber advisory
-            form->addRow(regNote);
-
-            auto *code = new QLabel(page);
-            auto setCode = [code](int c) {
-                code->setText(tr("BCD code: %1").arg(c));
-            };
-            setCode(bcd_->currentBcd());
-            code->setStyleSheet(QStringLiteral(
-                "QLabel{color:#8fa6ba;font-family:Consolas;}"));
-            connect(bcd_, &UsbBcd::currentBcdChanged, code, setCode);
-            form->addRow(tr("BCD output"), code);
-        }
-    }
+    // #199 — the entire USB-BCD block moved to the "Filters / BCD" tab
+    // (buildFiltersBcdTab), alongside the OC editor.
 
     // --- TX safety timeout + PA enable (TX-0c-pa-debug) ---
     // The operating-time TX controls (Drive %, MOX) live on the front-
@@ -3061,6 +2846,349 @@ QWidget *SettingsDialog::buildHardwareTab() {
         form->addRow(grp);
     }
 
+    return page;
+}
+
+QWidget *SettingsDialog::buildFiltersBcdTab() {
+    // #199 — external band-following: the editable OC (J16 open-collector)
+    // table that drives an external filter board per band (Lyra-native port
+    // of Thetis's OC Control) + the USB-BCD amp band-code output.  The OC
+    // section edits HL2Stream's OcControl and calls applyOcEdit() (persist
+    // oc/* + re-emit the current band).
+    auto *page = new QWidget;
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(14, 14, 14, 14);
+    root->setSpacing(12);
+
+    lyra::oc::OcControl *oc = stream_ ? stream_->ocControl() : nullptr;
+
+    auto section = [](const QString &title) {
+        auto *g = new QGroupBox(title);
+        g->setStyleSheet(QStringLiteral(
+            "QGroupBox{font-weight:bold;color:#cdd9e5;border:1px solid #2a3f4d;"
+            "border-radius:8px;margin-top:14px;background:rgba(20,32,40,0.35);}"
+            "QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 6px;"
+            "color:#4fc3f7;}"));
+        return g;
+    };
+    auto colHdr = [](const QString &t, const QString &color) {
+        auto *l = new QLabel(t);
+        l->setAlignment(Qt::AlignCenter);
+        l->setStyleSheet(
+            QStringLiteral("QLabel{color:%1;font-weight:bold;}").arg(color));
+        return l;
+    };
+
+    // Build the USB-BCD group up front so it can sit either in the right
+    // column beside the transmit-pin actions (when the OC editor is present)
+    // or full-width (BCD-only, no stream).
+    QGroupBox *bcdBox = nullptr;
+    if (bcd_) {
+        bcdBox = section(tr("USB-BCD amp band output"));
+        auto *bf = new QFormLayout(bcdBox);
+        if (!bcd_->available()) {
+            auto *na = new QLabel(tr("FTDI driver (ftd2xx.dll) not found — "
+                "install the FTDI D2XX driver to use USB-BCD."));
+            na->setWordWrap(true);
+            na->setStyleSheet(QStringLiteral("QLabel{color:#8a9aac;}"));
+            bf->addRow(na);
+        } else {
+            auto *en = new QCheckBox(tr("Enable USB-BCD amp band output"));
+            en->setChecked(bcd_->enabled());
+            en->setToolTip(tr("Outputs the Yaesu BCD band code on an FTDI cable "
+                              "so a linear amp follows the band.\n⚠ Verify "
+                              "wiring + low-power test per band before keying "
+                              "at full power."));
+            connect(en, &QCheckBox::toggled, bcd_, &UsbBcd::setEnabled);
+            connect(bcd_, &UsbBcd::enabledChanged, en, [en](bool on) {
+                if (en->isChecked() != on) en->setChecked(on);
+            });
+            bf->addRow(tr("USB-BCD"), en);
+
+            auto *dev = new QComboBox;
+            dev->setMaximumWidth(180);
+            dev->addItem(tr("(none)"), QString());
+            for (const QString &s : bcd_->devices()) dev->addItem(s, s);
+            int di = dev->findData(bcd_->serial());
+            dev->setCurrentIndex(di >= 0 ? di : 0);
+            connect(dev, &QComboBox::currentIndexChanged, bcd_, [this, dev](int) {
+                bcd_->setSerial(dev->currentData().toString());
+            });
+            bf->addRow(tr("BCD cable"), dev);
+
+            auto *sixty = new QCheckBox(tr("60 m uses the 40 m filter (BCD 3)"));
+            sixty->setChecked(bcd_->sixtyAsForty());
+            sixty->setToolTip(tr("60 m has no standard BCD code. On = use the "
+                                 "40 m code; off = bypass."));
+            connect(sixty, &QCheckBox::toggled, bcd_, &UsbBcd::setSixtyAsForty);
+            connect(bcd_, &UsbBcd::sixtyAsFortyChanged, sixty, [sixty](bool on) {
+                if (sixty->isChecked() != on) sixty->setChecked(on);
+            });
+            bf->addRow(QString(), sixty);
+
+            auto *eleven = new QCheckBox(tr("11 m uses the 10 m filter (BCD 9)"));
+            eleven->setChecked(bcd_->elevenAsTen());
+            eleven->setToolTip(tr("11 m / CB has no standard BCD code. On = use "
+                                  "the 10 m code; off = bypass."));
+            connect(eleven, &QCheckBox::toggled, bcd_, &UsbBcd::setElevenAsTen);
+            connect(bcd_, &UsbBcd::elevenAsTenChanged, eleven, [eleven](bool on) {
+                if (eleven->isChecked() != on) eleven->setChecked(on);
+            });
+            bf->addRow(QString(), eleven);
+
+            auto *regNote = new QLabel(tr("⚠ Operate only within the maximum "
+                "power and band limits permitted by your country / region's "
+                "regulations."));
+            regNote->setWordWrap(true);
+            regNote->setStyleSheet(QStringLiteral("QLabel{color:#c9a23a;}"));
+            bf->addRow(regNote);
+
+            auto *code = new QLabel;
+            auto setCode = [code](int c) {
+                code->setText(tr("BCD code: %1").arg(c));
+            };
+            setCode(bcd_->currentBcd());
+            code->setStyleSheet(QStringLiteral(
+                "QLabel{color:#8fa6ba;font-family:Consolas;}"));
+            connect(bcd_, &UsbBcd::currentBcdChanged, code, setCode);
+            bf->addRow(tr("BCD output"), code);
+        }
+    }
+
+    if (oc) {
+        auto *ocBox = section(tr("Filter board — OC Control (J16 pins)"));
+        auto *ocv = new QVBoxLayout(ocBox);
+        ocv->setSpacing(10);
+
+        // --- master enable + live hardware pin-state strip ---
+        auto *topRow = new QHBoxLayout;
+        auto *fb = new QCheckBox(
+            tr("Enable external filter board (N2ADR / compatible)"));
+        fb->setChecked(stream_->filterBoardEnabled());
+        fb->setToolTip(tr("Switches the HL2 open-collector outputs per band to "
+                          "drive an external band-pass filter board.\n"
+                          "Off = OC pins idle (harmless with no board)."));
+        connect(fb, &QCheckBox::toggled, stream_,
+                &lyra::ipc::HL2Stream::setFilterBoardEnabled);
+        connect(stream_, &lyra::ipc::HL2Stream::filterBoardChanged, fb,
+                [fb](bool on) { if (fb->isChecked() != on) fb->setChecked(on); });
+        topRow->addWidget(fb);
+        topRow->addStretch(1);
+        topRow->addWidget(new QLabel(tr("Live pins:")));
+        QVector<QLabel *> pinCells;
+        for (int p = 1; p <= 7; ++p) {
+            auto *cell = new QLabel(QString::number(p));
+            cell->setAlignment(Qt::AlignCenter);
+            cell->setFixedSize(22, 22);
+            pinCells.append(cell);
+            topRow->addWidget(cell);
+        }
+        auto refreshPins = [pinCells](int bits) {
+            for (int p = 0; p < 7; ++p) {
+                const bool on = (bits >> p) & 1;
+                pinCells[p]->setStyleSheet(
+                    on ? QStringLiteral("QLabel{background:#9acd32;color:#0b1116;"
+                                        "border-radius:4px;font-weight:bold;}")
+                       : QStringLiteral("QLabel{background:#26333c;color:#5b6b78;"
+                                        "border-radius:4px;}"));
+            }
+        };
+        refreshPins(stream_->ocBits());
+        connect(stream_, &lyra::ipc::HL2Stream::ocBitsChanged, page, refreshPins);
+        ocv->addLayout(topRow);
+
+        // --- per-band editable grid (HF group v1) ---
+        const auto &bands = lyra::amateurBands();
+        const int nB = int(bands.size());
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(4);
+        grid->setVerticalSpacing(3);
+        grid->addWidget(colHdr(tr("Band"), QStringLiteral("#cdd9e5")),
+                        0, 0, 2, 1);
+        grid->addWidget(colHdr(tr("J16 Receive pins"), QStringLiteral("#7fd4a0")),
+                        0, 1, 1, 7, Qt::AlignCenter);
+        grid->addWidget(colHdr(tr("J16 Transmit pins"), QStringLiteral("#e08a8a")),
+                        0, 9, 1, 7, Qt::AlignCenter);
+        for (int p = 1; p <= 7; ++p) {
+            grid->addWidget(colHdr(QString::number(p), QStringLiteral("#7fd4a0")),
+                            1, p);
+            grid->addWidget(colHdr(QString::number(p), QStringLiteral("#e08a8a")),
+                            1, 8 + p);
+        }
+        // Bring the RX and TX halves closer + a thin divider between them.
+        grid->setColumnMinimumWidth(8, 9);
+        auto *gdiv = new QFrame;
+        gdiv->setFrameShape(QFrame::VLine);
+        gdiv->setStyleSheet(QStringLiteral("QFrame{color:#5a7c94;}"));
+        grid->addWidget(gdiv, 0, 8, 2 + nB, 1);
+
+        QVector<QVector<QCheckBox *>> rxCb(nB), txCb(nB);
+        for (int b = 0; b < nB; ++b) {
+            auto *bl = new QLabel(QString::fromLatin1(bands[b].name));
+            bl->setStyleSheet(QStringLiteral("QLabel{color:#cdd9e5;}"));
+            grid->addWidget(bl, 2 + b, 0);
+            for (int p = 1; p <= 7; ++p) {
+                auto *rx = new QCheckBox;
+                auto *tx = new QCheckBox;
+                rxCb[b].append(rx);
+                txCb[b].append(tx);
+                grid->addWidget(rx, 2 + b, p, Qt::AlignCenter);
+                grid->addWidget(tx, 2 + b, 8 + p, Qt::AlignCenter);
+                const int bit = 1 << (p - 1);
+                connect(rx, &QCheckBox::toggled, page,
+                        [this, oc, b, bit](bool on) {
+                            quint8 m = oc->rxMaskA(b);
+                            if (on) m |= bit; else m &= ~bit;
+                            oc->setRxMaskA(b, m);
+                            stream_->applyOcEdit();
+                        });
+                connect(tx, &QCheckBox::toggled, page,
+                        [this, oc, b, bit](bool on) {
+                            quint8 m = oc->txMaskA(b);
+                            if (on) m |= bit; else m &= ~bit;
+                            oc->setTxMaskA(b, m);
+                            stream_->applyOcEdit();
+                        });
+            }
+        }
+        auto loadGrid = [oc, rxCb, txCb, nB]() {
+            for (int b = 0; b < nB; ++b)
+                for (int p = 0; p < 7; ++p) {
+                    const int bit = 1 << p;
+                    QSignalBlocker br(rxCb[b][p]);
+                    QSignalBlocker bt(txCb[b][p]);
+                    rxCb[b][p]->setChecked(oc->rxMaskA(b) & bit);
+                    txCb[b][p]->setChecked(oc->txMaskA(b) & bit);
+                }
+        };
+        loadGrid();
+        ocv->addLayout(grid);
+
+        // --- preset buttons + hot-switch ---
+        auto *btnRow = new QHBoxLayout;
+        auto *n2 = new QPushButton(tr("N2ADR preset"));
+        n2->setToolTip(tr("Load the standard N2ADR filter-board pin map."));
+        connect(n2, &QPushButton::clicked, page, [this, oc, loadGrid]() {
+            const int n = oc->nBands();
+            for (int b = 0; b < n; ++b) {
+                oc->setRxMaskA(b, quint8(lyra::n2adrOcPattern(b, false)));
+                oc->setTxMaskA(b, quint8(lyra::n2adrOcPattern(b, true)));
+            }
+            loadGrid();
+            stream_->applyOcEdit();
+        });
+        auto *clr = new QPushButton(tr("Clear all"));
+        connect(clr, &QPushButton::clicked, page, [this, oc, loadGrid]() {
+            const int n = oc->nBands();
+            for (int b = 0; b < n; ++b) {
+                oc->setRxMaskA(b, 0);
+                oc->setTxMaskA(b, 0);
+            }
+            loadGrid();
+            stream_->applyOcEdit();
+        });
+        btnRow->addWidget(n2);
+        btnRow->addWidget(clr);
+        btnRow->addStretch(1);
+        auto *hot = new QCheckBox(tr("Allow hot switching"));
+        hot->setChecked(oc->allowHotSwitch());
+        hot->setToolTip(tr("Allow TX-pin edits while transmitting. Off is safer "
+                           "(edits apply on the next key)."));
+        connect(hot, &QCheckBox::toggled, page, [this, oc](bool on) {
+            oc->setAllowHotSwitch(on);
+            stream_->applyOcEdit();
+        });
+        btnRow->addWidget(hot);
+        ocv->addLayout(btnRow);
+
+        // ocBox (enable + live pins + grid + preset buttons) is complete.
+        root->addWidget(ocBox);
+
+        // --- lower area: two columns — transmit pin action (left) | BCD (right) ---
+        auto *lower = new QHBoxLayout;
+        lower->setSpacing(12);
+
+        // LEFT: transmit pin action + external-PA gating (narrowed combos,
+        // PA·RX / PA·TX pulled in beside them).
+        auto *paBox = section(tr("Transmit pin action + external-PA gating"));
+        auto *pav = new QVBoxLayout(paBox);
+        auto *paGrid = new QGridLayout;
+        paGrid->setHorizontalSpacing(6);
+        paGrid->addWidget(colHdr(tr("Pin"), QStringLiteral("#cdd9e5")), 0, 0);
+        paGrid->addWidget(colHdr(tr("Transmit action"), QStringLiteral("#cdd9e5")),
+                          0, 1);
+        paGrid->addWidget(colHdr(tr("PA·RX"), QStringLiteral("#cdd9e5")), 0, 2);
+        paGrid->addWidget(colHdr(tr("PA·TX"), QStringLiteral("#cdd9e5")), 0, 3);
+        const QStringList actLabels = {
+            tr("Mox"),          tr("Tune"),          tr("2-Tone"),
+            tr("Mox / Tune"),   tr("Mox / 2-Tone"),  tr("Tune / 2-Tone"),
+            tr("Mox / Tune / 2-Tone")};
+        for (int p = 1; p <= 7; ++p) {
+            paGrid->addWidget(new QLabel(QString::number(p)), p, 0);
+            auto *combo = new QComboBox;
+            combo->addItems(actLabels);
+            combo->setMaximumWidth(180);   // narrow — free space for the BCD column
+            combo->setCurrentIndex(int(oc->txPinAction(0, p - 1)));
+            connect(combo, &QComboBox::currentIndexChanged, page,
+                    [this, oc, p](int idx) {
+                        oc->setTxPinAction(
+                            0, p, static_cast<lyra::oc::TxPinAction>(idx));
+                        stream_->applyOcEdit();
+                    });
+            paGrid->addWidget(combo, p, 1);
+            auto *paRx = new QCheckBox;
+            paRx->setChecked(oc->rxPinPa(0, p - 1));
+            connect(paRx, &QCheckBox::toggled, page, [this, oc, p](bool on) {
+                oc->setRxPinPa(0, p, on);
+                stream_->applyOcEdit();
+            });
+            paGrid->addWidget(paRx, p, 2, Qt::AlignCenter);
+            auto *paTx = new QCheckBox;
+            paTx->setChecked(oc->txPinPa(0, p - 1));
+            connect(paTx, &QCheckBox::toggled, page, [this, oc, p](bool on) {
+                oc->setTxPinPa(0, p, on);
+                stream_->applyOcEdit();
+            });
+            paGrid->addWidget(paTx, p, 3, Qt::AlignCenter);
+        }
+        paGrid->setColumnStretch(4, 1);   // absorb slack right of PA·TX
+        pav->addLayout(paGrid);
+        pav->addStretch(1);
+        lower->addWidget(paBox, 0);
+
+        // RIGHT: USB-BCD (moved up into the space freed by the narrow combos).
+        if (bcdBox) {
+            auto *rightCol = new QVBoxLayout;
+            rightCol->addWidget(bcdBox);
+            rightCol->addStretch(1);
+            lower->addLayout(rightCol, 1);
+        } else {
+            lower->addStretch(1);
+        }
+        root->addLayout(lower);
+
+        // --- full-width beneath the two columns ---
+        auto *warn = new QLabel(tr(
+            "<b style='color:#d11515;'>⚠ Pre-antenna gate:</b>  verify the "
+            "predicted RX / TX pins match your physical board wiring at low "
+            "power on every band before keying an amp.  Wrong pins = wrong "
+            "filter = out-of-band emissions / blown LPF relay."));
+        warn->setWordWrap(true);
+        warn->setStyleSheet(QStringLiteral("QLabel{color:#cccccc;}"));
+        root->addWidget(warn);
+
+        auto *split = new QCheckBox(tr("Split pins (per-VFO) — activates with RX2"));
+        split->setChecked(oc->splitPins());
+        split->setEnabled(false);
+        split->setToolTip(tr("Per-VFO split-pin routing; enabled when the "
+                             "second receiver lands."));
+        root->addWidget(split);
+    } else if (bcdBox) {
+        // No OC editor (BCD-only) — USB-BCD spans the tab.
+        root->addWidget(bcdBox);
+    }
+
+    root->addStretch(1);
     return page;
 }
 

@@ -278,6 +278,15 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // for the restored band (so the board is correct from the first send).
     filterBoardEnabled_ =
         QSettings().value(QStringLiteral("hw/filterBoard"), false).toBool();
+    // #199 Stage 2 — seed the editable OC table with the N2ADR preset (so an
+    // enabled board reproduces today's per-band pattern byte-for-byte) + set
+    // the family + sync the master gate to the restored enable state, THEN
+    // seed the OC pattern for the restored band.  (Stage 3 replaces the
+    // preset seed with the persisted oc/* table.)
+    oc_.setFamily(lyra::oc::Family::HermesLite);
+    seedOcN2adr();
+    loadOcSettings();   // override the N2ADR seed if the operator edited the table
+    oc_.setEnabled(filterBoardEnabled_);
     updateOcPattern();
     // RX1 LNA gain (AD9866 PGA) — restore the operator's last setting.
     lnaGainDb_.store(
@@ -4359,6 +4368,10 @@ void HL2Stream::setFilterBoardEnabled(bool on) {
         return;
     }
     filterBoardEnabled_ = on;
+    // #199 — keep OcControl's master gate in sync (this also re-arms its −1
+    // change gate on the enable edge, so the next emit — including a
+    // legitimate "all pins off" = 0 on disable — is never swallowed).
+    oc_.setEnabled(on);
     QSettings().setValue(QStringLiteral("hw/filterBoard"), on);
     updateOcPattern();
     emit filterBoardChanged(on);
@@ -4377,29 +4390,129 @@ void HL2Stream::updateOcPattern(bool transmitting) {
     // On keyup the FSM passes transmitting=false in fsmKeyupSettled AFTER
     // the wire MOX bit has cleared and ptt_out_delay elapsed, so the
     // board switches back to RX configuration only after RF is gone.
-    int pattern = 0;
+    // #199 Stage 2 — the pattern now comes from the editable OcControl table
+    // (seeded with the N2ADR preset), NOT the hard-coded n2adrOcPattern.  The
+    // enable gate + the call-site timing are unchanged, so a disabled board
+    // still emits 0 and an N2ADR-seeded enabled board is byte-identical.
+    quint8 bits = 0;
     if (filterBoardEnabled_) {
         const int bi = lyra::bandIndexForFreq(
             static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed)));
-        pattern = lyra::n2adrOcPattern(bi, transmitting) & 0x7F;
+        // Non-split (RX2 not built): bandA == bandB == the RX1 band, and the
+        // TX OC band == the RX1 band today.  When RX2/split lands the TX path
+        // passes the TX-freq-derived index as bandA (§7.3); compute() already
+        // takes bandB.  pa=false: no external-PA-override state is wired yet
+        // and every xPA gate defaults off, so it is ignored (Stage 4 wires it).
+        bits = oc_.compute(bi, bi, transmitting, /*tune*/ false,
+                           /*twoTone*/ false, /*pa*/ false);
     }
-    if (pattern == ocPattern_) {
+    // Change gate (Thetis m_nOldBits, −1-seeded so the first emit after an
+    // enable/open is never swallowed — §7.5.1).  Push only on a real change.
+    if (!oc_.takeIfChanged(bits)) {
         return;
     }
-    ocPattern_ = pattern;
-    // §5 control-plane mapping (RX side): compose_case_0 C2 derives the
-    // OC pins as ((prn->oc_output << 1) & 0xFE).  Write the raw pattern
-    // home (composer does the shift) — the retired composeCC read ocC2_.
-    // `if (prn)` guards the pre-open window (covered by the at-open seed).
+    setOcOutput(bits);
+}
+
+void HL2Stream::setOcOutput(quint8 bits) {
+    // §7.5.5 — OC pins occupy C2[7:1]; the frame-0 composer does the
+    // `((oc_output << 1) & 0xFE) | cw.eer`.  Write the raw 7-bit pattern
+    // home (compose_case_0 reads prn->oc_output); mirror into ocPattern_ for
+    // the Q_PROPERTY ocBits readout + the retired ocC2_ atomic (left until
+    // the §7 composeCC retirement cleanup).  `if (prn)` guards the pre-open
+    // window (covered by the at-open seed).  Qt-main/control thread only
+    // (§7.5.2); the EP2 writer thread reads the single settled byte.
+    ocPattern_ = static_cast<int>(bits & 0x7F);
     if (lyra::wire::prn != nullptr) {
-        lyra::wire::prn->oc_output = pattern;
+        lyra::wire::prn->oc_output = ocPattern_;
     }
-    // C2[7:1] = OC pins; C2[0] (CW key bit) stays 0.  Atomic store so the
-    // EP2 writer thread picks it up on the next send.  (ocC2_ is the
-    // retired composeCC source — left until the §7 retirement cleanup.)
-    ocC2_.store(static_cast<std::uint8_t>((pattern << 1) & 0xFE),
+    ocC2_.store(static_cast<std::uint8_t>((ocPattern_ << 1) & 0xFE),
                 std::memory_order_relaxed);
-    emit ocBitsChanged(pattern);
+    emit ocBitsChanged(ocPattern_);
+}
+
+void HL2Stream::seedOcN2adr() {
+    // Seed OcControl's per-band RX/TX masks from the N2ADR filter-board
+    // preset (bands.cpp n2adrOcPattern) so an enabled board reproduces the
+    // shipped behaviour exactly.  The Stage-4 "N2ADR Filter" preset button
+    // re-seeds through this same helper.
+    const int n = static_cast<int>(lyra::amateurBands().size());
+    for (int bi = 0; bi < n; ++bi) {
+        oc_.setRxMaskA(bi,
+            static_cast<quint8>(lyra::n2adrOcPattern(bi, /*tx*/ false)));
+        oc_.setTxMaskA(bi,
+            static_cast<quint8>(lyra::n2adrOcPattern(bi, /*tx*/ true)));
+    }
+}
+
+void HL2Stream::applyOcEdit() {
+    // #199 Stage 4 — the Settings "Filters / BCD" tab mutates oc_ via its
+    // setters, then calls this to (a) persist the table to oc/* and (b)
+    // re-emit the current-band pattern so an edit to the ACTIVE band takes
+    // effect on the wire immediately (the change gate suppresses a no-op).
+    saveOcSettings();
+    updateOcPattern();
+}
+
+void HL2Stream::saveOcSettings() const {
+    QSettings s;
+    s.beginGroup(QStringLiteral("oc"));
+    s.setValue(QStringLiteral("present"), true);
+    const int n = oc_.nBands();
+    for (int b = 0; b < n; ++b) {
+        s.setValue(QStringLiteral("rxA/%1").arg(b), int(oc_.rxMaskA(b)));
+        s.setValue(QStringLiteral("txA/%1").arg(b), int(oc_.txMaskA(b)));
+        s.setValue(QStringLiteral("rxB/%1").arg(b), int(oc_.rxMaskB(b)));
+        s.setValue(QStringLiteral("txB/%1").arg(b), int(oc_.txMaskB(b)));
+    }
+    for (int g = 0; g < lyra::oc::OcControl::kGroups; ++g) {
+        for (int p = 0; p < lyra::oc::OcControl::kPins; ++p) {
+            s.setValue(QStringLiteral("txPinAction/%1/%2").arg(g).arg(p),
+                       int(oc_.txPinAction(g, p)));
+            s.setValue(QStringLiteral("txPinPa/%1/%2").arg(g).arg(p),
+                       oc_.txPinPa(g, p));
+            s.setValue(QStringLiteral("rxPinPa/%1/%2").arg(g).arg(p),
+                       oc_.rxPinPa(g, p));
+        }
+    }
+    s.setValue(QStringLiteral("splitPins"), oc_.splitPins());
+    s.setValue(QStringLiteral("rxABitMask"), oc_.rxABitMask());
+    s.setValue(QStringLiteral("allowHotSwitch"), oc_.allowHotSwitch());
+    s.endGroup();
+}
+
+void HL2Stream::loadOcSettings() {
+    QSettings s;
+    s.beginGroup(QStringLiteral("oc"));
+    if (!s.value(QStringLiteral("present"), false).toBool()) {
+        s.endGroup();
+        return;   // never edited -> keep the N2ADR seed (byte-identical)
+    }
+    const int n = oc_.nBands();
+    for (int b = 0; b < n; ++b) {
+        oc_.setRxMaskA(b, quint8(s.value(QStringLiteral("rxA/%1").arg(b),
+                                         int(oc_.rxMaskA(b))).toInt()));
+        oc_.setTxMaskA(b, quint8(s.value(QStringLiteral("txA/%1").arg(b),
+                                         int(oc_.txMaskA(b))).toInt()));
+        oc_.setRxMaskB(b, quint8(s.value(QStringLiteral("rxB/%1").arg(b), 0).toInt()));
+        oc_.setTxMaskB(b, quint8(s.value(QStringLiteral("txB/%1").arg(b), 0).toInt()));
+    }
+    for (int g = 0; g < lyra::oc::OcControl::kGroups; ++g) {
+        for (int p = 0; p < lyra::oc::OcControl::kPins; ++p) {
+            oc_.setTxPinAction(g, p + 1,
+                static_cast<lyra::oc::TxPinAction>(
+                    s.value(QStringLiteral("txPinAction/%1/%2").arg(g).arg(p),
+                            int(lyra::oc::TxPinAction::MoxTuneTwoTone)).toInt()));
+            oc_.setTxPinPa(g, p + 1,
+                s.value(QStringLiteral("txPinPa/%1/%2").arg(g).arg(p), false).toBool());
+            oc_.setRxPinPa(g, p + 1,
+                s.value(QStringLiteral("rxPinPa/%1/%2").arg(g).arg(p), false).toBool());
+        }
+    }
+    oc_.setSplitPins(s.value(QStringLiteral("splitPins"), false).toBool());
+    oc_.setRxABitMask(s.value(QStringLiteral("rxABitMask"), 0x0f).toInt());
+    oc_.setAllowHotSwitch(s.value(QStringLiteral("allowHotSwitch"), false).toBool());
+    s.endGroup();
 }
 
 
