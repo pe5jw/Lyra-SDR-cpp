@@ -11,16 +11,23 @@
 #endif
 #include <windows.h>
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QLabel>
 #include <QProcess>
+#include <QProgressBar>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
+#include <QVBoxLayout>
 
 namespace lyra::dsp {
 
@@ -433,8 +440,8 @@ bool WdspNative::ensureWisdom() {
     // ---- Slow path: no cache, spawn the subprocess builder. ----
     emitLog(QStringLiteral(
         "[wdsp] wisdom: building (one-time, may take several "
-        "minutes — the window stays unresponsive while planning "
-        "runs; this is normal)…"));
+        "minutes; a 'please wait' notice shows and Lyra stays "
+        "responsive)"));
     emitLog(QStringLiteral(
         "[wdsp] wisdom: target dir = %1").arg(dir));
 
@@ -453,12 +460,62 @@ bool WdspNative::ensureWisdom() {
             "subprocess: %1").arg(builder.errorString()));
         return false;
     }
-    // 20 minute hard cap.  WDSP_PATIENT on a midrange machine
-    // typically completes in 2-5 minutes; generous headroom for
-    // slow CPUs but capped so a hung subprocess doesn't deadlock
-    // launch.
-    constexpr int kBuildTimeoutMs = 20 * 60 * 1000;
-    if (!builder.waitForFinished(kBuildTimeoutMs)) {
+    // Wait for the child WITHOUT blocking the Qt main thread.  A blocking
+    // waitForFinished() here freezes the whole UI ("Not Responding") for the
+    // multi-minute FFTW_PATIENT run — Windows then offers to kill Lyra, and an
+    // operator seeing a hung window + a stray console box tends to force-close
+    // it, which aborts the build before the wisdom file is written, so it
+    // rebuilds on EVERY launch.  Instead: show a modal "please wait" notice
+    // and pump a local event loop (the idiomatic Qt async-QProcess pattern) so
+    // the app stays responsive and the operator gets clear guidance.  30-min
+    // hard cap for very slow CPUs (a stuck child still can't deadlock launch).
+    constexpr int kBuildTimeoutMs = 30 * 60 * 1000;
+
+    QDialog *dlg = nullptr;
+    if (qobject_cast<QApplication *>(QCoreApplication::instance())) {
+        dlg = new QDialog(nullptr, Qt::Dialog | Qt::CustomizeWindowHint |
+                                       Qt::WindowTitleHint);
+        dlg->setWindowTitle(
+            QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
+        dlg->setModal(true);
+        auto *v = new QVBoxLayout(dlg);
+        auto *note = new QLabel(QCoreApplication::translate("wdsp",
+            "<b>Optimizing FFT plans — one-time setup.</b><br><br>"
+            "This runs only once and can take several minutes — up to about "
+            "10 on some PCs.  Please let it finish, and avoid launching other "
+            "heavy programs while it computes.<br><br>"
+            "A small console window may appear; that is normal.  Lyra opens "
+            "automatically when it is done — <b>do not close anything.</b>"));
+        note->setWordWrap(true);
+        v->addWidget(note);
+        auto *bar = new QProgressBar(dlg);
+        bar->setRange(0, 0);   // indeterminate "busy" animation
+        v->addWidget(bar);
+        dlg->setMinimumWidth(460);
+        dlg->show();
+    }
+
+    QEventLoop loop;
+    bool finishedOk = false;
+    QObject::connect(
+        &builder,
+        QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+        &loop, [&](int code, QProcess::ExitStatus st) {
+            finishedOk = (st == QProcess::NormalExit && code == 0);
+            loop.quit();
+        });
+    QTimer capTimer;
+    capTimer.setSingleShot(true);
+    QObject::connect(&capTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    capTimer.start(kBuildTimeoutMs);
+    loop.exec();   // stays responsive; quits on child-finished or the cap
+
+    if (dlg) {
+        dlg->close();
+        dlg->deleteLater();
+    }
+
+    if (builder.state() != QProcess::NotRunning) {
         builder.kill();
         builder.waitForFinished(2000);
         emitLog(QStringLiteral(
@@ -466,8 +523,7 @@ bool WdspNative::ensureWisdom() {
             .arg(kBuildTimeoutMs / 60000));
         return false;
     }
-    if (builder.exitStatus() != QProcess::NormalExit ||
-        builder.exitCode() != 0) {
+    if (!finishedOk) {
         emitLog(QStringLiteral(
             "[wdsp] wisdom: BUILD FAILED — subprocess exit %1")
             .arg(builder.exitCode()));
