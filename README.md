@@ -211,7 +211,7 @@ Lyra is in active development — testers and bug reports are welcome.
 See **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** first for current rough edges and
 what hasn't been built yet (so you don't report a planned feature as a bug).
 
-* **Discord:** <https://discord.gg/nbJEqvFQ> — questions, feature ideas,
+* **Discord:** <https://discord.gg/BwjsQvjcSc> — questions, feature ideas,
   and quick help.
 * **Bug reports:** open a
   **[GitHub issue](https://github.com/N8SDR1/Lyra-SDR-cpp/issues)** (or post

@@ -2356,7 +2356,7 @@ log** you can read, copy, and send to us.
 Testers and bug reports are welcome — Lyra is in active development.
 
 - **Discord (preferred for questions & quick help):**
-  [discord.gg/nbJEqvFQ](https://discord.gg/nbJEqvFQ) — questions, feature
+  [discord.gg/BwjsQvjcSc](https://discord.gg/BwjsQvjcSc) — questions, feature
   ideas, and getting unstuck.
 - **Bug reports:** file a
   [GitHub issue](https://github.com/N8SDR1/Lyra-SDR-cpp/issues) (or post in

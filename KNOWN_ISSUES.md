@@ -75,7 +75,7 @@ disclaimer in **Help → About Lyra** and the User Guide.
 ## Reporting a bug
 
 Open a [GitHub issue](https://github.com/N8SDR1/Lyra-SDR-cpp/issues) or post
-in [Discord](https://discord.gg/nbJEqvFQ). To make it actionable, include:
+in [Discord](https://discord.gg/BwjsQvjcSc). To make it actionable, include:
 
 1. **Lyra version** (Help → About, or the installer filename).
 2. **Windows version**, and whether your radio is an **HL2 or HL2+**.
