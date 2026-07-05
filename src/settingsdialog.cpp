@@ -1503,11 +1503,21 @@ QWidget *SettingsDialog::buildNetworkTab() {
     status->setWordWrap(true);
     status->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
     auto refreshStatus = [this, status]() {
-        if (tci_->running())
+        if (tci_->running()) {
+            status->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
             status->setText(tr("Listening — %1 client(s) connected.")
                                 .arg(tci_->clientCount()));
-        else
+        } else if (!tci_->bindError().isEmpty()) {
+            // Port collision (e.g. another app grabbed the TCI port) — show it
+            // instead of a silent "Stopped." so the operator knows to change
+            // the port.  40001 (the default) sits outside the Windows ephemeral
+            // range, so this should be rare.
+            status->setStyleSheet(QStringLiteral("color:#e0736b;"));
+            status->setText(tr("Couldn't start — %1").arg(tci_->bindError()));
+        } else {
+            status->setStyleSheet(QStringLiteral("color:#8fa6ba;"));
             status->setText(tr("Stopped."));
+        }
     };
     refreshStatus();
     connect(tci_, &TciServer::runningChanged, status, refreshStatus);

@@ -238,7 +238,13 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     rateClock_.start();
     QSettings s;
     enabled_           = s.value(QString::fromLatin1(kKeyEnabled), false).toBool();
-    port_              = s.value(QString::fromLatin1(kKeyPort), 50001).toInt();
+    // Default 40001 — the ExpertSDR3 / TCI convention AND, crucially, it sits
+    // BELOW the Windows ephemeral range (49152-65535).  50001 (the old default)
+    // is INSIDE that range, so any service asking the OS for a temporary port
+    // at boot (e.g. Acronis' scheduler) can be randomly handed 50001 and win it
+    // before Lyra — a rare, intermittent "TCI won't start" that looks like a
+    // regression but is a port lottery.  40001 can't be grabbed that way.
+    port_              = s.value(QString::fromLatin1(kKeyPort), 40001).toInt();
     bindHost_          = s.value(QString::fromLatin1(kKeyHost),
                                  QStringLiteral("127.0.0.1")).toString();
     rateLimitMs_       = s.value(QString::fromLatin1(kKeyRate), 20).toInt();
@@ -399,7 +405,19 @@ bool TciServer::start() {
     else
         addr = QHostAddress(bindHost_);
     const bool ok = server_->listen(addr, quint16(port_));
-    if (ok) maintTimer_->start();
+    if (ok) {
+        maintTimer_->start();
+        bindError_.clear();
+    } else {
+        // Make the failure LOUD — port collisions were previously a silent
+        // checkbox-bounce with nothing in the log.  Now it's in the log AND
+        // the Settings → Network status line (via bindError()).
+        bindError_ = tr("port %1 in use — %2 (try another port)")
+                         .arg(port_).arg(server_->errorString());
+        qWarning("[tci] failed to bind %s:%d — %s",
+                 qPrintable(bindHost_), port_,
+                 qPrintable(server_->errorString()));
+    }
     emit statusMessage(ok ? tr("TCI server listening on %1:%2")
                                 .arg(bindHost_).arg(port_)
                           : tr("TCI server failed to bind %1:%2 — %3")
@@ -412,6 +430,7 @@ bool TciServer::start() {
 void TciServer::stop() {
     smeterTimer_->stop();
     maintTimer_->stop();
+    bindError_.clear();   // clean stop — no stale "port in use" left on screen
     // CODEX-P0 (2026-06-15) — release TX-audio ownership cleanly BEFORE the
     // owner sockets are deleteLater()'d below.  Without this, stop() (TCI
     // disable / profile-toggle that flips TCI-enable / shutdown) left

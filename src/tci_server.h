@@ -52,6 +52,10 @@ public:
 
     bool running() const;
     int  clientCount() const { return clients_.size(); }
+    // Human-readable reason the last start() failed to bind (empty = no error).
+    // Surfaced in the Settings → Network status line so a port collision
+    // (e.g. another app grabbed the TCI port) is visible, not a silent bounce.
+    QString bindError() const { return bindError_; }
 
     // --- operator settings (persisted to QSettings "tci/...") ---
     bool    enabled() const   { return enabled_; }
@@ -179,6 +183,7 @@ private:
     QTimer                *smeterTimer_ = nullptr;
     QTimer                *maintTimer_  = nullptr;   // ping + prune dead clients
     bool                   sensorsEnabled_ = false;
+    QString                bindError_;   // last listen() failure reason ("" = ok)
 
     // Match the reference's RX-audio packetisation cadence (per
     // TCIServer.cs:5437-5513 PublishRxAudioSamples): accumulate
