@@ -158,7 +158,7 @@ Rectangle {
                         id: textEdit
                         Layout.fillWidth: true
                         text: modelData.text
-                        placeholderText: qsTr("CW text — use {CALL} {RST} {#} {MYCALL} {NAME}")
+                        placeholderText: qsTr("CW text — use {CALL} {RST} {#} {MYCALL} {NAME}  · add {LOG} to log the QSO")
                         color: root.cMuted; font.family: "Consolas"; font.pixelSize: 12
                         background: Rectangle { radius: 4; color: "#0b141b"
                             border.color: textEdit.activeFocus ? root.cAccent : "#2a4a5a" }
@@ -505,6 +505,33 @@ Rectangle {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.insertToken(modelData)
                         }
+                    }
+                }
+                // {LOG} — ACTION token (yellow), distinct from the cyan user
+                // tokens and amber text tokens.  It is stripped from the keyed
+                // CW and instead logs the QSO to a linked SDRLogger+ (Combo
+                // Stage B).  Only meaningful inside a macro's text, so it dims +
+                // no-ops when the live send line (or nothing) is focused.
+                Rectangle {
+                    property bool canLog: root.insertTarget && root.insertTarget !== sendField
+                    width: logTxt.implicitWidth + 14; height: 22; radius: 5
+                    color: "#1e2112"
+                    border.color: "#c9a800"
+                    opacity: canLog ? 1.0 : 0.4
+                    Text {
+                        id: logTxt; anchors.centerIn: parent
+                        text: "{LOG}"
+                        color: "#ffdd33"
+                        font.family: "Consolas"; font.pixelSize: 11
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: parent.canLog ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: if (parent.canLog) root.insertToken("{LOG}")
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: qsTr("Action token — not keyed as CW. When this macro is sent, it logs the QSO to a linked SDRLogger+ (Combo). Click into a macro's text field first.")
                     }
                 }
             }

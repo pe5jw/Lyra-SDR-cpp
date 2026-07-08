@@ -6,8 +6,11 @@
 //   - MainWindow F1-F12 key -> CwMacros.sendByFkey(n)   (global, like a real
 //     keyer — QML Shortcut doesn't fire inside the QQuickWidget docks)
 // Macros + serial persist to QSettings (cw/*); the contact call/name are
-// session-live (a fresh QSO each session).  Tokens: {MYCALL} (Prefs.callsign),
-// {CALL}/{RST}/{NAME} (contact row), {#} (serial).  Sends via HL2Stream::sendCw.
+// session-live (a fresh QSO each session).  Text tokens: {MYCALL}
+// (Prefs.callsign), {CALL}/{RST}/{NAME} (contact row), {#} (serial).  Action
+// token: {LOG} — stripped from the keyed CW, fires logQsoRequested() so a
+// linked SDRLogger+ (Combo) logs the QSO (e.g. "TU 73 {MYCALL} ee {LOG}").
+// Sends via HL2Stream::sendCw.
 
 #pragma once
 
@@ -76,6 +79,12 @@ signals:
     void sendingChanged();
     void serialChanged();
     void contactChanged();
+    // Emitted when a sent macro contained the {LOG} action token — the CW
+    // Console asking a linked SDRLogger+ (Combo) to log the current QSO. The
+    // token itself is stripped from the keyed text (never sent as morse); this
+    // fires alongside the send. Self-authorizing consent: the operator put
+    // {LOG} in the macro on purpose. See combo_link_design.md Stage B.
+    void logQsoRequested();
 
 private:
     struct Macro { QString name; QString text; int fkey = 0; bool user = false; };

@@ -537,6 +537,15 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     tci_ = new TciServer(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
                          qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
                          spots_, this);
+    // The TCI rx_channel_sensors S-meter broadcast reads its dBm from the
+    // MeterModel (created above) so the wire matches the on-screen meter's
+    // single calibration.  MeterModel outlives TciServer (both parented to
+    // this window), so the raw pointer is safe for the app lifetime.
+    tci_->setMeterModel(meter_);
+    // Lyra ↔ SDRLogger+ Combo link: the TCI server shares the CW Console
+    // contact row (CwMacros, created above) with a linked logger.  Same
+    // lifetime story — both parented to this window.
+    tci_->setCwMacros(cwMacros_);
     // Serial PTT input — a digital app (WSJT-X / VarAC / fldigi) asserts
     // RTS/DTR on a (virtual) COM port → crosses to our CTS/DSR → keys Lyra
     // (which keys the rig downstream).  Default-OFF; configured in

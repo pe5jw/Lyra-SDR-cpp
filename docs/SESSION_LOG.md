@@ -4,6 +4,145 @@ Running EOD log. Newest entry on top. Short rough-outline format.
 
 ---
 
+## 2026-07-07 — Combo link — Stage A′ + B + auto received-S
+
+Continuation of the Combo link (Stage A below). A + A′ **operator-confirmed
+working**; B + the auto-S are built (SL+ side live) and **NEED THE NEXT LYRA
+REBUILD**. Canonical: `docs/architecture/combo_link_design.md` §9–§10.
+
+### Stage A′ — name-back (SL+ → Lyra `{NAME}`) — CONFIRMED
+- Lyra side was already in place (inbound `LYRA_CONTACT:sdrlog,…` → `setOpName`).
+  SL+ now sends `lyra_contact:sdrlog,<call>,,,<name>,,<grid>,` after its callbook
+  resolve; Lyra fills `{NAME}`. SL+ sends the **first name only** (QRZ `Name` is
+  the surname) — no Lyra change needed.
+
+### Stage B — `{LOG}` auto-log tag — NEEDS REBUILD
+- `CwMacroModel`: `{LOG}` is an ACTION token — `expand()` STRIPS it (never keyed
+  as morse); `sendIndex()` detects it in the raw macro → emits new
+  `logQsoRequested()` (fires even for a pure-`{LOG}` log-only macro). Header doc
+  + signal added.
+- `TciServer`: `setCwMacros` also connects `logQsoRequested`→`onLogQsoRequested`,
+  which broadcasts `lyra_log:<call>,<rstSent>,<rstRcvd>,<mode>,<freqHz>` (gated
+  combo-on + running + non-empty call; `rst()` fills both sent+rcvd; `mode` =
+  `prefs_->mode()`; carrier = `rx1FreqHz()+markerOffsetHz()`).
+- SL+ (live): `case lyra_log`→`ComboLogRequestedEvent`→`LogEntryPlugin` submits
+  the current log-entry form (payload RST/mode/freq stamp it).
+- Files: `CwMacroModel.h/.cpp`, `tci_server.h/.cpp`.
+- Operator usage: put `{LOG}` in a CW macro (e.g. `TU 73 {MYCALL} ee {LOG}`) →
+  sends the signoff AND logs the QSO in SDRLogger+.
+
+### Auto received-S (RST) from the signal meter — NEEDS REBUILD
+- Combo standout: SL+ auto-suggests the **S** digit of RST-Rcvd from the shared
+  calibrated S-meter (peak-hold, SNR-gated). Compute lives in SL+; Lyra supplies
+  the SNR gate. R=5/T=9 by convention. Works SSB/CW/digital, not SAT.
+- Lyra: `MeterModel::rxSnrDb()` = `dispDbm_ − noiseFloorDbm_` floored at 0 (the
+  on-screen SNR value; cal-independent). `TciServer::onSmeterTick` also
+  broadcasts **`lyra_snr:<db>`** right after `rx_channel_sensors`, **combo-scoped**
+  (`comboEnabled_ && meter_`).
+- SL+ (live): `lyra_snr`→`TciMeterAggregator.UpdateSnr`→`RxSnrDb` on the meter
+  event → LogEntry peak-holds `rxSignalDbm` while `!TX && SNR≥3 dB` → S digit
+  (HF S9=−73, 6 dB/unit) → fills RST-Rcvd while AUTO; typing latches MANUAL; new
+  call re-arms. Inline "S-auto" toggle + auto/manual badge by the field.
+- Files: `metermodel.h`, `tci_server.cpp`.
+
+### Verify after the (single, bundled) Lyra rebuild
+1. Grab a call → SL+ populates + name-back to `{NAME}` (A/A′).
+2. Enable "S-auto" by RST-Rcvd → the S tracks their signal; type to override
+   (badge → manual); new call re-arms (badge → auto).
+3. Send a `{LOG}` macro → SL+ logs the QSO with that RST.
+
+---
+
+## 2026-07-07 — Feature: Lyra ↔ SDRLogger+ "Combo" link — Stage A (call export)
+
+Design: `docs/architecture/combo_link_design.md` (canonical). Building the
+Lyra↔SDRLogger+ collaboration layer over the **existing TCI socket** — no
+separate bridge app, one master toggle in Lyra, SDRLogger+ shows a read-only
+"Lyra Combo: Linked" indicator. Stage A = callsign export Lyra → SDRLogger+.
+
+### Lyra side (this session — NEEDS REBUILD)
+- `TciServer`: new master toggle `comboEnabled_` (persisted `tci/combo_
+  sdrloggerplus`, default OFF) + `setComboEnabled` (announces `lyra_combo:on/off`
+  + pushes current contact on enable). `setCwMacros(CwMacroModel*)` wires the CW
+  Console contact row; `onCwContactChanged` broadcasts
+  `lyra_contact:lyra,<call>,<rstSent>,,<name>,,,<serial>` on any contact change
+  (skipped while `comboApplyingRemote_` — the echo guard). Inbound
+  `LYRA_CONTACT:sdrlog,…` applies call/name back into `CwMacros` under the guard
+  (the A′ name-back plumbing, dormant until SL+ sends it). `sendInit` announces
+  `lyra_combo:on` to freshly-connected clients.
+- Wiring: `MainWindow` calls `tci_->setCwMacros(cwMacros_)` after `tci_` ctor.
+- UI: Settings → Network → **"SDRLogger+ Combo (share CW Console contact)"**
+  checkbox (tooltip explains call-populate + `{NAME}` back + `{LOG}` tag).
+- Files: `tci_server.h/.cpp`, `mainwindow.cpp`, `settingsdialog.cpp`.
+
+### SDRLogger+ side (built + compiles clean this session)
+- `TciRadioService` parses `lyra_combo` (→ `ComboLinkChangedEvent` for the
+  indicator) + `lyra_contact:lyra,…` (→ reuse `SpotSelectedEvent` so the log
+  entry populates + QRZ/HamQTH fires; dedup on call). New contract event +
+  hub + signalr + store + a **`● Lyra Combo`** badge in the Log Entry header.
+
+### Verify after Lyra rebuild
+Enable the Combo checkbox in Lyra + connect SDRLogger+ over TCI → SL+ shows the
+"Lyra Combo" badge. Grab a call in Lyra's CW Decoder (`→ His Call`) → the call
+should populate SDRLogger+'s log entry + fire its callbook lookup.
+
+### Next: Stage A′ (name-back) — the "magic" half
+SL+ sends `lyra_contact:sdrlog,<call>,,,<name>,,<grid>,` after its lookup; Lyra
+already applies it into `{NAME}`. Needs an outbound TCI-send path on SL+'s
+`TciRadioService` + the `LogHub.FocusCallsign` hook. Bundle into the same Lyra
+rebuild as this + the meter fix if built before you compile.
+
+---
+
+## 2026-07-07 — Fix: TCI S-meter export sent post-AGC dBFS, not a calibrated dBm (SDRLogger+ meter "wildly off")
+
+Operator (running SDRLogger+ against Lyra over TCI) reported the SDRLogger+
+signal meter was "so far off it's ridiculous." Traced to Lyra's **TCI export**,
+NOT SDRLogger+'s math (which is standard S9=−73 dBm) and NOT Lyra's own
+on-screen meter (which is correct).
+
+### Root cause
+`TciServer::onSmeterTick()` broadcast `rx_channel_sensors:0,0,<dbm>` where
+`dbm = WdspEngine::audioDbFs() − 30`. `audioDbFs()` is the **post-AGC audio
+level** (dBFS); the `−30` was an admitted "coarse stopgap until per-band cal
+lands." That's not an S-meter: AGC compresses it toward full scale so it barely
+tracks signal strength, and the offset is arbitrary → clients see a squished /
+pegged reading.
+
+Meanwhile the **on-screen meter** (`MeterModel::computeSMeter`) already builds a
+proper calibrated dBm from a *different* engine method — `WdspEngine::sMeterDbm()`
+(WDSP RXA_S_PK, **in-passband**, pre-AGC) `+ operator calDb trim − LNA gain`,
+with the HF/VHF S9 split. The TCI path was just reaching for the wrong engine
+value next door.
+
+### Fix (RX-only, display/telemetry path — no wire/protocol/DSP change)
+Route the TCI export through the SAME single calibration the face meter uses:
+- `MeterModel`: factored the calibration into `calibratedSMeterDbm(raw)` (one
+  source of truth) and added `double rxSMeterDbm() const` — the instantaneous
+  calibrated RX S-meter dBm, source-independent (always the S-meter, whatever
+  the face is currently showing PWR/SWR/etc.) and sentinel-safe (S0 floor when
+  the stream isn't running). `computeSMeter()` now calls the shared helper.
+- `TciServer`: new `setMeterModel(MeterModel*)` + `meter_` member; `onSmeterTick`
+  broadcasts `meter_->rxSMeterDbm()` (falls back to raw `engine_->sMeterDbm()`
+  only if unwired). Forward-decl + `#include "metermodel.h"`.
+- `MainWindow`: `tci_->setMeterModel(meter_);` right after `tci_` construction
+  (meter_ created earlier; both parented to the window → lifetime-safe).
+
+Files: `metermodel.h`, `metermodel.cpp`, `tci_server.h`, `tci_server.cpp`,
+`mainwindow.cpp`.
+
+### Net
+Every TCI client (SDRLogger+, WSJT-X, N1MM, …) now gets the exact calibrated dBm
+the Lyra front panel shows. On the **SDRLogger+ side**, its meter calibration
+offset should go back to **0** once this Lyra build ships (the arriving value is
+now real dBm, not something needing a −15 dB fudge).
+
+⚠ NEEDS REBUILD + PUSH: this is a source change; rebuild Lyra and push so
+connected loggers receive the corrected feed. Regenerate SESSION_LOG.docx/.pdf
+via `tools/sync_execution_plan.py` if keeping the siblings in sync.
+
+---
+
 ## 2026-07-04 — Research: HardRock-50 / Icom AH-4 amp+ATU band-follow = a GATEWARE feature (no Lyra port needed)
 
 Investigation session (no code). Operator asked why the HardRock-50 band-follows

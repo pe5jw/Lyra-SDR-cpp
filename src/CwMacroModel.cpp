@@ -157,6 +157,11 @@ QString CwMacroModel::expand(const QString &text) const {
     s.replace(QStringLiteral("{RST}"),    rst_,              Qt::CaseInsensitive);
     s.replace(QStringLiteral("{NAME}"),   opName_,           Qt::CaseInsensitive);
     s.replace(QStringLiteral("{#}"),      QString::number(serial_), Qt::CaseInsensitive);
+    // {LOG} is an ACTION token, not text — strip it so it's never keyed as
+    // morse. The send path (sendIndex) detects it in the raw macro and emits
+    // logQsoRequested() separately. Stripped here too so the macro preview
+    // shows only what actually gets sent.
+    s.replace(QStringLiteral("{LOG}"), QString(), Qt::CaseInsensitive);
     // Personal tokens last — the 5 built-in names above already won.
     for (const Token &t : tokens_) {
         if (t.name.isEmpty()) continue;
@@ -178,10 +183,17 @@ void CwMacroModel::startSending(int i, const QString &expanded) {
 
 void CwMacroModel::sendIndex(int i) {
     if (i < 0 || i >= macros_.size()) return;
+    // Detect the {LOG} action token in the RAW macro (expand() strips it).
+    const bool wantLog =
+        macros_[i].text.contains(QStringLiteral("{LOG}"), Qt::CaseInsensitive);
     const QString expanded = expand(macros_[i].text);
-    if (expanded.trimmed().isEmpty()) return;
-    if (stream_) stream_->sendCw(expanded);
-    startSending(i, expanded);
+    // Key the CW if there's anything left after stripping {LOG} — a macro can
+    // be pure "{LOG}" (a log-only button) with no morse to send.
+    if (!expanded.trimmed().isEmpty()) {
+        if (stream_) stream_->sendCw(expanded);
+        startSending(i, expanded);
+    }
+    if (wantLog) emit logQsoRequested();
 }
 
 void CwMacroModel::sendByFkey(int fn) {

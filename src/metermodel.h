@@ -280,6 +280,26 @@ public:
     QString dbmText()  const { return dbmText_; }
     QVariantList history() const { return history_; }
     double  normAtS9() const;
+    // Calibrated instantaneous RX S-meter dBm — the SAME calibration the
+    // on-screen meter is built from (WDSP RXA_S_PK + operator calDb trim −
+    // current LNA gain).  Exposed so the TCI server broadcasts a real,
+    // calibrated dBm over rx_channel_sensors instead of a post-AGC audio
+    // level.  Source-independent: always returns the RX S-meter reading
+    // regardless of which Source the face is currently displaying (the TCI
+    // rx_channel_sensors field is defined as the receiver's signal
+    // strength).  Sentinel-safe: returns an S0-region floor when the stream
+    // is not running (RXA_S_PK ≈ −200).
+    double  rxSMeterDbm() const;
+
+    // Numeric in-passband SNR (dB) — the SAME value the on-screen SNR readout
+    // shows (dispDbm_ − noiseFloorDbm_, floored at 0). Shared over TCI as
+    // `lyra_snr` so a linked SDRLogger+ (Combo) can GATE its auto RST-received
+    // suggestion: only trust the S-unit when the signal is clearly above the
+    // noise floor. Calibration-independent — a difference of two same-domain
+    // dBm values, so the operator's calDb trim cancels out.
+    double  rxSnrDb() const {
+        return dispDbm_ > noiseFloorDbm_ ? dispDbm_ - noiseFloorDbm_ : 0.0;
+    }
 
     int  style() const { return style_; }
     void setStyle(int s);
@@ -424,6 +444,11 @@ private:
     // zone coloring uniformly across all rows.
     void   ladderRowFor(int src, double *level, double *danger) const;
     double normForDbm(double dbm) const;
+    // SINGLE source of truth for the RX S-meter calibration:
+    // raw RXA_S_PK dBm + operator calDb trim − current LNA gain.  Called by
+    // BOTH computeSMeter() (the on-screen meter) and rxSMeterDbm() (the TCI
+    // export) so the face and the wire can never disagree.
+    double calibratedSMeterDbm(double raw) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // standard HF dBm→S-unit table
     // PWR cal: per-band watt calibration lives in HL2Stream

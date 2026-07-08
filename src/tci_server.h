@@ -40,6 +40,8 @@ namespace lyra::ui {
 
 class Prefs;
 class SpotStore;
+class MeterModel;
+class CwMacroModel;
 
 class TciServer : public QObject {
     Q_OBJECT
@@ -80,6 +82,22 @@ public:
     bool start();
     void stop();
 
+    // RX S-meter source for the TCI rx_channel_sensors broadcast.  Wired
+    // once by MainWindow after both objects exist, so the value sent over
+    // TCI is the SAME calibrated dBm the on-screen meter shows (MeterModel
+    // owns the one calibration).  Null-safe: without it the broadcast falls
+    // back to the raw uncalibrated engine reading.
+    void setMeterModel(MeterModel *m) { meter_ = m; }
+
+    // Lyra ↔ SDRLogger+ "Combo" link (docs/architecture/combo_link_design.md).
+    // The CW Console contact row is the shared object; when Combo is on Lyra
+    // broadcasts it as `lyra_contact:lyra,…` and honours the inbound
+    // `lyra_contact:sdrlog,…` (callbook name-back).  Wired once by MainWindow
+    // after both objects exist.
+    void setCwMacros(CwMacroModel *m);
+    bool comboEnabled() const { return comboEnabled_; }
+    void setComboEnabled(bool on);   // persist + announce lyra_combo:on/off
+
     // TX-rip Phase 1 (Q2): setTciMicSource / setTxDspWorker removed
     // here and at main.cpp.  Inbound TCI TX_AUDIO_STREAM frames are
     // silently dropped until the new TX path lands per
@@ -109,6 +127,13 @@ private slots:
     // click, FSM keyup, foot-switch release, §15.20 TX-timeout fire).
     // Equivalent to the working reference's SyncTciPttToMox.
     void onMoxActiveChanged(bool on);
+    // Combo link: the CW Console contact row changed → broadcast it to a
+    // linked SDRLogger+ as `lyra_contact:lyra,…` (suppressed while applying
+    // an inbound remote update, so name-back can't bounce — echo guard).
+    void onCwContactChanged();
+    // Combo Stage B: a {LOG}-tagged CW macro was sent → broadcast lyra_log so a
+    // linked SDRLogger+ logs the current QSO. Wired to CwMacroModel in setCwMacros.
+    void onLogQsoRequested();
     // TCI v2.0 binary streams (from the DSP worker, queued onto this thread).
     void onTciAudioBlock(const QByteArray &monoFloat, int rateHz);
     void onTciIqBlock(const QByteArray &iqFloat, int rateHz);
@@ -150,6 +175,14 @@ private:
     void onVolumeChanged();
     void onMutedChanged();
     void onPassbandChanged();
+    // TX-frequency announce — reference TCIServer.cs::sendTXFrequencyChanged
+    // (the standard `tx_frequency` + the Thetis-bespoke `tx_frequency_thetis`).
+    // Loggers (LogHX3, …) take the logged QSO frequency from `tx_frequency`;
+    // Lyra never emitted it, so those clients logged 0.  Carrier = operating
+    // VFO freq (no SPLIT/RX2 yet → rx2=false, vfob=false).
+    QString txFrequencyLine() const;
+    QString txFrequencyThetisLine() const;
+    void    broadcastTxFrequency();
     // Soft-store helpers (DSP params Lyra doesn't truly control yet).
     QString softGet(const QString &key, const QString &def) const;
     void    softSet(const QString &key, const QString &val);
@@ -164,6 +197,10 @@ private:
     lyra::ipc::HL2Stream  *stream_        = nullptr;
     lyra::dsp::WdspEngine *engine_        = nullptr;
     SpotStore             *spots_         = nullptr;
+    MeterModel            *meter_         = nullptr;   // RX S-meter dBm source (calibrated)
+    CwMacroModel          *cwMacros_      = nullptr;   // Combo link — shared CW contact row
+    bool                   comboEnabled_  = false;     // "SDRLogger+ Combo" master toggle
+    bool                   comboApplyingRemote_ = false; // echo guard while applying inbound
     // TX-rip Phase 1 (Q2): tciMicSource_ / txWorker_ / savedMicSource_
     // / micSourceForcedTci_ removed — TX DSP worker + TCI mic source
     // are being rebuilt from empty files per

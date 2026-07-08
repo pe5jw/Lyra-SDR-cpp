@@ -1421,6 +1421,18 @@ QWidget *SettingsDialog::buildNetworkTab() {
             [this](bool on) { tci_->setCwluBecomesCw(on); });
     form->addRow(QString(), cwlu);
 
+    auto *combo = new QCheckBox(tr("SDRLogger+ Combo (share CW Console contact)"), grp);
+    combo->setChecked(tci_->comboEnabled());
+    combo->setToolTip(tr("Two-way link with SDRLogger+ over this TCI connection.\n"
+                         "When on, a callsign grabbed in the CW Decoder / typed in\n"
+                         "the CW Console populates the SDRLogger+ log entry (and its\n"
+                         "callbook lookup fills the {NAME} token back here). A macro\n"
+                         "containing the {LOG} tag logs the QSO in SDRLogger+.\n"
+                         "SDRLogger+ shows a “Lyra Combo: Linked” indicator while active."));
+    connect(combo, &QCheckBox::toggled, tci_,
+            [this](bool on) { tci_->setComboEnabled(on); });
+    form->addRow(QString(), combo);
+
     auto *emuProto = new QCheckBox(tr("Emulate ExpertSDR3 (report protocol "
                                       "name “ExpertSDR3”)"), grp);
     emuProto->setChecked(tci_->emulateExpertSdr3());

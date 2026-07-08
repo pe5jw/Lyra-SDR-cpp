@@ -68,6 +68,7 @@ not programmers — if you can click a menu, you can use this.
 - [Settings → VOX (voice-operated transmit)](#settings--vox-voice-operated-transmit)
 - [Settings → PA Gain (per-band power calibration + watts cap)](#settings--pa-gain)
 - [Settings → Network (TCI)](#settings--network-tci)
+  - [SDRLogger+ Combo link](#sdrlogger-combo-link)
   - [CW keying over TCI](#cw-keying-over-tci)
 - [Settings → CAT / Serial (rig control over COM / TCP)](#settings--cat--serial-rig-control-over-com--tcp)
   - [Digital modes over TCI](#digital-modes-over-tci-ft8--ft4--msk144--q65--etc)
@@ -1564,10 +1565,21 @@ macro can contain tokens in `{BRACES}` that expand when you send:
   `{ME}` = Rick, `{PWR}` = 25 watts, `{QTH}` = Hamilton OH, `{RIG}`,
   `{ANT}`). Then any macro using `{ME}` / `{PWR}` / `{QTH}` fills in
   automatically. (The five built-in names above are reserved.)
+- **`{LOG}` — an *action* token, not text.** Drop `{LOG}` into a macro and
+  it is **stripped from the keyed Morse** (never sent on the air) — instead
+  it logs the current QSO to a linked **SDRLogger+** when the macro is sent.
+  Put it on the end of your sign-off (`TU 73 {MYCALL} ee {LOG}`) to log as
+  you say 73, or make a macro that is *only* `{LOG}` for a one-click
+  "log it" button that keys nothing. It does something only when the
+  **[SDRLogger+ Combo link](#sdrlogger-combo-link)** is on; otherwise it's
+  harmlessly ignored.
 - **Click to insert** — the **token palette** sits just above the send
   line. Click into a macro's text field (in Edit mode) or the send line,
   then click a token chip to drop it in at the cursor — no need to type the
-  braces. Built-in tokens are amber, your personal ones cyan.
+  braces. Built-in tokens are **amber**, your personal ones **cyan**, and
+  the **`{LOG}`** action token is **yellow** (it lights up only when your
+  cursor is in a macro's text field — it doesn't belong on the live send
+  line).
 
 **3 — From a logger over TCI.** A TCI logging/contest program can key CW
 through Lyra — see [CW keying over TCI](#cw-keying-over-tci).
@@ -1618,7 +1630,12 @@ answer? Pull their call straight out of the decoded text:
 - Or drag-select and click the **→ His Call** / **→ Name** chips.
 
 That fills the CW console's **contact row**, so a "Reply" macro built from
-`{CALL}` / `{NAME}` instantly addresses that station — no typing.
+`{CALL}` / `{NAME}` instantly addresses that station — no typing. And if the
+**[SDRLogger+ Combo link](#sdrlogger-combo-link)** is on, that same grab is
+pushed to SDRLogger+: the call drops into its log entry, its callbook lookup
+fires, and the operator's first name comes back to fill your `{NAME}` token
+— so one double-click on the decoded call sets up both the reply *and* the
+log.
 
 **Match TX speed to RX WPM** (under **Keyer**) — turn this on and your
 keyer's send speed follows the speed you're *copying*, so you answer at the
@@ -3176,8 +3193,67 @@ binary frames — no extra toggle needed. Lyra advertises the audio format
 at connect so the client decoder configures itself correctly the moment
 it attaches.
 
+**Signal-strength readings** ride the same link, too. Lyra continuously
+sends its receiver's meter reading over TCI as a *calibrated dBm* value —
+the same number your S-meter shows — so a connected logger's own signal
+meter mirrors Lyra's rather than guessing from raw audio level. (This is
+sent to every TCI client; it's what the Combo auto-RST feature below builds
+on.)
+
 > RX2 over TCI is deferred until Lyra has a second receiver. Today the
 > server advertises a single channel.
+
+### SDRLogger+ Combo link
+
+**SDRLogger+** is the companion logging program (by the same developer).
+Over an ordinary TCI link it already drives Lyra and shows spots — but
+turning on **Combo** upgrades that one-way link into a two-way
+*collaboration* that runs over the **same TCI socket**: no bridge app, no
+second connection, no extra port. The CW Console, the CW Decoder and the
+logger start acting as one desk.
+
+**Engage it** with a single switch:
+
+1. **Settings → Network** → tick **"SDRLogger+ Combo (share CW Console
+   contact)"**. It's **off by default**, and it's a per-machine setting
+   that's remembered.
+2. Make sure **TCI server running** is on (Combo rides the TCI link), and
+   that **SDRLogger+ is connected to Lyra as a TCI client** (point its
+   radio/TCI connection at Lyra's IP + port, the same **50001** above).
+3. When the two are linked, SDRLogger+ shows a **`● Lyra Combo`** badge in
+   its Log-Entry header — that badge is your confirmation the link is live.
+
+With Combo on, four things happen automatically as you work a station:
+
+- **Call → logger.** Put a call in Lyra's CW Console **His call** — type
+  it, or grab it from the [CW Decoder](#reading-cw--the-rx-decoder) — and
+  it lands in SDRLogger+'s log entry and fires its callbook (QRZ / HamQTH)
+  lookup. You copy the call once, in Lyra, and the logger catches up.
+- **Name → back to `{NAME}`.** After that lookup resolves, SDRLogger+
+  sends the operator's **first name** back to Lyra, which fills the
+  **`{NAME}`** token in the CW Console. A reply macro like
+  `{CALL} DE {MYCALL} GE {NAME}` now greets them by name with no typing.
+- **Received signal → RST.** SDRLogger+ can auto-fill the **S** digit of
+  **RST-Received** from the same shared, *calibrated* S-meter reading
+  described above — so the number it logs is exactly what your meter shows,
+  not a guess. Lyra also sends a small signal-to-noise figure alongside it
+  (Combo only) so the logger peak-holds and fills the S **only on a real
+  signal**, not on the band noise. Turn on the **S-auto** control next to
+  the RST-Rcvd field in SDRLogger+; typing a value latches it to manual,
+  and working a new call re-arms it. Works on SSB / CW / digital (not SAT).
+- **One-click log with `{LOG}`.** Add the **`{LOG}`** action token to a CW
+  macro — e.g. `TU 73 {MYCALL} ee {LOG}` — and sending that macro sends
+  the sign-off *and* logs the QSO in SDRLogger+ (call, RST, mode and
+  frequency all stamped from the shared state). A macro that is **only**
+  `{LOG}` is a log-only button that keys nothing. See
+  [CW operating](#cw-operating-paddle-keyboard-tci) for how `{LOG}` sits in
+  the token palette (it's the **yellow** action chip).
+
+Combo is a Lyra ↔ SDRLogger+ conversation — a plain third-party TCI logger
+simply ignores the extra messages, so leaving it on does no harm. Nothing
+here changes the normal TCI control/spots behaviour; it only *adds* the
+contact-sharing, name-back, signal-report and one-click-log conveniences on
+top.
 
 ### CW keying over TCI
 

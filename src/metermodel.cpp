@@ -1059,8 +1059,10 @@ void MeterModel::computeSMeter() {
     // subtract the current LNA gain.  calDb_ then trims the absolute level
     // once (set at any LNA setting); changing LNA no longer moves the S
     // reading.  (Sentinel raw≈−200 when not running → handled downstream.)
-    const double lna = stream_ ? static_cast<double>(stream_->lnaGainDb()) : 0.0;
-    const double dbm = raw + calDb_ - lna;
+    // The calibration formula lives in calibratedSMeterDbm() — the SINGLE
+    // source of truth shared with the TCI export (rxSMeterDbm()) so the
+    // on-screen meter and the wire can never disagree.
+    const double dbm = calibratedSMeterDbm(raw);
 
     dispDbm_ += kSmooth * (dbm - dispDbm_);
     const double n = normForDbm(dispDbm_);
@@ -1111,6 +1113,25 @@ void MeterModel::computeSMeter() {
 
     if (activeStyle() == 2) buildLadderRows();
     emit updated();
+}
+
+double MeterModel::calibratedSMeterDbm(double raw) const {
+    // SINGLE source of truth for the RX S-meter calibration (see the header
+    // decl).  RXA_S_PK is measured after the hardware PGA, so subtract the
+    // current LNA gain to stay true-to-source across LNA changes; calDb_
+    // then trims the absolute level once.
+    const double lna = stream_ ? static_cast<double>(stream_->lnaGainDb()) : 0.0;
+    return raw + calDb_ - lna;
+}
+
+double MeterModel::rxSMeterDbm() const {
+    const double raw = wdsp_ ? wdsp_->sMeterDbm() : -200.0;
+    // RXA_S_PK returns ≈ −200 when the stream isn't running / between rate
+    // changes.  Report a fixed S0-region floor rather than a
+    // calibration-shifted sentinel so a TCI client's meter rests at the
+    // bottom of its scale instead of jumping to an odd value.
+    if (raw <= -190.0) return -140.0;
+    return calibratedSMeterDbm(raw);
 }
 
 void MeterModel::computePwr() {

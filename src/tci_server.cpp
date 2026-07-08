@@ -2,8 +2,11 @@
 
 #include "tci_server.h"
 
+#include "CwMacroModel.h"
+#include "bandmemory.h"
 #include "hl2_stream.h"
 #include "logbuffer.h"
+#include "metermodel.h"
 #include "prefs.h"
 #include "spotstore.h"
 // TX-rip Phase 1 (Q2): tci_mic_source.h / tx_dsp_worker.h removed —
@@ -36,6 +39,7 @@ constexpr auto kKeyInitial  = "tci/send_initial_state";
 constexpr auto kKeyEsdr3    = "tci/emulate_expertsdr3";
 constexpr auto kKeySunSdr   = "tci/emulate_sunsdr2";
 constexpr auto kKeyCwlu     = "tci/cwlu_becomes_cw";
+constexpr auto kKeyCombo    = "tci/combo_sdrloggerplus";   // Lyra↔SDRLogger+ combo link
 // vfo_limits advertised to clients (HL2 receive range, Hz).
 constexpr qint64 kVfoLo = 10000;
 constexpr qint64 kVfoHi = 55000000;
@@ -252,6 +256,7 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
     emulateExpertSdr3_ = s.value(QString::fromLatin1(kKeyEsdr3), false).toBool();
     emulateSunSdr2_    = s.value(QString::fromLatin1(kKeySunSdr), false).toBool();
     cwluBecomesCw_     = s.value(QString::fromLatin1(kKeyCwlu), true).toBool();
+    comboEnabled_      = s.value(QString::fromLatin1(kKeyCombo), false).toBool();
 
     smeterTimer_ = new QTimer(this);
     smeterTimer_->setInterval(250);   // 4 Hz sensor cadence
@@ -349,6 +354,65 @@ TciServer::TciServer(Prefs *prefs, lyra::ipc::HL2Stream *stream,
 }
 
 TciServer::~TciServer() { stop(); }
+
+// ── Lyra ↔ SDRLogger+ Combo link (docs/architecture/combo_link_design.md) ──
+void TciServer::setCwMacros(CwMacroModel *m) {
+    if (cwMacros_ == m) return;
+    cwMacros_ = m;
+    if (cwMacros_) {
+        connect(cwMacros_, &CwMacroModel::contactChanged,
+                this, &TciServer::onCwContactChanged, Qt::UniqueConnection);
+        // Combo Stage B: {LOG}-tagged macro → log the QSO in SDRLogger+.
+        connect(cwMacros_, &CwMacroModel::logQsoRequested,
+                this, &TciServer::onLogQsoRequested, Qt::UniqueConnection);
+    }
+}
+
+void TciServer::setComboEnabled(bool on) {
+    if (comboEnabled_ == on) return;
+    comboEnabled_ = on;
+    QSettings().setValue(QString::fromLatin1(kKeyCombo), comboEnabled_);
+    // Announce the master state so a linked SDRLogger+ shows/hides its
+    // "Lyra Combo: Linked" indicator and starts/stops acting.
+    if (running())
+        broadcastNow(QStringLiteral("lyra_combo:%1")
+                         .arg(comboEnabled_ ? QStringLiteral("on")
+                                            : QStringLiteral("off")));
+    // On enable, push the current contact so the logger syncs immediately.
+    if (comboEnabled_) onCwContactChanged();
+}
+
+void TciServer::onCwContactChanged() {
+    // Broadcast the CW Console contact row to a linked SDRLogger+.  Skipped
+    // while applying an inbound remote update (echo guard — the name-back
+    // must not bounce), and when Combo is off / nothing is running / no call.
+    if (!comboEnabled_ || comboApplyingRemote_ || !running() || !cwMacros_) return;
+    const QString call = cwMacros_->hisCall().trimmed().toUpper();
+    if (call.isEmpty()) return;
+    // lyra_contact:<src>,<call>,<rstSent>,<rstRcvd>,<name>,<qth>,<grid>,<serial>
+    // Lyra owns call / rstSent / name / serial; rstRcvd / qth / grid ride
+    // empty (no Lyra field today — SDRLogger+ fills name back into <name>).
+    broadcastNow(QStringLiteral("lyra_contact:lyra,%1,%2,,%3,,,%4")
+                     .arg(call, cwMacros_->rst().trimmed(),
+                          cwMacros_->opName().trimmed(),
+                          QString::number(cwMacros_->serial())));
+}
+
+void TciServer::onLogQsoRequested() {
+    // Combo Stage B: a {LOG}-tagged CW macro was sent → ask a linked SDRLogger+
+    // to log the current QSO. Gated exactly like the contact broadcast (Combo
+    // on + running + a callsign to log). Nothing to log without a His Call.
+    if (!comboEnabled_ || !running() || !cwMacros_) return;
+    const QString call = cwMacros_->hisCall().trimmed().toUpper();
+    if (call.isEmpty()) return;
+    const QString rst  = cwMacros_->rst().trimmed();            // single Lyra RST → sent+rcvd
+    const QString mode = prefs_ ? prefs_->mode() : QStringLiteral("CW");
+    const qint64  carrier = (stream_ ? qint64(stream_->rx1FreqHz()) : 0)
+                            + (engine_ ? engine_->markerOffsetHz() : 0);
+    // lyra_log:<call>,<rstSent>,<rstRcvd>,<mode>,<freqHz>
+    broadcastNow(QStringLiteral("lyra_log:%1,%2,%3,%4,%5")
+                     .arg(call).arg(rst).arg(rst).arg(mode).arg(carrier));
+}
 
 bool TciServer::running() const { return server_ && server_->isListening(); }
 
@@ -1060,8 +1124,7 @@ void TciServer::sendInit(QWebSocket *ws) {
     sendTo(ws, QStringLiteral("device:%1").arg(dev));
     sendTo(ws, QStringLiteral("receive_only:false"));
     sendTo(ws, QStringLiteral("trx_count:1"));
-    sendTo(ws, QStringLiteral("channel_count:1"));    // RX1 only (no RX2 yet)
-    sendTo(ws, QStringLiteral("channels_count:1"));   // legacy plural spelling (compat)
+    sendTo(ws, QStringLiteral("channels_count:1"));   // RX1 only (no RX2 yet) — reference sendInit spelling
     sendTo(ws, QStringLiteral("vfo_limits:%1,%2").arg(kVfoLo).arg(kVfoHi));
     sendTo(ws, QStringLiteral("if_limits:%1,%2").arg(-half).arg(half));
     sendTo(ws, QStringLiteral("modulations_list:") + modulationsList());
@@ -1086,10 +1149,17 @@ void TciServer::sendInit(QWebSocket *ws) {
     sendTo(ws, QStringLiteral("tx_stream_audio_buffering:50"));
     sendTo(ws, QStringLiteral("ready"));
 
+    // Lyra ↔ SDRLogger+ Combo link: tell a freshly-connected client whether
+    // Combo is on, so its "Lyra Combo: Linked" indicator is correct from the
+    // first frame (independent of send_initial_state, which gates radio state).
+    if (comboEnabled_) sendTo(ws, QStringLiteral("lyra_combo:on"));
+
     if (!sendInitialState_) return;
     const qint64 carrier = hz + (engine_ ? engine_->markerOffsetHz() : 0);
     sendTo(ws, QStringLiteral("dds:0,%1").arg(hz));        // DDS centre
     sendTo(ws, QStringLiteral("vfo:0,0,%1").arg(carrier)); // operating carrier
+    sendTo(ws, txFrequencyLine());                         // logged QSO freq (LogHX3 &c.)
+    sendTo(ws, txFrequencyThetisLine());
     sendTo(ws, QStringLiteral("modulation:0,%1").arg(mode));
     if (engine_) {
         sendTo(ws, QStringLiteral("rx_filter_band:0,%1,%2")
@@ -1190,6 +1260,25 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
     if (cmd == QStringLiteral("START")) { emit startRequested(); return; }
     if (cmd == QStringLiteral("STOP"))  { emit stopRequested();  return; }
     if (cmd == QStringLiteral("SET_IN_FOCUS")) return;   // no-op
+
+    // ── Lyra ↔ SDRLogger+ Combo link ─────────────────────────────
+    // Inbound from a linked SDRLogger+: the callbook name-back (and, later,
+    // reverse call push).  Apply to the CW Console contact row under the echo
+    // guard so it doesn't bounce straight back out.  Lyra is the master for
+    // the on/off state, so an inbound lyra_combo is ignored.
+    if (cmd == QStringLiteral("LYRA_COMBO")) return;
+    if (cmd == QStringLiteral("LYRA_CONTACT")) {
+        // args: <src>,<call>,<rstSent>,<rstRcvd>,<name>,<qth>,<grid>,<serial>
+        if (!comboEnabled_ || !cwMacros_ || args.size() < 2) return;
+        if (args[0].compare(QStringLiteral("sdrlog"), Qt::CaseInsensitive) != 0) return;
+        comboApplyingRemote_ = true;
+        const QString call = args.value(1).trimmed().toUpper();
+        if (!call.isEmpty()) cwMacros_->setHisCall(call);
+        const QString name = args.value(4).trimmed();
+        if (!name.isEmpty()) cwMacros_->setOpName(name);   // → {NAME} token
+        comboApplyingRemote_ = false;
+        return;
+    }
 
     // ── frequency: VFO / DDS / IF ────────────────────────────────
     if (cmd == QStringLiteral("DDS")) {
@@ -1828,12 +1917,47 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
 }
 
 // ── broadcast handlers (radio → clients) ─────────────────────────
+
+// TX-frequency announce (reference TCIServer.cs::sendTXFrequencyChanged,
+// :2246-2258).  The operating carrier == the TX VFO frequency when not split;
+// Lyra has no SPLIT/RX2 yet so it equals the `vfo:0,0` value.  Emitting it is
+// purely additive: clients that don't parse it ignore it, and clients that do
+// (LogHX3 &c.) get the real QSO frequency instead of a stuck 0.  SDRLogger+ is
+// unaffected — its Combo link uses the separate `lyra_*` messages, and this
+// carries the SAME carrier value as `vfo:0,0`, so any freq a client reads is
+// consistent whichever field it prefers.
+QString TciServer::txFrequencyLine() const {
+    if (!stream_) return QString();
+    const qint64 carrier = qint64(stream_->rx1FreqHz())
+                           + (engine_ ? engine_->markerOffsetHz() : 0);
+    return QStringLiteral("tx_frequency:%1").arg(carrier);
+}
+QString TciServer::txFrequencyThetisLine() const {
+    if (!stream_) return QString();
+    const qint64 carrier = qint64(stream_->rx1FreqHz())
+                           + (engine_ ? engine_->markerOffsetHz() : 0);
+    // Reference: tx_frequency_thetis:<freq>,<band>,<rx2_enabled>,<tx_vfob>.
+    // Band token mirrors Thetis's enum ("b40m"/"b80m"/…); GEN out-of-band.
+    QString band = BandMemory::bandNameFor(int(carrier));
+    band = (band.isEmpty() || band.contains(QLatin1Char('_')))
+               ? QStringLiteral("bgen")
+               : QStringLiteral("b") + band;
+    return QStringLiteral("tx_frequency_thetis:%1,%2,false,false")
+        .arg(carrier).arg(band);
+}
+void TciServer::broadcastTxFrequency() {
+    if (!stream_) return;
+    broadcast(QStringLiteral("tx_frequency"),        txFrequencyLine());
+    broadcast(QStringLiteral("tx_frequency_thetis"), txFrequencyThetisLine());
+}
+
 void TciServer::onFreqChanged() {
     if (!stream_) return;
     const qint64 hz = qint64(stream_->rx1FreqHz());          // DDS centre
     const qint64 carrier = hz + (engine_ ? engine_->markerOffsetHz() : 0);
     broadcast(QStringLiteral("dds:0"),   QStringLiteral("dds:0,%1").arg(hz));
     broadcast(QStringLiteral("vfo:0,0"), QStringLiteral("vfo:0,0,%1").arg(carrier));
+    broadcastTxFrequency();
 }
 void TciServer::onModeChanged() {
     if (!prefs_) return;
@@ -1846,6 +1970,7 @@ void TciServer::onModeChanged() {
                                + (engine_ ? engine_->markerOffsetHz() : 0);
         broadcast(QStringLiteral("vfo:0,0"),
                   QStringLiteral("vfo:0,0,%1").arg(carrier));
+        broadcastTxFrequency();
     }
 }
 void TciServer::onVolumeChanged() {
@@ -1873,23 +1998,34 @@ void TciServer::onRunningChanged() {
 }
 void TciServer::onSmeterTick() {
     if (!sensorsEnabled_ || clients_.isEmpty() || !engine_) return;
-    // Reference-faithful S-meter source: WDSP RXA_S_PK polled at the
-    // operator-UI cadence (matches reference's GetRXAMeter path via
-    // wdsp_engine.h:80 audioDbFs Q_PROPERTY).  Pre-Stage-2b this read
-    // came off a Lyra-native pre-WDSP raw-IQ RMS accumulator on
-    // HL2Stream (rx1DbFs); that accumulator is deleted as part of
-    // Stage 2b strict-reference strip-out — reference has no
-    // pre-DSP instrument here, only the WDSP-derived meter.  The
-    // dBm offset (-30) carries forward unchanged as a coarse stopgap
-    // until per-band cal lands; behavioural note: audioDbFs is
-    // post-AGC, so the TCI client sees the AGC-shaped meter (=
-    // exactly what reference's S-meter does, since reference shows
-    // the same WDSP-derived reading).
-    const double dbfs = engine_->audioDbFs();
-    const double dbm = (dbfs <= -199.0) ? -140.0 : dbfs - 30.0;
+    // Broadcast the SAME calibrated RX S-meter dBm the on-screen meter
+    // shows.  MeterModel owns the one calibration (WDSP RXA_S_PK in-passband
+    // + operator calDb trim − LNA gain), so the front-panel meter and every
+    // TCI client (SDRLogger+, WSJT-X, N1MM, …) agree on a real, S9=-73dBm-
+    // referenced reading.
+    //
+    // WAS: audioDbFs − 30 — a POST-AGC audio-level dBFS with a fixed coarse
+    // offset ("stopgap until per-band cal lands").  That is not an S-meter:
+    // AGC compresses it toward full scale so it barely tracks signal
+    // strength, and the −30 is arbitrary.  SDRLogger+'s meter reading being
+    // "wildly off" traced entirely to this line reaching for the wrong
+    // engine value while a fully-calibrated one already existed next door in
+    // MeterModel.  Fall back to the raw uncalibrated engine reading only if
+    // the meter model isn't wired (shouldn't happen in the full app).
+    const double dbm = meter_ ? meter_->rxSMeterDbm() : engine_->sMeterDbm();
     broadcast(QStringLiteral("rx_channel_sensors:0,0"),
               QStringLiteral("rx_channel_sensors:0,0,%1")
                   .arg(QString::number(dbm, 'f', 1)));
+
+    // Combo received-S auto-fill: also share the numeric SNR (dB) so a linked
+    // SDRLogger+ can gate its auto RST-received suggestion — the S-meter alone
+    // can't tell a real S9 from an S9 of pure noise. Lyra-namespaced and
+    // combo-scoped (only sent while Combo is on, which is the only time it's
+    // used); other TCI clients ignore the unknown command.
+    if (comboEnabled_ && meter_)
+        broadcast(QStringLiteral("lyra_snr"),
+                  QStringLiteral("lyra_snr:%1")
+                      .arg(QString::number(meter_->rxSnrDb(), 'f', 1)));
 }
 
 } // namespace lyra::ui
