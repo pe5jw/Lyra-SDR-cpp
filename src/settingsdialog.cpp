@@ -3126,6 +3126,33 @@ QWidget *SettingsDialog::buildFiltersBcdTab() {
         // ocBox (enable + live pins + grid + preset buttons) is complete.
         root->addWidget(ocBox);
 
+        // --- HL2 Band-Voltage output (MI0BOT / Ramdor gateware) -----------
+        // Separate from the OC/J16 pins: this repurposes the fan-PWM pin to
+        // emit a per-band analog voltage (the gateware "band volts" feature,
+        // enabled by the C0=0x00 dither bit).  Used by amps / tuners / ant
+        // switches that band-follow off a band voltage.  Thetis exposes the
+        // identical bit as its "HL2 Band Volts" checkbox.
+        {
+            auto *bvBox = section(tr("Band-voltage output (fan-PWM pin)"));
+            auto *bvv = new QVBoxLayout(bvBox);
+            auto *bv = new QCheckBox(
+                tr("Output per-band analog voltage on the fan-PWM pin"));
+            bv->setChecked(stream_->bandVoltsOutput());
+            bv->setToolTip(tr(
+                "HL2 gateware \"band volts\" feature (MI0BOT / Ramdor builds).\n"
+                "Drives a band-dependent voltage on the fan-PWM pin for amps,\n"
+                "tuners, or antenna switches that band-follow off a band voltage\n"
+                "(e.g. a HardRock-50 set to Transceiver: None).\n\n"
+                "TRADE-OFF: while on, that pin outputs band voltage INSTEAD of\n"
+                "fan speed control — leave OFF unless your wiring uses it."));
+            connect(bv, &QCheckBox::toggled, stream_,
+                    &lyra::ipc::HL2Stream::setBandVoltsOutput);
+            connect(stream_, &lyra::ipc::HL2Stream::bandVoltsOutputChanged, bv,
+                    [bv](bool on) { if (bv->isChecked() != on) bv->setChecked(on); });
+            bvv->addWidget(bv);
+            root->addWidget(bvBox);
+        }
+
         // --- lower area: two columns — transmit pin action (left) | BCD (right) ---
         auto *lower = new QHBoxLayout;
         lower->setSpacing(12);

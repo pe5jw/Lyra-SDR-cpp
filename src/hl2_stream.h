@@ -257,6 +257,13 @@ class HL2Stream : public QObject {
     // the codec mic is the active TX source.
     Q_PROPERTY(bool micBoost READ micBoost WRITE setMicBoost
                NOTIFY micBoostChanged)
+    // HL2 "Band Volts" output (MI0BOT / Ramdor gateware feature): C0=0x00
+    // frame C3 bit 3 (the ADC "dither" bit) → gateware band_volts_enabled →
+    // per-band analog voltage on the fan-PWM pin for amps / tuners / antenna
+    // switches that band-follow off a band voltage.  Repurposes the fan pin
+    // while on → operator opt-in, default OFF.  Persisted: hw/bandVolts.
+    Q_PROPERTY(bool bandVoltsOutput READ bandVoltsOutput WRITE setBandVoltsOutput
+               NOTIFY bandVoltsOutputChanged)
     // TX-0c-pa-drive — operator-tunable drive DAC level.  Maps to
     // frame-10 C1; the gateware uses the top 4 bits → 16 coarse steps,
     // so wire values 0/16/32/.../255 are the meaningful endpoints (the
@@ -804,6 +811,7 @@ public:
     // getter).  Reads the wire atomic.
     bool    paEnabled() const { return paOn_.load(std::memory_order_relaxed); }
     bool    micBoost()  const { return micBoost_.load(std::memory_order_relaxed); }
+    bool    bandVoltsOutput() const { return bandVolts_.load(std::memory_order_relaxed); }
     // TX-0c-pa-drive — drive DAC level (Q_PROPERTY getter).  Raw 0..255
     // wire value; UI converts to/from 0..100 %.  Reads the wire atomic.
     int     txDriveLevel() const { return txDriveLevel_.load(std::memory_order_relaxed); }
@@ -1103,6 +1111,7 @@ public slots:
     void setTxStepAttnDb(int db);
     void setPaEnabled(bool on);
     void setMicBoost(bool on);
+    void setBandVoltsOutput(bool on);
     // TX-0c-tune — arm/disarm the tune-tone generator.  The EP2 writer
     // fills TX-I/TX-Q with a 1 kHz complex tone @ 0.95 full scale only
     // when (mox_ on the wire) AND (this flag set).  Auto-cleared on
@@ -1436,6 +1445,7 @@ signals:
     // checkbox, persistence reload, or stream open/close safety clear).
     void paEnabledChanged(bool on);
     void micBoostChanged(bool on);
+    void bandVoltsOutputChanged(bool on);
     // TX-0c-pa-drive — operator-tunable drive DAC level changed (via
     // Settings SpinBox or persistence reload).  Raw 0..255 wire value.
     void txDriveLevelChanged(int level);
@@ -1897,6 +1907,7 @@ private:
     std::atomic<int>     cwPitchHz_{600};
     std::atomic<bool>    paOn_{false};          // 0x12 C2 bit 3 (active-high)
     std::atomic<bool>    micBoost_{false};      // 0x12 C2 bit 0 (+20 dB HW boost)
+    std::atomic<bool>    bandVolts_{false};     // 0x00 C3 bit 3 (band-volts enable)
     // TX-0c-tune — operator-armed tune-tone generator.  Atomic so the
     // EP2 writer thread reads it lock-free on every datagram.  The NCO
     // phase below is owned single-thread by that writer (no atomic

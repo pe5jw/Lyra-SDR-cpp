@@ -116,6 +116,13 @@ void set_tx_freq(int freq_hz) {
     prn->tx[0].frequency = corrected_freq(freq_hz);
 }
 
+// HL2 "Band Volts" enable → C0=0x00 frame C3 bit 3 (ADC dither bit).
+// compose_case_0 reads `prn->adc[0].dither` into C3 bit 3; the gateware
+// (control.v:582-584) latches it as `band_volts_enabled`.
+void set_band_volts_output(bool on) {
+    prn->adc[0].dither = on ? 1 : 0;
+}
+
 // Frequency-calibration factor accessors (see FrameComposer.h).  The
 // factor multiplies inside the two setters above, so it covers every
 // tune path uniformly and `prn->..[].frequency` always holds the

@@ -104,6 +104,14 @@ void set_rx_freq(int rx_idx, int freq_hz);
 // (see Q4).
 void set_tx_freq(int freq_hz);
 
+// HL2 "Band Volts" output enable (MI0BOT / Ramdor gateware feature).
+// Writes the C0=0x00 frame's C3 bit 3 — the ADC "dither" bit — which the
+// gateware decodes as `band_volts_enabled` (control.v:582-584,
+// `cmd_data[11]`) and then emits a per-band analog voltage on the fan-PWM
+// pin for amps / tuners / antenna switches that band-follow off a band
+// voltage.  Writes `prn->adc[0].dither`; caller guards `prn != nullptr`.
+void set_band_volts_output(bool on);
+
 // Frequency-calibration factor — a crystal/TCXO ppm trim applied to
 // EVERY RX/TX frequency inside set_rx_freq / set_tx_freq, i.e. the one
 // choke point every tune path (RIT/XIT/CTUN/PS-feedback/waterfall-ID)

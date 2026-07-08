@@ -384,6 +384,15 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     micBoost_.store(
         QSettings().value(QStringLiteral("tx/micBoost"), false).toBool(),
         std::memory_order_relaxed);
+    // HL2 "Band Volts" output (MI0BOT / Ramdor gateware): persisted
+    // across launches, seeded into the C0=0x00 frame's dither bit now so
+    // the fan-pin band voltage is live from the first frame if enabled.
+    bandVolts_.store(
+        QSettings().value(QStringLiteral("hw/bandVolts"), false).toBool(),
+        std::memory_order_relaxed);
+    if (lyra::wire::prn != nullptr)
+        lyra::wire::set_band_volts_output(
+            bandVolts_.load(std::memory_order_relaxed));
     // TX-0c-pa-drive — operator-tunable drive DAC level (raw 0..255,
     // UI exposes 0..100 %).  Persisted across launches; NOT cleared on
     // stream open/close — the "volume" knob carries the operator's
@@ -2326,6 +2335,29 @@ void HL2Stream::setMicBoost(bool on) {
     safetyLog(QStringLiteral("TX: Mic Boost -> %1")
               .arg(on ? QStringLiteral("ON  (+20 dB HW)")
                       : QStringLiteral("off (0 dB HW)")));
+}
+
+void HL2Stream::setBandVoltsOutput(bool on) {
+    // HL2 "Band Volts" gateware feature (MI0BOT / Ramdor Thetis builds):
+    // sets the C0=0x00 frame C3 bit 3 (the ADC "dither" bit), which the
+    // gateware decodes as `band_volts_enabled` (control.v:582-584) and then
+    // emits a per-band analog voltage on the fan-PWM pin — used by amps,
+    // tuners, and antenna switches that band-follow off a band voltage.
+    //
+    // Thetis parity: `chkHL2BandVolts` -> NetworkIO.SetADCDither ->
+    // prn->adc[0].dither -> WriteMainLoop_HL2 case 0 C3 bit 3.
+    //
+    // TRADE-OFF: while on, the fan-PWM pin outputs band voltage instead of
+    // fan control (control.v:604-714) — operator opt-in, default OFF.  No
+    // MOX gating (band data should be current in RX too).  Persisted.
+    const bool prev = bandVolts_.exchange(on, std::memory_order_relaxed);
+    if (prev == on) return;
+    if (lyra::wire::prn != nullptr) lyra::wire::set_band_volts_output(on);
+    QSettings().setValue(QStringLiteral("hw/bandVolts"), on);
+    emit bandVoltsOutputChanged(on);
+    safetyLog(QStringLiteral("HW: Band-Volts output -> %1")
+              .arg(on ? QStringLiteral("ON  (fan pin = band voltage)")
+                      : QStringLiteral("off (fan pin = fan control)")));
 }
 
 int HL2Stream::cwTxCarrierOffsetHz() const {

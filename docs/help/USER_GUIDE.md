@@ -2470,6 +2470,25 @@ option to borrow the adjacent band's filter:
 (If the FTDI driver, `ftd2xx.dll`, isn't installed, this section says so
 instead — install the FTDI D2XX driver to use USB-BCD.)
 
+### Band-voltage output (fan-PWM pin)
+
+Some amps, tuners, and antenna switches band-follow off a single **analog
+band voltage** rather than serial CAT or logic pins. The HL2 gateware can
+emit that voltage on its **fan-PWM pin** (the "band volts" feature in the
+MI0BOT / Ramdor gateware builds), and Lyra can turn it on:
+
+- **Output per-band analog voltage on the fan-PWM pin** — enables it. Off
+  (default) leaves the pin as normal fan control.
+
+> ⚠ **Trade-off:** while this is on, that pin outputs band voltage
+> **instead of** fan-speed control. Only enable it if your wiring actually
+> uses the band voltage. It also needs a gateware build that includes the
+> band-volts feature.
+
+This is independent of the OC/J16 pins above and the serial band-follow
+used by an HL2+ AK4951 companion board (which drives a HardRock-50 / AH-4
+automatically from the gateware — no setting needed here).
+
 ## Settings → Audio
 
 Where Lyra sends received audio:
