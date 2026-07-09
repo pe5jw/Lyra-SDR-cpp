@@ -18,7 +18,8 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.21.1
+    VERSION 0.16.0
+
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -75,18 +76,6 @@ qt_add_executable(lyra
     src/wdsp_engine.cpp
     src/mic_source.h
     src/mic_source.cpp
-    src/win_perf.cpp
-    # Multi-rig Stage 1 — per-family capability descriptor (inert
-    # scaffolding; see docs/architecture/multi_rig_design.md).
-    src/rig/RadioCapabilities.h
-    src/rig/RadioCapabilities.cpp
-    # Multi-rig Stage 2 — rig registry + identity (inert; seeded/routed
-    # in Stage 3).
-    src/rig/RigRegistry.h
-    src/rig/RigRegistry.cpp
-    # Multi-rig Stage 3 — active-rig key routing + snapshot-gated migration.
-    src/rig/RigScope.h
-    src/rig/RigScope.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h
@@ -229,8 +218,6 @@ qt_add_executable(lyra
     src/dsp/cw_fldigi/fldigi_cw.cpp
     src/dsp/FreqCalMeasure.h
     src/dsp/FreqCalMeasure.cpp
-    src/dsp/ZeroBeat.h
-    src/dsp/ZeroBeat.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -268,15 +255,6 @@ qt_add_executable(lyra
     src/tx/VoiceKeyer.cpp
     src/tx/ClipRecorder.h
     src/tx/ClipRecorder.cpp
-    # Session Recorder (#201) — RX/TX audio + timed pan/waterfall snapshots.
-    # Headless engine (RT-safe ring + writer thread) + streaming WAV writer;
-    # UI panel/status-chip + Settings tab + offline MP4 export land on top.
-    src/recorder/WavStreamWriter.h
-    src/recorder/WavStreamWriter.cpp
-    src/recorder/RecorderEngine.h
-    src/recorder/RecorderEngine.cpp
-    src/recorder/SessionConverter.h
-    src/recorder/SessionConverter.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -340,8 +318,7 @@ qt_add_executable(lyra
     src/mainwindow.cpp
     src/dockdragcontroller.h
     src/dockdragcontroller.cpp
-    src/panelrack.h
-    src/panelrack.cpp
+    src/default_layout.h
     src/prefs.h
     src/prefs.cpp
     src/settingsdialog.h
@@ -446,7 +423,6 @@ qt_add_qml_module(lyra
         src/qml/CwDecoderPanel.qml
         src/qml/CalibrationPanel.qml
         src/qml/VoiceKeyerPanel.qml
-        src/qml/RecorderPanel.qml
         src/qml/TrashCan.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
@@ -714,23 +690,6 @@ add_executable(test_wav_io EXCLUDE_FROM_ALL
 target_include_directories(test_wav_io PRIVATE src)
 if(MSVC)
     target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
-endif()
-
-# Session Recorder (#201) Stage 1 — engine + streaming WAV writer unit test.
-# Qt Core only (QSettings isolated to a temp INI); EXCLUDE_FROM_ALL.
-# Build + run:  cmake --build build --target test_recorder
-add_executable(test_recorder EXCLUDE_FROM_ALL
-    scratch/test_recorder.cpp
-    src/recorder/WavStreamWriter.h
-    src/recorder/WavStreamWriter.cpp
-    src/recorder/RecorderEngine.h
-    src/recorder/RecorderEngine.cpp
-)
-target_include_directories(test_recorder PRIVATE src)
-target_link_libraries(test_recorder PRIVATE Qt6::Core)
-set_target_properties(test_recorder PROPERTIES AUTOMOC ON)   # RecorderEngine Q_OBJECT
-if(MSVC)
-    target_compile_options(test_recorder PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #89 Stage C — recorder capture-core unit test (ClipRecorder).  Qt-free;
