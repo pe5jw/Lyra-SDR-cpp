@@ -368,6 +368,17 @@ class Prefs : public QObject {
     Q_PROPERTY(QString micSource READ micSource WRITE setMicSource
                NOTIFY micSourceChanged)
 
+    // When true, a TCI-driven keydown saves the current mic-source token
+    // and restores it when PTT drops (normal keyup, client disconnect, or
+    // external MOX drop).  Lets mixed voice + digital operators return to
+    // VAC1 / mic1 automatically after each digital TX without a manual
+    // switch.  Default false — dedicated-digital setups are unaffected.
+    // Persisted: tx/tci_restore_mic_source.
+    Q_PROPERTY(bool tciRestoreMicSource
+               READ  tciRestoreMicSource
+               WRITE setTciRestoreMicSource
+               NOTIFY tciRestoreMicSourceChanged)
+
     // Global tooltips on/off (Settings → Visuals).  Default true.  Every
     // QML ToolTip.visible binding ANDs this in, and an app-wide event
     // filter swallows QWidget (Settings dialog) tooltips too, so the
@@ -612,6 +623,8 @@ public:
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
+    bool tciRestoreMicSource() const { return tciRestoreMicSource_; }
+    void setTciRestoreMicSource(bool on);
     bool tooltipsEnabled() const { return tooltipsEnabled_; }
     void setTooltipsEnabled(bool on);
     // Task #33 — operator-facing token list with display labels.  Used
@@ -722,6 +735,7 @@ signals:
     void digitalDriveEnabledChanged();
     void digitalDrivePctChanged();
     void micSourceChanged();
+    void tciRestoreMicSourceChanged();
     void tooltipsEnabledChanged();
 
 private:
@@ -845,6 +859,9 @@ private:
     // Task #33 — TX mic source token.  Default "mic1" matches the
     // v0.2.0..v0.2.2 ship behaviour.  Persisted: tx/mic_source.
     QString micSource_   = QStringLiteral("mic1");
+    // Persisted: tx/tci_restore_mic_source.  Default false so existing
+    // dedicated-digital setups keep "stays on TCI" behaviour unchanged.
+    bool    tciRestoreMicSource_ = false;
     bool    tooltipsEnabled_ = true;   // Settings → Visuals; ui/tooltips_enabled
 };
 

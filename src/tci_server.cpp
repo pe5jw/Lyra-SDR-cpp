@@ -587,9 +587,13 @@ void TciServer::onClientDisconnected() {
         emit statusMessage(QStringLiteral(
             "TCI: TX-audio ownership released (client disconnected)"));
         if (stream_) stream_->requestMoxFromTci(false);
-        // TX-rip Phase 1 (Q2): R-H2 activeMicSource_ save/restore
-        // returns with the new TX DSP worker per
-        // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
+        // pe5jw patch — restore mic source when owner disconnects mid-TX.
+        if (prefs_ && !preMicSource_.isEmpty()) {
+            prefs_->setMicSource(preMicSource_);
+            emit statusMessage(QStringLiteral(
+                "TCI: mic source restored (owner disconnect): ") + preMicSource_);
+            preMicSource_.clear();
+        }
     }
     clients_.removeAll(ws);
     streams_.remove(ws);
@@ -1139,10 +1143,20 @@ void TciServer::onMoxActiveChanged(bool on) {
         "TCI: TX-audio ownership released (wire MOX dropped externally)"));
     // Do NOT send an extra trx:0,false to the released owner here — the
     // onMoxActiveChanged broadcast above already emitted trx:0,false to EVERY
-    // client including this owner.  Thetis's SyncTciPttToMox tears down ownership
+    // client including this owner.  Thetis’s SyncTciPttToMox tears down ownership
     // WITHOUT emitting trx (TCIServer.cs:5560-5577): exactly one trx per edge,
     // from the wire edge only.
     (void)was;
+    // pe5jw patch — restore mic source on external MOX drop (e.g. operator
+    // presses the MOX button while a TCI session is active, or hardware PTT
+    // drops).  Covers the edge case where the TCI client never sends
+    // trx:0,false itself.
+    if (prefs_ && !preMicSource_.isEmpty()) {
+        prefs_->setMicSource(preMicSource_);
+        emit statusMessage(QStringLiteral(
+            "TCI: mic source restored (external MOX drop): ") + preMicSource_);
+        preMicSource_.clear();
+    }
 }
 
 void TciServer::onMaintenanceTick() {
@@ -1889,8 +1903,21 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
                 // Mic source=tci already matches, and we don't want
                 // to flip the picker on a generic TCI-client keying
                 // request that didn't specifically ask for TCI audio.
-                if (useTciAudio && prefs_)
+                if (useTciAudio && prefs_) {
+                    // pe5jw patch — save the current mic-source token before
+                    // the auto-flip so we can restore it on keyup.  Only save
+                    // when the pref is on AND the source is not already "tci"
+                    // (if it's already tci there is nothing to restore).
+                    if (prefs_->tciRestoreMicSource()
+                            && prefs_->micSource() != QLatin1String("tci")) {
+                        preMicSource_ = prefs_->micSource();
+                        emit statusMessage(QStringLiteral(
+                            "TCI: mic source saved for restore: ") + preMicSource_);
+                    } else {
+                        preMicSource_.clear();
+                    }
                     prefs_->setMicSource(QStringLiteral("tci"));
+                }
             }
             // R-H2 — diagnostic snapshot + token-agnostic source force.
             //
@@ -1958,8 +1985,13 @@ void TciServer::dispatch(QWebSocket *ws, const QString &cmd,
             emit statusMessage(
                 QStringLiteral("TCI: TX-audio ownership RELEASED"));
         }
-        // TX-rip Phase 1 (Q2): R-H2 keyup-restore returns with the
-        // new TX DSP worker per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
+        // pe5jw patch — restore mic source on normal TCI keyup.
+        if (prefs_ && !preMicSource_.isEmpty()) {
+            prefs_->setMicSource(preMicSource_);
+            emit statusMessage(QStringLiteral(
+                "TCI: mic source restored after PTT release: ") + preMicSource_);
+            preMicSource_.clear();
+        }
         stream_->requestMoxFromTci(false);
         // NO direct/pre-edge trx reply — the on-wire-edge onMoxActiveChanged
         // broadcast is the sole trx authority (as Thetis).  Replying trx:0,false
