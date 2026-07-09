@@ -5505,6 +5505,39 @@ QWidget *SettingsDialog::buildTxTab() {
             form->addRow(tr("Mic source:"), combo);
         }
 
+        // ── pe5jw patch: Auto-restore mic source after TCI PTT ───
+        // For mixed voice + digital operation: when the operator uses
+        // VAC1 / mic1 for SSB and a TCI client (WSJT-X, MSHV) drives
+        // a digital TX, Lyra auto-flips the picker to "TCI".  With
+        // this checkbox on, Lyra restores the previous source when PTT
+        // drops — mic works again immediately for the next SSB QSO.
+        // Leave off for dedicated digital setups.
+        if (prefs_) {
+            auto *restoreBox = new QCheckBox(
+                tr("Auto-restore mic source after TCI PTT release"), grp);
+            restoreBox->setChecked(prefs_->tciRestoreMicSource());
+            restoreBox->setToolTip(tr(
+                "When enabled, Lyra remembers the mic source that was "
+                "active before a TCI digital transmission and switches "
+                "back to it automatically when the TCI client releases "
+                "PTT.\n\n"
+                "Use this for mixed voice + digital operation (e.g. SSB "
+                "with occasional FT8 / WSPR sessions).  Leave off for "
+                "dedicated digital setups where the mic source should "
+                "stay on TCI between transmissions."));
+            connect(restoreBox, &QCheckBox::toggled,
+                    grp, [this](bool on) {
+                if (prefs_) prefs_->setTciRestoreMicSource(on);
+            });
+            connect(prefs_, &lyra::ui::Prefs::tciRestoreMicSourceChanged,
+                    restoreBox, [this, restoreBox]() {
+                if (!prefs_) return;
+                QSignalBlocker b(restoreBox);
+                restoreBox->setChecked(prefs_->tciRestoreMicSource());
+            });
+            form->addRow(QString(), restoreBox);
+        }
+
         // ── Mic Boost (Task #39: HL2 hardware +20 dB) ────────────
         // Single bit on the wire (C0 0x12 C2 bit 0) engaging the HL2
         // codec's analog mic PGA at +20 dB — pure hardware boost

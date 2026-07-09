@@ -103,6 +103,7 @@ constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 constexpr auto kSpaceBarPttEnabled = "tx/space_bar_ptt_enabled";
 constexpr auto kAutoStartOnLaunch  = "hw/autoStartOnLaunch";
 constexpr auto kMicSource    = "tx/mic_source";
+constexpr auto kTciRestoreMicSource = "tx/tci_restore_mic_source";
 constexpr auto kTooltipsEnabled = "ui/tooltips_enabled";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
 // Settings → TX (toggle) and on TxPanel's inline tune-drive stepper.
@@ -295,6 +296,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         micSource_ = micSourceTokens().contains(tok) ? tok
                                                      : QStringLiteral("mic1");
     }
+    tciRestoreMicSource_ = s.value(kTciRestoreMicSource, false).toBool();
     sampleRate_ = s.value(kSampRate, 192000).toInt();
     if (sampleRate_ != 96000 && sampleRate_ != 192000 && sampleRate_ != 384000)
         sampleRate_ = 192000;
@@ -1249,6 +1251,16 @@ void Prefs::setMicSource(const QString &token) {
         QSettings().setValue(kMicSource, t);
         emit micSourceChanged();
     }
+}
+
+// pe5jw patch — auto-restore mic source after TCI PTT release.
+// Persists + emits so the Settings checkbox and TciServer's save/restore
+// logic both see the change immediately.
+void Prefs::setTciRestoreMicSource(bool on) {
+    if (on == tciRestoreMicSource_) return;
+    tciRestoreMicSource_ = on;
+    QSettings().setValue(kTciRestoreMicSource, on);
+    emit tciRestoreMicSourceChanged();
 }
 
 // The known TX mic-source tokens, in operator-picker order.  Matches

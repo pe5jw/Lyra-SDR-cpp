@@ -281,6 +281,10 @@ private:
     // so every deref below is crash-safe against a dropped owner (CODEX-P0
     // dangling-deref / onChronoTick 0xC0000005 fix, 2026-06-15).
     QPointer<QWebSocket>   txAudioOwner_;
+    // pe5jw patch — mic-source token saved at TCI keydown when the
+    // tciRestoreMicSource pref is on.  Restored at keyup, owner
+    // disconnect, or external MOX drop.  Empty = nothing to restore.
+    QString                preMicSource_;
     // TX_CHRONO outbound pump (TCI v2 §3.4) — fires when txAudioOwner_
     // is set AND wire MOX is active.  Implements the reference's
     // dynamic-pull formula (cmaster.cs:1289-1359) — at each tick,
