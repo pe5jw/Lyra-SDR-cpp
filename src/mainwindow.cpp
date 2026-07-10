@@ -82,6 +82,8 @@
 #include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
+#include <QJsonValue>
 #include <QStyle>
 #include <QToolBar>
 #include <QStatusBar>
@@ -2301,6 +2303,133 @@ void MainWindow::importSettings() {
         tr("Lyra profile (*.lyra);;All files (*)"));
     if (path.isEmpty()) return;
     lyra::ui::restoreBackupInteractive(this, path);
+}
+
+// ── Share a single layout as a small .lyralayout file ──────────────────────
+// A "layout" here is just the panel arrangement (saveState()) + the
+// panadapter/waterfall split — NOT window geometry, so it drops onto any
+// monitor.  Export writes a tiny JSON; import applies it live.
+
+void MainWindow::exportLayoutToFile() {
+    flushLayoutToSettings();   // capture the arrangement on screen right now
+
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this, tr("Export layout"),
+        tr("Name this layout (shown to whoever imports it):"),
+        QLineEdit::Normal, tr("My Lyra layout"), &ok).trimmed();
+    if (!ok) return;
+    if (name.isEmpty()) name = tr("Lyra layout");
+
+    QString slug;
+    for (const QChar c : name)
+        slug += (c.isLetterOrNumber() || c == QLatin1Char(' ') ||
+                 c == QLatin1Char('-') || c == QLatin1Char('_'))
+                    ? c : QLatin1Char('_');
+    if (slug.trimmed().isEmpty()) slug = QStringLiteral("lyra-layout");
+
+    const QString docs =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Lyra layout"),
+        docs + QStringLiteral("/") + slug + QStringLiteral(".lyralayout"),
+        tr("Lyra layout (*.lyralayout)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(QStringLiteral(".lyralayout"), Qt::CaseInsensitive))
+        path += QStringLiteral(".lyralayout");
+
+    QJsonObject o;
+    o[QStringLiteral("lyraLayout")] = 1;                       // format version
+    o[QStringLiteral("app")]        = QStringLiteral("lyra-cpp");
+    o[QStringLiteral("name")]       = name;
+    o[QStringLiteral("created")]    =
+        QDateTime::currentDateTime().toString(Qt::ISODate);
+    // Dock positions + open/closed + sizes, base64 so it rides in JSON.
+    o[QStringLiteral("windowState")] =
+        QString::fromLatin1(saveState().toBase64());
+    if (prefs_)
+        o[QStringLiteral("panadapterSplit")] =
+            QJsonValue::fromVariant(prefs_->panadapterSplit());
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export failed"),
+            tr("Couldn't write the layout file:\n%1").arg(path));
+        return;
+    }
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+    f.close();
+    QMessageBox::information(this, tr("Layout exported"),
+        tr("Saved the layout \"%1\" to:\n%2\n\n"
+           "Share this file (Discord, email, …) — whoever gets it opens "
+           "Settings → Backup & Restore → \"Import layout\" to use it. It "
+           "carries only the panel arrangement, so it drops onto any screen "
+           "size.").arg(name, path));
+}
+
+void MainWindow::importLayoutFromFile() {
+    const QString docs =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import Lyra layout"), docs,
+        tr("Lyra layout (*.lyralayout);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Import failed"),
+            tr("Couldn't read the file:\n%1").arg(path));
+        return;
+    }
+    QJsonParseError perr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &perr);
+    f.close();
+    if (perr.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(this, tr("Not a Lyra layout"),
+            tr("That file isn't a valid Lyra layout file."));
+        return;
+    }
+    const QJsonObject o = doc.object();
+    const QByteArray st = QByteArray::fromBase64(
+        o.value(QStringLiteral("windowState")).toString().toLatin1());
+    if (!o.contains(QStringLiteral("lyraLayout")) || st.isEmpty()) {
+        QMessageBox::warning(this, tr("Not a Lyra layout"),
+            tr("That file doesn't contain a Lyra panel layout.\n\n"
+               "(A full backup is a .lyra file — restore it under "
+               "\"Restore\" instead.)"));
+        return;
+    }
+    QString name = o.value(QStringLiteral("name")).toString().trimmed();
+    if (name.isEmpty()) name = tr("(unnamed)");
+
+    if (QMessageBox::question(this, tr("Apply this layout?"),
+            tr("Apply the layout \"%1\"?\n\nYour panels will rearrange to "
+               "match it. Your settings, frequency and audio are untouched.")
+                .arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+        != QMessageBox::Yes)
+        return;
+
+    if (!restoreState(st)) {
+        QMessageBox::warning(this, tr("Import failed"),
+            tr("Lyra couldn't apply that layout (it may be from a much "
+               "newer or older version)."));
+        return;
+    }
+    if (prefs_) {
+        const QJsonValue sp = o.value(QStringLiteral("panadapterSplit"));
+        if (!sp.isUndefined() && !sp.isNull())
+            prefs_->setPanadapterSplit(sp.toVariant());
+    }
+    // Re-apply the current lock state to the restored arrangement + persist,
+    // exactly as recallNamedLayout() does.
+    applyPanelLock(
+        QSettings().value(QStringLiteral("ui/panelsLocked"), false).toBool());
+    flushLayoutToSettings();
+    QMessageBox::information(this, tr("Layout applied"),
+        tr("Now using the layout \"%1\".\n\nTo keep it in a slot for quick "
+           "recall later, use View → Layouts → \"Save current layout to\".")
+            .arg(name));
 }
 
 void MainWindow::refreshLayoutMenus() {

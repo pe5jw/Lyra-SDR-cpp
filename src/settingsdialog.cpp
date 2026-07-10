@@ -4,6 +4,7 @@
 
 #include "bands.h"
 #include "hl2_discovery.h"
+#include "mainwindow.h"   // Share-a-layout buttons call MainWindow export/import
 #include "hl2_stream.h"
 #include "palettes.h"
 #include "prefs.h"
@@ -8567,6 +8568,38 @@ QWidget *SettingsDialog::buildBackupRestoreTab() {
             QMessageBox::warning(this, tr("Export failed"),
                 tr("Couldn't write the file:\n%1").arg(path));
         }
+    });
+
+    // ── Share a layout ──
+    // A "layout" is just the panel arrangement, exported to a small
+    // .lyralayout file so operators can swap screen setups (post the file +
+    // a screenshot on Discord / email).  Lighter and friendlier than a full
+    // backup for the "here's how I arrange my screen" use case.
+    auto *layGrp = new QGroupBox(tr("Share a layout"), page);
+    auto *layV = new QVBoxLayout(layGrp);
+    auto *layDesc = new QLabel(
+        tr("Export just your panel arrangement to a small .lyralayout file "
+           "you can share, or import one someone sent you.  Only the layout "
+           "travels — not your settings, radio address, or window size — so "
+           "it drops onto any screen."), layGrp);
+    layDesc->setWordWrap(true);
+    bumpFont(layDesc);
+    layV->addWidget(layDesc);
+    auto *layRow = new QHBoxLayout();
+    auto *layExpBtn = new QPushButton(tr("Export layout…"), layGrp);
+    auto *layImpBtn = new QPushButton(tr("Import layout…"), layGrp);
+    layRow->addWidget(layExpBtn);
+    layRow->addWidget(layImpBtn);
+    layRow->addStretch(1);
+    layV->addLayout(layRow);
+    v->addWidget(layGrp);
+    connect(layExpBtn, &QPushButton::clicked, this, [this]() {
+        if (auto *mw = qobject_cast<MainWindow *>(parentWidget()))
+            mw->exportLayoutToFile();
+    });
+    connect(layImpBtn, &QPushButton::clicked, this, [this]() {
+        if (auto *mw = qobject_cast<MainWindow *>(parentWidget()))
+            mw->importLayoutFromFile();
     });
 
     // ── Snapshots ──

@@ -93,6 +93,14 @@ public:
     // "Connecting…" to a radio that moved / changed lease / is off.
     void beginConnect(const QString &preferIp);
 
+    // Share JUST the panel layout as a small .lyralayout file (driven from
+    // Settings → Backup & Restore → "Share a layout").  Arrangement only —
+    // no window size/position, so a layout is monitor-independent and safe to
+    // swap between users.  Import applies it live (panels rearrange) — no
+    // restart.  Public so the Settings dialog can invoke them.
+    void exportLayoutToFile();
+    void importLayoutFromFile();
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     // While panels are locked, swallow dock-separator resize presses so the
