@@ -584,6 +584,13 @@ signals:
 private:
     bool resolveSymbols();
     void emitLog(const QString &line);   // mirror logLine -> qInfo console
+    // Wisdom-build diagnostics.  Unlike emitLog (qInfo, dropped by the
+    // in-app LogBuffer unless the operator enabled verbose logging),
+    // this logs at qWarning so the lines ALWAYS reach lyra-log.txt, and
+    // also appends them to a dedicated wisdom.log next to the cache dir
+    // -- so a field "rebuilds every launch" report is self-diagnosing
+    // with zero setup.
+    void logWisdom(const QString &line);
 
     // We deliberately keep this as a `void*` so the header doesn't
     // drag windows.h through every translation unit that includes

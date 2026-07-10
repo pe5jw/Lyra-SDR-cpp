@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDialog>
 #include <QDir>
@@ -26,6 +27,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -161,6 +163,33 @@ void WdspNative::emitLog(const QString &line) {
     // call); no production concern.
     qInfo("%s", qPrintable(line));
     emit logLine(line);
+}
+
+void WdspNative::logWisdom(const QString &line) {
+    // qWarning (NOT qInfo) so the in-app LogBuffer keeps the line even
+    // when the operator has NOT enabled verbose logging -- a field
+    // report of "rebuilds every launch" needs these with zero setup.
+    qWarning("%s", qPrintable(line));
+    emit logLine(line);
+
+    // Also mirror to a dedicated wisdom.log right next to the cache dir,
+    // so the one file a user sends is self-contained.  Appended across
+    // launches (each line timestamped) so the every-launch pattern is
+    // visible in one file.  Best-effort: never throws, never blocks the
+    // caller on failure.  Capped so it can't grow unbounded.
+    const QString dir  = wisdomDir();
+    QDir().mkpath(dir);
+    const QString path = QDir(dir).filePath(QStringLiteral("wisdom.log"));
+    QFile f(path);
+    const QIODevice::OpenMode mode =
+        (QFileInfo(path).size() > 256 * 1024)
+            ? (QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)
+            : (QIODevice::WriteOnly | QIODevice::Append   | QIODevice::Text);
+    if (f.open(mode)) {
+        QTextStream ts(&f);
+        ts << QDateTime::currentDateTime().toString(Qt::ISODate)
+           << QStringLiteral("  ") << line << '\n';
+    }
 }
 
 bool WdspNative::resolveSymbols() {
@@ -399,12 +428,12 @@ int WdspNative::runWisdomBuilderEntryPoint(const QString &targetDir) {
 
 bool WdspNative::ensureWisdom() {
     if (!isLoaded()) {
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: cannot ensure — DLL not loaded"));
         return false;
     }
     if (!api_.WDSPwisdom) {
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: cannot ensure — WDSPwisdom symbol "
             "not resolved"));
         return false;
@@ -422,7 +451,7 @@ bool WdspNative::ensureWisdom() {
     // subprocess too.  For now keep it in-process for simplicity
     // + bench-visibility.
     if (wisdomFileExists(dir)) {
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: loading cached plans from %1").arg(dir));
         QElapsedTimer t; t.start();
         QString dirArg = dir;
@@ -440,12 +469,12 @@ bool WdspNative::ensureWisdom() {
             // multi-minute stall the fast path is NOT meant to incur;
             // log it so a "rebuilds every launch" report on an existing
             // file is unambiguous rather than looking like a normal load.
-            emitLog(QStringLiteral(
+            logWisdom(QStringLiteral(
                 "[wdsp] wisdom: cached file at %1 was REJECTED by FFTW "
                 "and re-planned in-process in %2 ms -- the cache is "
                 "stale/incompatible").arg(dir).arg(t.elapsed()));
         } else {
-            emitLog(QStringLiteral(
+            logWisdom(QStringLiteral(
                 "[wdsp] wisdom: loaded cached plans in %1 ms (rc=%2)")
                 .arg(t.elapsed()).arg(rc));
         }
@@ -453,11 +482,11 @@ bool WdspNative::ensureWisdom() {
     }
 
     // ---- Slow path: no cache, spawn the subprocess builder. ----
-    emitLog(QStringLiteral(
+    logWisdom(QStringLiteral(
         "[wdsp] wisdom: building (one-time, may take several "
         "minutes; a 'please wait' notice shows and Lyra stays "
         "responsive)"));
-    emitLog(QStringLiteral(
+    logWisdom(QStringLiteral(
         "[wdsp] wisdom: target dir = %1").arg(dir));
 
     const QString exe = QCoreApplication::applicationFilePath();
@@ -470,7 +499,7 @@ bool WdspNative::ensureWisdom() {
     QElapsedTimer t; t.start();
     builder.start(exe, args);
     if (!builder.waitForStarted(5000)) {
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: BUILD FAILED — could not spawn "
             "subprocess: %1").arg(builder.errorString()));
         return false;
@@ -533,24 +562,27 @@ bool WdspNative::ensureWisdom() {
     if (builder.state() != QProcess::NotRunning) {
         builder.kill();
         builder.waitForFinished(2000);
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: BUILD TIMEOUT after %1 min")
             .arg(kBuildTimeoutMs / 60000));
         return false;
     }
     if (!finishedOk) {
-        emitLog(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — subprocess exit %1")
+        logWisdom(QStringLiteral(
+            "[wdsp] wisdom: BUILD FAILED — subprocess exit %1 "
+            "(a crash/kill code -- e.g. antivirus terminating the "
+            "build child -- differs from a clean exit 1)")
             .arg(builder.exitCode()));
         return false;
     }
     if (!wisdomFileExists(dir)) {
-        emitLog(QStringLiteral(
+        logWisdom(QStringLiteral(
             "[wdsp] wisdom: BUILD FAILED — subprocess succeeded "
-            "but no wisdom file appeared at %1").arg(dir));
+            "but no wisdom file appeared at %1 (write blocked / "
+            "permissions / antivirus?)").arg(dir));
         return false;
     }
-    emitLog(QStringLiteral(
+    logWisdom(QStringLiteral(
         "[wdsp] wisdom: built in %1 s").arg(t.elapsed() / 1000));
 
     // Now do the in-process import of the freshly-built cache so
@@ -562,7 +594,7 @@ bool WdspNative::ensureWisdom() {
     QByteArray dirBytes =
         QDir::toNativeSeparators(dirArg).toLocal8Bit();
     const int rc = api_.WDSPwisdom(dirBytes.data());
-    emitLog(QStringLiteral(
+    logWisdom(QStringLiteral(
         "[wdsp] wisdom: loaded freshly-built cache from %1 "
         "(rc=%2, expected 0=import)").arg(dir).arg(rc));
     return true;
