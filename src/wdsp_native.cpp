@@ -431,9 +431,24 @@ bool WdspNative::ensureWisdom() {
         }
         QByteArray dirBytes = QDir::toNativeSeparators(dirArg)
                               .toLocal8Bit();
-        api_.WDSPwisdom(dirBytes.data());
-        emitLog(QStringLiteral(
-            "[wdsp] wisdom: loaded in %1 ms").arg(t.elapsed()));
+        const int rc = api_.WDSPwisdom(dirBytes.data());
+        if (rc == 1) {
+            // WDSPwisdom returns 1 ONLY when it rebuilt the plans --
+            // i.e. the cached file was present but REJECTED by FFTW
+            // (stale after a wdsp.dll/FFTW bump, wrong-CPU, or corrupt)
+            // and silently re-planned IN-PROCESS.  That is the
+            // multi-minute stall the fast path is NOT meant to incur;
+            // log it so a "rebuilds every launch" report on an existing
+            // file is unambiguous rather than looking like a normal load.
+            emitLog(QStringLiteral(
+                "[wdsp] wisdom: cached file at %1 was REJECTED by FFTW "
+                "and re-planned in-process in %2 ms -- the cache is "
+                "stale/incompatible").arg(dir).arg(t.elapsed()));
+        } else {
+            emitLog(QStringLiteral(
+                "[wdsp] wisdom: loaded cached plans in %1 ms (rc=%2)")
+                .arg(t.elapsed()).arg(rc));
+        }
         return true;
     }
 
@@ -546,8 +561,10 @@ bool WdspNative::ensureWisdom() {
     }
     QByteArray dirBytes =
         QDir::toNativeSeparators(dirArg).toLocal8Bit();
-    api_.WDSPwisdom(dirBytes.data());
-    emitLog(QStringLiteral("[wdsp] wisdom: loaded from %1").arg(dir));
+    const int rc = api_.WDSPwisdom(dirBytes.data());
+    emitLog(QStringLiteral(
+        "[wdsp] wisdom: loaded freshly-built cache from %1 "
+        "(rc=%2, expected 0=import)").arg(dir).arg(rc));
     return true;
 }
 
