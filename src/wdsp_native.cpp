@@ -11,6 +11,10 @@
 #endif
 #include <windows.h>
 
+#include <atomic>
+#include <cstdio>
+#include <thread>
+
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -390,41 +394,108 @@ bool WdspNative::deleteWisdom() {
     return QFile::remove(path);
 }
 
-int WdspNative::runWisdomBuilderEntryPoint(const QString &targetDir) {
-    // Subprocess entry point.  Parent process spawned us with:
+int WdspNative::runWisdomCall(const QString &callDir) {
+    // Call api_.WDSPwisdom(<callDir>/) on a BACKGROUND thread while the
+    // GUI stays responsive.  WDSPwisdom imports an existing cache in
+    // <100 ms (returns 0), or -- when the file is missing or REJECTED by
+    // FFTW -- runs a multi-minute FFTW_PATIENT search + writes the file
+    // (returns 1).  On that rebuild branch WDSP internally does
+    // AllocConsole() + freopen(CONOUT$) + FreeConsole(); on our windowed
+    // (WIN32_EXECUTABLE) build that would pop a visible console window
+    // and leave CRT stdout dangling.  We tame it: pre-own a HIDDEN
+    // console so WDSP's AllocConsole no-ops and its output goes nowhere
+    // visible, then restore stdout/stderr afterward.  This is the
+    // Thetis in-process model (radio.cs:135 calls WDSPwisdom directly);
+    // building on a worker + a modal-if-slow keeps the UI responsive,
+    // which the reference does not, and -- crucially -- there is NO
+    // self-spawned child (the old `lyra.exe --build-wisdom` pattern trips
+    // antivirus SONAR: an unsigned exe launching a copy of itself).
     //
-    //   lyra.exe --build-wisdom <targetDir>
-    //
-    // We need wdsp.dll loaded + the WDSPwisdom symbol resolved
-    // before we can call it.  Reuse our normal load() path — it
-    // walks the same _native/ folder + resolves all 9 symbols.
-    // On success we call WDSPwisdom(<targetDir>) which does the
-    // multi-minute FFTW_PATIENT search inside WDSP, writes
-    // wdspWisdom00 in the target dir, then returns.
-    //
-    // AllocConsole + FreeConsole inside WDSPwisdom won't bite us
-    // here — we redirect stdio to nullDevice() in the parent's
-    // QProcess setup, and we don't read any output from this
-    // process.  Stdout corruption is irrelevant.
-    if (!load()) {
-        return 1;   // DLL couldn't be loaded
-    }
-    if (!api_.WDSPwisdom) {
-        return 1;   // unexpected — load() already validated this
-    }
-    QDir().mkpath(targetDir);
-    // WDSP appends "wdspWisdom00" to the dir string with strcat,
-    // so the dir argument MUST end in a path separator.  Use
-    // native separators + ANSI codepage for filesystem APIs.
-    QString dirArg = targetDir;
+    // Returns the WDSPwisdom return code (0=import, 1=rebuilt).
+    QString dirArg = callDir;
     if (!dirArg.endsWith(QLatin1Char('/')) &&
         !dirArg.endsWith(QLatin1Char('\\'))) {
         dirArg += QLatin1Char('/');
     }
-    QByteArray dirBytes =
+    const QByteArray dirBytes =
         QDir::toNativeSeparators(dirArg).toLocal8Bit();
-    api_.WDSPwisdom(dirBytes.data());
-    return 0;
+
+    std::atomic<int>  rc{0};
+    std::atomic<bool> done{false};
+    std::thread worker([this, dirBytes, &rc, &done]() {
+        // Tame WDSP's console ONLY if we don't already own one (a dev
+        // console build must keep its own console).  Import-only calls
+        // never touch the console, so this whole block is a no-op on the
+        // fast path -- it bites only when WDSP actually rebuilds.
+        const bool weOwnConsole = (::GetConsoleWindow() == nullptr);
+        if (weOwnConsole && ::AllocConsole()) {
+            if (HWND cw = ::GetConsoleWindow())
+                ::ShowWindow(cw, SW_HIDE);
+        }
+        rc.store(api_.WDSPwisdom(
+            const_cast<char *>(dirBytes.constData())));
+        if (weOwnConsole) {
+            // WDSP already called FreeConsole on its rebuild branch;
+            // make sure nothing lingers and restore stdout/stderr (WDSP's
+            // freopen(CONOUT$) left them on a now-dead console handle).
+            // Lyra logs via Qt, not CRT stdout, so this is defensive but
+            // keeps the CRT sane for anything that might touch it.
+            if (::GetConsoleWindow()) ::FreeConsole();
+            FILE *f = nullptr;
+            ::freopen_s(&f, "NUL", "w", stdout);
+            ::freopen_s(&f, "NUL", "w", stderr);
+        }
+        done.store(true);
+    });
+
+    // Main thread: pump events; show a modal notice ONLY if the call
+    // runs longer than the threshold (a rebuild), never for a fast
+    // import.  No hard timeout -- an in-process worker can't be safely
+    // killed, and a genuine FFTW hang would wedge either way; the UI
+    // stays responsive so the operator can always quit.
+    QEventLoop loop;
+    QTimer poll;
+    poll.setInterval(50);
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&]() {
+        if (done.load()) loop.quit();
+    });
+    poll.start();
+
+    QDialog *dlg = nullptr;
+    QTimer modalTimer;
+    modalTimer.setSingleShot(true);
+    QObject::connect(&modalTimer, &QTimer::timeout, &loop, [&]() {
+        if (done.load() || dlg) return;
+        if (!qobject_cast<QApplication *>(QCoreApplication::instance()))
+            return;
+        dlg = new QDialog(nullptr, Qt::Dialog | Qt::CustomizeWindowHint |
+                                       Qt::WindowTitleHint);
+        dlg->setWindowTitle(
+            QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
+        dlg->setModal(true);
+        auto *v = new QVBoxLayout(dlg);
+        auto *note = new QLabel(QCoreApplication::translate("wdsp",
+            "<b>Optimizing FFT plans — one-time setup.</b><br><br>"
+            "This runs only once and can take several minutes — up to "
+            "about 10 on some PCs.  Please let it finish, and avoid "
+            "launching other heavy programs while it computes.<br><br>"
+            "Lyra opens automatically when it is done — "
+            "<b>do not close anything.</b>"));
+        note->setWordWrap(true);
+        v->addWidget(note);
+        auto *bar = new QProgressBar(dlg);
+        bar->setRange(0, 0);   // indeterminate "busy" animation
+        v->addWidget(bar);
+        dlg->setMinimumWidth(460);
+        dlg->show();
+    });
+    modalTimer.start(500);   // show the notice only if the call is slow
+
+    loop.exec();             // responsive; quits when the worker finishes
+
+    if (dlg) { dlg->close(); dlg->deleteLater(); }
+    worker.join();
+    return rc.load();
 }
 
 bool WdspNative::ensureWisdom() {
@@ -443,33 +514,26 @@ bool WdspNative::ensureWisdom() {
     const QString dir = wisdomDir();
     QDir().mkpath(dir);
 
-    // ---- Fast path: cache exists, import in-process. ----
-    // We're a console build right now (CMakeLists.txt keeps
-    // WIN32_EXECUTABLE OFF for the diagnostic build), and an
-    // import-only WDSPwisdom call is sub-100ms anyway, so any
-    // AllocConsole stdout hijack is brief + harmless.  When we
-    // flip to a --windowed binary, we'll route this through the
-    // subprocess too.  For now keep it in-process for simplicity
-    // + bench-visibility.
+    // ---- Fast path: cache exists -> import in place. ----
+    // Runs through runWisdomCall (worker thread + console taming) so
+    // that even if the cached file is REJECTED by FFTW and WDSP silently
+    // re-plans, it neither pops a console window nor freezes the GUI
+    // thread; the 'please wait' notice appears only if that rebuild
+    // actually happens (a clean import is sub-100 ms).
     if (wisdomFileExists(dir)) {
         logWisdom(QStringLiteral(
             "[wdsp] wisdom: loading cached plans from %1").arg(dir));
         QElapsedTimer t; t.start();
-        QString dirArg = dir;
-        if (!dirArg.endsWith(QLatin1Char('/'))) {
-            dirArg += QLatin1Char('/');
-        }
-        QByteArray dirBytes = QDir::toNativeSeparators(dirArg)
-                              .toLocal8Bit();
-        const int rc = api_.WDSPwisdom(dirBytes.data());
+        const int rc = runWisdomCall(dir);
         if (rc == 1) {
             // WDSPwisdom returns 1 ONLY when it rebuilt the plans --
             // i.e. the cached file was present but REJECTED by FFTW
             // (stale after a wdsp.dll/FFTW bump, wrong-CPU, or corrupt)
-            // and silently re-planned IN-PROCESS.  That is the
-            // multi-minute stall the fast path is NOT meant to incur;
-            // log it so a "rebuilds every launch" report on an existing
-            // file is unambiguous rather than looking like a normal load.
+            // and silently re-planned IN-PROCESS.  Should be rare (the
+            // atomic publish means a truncated file can't linger); log it
+            // so a "rebuilds every launch" report on an existing file is
+            // unambiguous rather than looking like a normal load.  WDSP
+            // re-exports the file itself on this branch, so it self-heals.
             logWisdom(QStringLiteral(
                 "[wdsp] wisdom: cached file at %1 was REJECTED by FFTW "
                 "and re-planned in-process in %2 ms -- the cache is "
@@ -482,7 +546,7 @@ bool WdspNative::ensureWisdom() {
         return true;
     }
 
-    // ---- Slow path: no cache, spawn the subprocess builder. ----
+    // ---- Slow path: no cache -> build in-process, then publish. ----
     logWisdom(QStringLiteral(
         "[wdsp] wisdom: building (one-time, may take several "
         "minutes; a 'please wait' notice shows and Lyra stays "
@@ -507,109 +571,33 @@ bool WdspNative::ensureWisdom() {
     }
     const QString buildDir = buildTmp.path();
 
-    const QString exe = QCoreApplication::applicationFilePath();
-    QProcess builder;
-    builder.setStandardOutputFile(QProcess::nullDevice());
-    builder.setStandardErrorFile(QProcess::nullDevice());
-    QStringList args;
-    args << QStringLiteral("--build-wisdom") << buildDir;
-
     QElapsedTimer t; t.start();
-    builder.start(exe, args);
-    if (!builder.waitForStarted(5000)) {
-        logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — could not spawn "
-            "subprocess: %1").arg(builder.errorString()));
-        return false;
-    }
-    // Wait for the child WITHOUT blocking the Qt main thread.  A blocking
-    // waitForFinished() here freezes the whole UI ("Not Responding") for the
-    // multi-minute FFTW_PATIENT run — Windows then offers to kill Lyra, and an
-    // operator seeing a hung window + a stray console box tends to force-close
-    // it, which aborts the build before the wisdom file is written, so it
-    // rebuilds on EVERY launch.  Instead: show a modal "please wait" notice
-    // and pump a local event loop (the idiomatic Qt async-QProcess pattern) so
-    // the app stays responsive and the operator gets clear guidance.  30-min
-    // hard cap for very slow CPUs (a stuck child still can't deadlock launch).
-    constexpr int kBuildTimeoutMs = 30 * 60 * 1000;
+    // Build the plans IN-PROCESS on a worker thread (no self-spawned
+    // child -- that pattern trips antivirus SONAR: an unsigned exe
+    // launching a copy of itself).  WDSPwisdom writes wdspWisdom00 into
+    // buildDir AND leaves the freshly-planned wisdom live in FFTW's
+    // process-global state, so once this returns the running process is
+    // ready -- NO separate re-import needed (unlike the old subprocess
+    // path, where the build happened in a child).  runWisdomCall keeps
+    // the GUI responsive + tames WDSP's AllocConsole.
+    const int rc = runWisdomCall(buildDir);
 
-    QDialog *dlg = nullptr;
-    if (qobject_cast<QApplication *>(QCoreApplication::instance())) {
-        dlg = new QDialog(nullptr, Qt::Dialog | Qt::CustomizeWindowHint |
-                                       Qt::WindowTitleHint);
-        dlg->setWindowTitle(
-            QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
-        dlg->setModal(true);
-        auto *v = new QVBoxLayout(dlg);
-        auto *note = new QLabel(QCoreApplication::translate("wdsp",
-            "<b>Optimizing FFT plans — one-time setup.</b><br><br>"
-            "This runs only once and can take several minutes — up to about "
-            "10 on some PCs.  Please let it finish, and avoid launching other "
-            "heavy programs while it computes.<br><br>"
-            "A small console window may appear; that is normal.  Lyra opens "
-            "automatically when it is done — <b>do not close anything.</b>"));
-        note->setWordWrap(true);
-        v->addWidget(note);
-        auto *bar = new QProgressBar(dlg);
-        bar->setRange(0, 0);   // indeterminate "busy" animation
-        v->addWidget(bar);
-        dlg->setMinimumWidth(460);
-        dlg->show();
-    }
-
-    QEventLoop loop;
-    bool finishedOk = false;
-    QObject::connect(
-        &builder,
-        QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-        &loop, [&](int code, QProcess::ExitStatus st) {
-            finishedOk = (st == QProcess::NormalExit && code == 0);
-            loop.quit();
-        });
-    QTimer capTimer;
-    capTimer.setSingleShot(true);
-    QObject::connect(&capTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    capTimer.start(kBuildTimeoutMs);
-    loop.exec();   // stays responsive; quits on child-finished or the cap
-
-    if (dlg) {
-        dlg->close();
-        dlg->deleteLater();
-    }
-
-    if (builder.state() != QProcess::NotRunning) {
-        builder.kill();
-        builder.waitForFinished(2000);
-        logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD TIMEOUT after %1 min")
-            .arg(kBuildTimeoutMs / 60000));
-        return false;
-    }
-    if (!finishedOk) {
-        logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — subprocess exit %1 "
-            "(a crash/kill code -- e.g. antivirus terminating the "
-            "build child -- differs from a clean exit 1)")
-            .arg(builder.exitCode()));
-        return false;
-    }
-    // The child wrote (or should have) into the temp build dir.  Verify
-    // it exists + is non-empty BEFORE publishing.
+    // Verify the built file exists + is non-empty BEFORE publishing.
     const QString builtFile =
         QDir(buildDir).filePath(QString::fromLatin1(kWisdomFilename));
     const QFileInfo builtInfo(builtFile);
     if (!builtInfo.exists() || builtInfo.size() == 0) {
         logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — subprocess succeeded but no "
-            "usable wisdom file in the temp build dir %1 (write blocked / "
-            "permissions / antivirus?)").arg(buildDir));
+            "[wdsp] wisdom: BUILD FAILED — no usable wisdom file in the "
+            "temp build dir %1 after WDSPwisdom (rc=%2) -- write blocked / "
+            "permissions?").arg(buildDir).arg(rc));
         return false;
     }
-    // Atomic publish: rename temp -> final (same volume).  MOVEFILE_
-    // WRITE_THROUGH flushes to disk before returning; REPLACE_EXISTING
-    // overwrites a stale cache.  On failure, log the EXACT Win32 error
-    // (e.g. 'Access is denied' = a folder shield / antivirus block --
-    // the disambiguator between 'child killed' and 'write blocked').
+    // Atomic publish for the NEXT launch's fast import: rename temp ->
+    // final (same volume).  MOVEFILE_WRITE_THROUGH flushes to disk before
+    // returning; REPLACE_EXISTING overwrites a stale cache.  On failure,
+    // log the EXACT Win32 error (e.g. 'Access is denied' = a folder
+    // shield / antivirus write block).
     const QString finalFile = wisdomFilePath();
     const std::wstring srcW =
         QDir::toNativeSeparators(builtFile).toStdWString();
@@ -624,21 +612,9 @@ bool WdspNative::ensureWisdom() {
         return false;
     }
     logWisdom(QStringLiteral(
-        "[wdsp] wisdom: built in %1 s and published %2 bytes to %3")
-        .arg(t.elapsed() / 1000).arg(builtInfo.size()).arg(finalFile));
-
-    // Now do the in-process import of the freshly-built cache so
-    // the rest of this process sees the plans.
-    QString dirArg = dir;
-    if (!dirArg.endsWith(QLatin1Char('/'))) {
-        dirArg += QLatin1Char('/');
-    }
-    QByteArray dirBytes =
-        QDir::toNativeSeparators(dirArg).toLocal8Bit();
-    const int rc = api_.WDSPwisdom(dirBytes.data());
-    logWisdom(QStringLiteral(
-        "[wdsp] wisdom: loaded freshly-built cache from %1 "
-        "(rc=%2, expected 0=import)").arg(dir).arg(rc));
+        "[wdsp] wisdom: built in %1 s (rc=%2) and published %3 bytes "
+        "to %4").arg(t.elapsed() / 1000).arg(rc)
+        .arg(builtInfo.size()).arg(finalFile));
     return true;
 }
 

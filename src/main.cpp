@@ -128,27 +128,14 @@ std::atomic<bool> g_shutdown_complete{false};
 
 int main(int argc, char *argv[])
 {
-    // ---- Subprocess entry point (Step 3c-i) ----
-    // When invoked as `lyra.exe --build-wisdom <dir>` we are a
-    // SHORT-LIVED CHILD spawned by the main Lyra process to build
-    // the FFTW wisdom file out-of-process.  AllocConsole inside
-    // WDSPwisdom would corrupt the parent's stdout if we ran in
-    // the parent process; this subprocess isolates the damage.
-    //
-    // Must be FIRST in main() — before QGuiApplication, before
-    // any Qt RHI or networking init.  We're a console-only mode
-    // here: no window, no QML, no event loop.  Just LoadLibrary,
-    // call WDSPwisdom, exit.
-    if (argc == 3 && std::string_view(argv[1]) == "--build-wisdom") {
-        // QCoreApplication needed for QStandardPaths + QString
-        // I/O.  No event loop, no GUI.
-        QCoreApplication app(argc, argv);
-        app.setApplicationName(QStringLiteral("Lyra-cpp"));
-        app.setOrganizationName(QStringLiteral("N8SDR"));
-        lyra::dsp::WdspNative builder;
-        return builder.runWisdomBuilderEntryPoint(
-            QString::fromLocal8Bit(argv[2]));
-    }
+    // NOTE: the FFTW wisdom build used to run here as a self-spawned
+    // `lyra.exe --build-wisdom <dir>` child (to isolate WDSPwisdom's
+    // AllocConsole from the parent's stdout).  That was removed: an
+    // unsigned exe launching a copy of itself trips antivirus SONAR
+    // heuristics, which killed the build child on some machines so the
+    // wisdom file never persisted and Lyra re-optimized on every launch.
+    // The build now runs IN-PROCESS on a worker thread with the console
+    // tamed -- see WdspNative::runWisdomCall (the Thetis model).
 
 #ifdef _WIN32
     // Explicit WSAStartup before any native socket use (HL2Stream

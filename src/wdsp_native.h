@@ -538,27 +538,20 @@ public:
     //       api().WDSPwisdom(<dir>) IN-PROCESS — fast import,
     //       <100 ms typical;
     //
-    //   (c) if it does not, spawning `lyra.exe --build-wisdom <dir>`
-    //       as a SUBPROCESS — the subprocess does the multi-minute
-    //       FFTW_PATIENT search and writes the file, then exits;
-    //       the main process waits + then loads the cached result.
-    //       Subprocess isolation is mandatory because WDSPwisdom()
-    //       internally calls AllocConsole() + FreeConsole() which
-    //       hijacks stdout when run in a `--windowed` Qt app
-    //       (operator-bench-verified bite in the Python tree,
-    //       CLAUDE.md §15.26 commit f936b2e).
+    //   (c) if it does not, building IN-PROCESS on a worker thread
+    //       (the Thetis model, radio.cs:135) into a temp dir, then
+    //       atomically publishing the result — NO self-spawned child
+    //       (the old `lyra.exe --build-wisdom` pattern tripped
+    //       antivirus SONAR: an unsigned exe launching a copy of
+    //       itself).  WDSPwisdom()'s internal AllocConsole() is tamed
+    //       (pre-owned hidden console + stdout restore) so nothing
+    //       pops up on the `--windowed` build; a modal 'please wait'
+    //       notice shows only if the build is actually slow.  See
+    //       runWisdomCall().
     //
     // Returns true on success.  Status messages stream through
-    // emitLog() (console + QML log panel).
+    // logWisdom() (lyra-log.txt + a dedicated wisdom.log).
     bool ensureWisdom();
-
-    // Invoked by main.cpp when argv[1] == "--build-wisdom".  Runs
-    // ONLY the wisdom build in this process, then exits with code
-    // 0 (built ok) / 1 (no DLL) / 2 (no dir).  The parent process
-    // launched us with stdio piped to DEVNULL; AllocConsole's
-    // hijack is harmless because we never produce any output that
-    // anyone reads.
-    int runWisdomBuilderEntryPoint(const QString &targetDir);
 
     // Returns the path Lyra C++ uses for the wisdom cache.  Public
     // so test code / future Settings UI can read it.
@@ -591,6 +584,13 @@ private:
     // -- so a field "rebuilds every launch" report is self-diagnosing
     // with zero setup.
     void logWisdom(const QString &line);
+
+    // Run api_.WDSPwisdom(<callDir>/) on a worker thread (the Thetis
+    // in-process model) with WDSP's AllocConsole tamed + a modal-if-slow
+    // notice, keeping the GUI responsive.  Returns WDSPwisdom's code
+    // (0=import, 1=rebuilt).  Used by ensureWisdom() for both the cache
+    // import (fast path) and the from-scratch build.
+    int runWisdomCall(const QString &callDir);
 
     // We deliberately keep this as a `void*` so the header doesn't
     // drag windows.h through every translation unit that includes
