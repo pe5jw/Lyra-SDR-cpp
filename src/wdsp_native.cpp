@@ -394,7 +394,8 @@ bool WdspNative::deleteWisdom() {
     return QFile::remove(path);
 }
 
-int WdspNative::runWisdomCall(const QString &callDir) {
+int WdspNative::runWisdomCall(const QString &callDir,
+                              bool showModalImmediately) {
     // Call api_.WDSPwisdom(<callDir>/) on a BACKGROUND thread while the
     // GUI stays responsive.  WDSPwisdom imports an existing cache in
     // <100 ms (returns 0), or -- when the file is missing or REJECTED by
@@ -462,9 +463,7 @@ int WdspNative::runWisdomCall(const QString &callDir) {
     poll.start();
 
     QDialog *dlg = nullptr;
-    QTimer modalTimer;
-    modalTimer.setSingleShot(true);
-    QObject::connect(&modalTimer, &QTimer::timeout, &loop, [&]() {
+    auto showDialog = [&]() {
         if (done.load() || dlg) return;
         if (!qobject_cast<QApplication *>(QCoreApplication::instance()))
             return;
@@ -479,8 +478,8 @@ int WdspNative::runWisdomCall(const QString &callDir) {
             "This runs only once and can take several minutes — up to "
             "about 10 on some PCs.  Please let it finish, and avoid "
             "launching other heavy programs while it computes.<br><br>"
-            "Lyra opens automatically when it is done — "
-            "<b>do not close anything.</b>"));
+            "Lyra is <b>not ready yet</b> — it opens automatically when "
+            "this is done.  <b>Do not close anything.</b>"));
         note->setWordWrap(true);
         v->addWidget(note);
         auto *bar = new QProgressBar(dlg);
@@ -488,8 +487,22 @@ int WdspNative::runWisdomCall(const QString &callDir) {
         v->addWidget(bar);
         dlg->setMinimumWidth(460);
         dlg->show();
-    });
-    modalTimer.start(500);   // show the notice only if the call is slow
+        dlg->raise();
+        dlg->activateWindow();
+    };
+
+    QTimer modalTimer;
+    modalTimer.setSingleShot(true);
+    QObject::connect(&modalTimer, &QTimer::timeout, &loop,
+                     [&]() { showDialog(); });
+    if (showModalImmediately) {
+        // Known build: the caller has deferred the main window, so show
+        // the notice at once -- there is no ready-looking Lyra to sit
+        // behind, and no gap where the screen is blank.
+        showDialog();
+    } else {
+        modalTimer.start(500);   // import: notice only if it unexpectedly rebuilds
+    }
 
     loop.exec();             // responsive; quits when the worker finishes
 
@@ -579,8 +592,10 @@ bool WdspNative::ensureWisdom() {
     // process-global state, so once this returns the running process is
     // ready -- NO separate re-import needed (unlike the old subprocess
     // path, where the build happened in a child).  runWisdomCall keeps
-    // the GUI responsive + tames WDSP's AllocConsole.
-    const int rc = runWisdomCall(buildDir);
+    // the GUI responsive + tames WDSP's AllocConsole.  Show the modal
+    // immediately: the caller (main.cpp) has deferred the main window for
+    // this build, so there is nothing to sit behind and no blank gap.
+    const int rc = runWisdomCall(buildDir, /*showModalImmediately=*/true);
 
     // Verify the built file exists + is non-empty BEFORE publishing.
     const QString builtFile =

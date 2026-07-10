@@ -1071,7 +1071,17 @@ int main(int argc, char *argv[])
     auto *win = new lyra::ui::MainWindow(discovery, stream, wdsp,
                                          wdspEngine, prefs, wx, profiles);
     winRef = win;   // populate the aboutToQuit teardown handler's reference
-    win->show();
+    // Defer showing the main window when a one-time FFTW-wisdom BUILD is
+    // pending (the build runs in-process below, behind a modal 'please
+    // wait').  We must NOT present a fully-rendered, ready-looking Lyra
+    // behind that modal: a user treats it as usable, starts operating or
+    // force-quits, and aborts the build -- which then re-optimizes on the
+    // next launch, the exact loop this change fixes.  When wisdom already
+    // exists (the normal case) show now; otherwise the singleShot below
+    // reveals the window once the build finishes.
+    const bool wisdomReady = lyra::dsp::WdspNative::wisdomExists();
+    if (wisdomReady)
+        win->show();
 
     // Crash-safe graphics fallback (see the RHI block near the top of main):
     // we survived UI construction — clear the "startup pending" sentinel a
@@ -1154,7 +1164,7 @@ int main(int argc, char *argv[])
     // Posting to the event loop means every [wdsp] line lands in the
     // Log panel exactly like [disc]/[strm].
     QTimer::singleShot(0, &app, [wdsp, wdspEngine, stream, prefs, win,
-                                  &micSource, &xmtrCreated]() {
+                                  wisdomReady, &micSource, &xmtrCreated]() {
         if (wdsp->load()) {
             // P0.a (2026-06-09) — resolve the ChannelMaster-port WDSP
             // call table from the now-loaded wdsp.dll.  MUST run after
@@ -1185,6 +1195,16 @@ int main(int argc, char *argv[])
             // child process, so the parent doesn't run FFTW_PATIENT
             // in-process).
             wdsp->ensureWisdom();
+
+            // The one-time wisdom build (if any) is done -- reveal the
+            // main window we deferred so the user never saw a ready-
+            // looking Lyra behind the 'please wait' modal.  No-op when
+            // wisdom already existed (window shown at construction).
+            if (!wisdomReady) {
+                win->show();
+                win->raise();
+                win->activateWindow();
+            }
 
             // Step 3c-ii: with the DLL loaded + wisdom in place, open
             // RX1 as a live WDSP channel.  Channel-lifecycle proof
@@ -1712,6 +1732,15 @@ int main(int argc, char *argv[])
             // (e.g. the radio's DHCP lease changed) leaving the window
             // stuck "Connecting…" to a dead host on launch.
             win->beginConnect(lastIp);
+        }
+
+        // Safety net: if the window was deferred for a wisdom build but
+        // the DLL failed to load (so ensureWisdom never ran and never
+        // revealed it), reveal it here so the app is still visible/usable.
+        if (!wisdomReady && !win->isVisible()) {
+            win->show();
+            win->raise();
+            win->activateWindow();
         }
     });
 

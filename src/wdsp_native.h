@@ -586,11 +586,14 @@ private:
     void logWisdom(const QString &line);
 
     // Run api_.WDSPwisdom(<callDir>/) on a worker thread (the Thetis
-    // in-process model) with WDSP's AllocConsole tamed + a modal-if-slow
-    // notice, keeping the GUI responsive.  Returns WDSPwisdom's code
-    // (0=import, 1=rebuilt).  Used by ensureWisdom() for both the cache
-    // import (fast path) and the from-scratch build.
-    int runWisdomCall(const QString &callDir);
+    // in-process model) with WDSP's AllocConsole tamed, keeping the GUI
+    // responsive.  Returns WDSPwisdom's code (0=import, 1=rebuilt).  Used
+    // by ensureWisdom() for both the cache import (fast path) and the
+    // from-scratch build.  showModalImmediately: true for a known build
+    // (the 'please wait' notice appears at once, since the caller has
+    // deferred the main window); false for the import (notice appears
+    // only if it unexpectedly rebuilds a rejected cache).
+    int runWisdomCall(const QString &callDir, bool showModalImmediately = false);
 
     // We deliberately keep this as a `void*` so the header doesn't
     // drag windows.h through every translation unit that includes
