@@ -325,6 +325,15 @@ sessions (and survive a lock + restart). To move a layout to another PC
 or keep a backup, see
 [Backing up & sharing your settings](#backing-up--sharing-your-settings).
 
+**Share a layout with someone.** **Settings → Backup & Restore → Share a
+layout** has **Export layout…** / **Import layout…** buttons that save just
+your panel arrangement to a small **`.lyralayout`** file. Post that file
+(and a screenshot) on Discord or email it, and the other person imports it
+in one click — their panels rearrange to match. Only the *arrangement*
+travels: no settings, no radio address, and no window size, so a shared
+layout drops cleanly onto any screen. (Importing applies it live; use
+**Save current layout to** a slot afterward if you want to keep it.)
+
 **Opening Settings:** **File → Settings…**, or press **Ctrl+,**.
 
 ---
