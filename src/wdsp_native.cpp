@@ -27,6 +27,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -489,12 +490,29 @@ bool WdspNative::ensureWisdom() {
     logWisdom(QStringLiteral(
         "[wdsp] wisdom: target dir = %1").arg(dir));
 
+    // Build into a private temp subdir on the SAME volume as the final
+    // cache, then atomically rename into place below -- so a killed or
+    // blocked build can never leave a truncated wdspWisdom00 that a later
+    // launch would feed to WDSP (which would silently drop into the
+    // in-process FFTW_PATIENT rebuild branch and freeze the GUI).
+    // "Present ⇒ valid."
+    QTemporaryDir buildTmp(
+        QDir(dir).filePath(QStringLiteral(".build-XXXXXX")));
+    buildTmp.setAutoRemove(true);
+    if (!buildTmp.isValid()) {
+        logWisdom(QStringLiteral(
+            "[wdsp] wisdom: BUILD FAILED — could not create temp build "
+            "dir under %1: %2").arg(dir, buildTmp.errorString()));
+        return false;
+    }
+    const QString buildDir = buildTmp.path();
+
     const QString exe = QCoreApplication::applicationFilePath();
     QProcess builder;
     builder.setStandardOutputFile(QProcess::nullDevice());
     builder.setStandardErrorFile(QProcess::nullDevice());
     QStringList args;
-    args << QStringLiteral("--build-wisdom") << dir;
+    args << QStringLiteral("--build-wisdom") << buildDir;
 
     QElapsedTimer t; t.start();
     builder.start(exe, args);
@@ -575,15 +593,39 @@ bool WdspNative::ensureWisdom() {
             .arg(builder.exitCode()));
         return false;
     }
-    if (!wisdomFileExists(dir)) {
+    // The child wrote (or should have) into the temp build dir.  Verify
+    // it exists + is non-empty BEFORE publishing.
+    const QString builtFile =
+        QDir(buildDir).filePath(QString::fromLatin1(kWisdomFilename));
+    const QFileInfo builtInfo(builtFile);
+    if (!builtInfo.exists() || builtInfo.size() == 0) {
         logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — subprocess succeeded "
-            "but no wisdom file appeared at %1 (write blocked / "
-            "permissions / antivirus?)").arg(dir));
+            "[wdsp] wisdom: BUILD FAILED — subprocess succeeded but no "
+            "usable wisdom file in the temp build dir %1 (write blocked / "
+            "permissions / antivirus?)").arg(buildDir));
+        return false;
+    }
+    // Atomic publish: rename temp -> final (same volume).  MOVEFILE_
+    // WRITE_THROUGH flushes to disk before returning; REPLACE_EXISTING
+    // overwrites a stale cache.  On failure, log the EXACT Win32 error
+    // (e.g. 'Access is denied' = a folder shield / antivirus block --
+    // the disambiguator between 'child killed' and 'write blocked').
+    const QString finalFile = wisdomFilePath();
+    const std::wstring srcW =
+        QDir::toNativeSeparators(builtFile).toStdWString();
+    const std::wstring dstW =
+        QDir::toNativeSeparators(finalFile).toStdWString();
+    if (!::MoveFileExW(srcW.c_str(), dstW.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD err = ::GetLastError();
+        logWisdom(QStringLiteral(
+            "[wdsp] wisdom: BUILD FAILED — could not publish %1 -> %2: %3")
+            .arg(builtFile, finalFile, winError(err)));
         return false;
     }
     logWisdom(QStringLiteral(
-        "[wdsp] wisdom: built in %1 s").arg(t.elapsed() / 1000));
+        "[wdsp] wisdom: built in %1 s and published %2 bytes to %3")
+        .arg(t.elapsed() / 1000).arg(builtInfo.size()).arg(finalFile));
 
     // Now do the in-process import of the freshly-built cache so
     // the rest of this process sees the plans.
