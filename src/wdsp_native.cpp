@@ -26,8 +26,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPen>
 #include <QProcess>
 #include <QProgressBar>
+#include <QRadialGradient>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -35,6 +39,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWidget>
 
 namespace lyra::dsp {
 
@@ -60,6 +65,86 @@ QString winError(DWORD code) {
         ? QStringLiteral("Win32 error %1").arg(code)
         : QStringLiteral("Win32 error %1: %2").arg(code).arg(descr);
 }
+
+// Little branded art for the one-time-setup splash: the Lyra
+// constellation (Vega + the parallelogram) with harp strings strung
+// between its sides -- Lyra IS the lyre.  A `twinkle` value (0..1),
+// driven a few times by a timer in the splash, pulses the star glow so
+// it "flashes a couple times" then settles.  Plain QWidget (no Q_OBJECT
+// / no moc): paintEvent is a virtual override, and the animation is
+// driven externally via setTwinkle().
+class LyraSplashArt : public QWidget {
+public:
+    explicit LyraSplashArt(QWidget *parent = nullptr) : QWidget(parent) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    void setTwinkle(qreal t) { twinkle_ = t; update(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal w = width(), h = height();
+        const qreal boxW = qMin<qreal>(w, 240.0);
+        const qreal ox = (w - boxW) * 0.5;
+        auto Pt = [&](qreal fx, qreal fy) {
+            return QPointF(ox + fx * boxW, fy * h);
+        };
+        // Lyra star field (y down): Vega on top, the classic parallelogram
+        // (epsilon / zeta / delta) + Sheliak (beta) & Sulafat (gamma).
+        const QPointF vega  = Pt(0.50, 0.14);
+        const QPointF eps   = Pt(0.66, 0.32);
+        const QPointF zeta  = Pt(0.40, 0.36);
+        const QPointF delta = Pt(0.68, 0.62);
+        const QPointF beta  = Pt(0.38, 0.82);
+        const QPointF gamma = Pt(0.66, 0.88);
+
+        const qreal tw = twinkle_;
+
+        // Faint constellation lines.
+        p.setPen(QPen(QColor(150, 175, 225, 70), 1.2));
+        p.drawLine(vega, eps);
+        p.drawLine(vega, zeta);
+        p.drawLine(zeta, delta);
+        p.drawLine(eps, delta);
+        p.drawLine(zeta, beta);
+        p.drawLine(delta, gamma);
+        p.drawLine(beta, gamma);
+
+        // Harp strings between the two sides -- shimmer with the twinkle.
+        QColor sc(228, 212, 168, int(90 + 90 * tw));
+        p.setPen(QPen(sc, 1.0));
+        for (int i = 1; i <= 4; ++i) {
+            const qreal f = i / 5.0;
+            p.drawLine(zeta + (eps - zeta) * f, beta + (gamma - beta) * f);
+        }
+
+        // Stars with a glow that pulses on twinkle.
+        auto star = [&](const QPointF &c, qreal r, const QColor &col) {
+            const qreal gr = r * (2.0 + 2.2 * tw);
+            QRadialGradient g(c, gr);
+            QColor glow = col; glow.setAlphaF(0.20 + 0.40 * tw);
+            g.setColorAt(0.0, glow);
+            QColor edge = col; edge.setAlpha(0);
+            g.setColorAt(1.0, edge);
+            p.setPen(Qt::NoPen);
+            p.setBrush(g);
+            p.drawEllipse(c, gr, gr);
+            p.setBrush(col);
+            p.drawEllipse(c, r, r);
+        };
+        const QColor starC(215, 230, 255);
+        star(vega, 3.6, QColor(185, 212, 255));   // Vega -- brightest
+        star(eps, 2.0, starC);
+        star(zeta, 2.0, starC);
+        star(delta, 2.2, starC);
+        star(beta, 2.4, starC);
+        star(gamma, 2.4, starC);
+    }
+
+private:
+    qreal twinkle_ = 0.0;
+};
 
 } // namespace
 
@@ -481,11 +566,17 @@ int WdspNative::runWisdomCall(const QString &callDir,
         dlg->setWindowTitle(
             QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
         dlg->setModal(true);
-        dlg->setMinimumSize(620, 300);
+        dlg->setMinimumSize(620, 380);
 
         auto *v = new QVBoxLayout(dlg);
-        v->setContentsMargins(30, 24, 30, 20);
-        v->setSpacing(14);
+        v->setContentsMargins(30, 22, 30, 20);
+        v->setSpacing(12);
+
+        // Branded art: the Lyra constellation + harp strings, flashed a
+        // few times by the twinkle timer below.
+        auto *art = new LyraSplashArt(dlg);
+        art->setFixedHeight(116);
+        v->addWidget(art);
 
         auto *title = new QLabel(QStringLiteral("Lyra"), dlg);
         title->setStyleSheet(QStringLiteral(
@@ -565,6 +656,26 @@ int WdspNative::runWisdomCall(const QString &callDir,
                              card->setText(cards.at(i));
                          });
         cycle->start();
+
+        // Flash the constellation / harp a few times, then settle to a
+        // gentle steady glow for the rest of the wait.
+        auto *twk = new QTimer(dlg);
+        twk->setInterval(33);   // ~30 fps
+        QObject::connect(twk, &QTimer::timeout, art,
+                         [art, twk, t = 0.0, dir = 1.0, flashes = 0]() mutable {
+                             t += dir * 0.06;
+                             if (t >= 1.0) { t = 1.0; dir = -1.0; }
+                             else if (t <= 0.0) {
+                                 t = 0.0; dir = 1.0;
+                                 if (++flashes >= 3) {
+                                     art->setTwinkle(0.4);   // steady rest glow
+                                     twk->stop();
+                                     return;
+                                 }
+                             }
+                             art->setTwinkle(t);
+                         });
+        twk->start();
 
         dlg->show();
         dlg->raise();
