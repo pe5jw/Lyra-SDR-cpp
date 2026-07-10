@@ -468,15 +468,13 @@ int WdspNative::runWisdomCall(const QString &callDir,
         if (!qobject_cast<QApplication *>(QCoreApplication::instance()))
             return;
 
-        // Real project links (GitHub matches the About dialog).  Discord:
-        // fill kDiscordUrl in when there is a permanent invite; the link is
-        // rendered only when it is set.
+        // Community / help links only -- deliberately NO donate prompt on
+        // a first-run setup screen (don't nag before the user has even
+        // seen Lyra).  GitHub matches the About dialog.
+        const QString kDiscordUrl =
+            QStringLiteral("https://discord.gg/BwjsQvjcSc");
         const QString kGithubUrl  =
             QStringLiteral("https://github.com/N8SDR1/Lyra-SDR-cpp");
-        const QString kDonateUrl  =
-            QStringLiteral("https://www.paypal.com/donate/"
-                           "?business=NP2ZQS4LR454L");
-        const QString kDiscordUrl = QString();   // TODO: permanent invite
 
         dlg = new QDialog(nullptr, Qt::Dialog | Qt::CustomizeWindowHint |
                                        Qt::WindowTitleHint);
@@ -526,11 +524,8 @@ int WdspNative::runWisdomCall(const QString &callDir,
         // Persistent help links (always clickable, unlike the cycling
         // cards).
         QStringList links;
+        links << QStringLiteral("<a href='%1'>Discord</a>").arg(kDiscordUrl);
         links << QStringLiteral("<a href='%1'>GitHub</a>").arg(kGithubUrl);
-        if (!kDiscordUrl.isEmpty())
-            links << QStringLiteral("<a href='%1'>Discord</a>")
-                     .arg(kDiscordUrl);
-        links << QStringLiteral("<a href='%1'>Donate</a>").arg(kDonateUrl);
         auto *help = new QLabel(
             QCoreApplication::translate("wdsp", "Help &amp; more:  ")
                 + links.join(QStringLiteral("  &nbsp;·&nbsp;  ")), dlg);
