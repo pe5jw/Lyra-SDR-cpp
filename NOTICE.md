@@ -30,6 +30,48 @@ naming the original WDSP source file and Warren Pratt's copyright.
 
 ---
 
+## fldigi — CW (Morse) receive decoder
+
+Lyra-cpp's RX CW decoder is a faithful, no-drift source port of
+the CW *receive* chain from fldigi.
+
+### Source
+
+- **Project:** fldigi (Fast Light Digital Modem)
+- **Ported source files:** `src/cw_rtty/cw.cxx` + `cw.h`,
+  `src/cw_rtty/morse.cxx` + `morse.h`, `src/filters/fftfilt.cxx`,
+  `src/include/filters.h`, `src/include/gfft.h`
+- **Upstream:** https://sourceforge.net/projects/fldigi/
+- **Project home:** http://www.w1hkj.com/
+
+### Contributors credited
+
+- **Dave Freese (W1HKJ)** — author and maintainer of fldigi,
+  including the CW modem, the overlap-add FFT filter, and the
+  running-mean helpers Lyra-cpp ports.
+- **Lawrence Glaister (VE7IT)** — author of fldigi's adaptive
+  CW speed-tracking algorithm, ported verbatim.
+
+### Original copyright + license
+
+- **Original copyright:** (C) various fldigi contributors (see
+  per-file headers in upstream fldigi source).
+- **License:** GNU General Public License v3 or later.
+
+### Usage in Lyra-cpp
+
+Lyra-cpp's `src/dsp/cw_fldigi/` (`fldigi_cw.{h,cpp}`, `gfft.h`)
+is a C++23 port of fldigi's CW receive chain — mixer → `fftfilt`
+overlap-add FFT low-pass → magnitude → decimate-by-16 →
+`decode_stream` adaptive slicer → `handle_event` timing FSM →
+`morse` lookup — running at fldigi's native 8000 Hz CW sample
+rate.  The ported files carry provenance comments naming the
+fldigi source files and the W1HKJ / VE7IT attribution.  The
+adapter (`src/dsp/CwDecoder.{h,cpp}`) decimates Lyra's 48 kHz
+demod audio to 8 kHz and is Lyra-native glue around the port.
+
+---
+
 ## openHPSDR Thetis — TX baseline architecture
 
 Lyra-cpp's TX baseline is a C++23 port of the openHPSDR Thetis

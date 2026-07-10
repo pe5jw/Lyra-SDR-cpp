@@ -75,6 +75,21 @@ upstream ramdor mainline with Reid's HL2-specific modifications.
   WDSP's calcc.c and iqc.c.  WDSP is GPL v3+.
   https://github.com/TAPR/OpenHPSDR-wdsp
 
+### fldigi — CW (Morse) receive decoder
+
+Lyra-cpp's RX CW decoder is a faithful, no-drift port of the
+CW *receive* chain from **fldigi** (mixer → overlap-add FFT
+low-pass → magnitude → decimate → adaptive slicer → timing
+FSM → Morse lookup).  fldigi is GPL v3+.
+
+- **Dave Freese (W1HKJ)** — author and maintainer of fldigi,
+  including the CW modem (`cw.cxx`/`morse.cxx`), the
+  overlap-add FFT filter (`fftfilt.cxx`), and the running-mean
+  helpers (`filters.h`) that Lyra-cpp's decoder ports.
+- **Lawrence Glaister (VE7IT)** — author of fldigi's adaptive
+  CW speed-tracking algorithm, which Lyra-cpp ports verbatim.
+  http://www.w1hkj.com/ — https://sourceforge.net/projects/fldigi/
+
 ---
 
 ## Reference projects (cross-checked, not source-incorporated)

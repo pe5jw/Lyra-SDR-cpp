@@ -583,27 +583,13 @@ public:
     // via the cwDecoded* signals.  AFC centre tracks cwPitchHz_ automatically.
     bool cwDecodeEnabled() const { return cwDecodeOn_.load(std::memory_order_relaxed); }
     Q_INVOKABLE void setCwDecodeEnabled(bool on);
-    Q_INVOKABLE void setCwDecodeSquelch(double snr)    { cwDecoder_.setSquelch(snr); }
-    Q_INVOKABLE void setCwDecodeThreshold(double f01)  { cwDecoder_.setThreshold(f01); }
-    Q_INVOKABLE void setCwDecodeAfcEnabled(bool on)    { cwDecoder_.setAfcEnabled(on); }
-    Q_INVOKABLE void setCwDecodeAfcRange(int hz)       { cwDecoder_.setAfcRange(hz); }
-    Q_INVOKABLE void setCwDecodeDspFilter(bool on)     { cwDecoder_.setDspFilter(on); }
-    Q_INVOKABLE void setCwDecodeNoiseBlanker(bool on)  { cwDecoder_.setNoiseBlanker(on); }
-    Q_INVOKABLE void setCwDecodeTxWpm(int wpm)         { cwDecoder_.setTxWpm(wpm); }
-    // #187 — CwGet-style acquisition / auto level.  Auto-seek grabs the loudest
-    // tone across the CW passband (span = the RX/CW bandwidth, pushed below);
-    // auto-threshold drives squelch + slicer from the live floor/peak SNR.
-    Q_INVOKABLE void setCwDecodeAutoSeek(bool on)      { cwDecoder_.setAutoSeek(on); }
-    Q_INVOKABLE void setCwDecodeAutoThreshold(bool on) { cwDecoder_.setAutoThreshold(on); }
-    // #187 narrow detection filter — THE fix for busy/multi-station bands:
-    // isolates one signal at the tone so the slicer sees clean key-up gaps.
-    Q_INVOKABLE void setCwDecodeNarrow(bool on)        { cwDecoder_.setNarrowDetect(on); }
-    Q_INVOKABLE void setCwDecodeNarrowBwHz(double hz)  { cwDecoder_.setNarrowDetectBwHz(hz); }
-    // #187 — live (auto-driven) squelch/threshold for the panel's Auto readout.
-    Q_INVOKABLE double cwDecodeSquelchLive() const     { return cwDecoder_.squelch(); }
-    Q_INVOKABLE double cwDecodeThresholdLive() const   { return cwDecoder_.threshold(); }
-    int  cwRxWpm()     const { return cwDecoder_.rxWpm(); }
-    bool cwAfcLocked() const { return cwDecoder_.afcLocked(); }
+    // fldigi CW-receiver controls — the ONLY knobs fldigi's CW RX exposes.
+    Q_INVOKABLE void setCwDecodeBandwidthHz(int hz)    { cwDecoder_.setBandwidthHz(hz); }
+    Q_INVOKABLE void setCwDecodeSpeedWpm(int wpm)      { cwDecoder_.setSpeedWpm(wpm); }
+    Q_INVOKABLE void setCwDecodeTracking(bool on)      { cwDecoder_.setTracking(on); }
+    Q_INVOKABLE void setCwDecodeMatchedFilter(bool on) { cwDecoder_.setMatchedFilter(on); }
+    Q_INVOKABLE void setCwDecodeSquelch(bool on, double value) { cwDecoder_.setSquelch(on, value); }
+    int  cwRxWpm() const { return cwDecoder_.rxWpm(); }
     // Task #53 — shared RX+TX filter low edge.  Affects only the
     // ASYMMETRIC SSB / DIG modes (USB/LSB/DIGU/DIGL).  CW filter
     // is centred on the pitch (low edge isn't a meaningful axis);
@@ -761,9 +747,8 @@ signals:
     // #173 CW-5a — RX CW decoder outputs (emitted from the audio thread; the
     // CW-5b panel connects with the default queued connection).
     void cwDecodeEnabledChanged();
-    void cwDecodedChar(QString ch, double confidence);  // char; conf 0..1 (advisory)
-    void cwRxWpmChanged(int wpm);            // adaptive RX speed
-    void cwAfcLockChanged(bool locked, double hz);
+    void cwDecodedChar(QString ch, double confidence);  // decoded unit (conf always 1)
+    void cwRxWpmChanged(int wpm);            // fldigi RX speed
     // Freq calibration — one emit per analysis window while measuring.
     void freqCalUpdated(double measuredHz, double snrDb, int windows);
     void nrChanged();        // NR enable / mode / AEPF / NPE

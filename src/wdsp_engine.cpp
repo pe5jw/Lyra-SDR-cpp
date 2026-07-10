@@ -303,21 +303,20 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // feedIq's append never reallocates in steady state.
     accum_.reserve(static_cast<size_t>(2 * (cfg_.inSize + 128)));
 
-    // #173 CW-5a — RX CW decoder wiring.  Owned here (the RX-audio + cwPitch
-    // + mode home); the pre-RX-EQ tap in dispatchAudioFrame feeds it CW-mode-
-    // gated 48 kHz mono.  Callbacks fire on the audio thread; the emits cross
-    // to the GUI via the default queued connection (consumed by the separate
-    // CW decoder panel, CW-5b).  AFC centre is seeded from / tracks cwPitchHz_.
+    // #173 — RX CW decoder wiring (faithful fldigi port).  Owned here (the
+    // RX-audio + cwPitch + mode home); the pre-RX-EQ tap in dispatchAudioFrame
+    // feeds it CW-mode-gated 48 kHz mono, which the decoder decimates to
+    // fldigi's 8 kHz internally.  Callbacks fire on the audio thread; the emits
+    // cross to the GUI via the default queued connection (CW decoder panel).
+    // The detection tone == the operator's CW pitch (they tune the signal to it,
+    // exactly as in fldigi — no AFC).
     cwDecoder_.setSampleRate(cfg_.outRate);
     cwDecoder_.setToneHz(cwPitchHz_);
-    cwDecoder_.setSeekBandwidthHz(bw_);   // #187 — auto-seek span == CW passband
-    cwDecoder_.onChar = [this](char c, double conf) {
-        emit cwDecodedChar(QString(QChar::fromLatin1(c)), conf);
+    cwDecoder_.onText = [this](const std::string& s) {
+        emit cwDecodedChar(QString::fromUtf8(s.c_str(),
+                                             static_cast<int>(s.size())), 1.0);
     };
     cwDecoder_.onWpm = [this](int w) { emit cwRxWpmChanged(w); };
-    cwDecoder_.onAfc = [this](bool locked, double hz) {
-        emit cwAfcLockChanged(locked, hz);
-    };
 
     // 5 Hz UI poll: emit levelsChanged so the QML audioDbFs binding
     // re-reads the atomic (mirrors HL2Stream's statsTimer cadence).
@@ -1952,7 +1951,6 @@ void WdspEngine::setBandwidth(int hz)
     bw_ = hz;
     recomputePassband();   // overlay edges
     applyModeFilter();     // re-push passband for the new bandwidth
-    cwDecoder_.setSeekBandwidthHz(bw_);   // #187 — keep the auto-seek span == CW passband
     emit bandwidthChanged();
 }
 

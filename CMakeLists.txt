@@ -212,6 +212,9 @@ qt_add_executable(lyra
     # RX tap; Lyra-native DSP, no Qt in the core.
     src/dsp/CwDecoder.h
     src/dsp/CwDecoder.cpp
+    src/dsp/cw_fldigi/gfft.h
+    src/dsp/cw_fldigi/fldigi_cw.h
+    src/dsp/cw_fldigi/fldigi_cw.cpp
     src/dsp/FreqCalMeasure.h
     src/dsp/FreqCalMeasure.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
@@ -790,6 +793,9 @@ add_executable(test_cw_decoder EXCLUDE_FROM_ALL
     scratch/test_cw_decoder.cpp
     src/dsp/CwDecoder.h
     src/dsp/CwDecoder.cpp
+    src/dsp/cw_fldigi/gfft.h
+    src/dsp/cw_fldigi/fldigi_cw.h
+    src/dsp/cw_fldigi/fldigi_cw.cpp
 )
 target_include_directories(test_cw_decoder PRIVATE src)
 if(MSVC)

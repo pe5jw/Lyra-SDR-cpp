@@ -1608,19 +1608,23 @@ to pop open the floating **CW Decoder** (it floats and remembers where you
 put it). It reads **only in CWU/CWL** — outside CW the detector controls
 dim and a "switch to CW to decode" note shows.
 
+The decoder is a faithful port of **fldigi's** CW receiver (the W1HKJ
+open-source Morse engine), so if you know fldigi's CW behaviour, this is it.
+
 **Tune the signal onto your CW pitch.** The decoder listens at the same
 single **CW Pitch** the rest of the radio uses, so just put the signal's
-beat note where you normally hear it and the decoder is on it. From there
-it **AFC-tracks drift** on its own — you don't set a separate tone.
+beat note where you normally hear it and the decoder is on it. There is
+**no AFC** (same as fldigi) — you tune the signal to your pitch and it
+copies at that pitch; the **Bandwidth** control gives you the tolerance
+for small drift.
 
 **The text pane.** Decoded characters scroll live, and the pane
 **auto-scrolls** to keep the newest text in view. The **WPM** readout (top
-right) shows the speed it's tracking; the **AFC** chip turns cyan and shows
-the locked pitch in Hz while it's holding a signal. Characters the decoder
-is *unsure* of are **dimmed grey** instead of hidden — so a shaky copy
-*looks* shaky at a glance rather than reading as solid text. **Decoding**
+right) shows the speed it's tracking (it seeds from your **Speed** setting
+and, with **Tracking** on, follows the sender's real fist). **Decoding**
 toggles the reader; **Clear** wipes the pane. Under **Display** you can set
-the **font size** and pick a **text colour**.
+the **font size** and pick a **text colour**. An unrecognised element
+string prints as `*` (fldigi's "noise" character) rather than a wrong guess.
 
 **Grab a call or name into your macros.** Worked a station you want to
 answer? Pull their call straight out of the decoded text:
@@ -1642,47 +1646,42 @@ keyer's send speed follows the speed you're *copying*, so you answer at the
 other operator's pace automatically. The current keyer speed shows beside
 it.
 
-**The detector knobs.** The panel is laid out so the everyday controls are
-up front and the niche ones are tucked into **Advanced**. Sensible defaults
-ship (Narrow on at 100 Hz, Auto level on, AFC + NB on) — reach for the rest
-only when copy is rough:
+**The detector knobs.** These are exactly fldigi's CW controls — nothing
+more, nothing less. The shipped defaults (Speed 18, Tracking on, Matched
+filter off, Bandwidth 150 Hz, Squelch off) are fldigi's own defaults and
+copy well on typical signals; reach for the rest only when copy is rough:
 
-- **Narrow** — a tight **detection filter** that isolates ONE signal in the
-  passband, with chips for **80 / 100 / 120 / 150 Hz** (default 100). This
-  is the key to clean letter and word spacing when several CW signals are
-  close together: without it the channel never goes quiet between stations
-  and the text runs together. Use ~80 for slow, clean signals and ~100–120
-  for typical speeds; widen only for fast CW on a clean single signal.
-- **Auto** (under **Level**) — when on, the decoder sets its own
-  squelch/threshold and **adapts as conditions change**; a small live
-  readout shows the values it's using (e.g. `×2.2 / 33%`). Recommended —
-  with it on, the manual Squelch/Threshold sliders are hidden because they
-  don't apply.
-- **AFC** — keeps the decoder centred on the signal as it drifts. (Its
-  search **range** lives under Advanced.)
-- **NB** — the decoder's own **impulse blanker**: it clamps static crashes,
-  key-clicks and lightning ticks before they can be read as a dit. This is
-  *separate* from the main RX Noise Blanker on the Audio panel — it cleans
-  up only what the decoder sees, not the audio you hear.
-- **Advanced** (collapsible) — keeps the main panel clean by tucking away:
-  - **Seek** — auto-grab the loudest tone across the CW passband.
-  - **DSP filter** — tightens the decoder's matched filter; **on** gives
-    cleaner element timing and better copy in QRM, **off** chases a very
-    weak or very fast signal where the tighter filter costs a little
-    sensitivity.
-  - **AFC range** (**±50 / 100 / 150 / 200 Hz**) — how far AFC will chase a
-    drifting or off-pitch signal. Wider catches more drift but is likelier
-    to wander onto a louder neighbour; narrower stays glued to your pitch.
+- **Speed** — the WPM the decoder *starts* from, set with the **± chips**
+  (or type a value). It's a seed, not a lock: with **Tracking** on the
+  decoder learns the sender's real speed from the first few characters and
+  the header **WPM** follows. Set it near the signal you're working (say 18
+  for a rag-chew, 30+ for contest CW) so it locks in faster.
+- **Tracking** — the adaptive speed follower. **On** (default) the decoder
+  measures dot/dash lengths from validated element pairs and tracks a
+  drifting or uneven fist automatically — the right setting for hand-sent
+  CW. Turn it **off** to pin the decoder to your **Speed** value when you
+  want it to ignore a ragged or interfering fist.
+- **Matched filter** — swaps the decoder's front-end low-pass for a tighter
+  **matched filter** whose bandwidth follows the speed (fldigi sizes it at
+  5 × WPM). **On** gives cleaner element edges and better copy on a single
+  steady signal in QRM; **off** (default) uses the plain **Bandwidth**
+  filter, which is more forgiving of drift and speed changes. When it's on,
+  the Bandwidth slider reads **"auto"** because the filter width is derived
+  from the speed.
+- **Bandwidth** — the width of the detection low-pass, in Hz (default 150).
+  Narrow it toward ~80–100 Hz to reject a close neighbour and tighten the
+  spacing between letters; widen it for fast CW or a drifting signal.
+  Disabled while Matched filter is on.
+- **Squelch** — an on/off **chip** plus a level slider. Off (default) the
+  decoder always tries to copy. On, it gates on fldigi's own signal metric
+  (an SNR-style 0–100 reading): raise the level to stop it printing `*`
+  noise between stations, lower it if a weak signal isn't being read. The
+  slider is greyed while the chip is off (no squelching — the decoder runs
+  wide open).
 
-If you turn **Auto** off, the manual gates appear:
-
-- **Squelch** (× over the noise floor) and **Threshold** (the mark/space
-  slicing point, in %) — the two gates that decide "signal vs noise." If
-  you're getting garbage out of the noise, raise them; if a real signal
-  isn't being read, lower them.
-
-> **Tip.** Tune the signal to your CW pitch on the panadapter; the decoder
-> follows the pitch and AFC-tracks the drift from there.
+> **Tip.** There's no AFC — tune the signal onto your CW pitch on the
+> panadapter and leave it there; **Tracking** handles fist and speed, and
+> **Bandwidth** gives you the tolerance for small drift.
 
 ---
 
@@ -3872,6 +3871,15 @@ the GPL-licensed components it depends on:
   modifications.** WDSP powers the RXA chain (noise reduction,
   AGC, bandpass, demod) and the TXA chain (modulator, ALC, leveler,
   bandpass, future EQ/compressor).
+- **fldigi** — the RX **CW (Morse) decoder** is a faithful,
+  no-drift source port of fldigi's CW *receive* chain (mixer →
+  overlap-add FFT low-pass → adaptive slicer → timing FSM → Morse
+  lookup) by **Dave Freese (W1HKJ)**, with the adaptive
+  speed-tracking algorithm by **Lawrence Glaister (VE7IT)**. GPL
+  v3+. Unlike the studied-but-not-copied references above, this is
+  an actual code port — so, like WDSP, it is credited here as a
+  licensed component. The port lives in `src/dsp/cw_fldigi/` with
+  per-file provenance headers; see `CREDITS.md` / `NOTICE.md`.
 - **TCI protocol** (Transceiver Control Interface) — public
   specification from **Expert Electronics** (EESDR). Lyra
   implements a TCI server compatible with the v1.9 / v2.0 spec so

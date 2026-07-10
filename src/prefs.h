@@ -128,27 +128,19 @@ class Prefs : public QObject {
                NOTIFY cwDecodeColorChanged)
     Q_PROPERTY(int cwDecodeFontSize READ cwDecodeFontSize WRITE setCwDecodeFontSize
                NOTIFY cwDecodeFontSizeChanged)
-    // #173 CW-5b — CW decoder detector knobs (persisted so tuned values recall).
-    Q_PROPERTY(double cwDecodeSquelch READ cwDecodeSquelch WRITE setCwDecodeSquelch
-               NOTIFY cwDecodeSquelchChanged)
-    Q_PROPERTY(int cwDecodeThreshold READ cwDecodeThreshold WRITE setCwDecodeThreshold
-               NOTIFY cwDecodeThresholdChanged)
-    Q_PROPERTY(bool cwDecodeAfc READ cwDecodeAfc WRITE setCwDecodeAfc
-               NOTIFY cwDecodeAfcChanged)
-    Q_PROPERTY(int cwDecodeAfcRange READ cwDecodeAfcRange WRITE setCwDecodeAfcRange
-               NOTIFY cwDecodeAfcRangeChanged)
-    Q_PROPERTY(bool cwDecodeNb READ cwDecodeNb WRITE setCwDecodeNb
-               NOTIFY cwDecodeNbChanged)
-    Q_PROPERTY(bool cwDecodeDsp READ cwDecodeDsp WRITE setCwDecodeDsp
-               NOTIFY cwDecodeDspChanged)
-    Q_PROPERTY(bool cwDecodeAutoSeek READ cwDecodeAutoSeek WRITE setCwDecodeAutoSeek
-               NOTIFY cwDecodeAutoSeekChanged)
-    Q_PROPERTY(bool cwDecodeAutoThreshold READ cwDecodeAutoThreshold WRITE setCwDecodeAutoThreshold
-               NOTIFY cwDecodeAutoThresholdChanged)
-    Q_PROPERTY(bool cwDecodeNarrow READ cwDecodeNarrow WRITE setCwDecodeNarrow
-               NOTIFY cwDecodeNarrowChanged)
-    Q_PROPERTY(int cwDecodeNarrowBw READ cwDecodeNarrowBw WRITE setCwDecodeNarrowBw
-               NOTIFY cwDecodeNarrowBwChanged)
+    // #173 — fldigi CW-receiver knobs (persisted so tuned values recall).
+    Q_PROPERTY(int cwDecodeBandwidth READ cwDecodeBandwidth WRITE setCwDecodeBandwidth
+               NOTIFY cwDecodeBandwidthChanged)
+    Q_PROPERTY(int cwDecodeSpeed READ cwDecodeSpeed WRITE setCwDecodeSpeed
+               NOTIFY cwDecodeSpeedChanged)
+    Q_PROPERTY(bool cwDecodeTracking READ cwDecodeTracking WRITE setCwDecodeTracking
+               NOTIFY cwDecodeTrackingChanged)
+    Q_PROPERTY(bool cwDecodeMatchedFilter READ cwDecodeMatchedFilter WRITE setCwDecodeMatchedFilter
+               NOTIFY cwDecodeMatchedFilterChanged)
+    Q_PROPERTY(bool cwDecodeSquelchOn READ cwDecodeSquelchOn WRITE setCwDecodeSquelchOn
+               NOTIFY cwDecodeSquelchOnChanged)
+    Q_PROPERTY(double cwDecodeSquelchValue READ cwDecodeSquelchValue WRITE setCwDecodeSquelchValue
+               NOTIFY cwDecodeSquelchValueChanged)
     // Noise-floor reference line on the panadapter (old-Lyra parity):
     // a dashed line at the rolling ~20th-percentile floor + an
     // "NF -NN dBFS" label.  On/off + colour are operator-tunable.
@@ -434,26 +426,18 @@ public:
     void    setCwDecodeColor(const QString &hex);
     int     cwDecodeFontSize() const { return cwDecodeFontSize_; }
     void    setCwDecodeFontSize(int px);
-    double  cwDecodeSquelch() const { return cwDecodeSquelch_; }
-    void    setCwDecodeSquelch(double v);
-    int     cwDecodeThreshold() const { return cwDecodeThreshold_; }
-    void    setCwDecodeThreshold(int pct);
-    bool    cwDecodeAfc() const { return cwDecodeAfc_; }
-    void    setCwDecodeAfc(bool on);
-    int     cwDecodeAfcRange() const { return cwDecodeAfcRange_; }
-    void    setCwDecodeAfcRange(int hz);
-    bool    cwDecodeNb() const { return cwDecodeNb_; }
-    void    setCwDecodeNb(bool on);
-    bool    cwDecodeDsp() const { return cwDecodeDsp_; }
-    bool    cwDecodeAutoSeek() const { return cwDecodeAutoSeek_; }
-    bool    cwDecodeAutoThreshold() const { return cwDecodeAutoThreshold_; }
-    bool    cwDecodeNarrow() const { return cwDecodeNarrow_; }
-    int     cwDecodeNarrowBw() const { return cwDecodeNarrowBw_; }
-    void    setCwDecodeDsp(bool on);
-    void    setCwDecodeAutoSeek(bool on);
-    void    setCwDecodeAutoThreshold(bool on);
-    void    setCwDecodeNarrow(bool on);
-    void    setCwDecodeNarrowBw(int hz);
+    int     cwDecodeBandwidth() const { return cwDecodeBandwidth_; }
+    void    setCwDecodeBandwidth(int hz);
+    int     cwDecodeSpeed() const { return cwDecodeSpeed_; }
+    void    setCwDecodeSpeed(int wpm);
+    bool    cwDecodeTracking() const { return cwDecodeTracking_; }
+    void    setCwDecodeTracking(bool on);
+    bool    cwDecodeMatchedFilter() const { return cwDecodeMatchedFilter_; }
+    void    setCwDecodeMatchedFilter(bool on);
+    bool    cwDecodeSquelchOn() const { return cwDecodeSquelchOn_; }
+    void    setCwDecodeSquelchOn(bool on);
+    double  cwDecodeSquelchValue() const { return cwDecodeSquelchValue_; }
+    void    setCwDecodeSquelchValue(double v);
     bool peakShowDb() const { return peakShowDb_; }
     void setPeakShowDb(bool v);
     bool noiseFloorEnabled() const { return noiseFloorEnabled_; }
@@ -624,16 +608,12 @@ signals:
     void peakShowDbChanged();
     void cwDecodeColorChanged();
     void cwDecodeFontSizeChanged();
-    void cwDecodeSquelchChanged();
-    void cwDecodeThresholdChanged();
-    void cwDecodeAfcChanged();
-    void cwDecodeAfcRangeChanged();
-    void cwDecodeNbChanged();
-    void cwDecodeDspChanged();
-    void cwDecodeAutoSeekChanged();
-    void cwDecodeAutoThresholdChanged();
-    void cwDecodeNarrowChanged();
-    void cwDecodeNarrowBwChanged();
+    void cwDecodeBandwidthChanged();
+    void cwDecodeSpeedChanged();
+    void cwDecodeTrackingChanged();
+    void cwDecodeMatchedFilterChanged();
+    void cwDecodeSquelchOnChanged();
+    void cwDecodeSquelchValueChanged();
     void peakClearRequested();
     void noiseFloorEnabledChanged();
     void noiseFloorColorChanged();
@@ -721,16 +701,12 @@ private:
     bool    peakShowDb_;
     QString cwDecodeColor_;
     int     cwDecodeFontSize_;
-    double  cwDecodeSquelch_;
-    int     cwDecodeThreshold_;
-    bool    cwDecodeAfc_;
-    int     cwDecodeAfcRange_;
-    bool    cwDecodeNb_;
-    bool    cwDecodeDsp_;
-    bool    cwDecodeAutoSeek_;
-    bool    cwDecodeAutoThreshold_;
-    bool    cwDecodeNarrow_;
-    int     cwDecodeNarrowBw_;
+    int     cwDecodeBandwidth_;
+    int     cwDecodeSpeed_;
+    bool    cwDecodeTracking_;
+    bool    cwDecodeMatchedFilter_;
+    bool    cwDecodeSquelchOn_;
+    double  cwDecodeSquelchValue_;
     bool    noiseFloorEnabled_;
     QString noiseFloorColor_;
     bool    watermark_;
