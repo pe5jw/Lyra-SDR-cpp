@@ -48,6 +48,10 @@ Rectangle {
     property bool squelchOn:     Prefs.cwDecodeSquelchOn
     property real squelchValue:  Prefs.cwDecodeSquelchValue
 
+    // Live squelch signal metric (fldigi SNR reading, 0..100) — polled for the
+    // meter bar so you can set the manual threshold just under the signal peaks.
+    property real sqMetric: 0
+
     // Decoded-text colour presets.
     readonly property var colorChoices:
         ["#39ff14", "#ffbe5a", "#00e5ff", "#e6edf3", "#ff9a3c", "#ff6b6b"]
@@ -82,6 +86,15 @@ Rectangle {
             root.rxWpm = w
             if (root.matchTxSpeed) root.applyWpmToKeyer(w)
         }
+    }
+
+    // Poll the live squelch metric (~10 Hz) only while the decoder is running
+    // in a CW mode and the panel is expanded — cheap, no cost otherwise.
+    Timer {
+        interval: 100; repeat: true
+        running: !root.collapsed && root.cwActive && WdspEngine.cwDecodeEnabled
+        onTriggered: root.sqMetric = WdspEngine.cwDecodeMetric()
+        onRunningChanged: if (!running) root.sqMetric = 0
     }
 
     // ── Reusable hand-styled chip (lit = active) ──
@@ -356,6 +369,47 @@ Rectangle {
             }
             Label {
                 text: Math.round(root.squelchValue)
+                color: root.cText; font.family: "Consolas"; font.pixelSize: 12
+                Layout.preferredWidth: 34; horizontalAlignment: Text.AlignRight
+            }
+        }
+
+        // Live signal-metric bar (fldigi SNR, own 0..50 scale).  The cyan fill
+        // is the current signal; the amber tick is your Squelch threshold when
+        // Squelch is on — set the slider just under the signal peaks.
+        RowLayout {
+            visible: !root.collapsed
+            Layout.fillWidth: true
+            spacing: 10
+            opacity: root.cwActive ? 1.0 : 0.4
+            Label {
+                text: qsTr("Signal"); color: root.cText; font.pixelSize: 11
+                Layout.preferredWidth: 44
+            }
+            Item {
+                Layout.fillWidth: true
+                implicitHeight: 8
+                Rectangle {                       // track
+                    anchors.fill: parent
+                    radius: 3; color: "#0e1621"
+                    border.color: "#1a2632"; border.width: 1
+                }
+                Rectangle {                       // signal fill
+                    anchors.left: parent.left; y: 1
+                    height: parent.height - 2
+                    width: parent.width * Math.max(0, Math.min(root.sqMetric, 50)) / 50
+                    radius: 3; color: "#3fb6e6"
+                }
+                Rectangle {                       // squelch threshold tick
+                    visible: root.squelchOn
+                    width: 2; height: parent.height + 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: parent.width * Math.max(0, Math.min(root.squelchValue, 50)) / 50 - width / 2
+                    color: "#e6a23f"
+                }
+            }
+            Label {
+                text: Math.round(Math.min(root.sqMetric, 99))
                 color: root.cText; font.family: "Consolas"; font.pixelSize: 12
                 Layout.preferredWidth: 34; horizontalAlignment: Text.AlignRight
             }

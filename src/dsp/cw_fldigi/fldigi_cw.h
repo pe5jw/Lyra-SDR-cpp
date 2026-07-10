@@ -128,6 +128,11 @@ public:
 
     int  rxWpm() const { return cw_receive_speed_; }
 
+    // Live signal metric (fldigi's SNR-in-dB reading, 0..100, IIR-smoothed).
+    // Read-only display value; the squelch gates on metric_ > threshold.  A
+    // plain cross-thread read of the last-written value is benign here.
+    double metric() const { return metric_; }
+
     std::function<void(const std::string&)> onText;  // one decoded unit
     std::function<void(int)>                onWpm;
 

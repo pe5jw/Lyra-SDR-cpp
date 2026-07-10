@@ -1677,7 +1677,16 @@ copy well on typical signals; reach for the rest only when copy is rough:
   (an SNR-style 0–100 reading): raise the level to stop it printing `*`
   noise between stations, lower it if a weak signal isn't being read. The
   slider is greyed while the chip is off (no squelching — the decoder runs
-  wide open).
+  wide open). Because that metric is measured *against the noise floor*, one
+  setting holds across bands — it's already "auto-levelling," so a value that
+  works stays working when the band noise rises or falls.
+- **Signal bar.** Just under the slider is a live **Signal** meter — the cyan
+  fill is the decoder's current SNR reading, and (when Squelch is on) the amber
+  tick marks your threshold. This is the tool for setting the level: watch the
+  bar while a signal comes and goes, then set the threshold **just under the
+  signal peaks** so it clears the between-station noise without choking the
+  copy. (Keep it a touch low — the same signal that feeds the print also feeds
+  the speed tracking, so too-high a squelch starves both.)
 
 > **Tip.** There's no AFC — tune the signal onto your CW pitch on the
 > panadapter and leave it there; **Tracking** handles fist and speed, and

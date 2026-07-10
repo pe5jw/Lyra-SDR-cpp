@@ -589,6 +589,8 @@ public:
     Q_INVOKABLE void setCwDecodeTracking(bool on)      { cwDecoder_.setTracking(on); }
     Q_INVOKABLE void setCwDecodeMatchedFilter(bool on) { cwDecoder_.setMatchedFilter(on); }
     Q_INVOKABLE void setCwDecodeSquelch(bool on, double value) { cwDecoder_.setSquelch(on, value); }
+    // Live squelch signal metric (SNR 0..100) for the panel bar; polled by QML.
+    Q_INVOKABLE double cwDecodeMetric() const { return cwDecoder_.squelchMetric(); }
     int  cwRxWpm() const { return cwDecoder_.rxWpm(); }
     // Task #53 — shared RX+TX filter low edge.  Affects only the
     // ASYMMETRIC SSB / DIG modes (USB/LSB/DIGU/DIGL).  CW filter

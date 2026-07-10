@@ -55,6 +55,9 @@ public:
 
     int rxWpm() const { return rx_.rxWpm(); }
 
+    // Live squelch metric (fldigi SNR-in-dB, 0..100) for the panel readout.
+    double squelchMetric() const { return rx_.metric(); }
+
 private:
     void rebuildDecimator();
 
