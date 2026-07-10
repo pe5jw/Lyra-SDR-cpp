@@ -178,6 +178,7 @@ int modeToWdsp(const QString &m) {
     if (m == QLatin1String("AM"))   return 6;
     if (m == QLatin1String("DIGU")) return 7;
     if (m == QLatin1String("DIGL")) return 9;
+    if (m == QLatin1String("SAM"))  return 10;   // synchronous AM detector
     return 1;   // USB
 }
 
@@ -1841,7 +1842,9 @@ int WdspEngine::bandwidthForEdge(double edgeOffsetHz) const
     } else {                                       // symmetric around DC
         bw = 2.0 * a;
     }
-    return std::clamp(static_cast<int>(bw + 0.5), 50, 12000);
+    // Upper cap matches setBandwidth()'s 20 kHz ceiling so a dragged AM/DSB
+    // passband edge can reach the wide (16/20 k) AM presets, not stop at 12 k.
+    return std::clamp(static_cast<int>(bw + 0.5), 50, 20000);
 }
 
 int WdspEngine::markerOffsetHz() const

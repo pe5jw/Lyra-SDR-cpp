@@ -1543,9 +1543,11 @@ int main(int argc, char *argv[])
                 auto wdspTxModeFor = [](const QString &uiMode) -> int {
                     const QString m = uiMode.toUpper();
                     // WDSP TXA modulation mode (coincides with the RX modeToWdsp
-                    // enum for these).  AM/DSB/FM/SAM now pass through (were all
+                    // enum for these).  AM/DSB/FM now pass through (were all
                     // clamped to USB) so WDSP's TXA modulates them natively as
                     // symmetric double-sideband instead of a one-sided USB signal.
+                    // SAM is an RX-only demod — WDSP TXA has no sync-AM modulator,
+                    // so keying in SAM transmits AM (Thetis parity).
                     if (m == QStringLiteral("LSB"))  return 0;
                     if (m == QStringLiteral("USB"))  return 1;
                     if (m == QStringLiteral("DSB"))  return 2;
@@ -1553,9 +1555,9 @@ int main(int argc, char *argv[])
                     if (m == QStringLiteral("CWU"))  return 4;
                     if (m == QStringLiteral("FM"))   return 5;
                     if (m == QStringLiteral("AM"))   return 6;
+                    if (m == QStringLiteral("SAM"))  return 6;   // TX SAM -> AM
                     if (m == QStringLiteral("DIGU")) return 7;
                     if (m == QStringLiteral("DIGL")) return 9;
-                    if (m == QStringLiteral("SAM"))  return 10;
                     return 1;       // USB default
                 };
                 // #50 native-rack digital gate: bypass the WHOLE mic DSP rack

@@ -138,8 +138,8 @@ const QStringList kModes = {
     QStringLiteral("LSB"),  QStringLiteral("USB"),
     QStringLiteral("CWL"),  QStringLiteral("CWU"),
     QStringLiteral("DSB"),  QStringLiteral("AM"),
-    QStringLiteral("FM"),   QStringLiteral("DIGU"),
-    QStringLiteral("DIGL"),
+    QStringLiteral("SAM"),  QStringLiteral("FM"),
+    QStringLiteral("DIGU"), QStringLiteral("DIGL"),
 };
 } // namespace
 
@@ -298,7 +298,7 @@ int Prefs::defaultBandwidthFor(const QString &mode) {
     if (mode == QStringLiteral("CWL") || mode == QStringLiteral("CWU"))
         return 250;
     if (mode == QStringLiteral("DSB")) return 5000;
-    if (mode == QStringLiteral("AM"))  return 6000;
+    if (mode == QStringLiteral("AM") || mode == QStringLiteral("SAM")) return 6000;
     if (mode == QStringLiteral("FM"))  return 10000;
     if (mode == QStringLiteral("DIGL") || mode == QStringLiteral("DIGU"))
         return 3000;

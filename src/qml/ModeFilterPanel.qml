@@ -24,12 +24,12 @@ Rectangle {
 
     // Mode list + per-mode bandwidth presets (Hz), from old Lyra.
     readonly property var modes: ["LSB", "USB", "CWL", "CWU",
-                                  "DSB", "AM", "FM", "DIGU", "DIGL"]
+                                  "DSB", "AM", "SAM", "FM", "DIGU", "DIGL"]
     readonly property var bwSSB: [1500, 1800, 2100, 2400, 2700, 3000,
                                   3600, 4000, 6000, 8000, 10000]
     readonly property var bwCW:  [50, 100, 150, 250, 400, 500, 750, 1000]
     readonly property var bwDSB: [3000, 4000, 5000, 6000, 8000, 10000]
-    readonly property var bwAM:  [3000, 4000, 6000, 8000, 10000, 12000]
+    readonly property var bwAM:  [3000, 4000, 6000, 8000, 10000, 12000, 16000, 20000]
     // FM RX presets are the FM CHANNEL widths the IF must pass, not SSB
     // widths: narrow FM (±2.5 kHz dev) ≈ 12 k, wide FM (±5 kHz dev) ≈ 16 k
     // (Carson: 2·(dev + 3 kHz audio)).  8/10 cover data/very-narrow.
@@ -44,7 +44,7 @@ Rectangle {
         if (mode === "LSB" || mode === "USB") return bwSSB
         if (mode === "CWL" || mode === "CWU") return bwCW
         if (mode === "DSB") return bwDSB
-        if (mode === "AM")  return bwAM
+        if (mode === "AM" || mode === "SAM") return bwAM
         if (mode === "FM")  return bwFM
         if (mode === "DIGL" || mode === "DIGU") return bwDIG
         return bwSSB

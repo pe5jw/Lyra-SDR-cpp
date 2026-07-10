@@ -1212,6 +1212,7 @@ QString TciServer::toTciMode(const QString &m) {
     if (m == QStringLiteral("CWL") || m == QStringLiteral("CWU"))
         return QStringLiteral("CW");
     if (m == QStringLiteral("FM")) return QStringLiteral("NFM");
+    if (m == QStringLiteral("SAM")) return QStringLiteral("AM");  // RX-only; report AM
     return m;
 }
 QString TciServer::fromTciMode(const QString &t, qint64 freqHz) const {

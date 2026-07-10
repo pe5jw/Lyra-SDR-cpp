@@ -82,7 +82,7 @@ Rectangle {
     readonly property color cRole: "#efb340"   // amber RX/TX role tag
 
     readonly property var modeList: ["LSB", "USB", "CWL", "CWU",
-                                     "DSB", "AM", "FM", "DIGU", "DIGL"]
+                                     "DSB", "AM", "SAM", "FM", "DIGU", "DIGL"]
     readonly property bool cwMode: Prefs.mode === "CWU" || Prefs.mode === "CWL"
     readonly property bool fmMode: Prefs.mode === "FM"
 
