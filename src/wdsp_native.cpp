@@ -467,25 +467,110 @@ int WdspNative::runWisdomCall(const QString &callDir,
         if (done.load() || dlg) return;
         if (!qobject_cast<QApplication *>(QCoreApplication::instance()))
             return;
+
+        // Real project links (GitHub matches the About dialog).  Discord:
+        // fill kDiscordUrl in when there is a permanent invite; the link is
+        // rendered only when it is set.
+        const QString kGithubUrl  =
+            QStringLiteral("https://github.com/N8SDR1/Lyra-SDR-cpp");
+        const QString kDonateUrl  =
+            QStringLiteral("https://www.paypal.com/donate/"
+                           "?business=NP2ZQS4LR454L");
+        const QString kDiscordUrl = QString();   // TODO: permanent invite
+
         dlg = new QDialog(nullptr, Qt::Dialog | Qt::CustomizeWindowHint |
                                        Qt::WindowTitleHint);
         dlg->setWindowTitle(
             QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
         dlg->setModal(true);
+        dlg->setMinimumSize(620, 300);
+
         auto *v = new QVBoxLayout(dlg);
-        auto *note = new QLabel(QCoreApplication::translate("wdsp",
-            "<b>Optimizing FFT plans — one-time setup.</b><br><br>"
-            "This runs only once and can take several minutes — up to "
-            "about 10 on some PCs.  Please let it finish, and avoid "
-            "launching other heavy programs while it computes.<br><br>"
-            "Lyra is <b>not ready yet</b> — it opens automatically when "
-            "this is done.  <b>Do not close anything.</b>"));
-        note->setWordWrap(true);
-        v->addWidget(note);
+        v->setContentsMargins(30, 24, 30, 20);
+        v->setSpacing(14);
+
+        auto *title = new QLabel(QStringLiteral("Lyra"), dlg);
+        title->setStyleSheet(QStringLiteral(
+            "font-size:26px; font-weight:800; letter-spacing:2px;"));
+        v->addWidget(title, 0, Qt::AlignHCenter);
+
+        // Rotating 'while you wait' billboard.  Fixed min height so the
+        // dialog doesn't jump as cards change.
+        auto *card = new QLabel(dlg);
+        card->setWordWrap(true);
+        card->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+        card->setMinimumHeight(96);
+        card->setStyleSheet(QStringLiteral("font-size:14px;"));
+        v->addWidget(card, 1);
+
+        // Blue indeterminate 'scrolling' bar.
         auto *bar = new QProgressBar(dlg);
-        bar->setRange(0, 0);   // indeterminate "busy" animation
+        bar->setRange(0, 0);
+        bar->setTextVisible(false);
+        bar->setFixedHeight(8);
+        bar->setStyleSheet(QStringLiteral(
+            "QProgressBar{border:none;border-radius:4px;"
+            "background:rgba(128,128,128,60);}"
+            "QProgressBar::chunk{border-radius:4px;background:#2f81f7;}"));
         v->addWidget(bar);
-        dlg->setMinimumWidth(460);
+
+        auto *status = new QLabel(QCoreApplication::translate("wdsp",
+            "<b>Optimizing FFT plans — one-time setup.</b>  Lyra is "
+            "<b>not ready yet</b>; it opens automatically when this "
+            "finishes.  <b>Please do not close anything.</b>"), dlg);
+        status->setWordWrap(true);
+        status->setAlignment(Qt::AlignHCenter);
+        status->setStyleSheet(QStringLiteral("font-size:11px;"));
+        v->addWidget(status);
+
+        // Persistent help links (always clickable, unlike the cycling
+        // cards).
+        QStringList links;
+        links << QStringLiteral("<a href='%1'>GitHub</a>").arg(kGithubUrl);
+        if (!kDiscordUrl.isEmpty())
+            links << QStringLiteral("<a href='%1'>Discord</a>")
+                     .arg(kDiscordUrl);
+        links << QStringLiteral("<a href='%1'>Donate</a>").arg(kDonateUrl);
+        auto *help = new QLabel(
+            QCoreApplication::translate("wdsp", "Help &amp; more:  ")
+                + links.join(QStringLiteral("  &nbsp;·&nbsp;  ")), dlg);
+        help->setAlignment(Qt::AlignHCenter);
+        help->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        help->setOpenExternalLinks(true);
+        help->setStyleSheet(QStringLiteral("font-size:11px;"));
+        v->addWidget(help);
+
+        // Billboard content cycled by the timer below.
+        static const QStringList cards = {
+            QCoreApplication::translate("wdsp",
+                "<b>Welcome to Lyra</b><br>A modern, Vulkan-accelerated "
+                "SDR transceiver for the Hermes&nbsp;Lite&nbsp;2 / 2+."),
+            QCoreApplication::translate("wdsp",
+                "<b>Getting started</b><br>Click the panadapter to tune, "
+                "drag the passband edges to set your filter, and "
+                "right-click to drop a notch."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>Lyra decodes CW on-screen — open "
+                "the <i>CW&nbsp;Dec</i> panel and it prints what it hears."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>You can save and share whole "
+                "screen layouts: Settings → Backup&nbsp;&amp;&nbsp;Restore "
+                "→ Share&nbsp;a&nbsp;layout."),
+            QCoreApplication::translate("wdsp",
+                "<b>Almost ready…</b><br>This one-time step tunes the DSP "
+                "math for <i>your</i> CPU, so every launch after this is "
+                "quick."),
+        };
+        card->setText(cards.at(0));
+        auto *cycle = new QTimer(dlg);
+        cycle->setInterval(6500);
+        QObject::connect(cycle, &QTimer::timeout, card,
+                         [card, i = 0]() mutable {
+                             i = (i + 1) % int(cards.size());
+                             card->setText(cards.at(i));
+                         });
+        cycle->start();
+
         dlg->show();
         dlg->raise();
         dlg->activateWindow();
