@@ -254,6 +254,13 @@ qt_add_executable(lyra
     src/tx/VoiceKeyer.cpp
     src/tx/ClipRecorder.h
     src/tx/ClipRecorder.cpp
+    # Session Recorder (#201) — RX/TX audio + timed pan/waterfall snapshots.
+    # Headless engine (RT-safe ring + writer thread) + streaming WAV writer;
+    # UI panel/status-chip + Settings tab + offline MP4 export land on top.
+    src/recorder/WavStreamWriter.h
+    src/recorder/WavStreamWriter.cpp
+    src/recorder/RecorderEngine.h
+    src/recorder/RecorderEngine.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -689,6 +696,23 @@ add_executable(test_wav_io EXCLUDE_FROM_ALL
 target_include_directories(test_wav_io PRIVATE src)
 if(MSVC)
     target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# Session Recorder (#201) Stage 1 — engine + streaming WAV writer unit test.
+# Qt Core only (QSettings isolated to a temp INI); EXCLUDE_FROM_ALL.
+# Build + run:  cmake --build build --target test_recorder
+add_executable(test_recorder EXCLUDE_FROM_ALL
+    scratch/test_recorder.cpp
+    src/recorder/WavStreamWriter.h
+    src/recorder/WavStreamWriter.cpp
+    src/recorder/RecorderEngine.h
+    src/recorder/RecorderEngine.cpp
+)
+target_include_directories(test_recorder PRIVATE src)
+target_link_libraries(test_recorder PRIVATE Qt6::Core)
+set_target_properties(test_recorder PROPERTIES AUTOMOC ON)   # RecorderEngine Q_OBJECT
+if(MSVC)
+    target_compile_options(test_recorder PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #89 Stage C — recorder capture-core unit test (ClipRecorder).  Qt-free;
