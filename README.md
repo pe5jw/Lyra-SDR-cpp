@@ -1,5 +1,7 @@
 # Lyra — C++23 / Qt 6 Rebuild
 
+**🌐 [Website & download →](https://n8sdr1.github.io/Lyra-SDR-cpp/)** · [Releases](https://github.com/N8SDR1/Lyra-SDR-cpp/releases) · [Discord](https://discord.gg/BwjsQvjcSc)
+
 Native rebuild of [Lyra](../lyra) (the Python+Qt6 desktop SDR transceiver
 for the Hermes Lite 2 / 2+).  The Python tree is preserved in `../lyra/`
 as the protocol research + doc archive reference; this is a clean ground-
