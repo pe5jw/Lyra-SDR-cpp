@@ -29,6 +29,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPen>
+#include <QPixmap>
 #include <QProcess>
 #include <QProgressBar>
 #include <QRadialGradient>
@@ -66,17 +67,19 @@ QString winError(DWORD code) {
         : QStringLiteral("Win32 error %1: %2").arg(code).arg(descr);
 }
 
-// Little branded art for the one-time-setup splash: the Lyra
-// constellation (Vega + the parallelogram) with harp strings strung
-// between its sides -- Lyra IS the lyre.  A `twinkle` value (0..1),
-// driven a few times by a timer in the splash, pulses the star glow so
-// it "flashes a couple times" then settles.  Plain QWidget (no Q_OBJECT
-// / no moc): paintEvent is a virtual override, and the animation is
-// driven externally via setTwinkle().
+// Branded art for the one-time-setup splash: the real Lyra logo (the
+// Orpheus + golden lyre + HL2 icon) centred, with a handful of stars
+// twinkling in the margins around it.  A `twinkle` value (0..1), driven
+// a few times by a timer in the splash, pulses the star glow so it
+// "flashes a couple times" then settles.  Plain QWidget (no Q_OBJECT /
+// no moc): paintEvent is a virtual override, animation driven via
+// setTwinkle().
 class LyraSplashArt : public QWidget {
 public:
     explicit LyraSplashArt(QWidget *parent = nullptr) : QWidget(parent) {
         setAttribute(Qt::WA_TransparentForMouseEvents);
+        logo_ = QPixmap(QStringLiteral(
+            ":/qt/qml/Lyra/src/assets/logo/lyra-icon-256.png"));
     }
     void setTwinkle(qreal t) { twinkle_ = t; update(); }
 
@@ -84,66 +87,41 @@ protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const qreal w = width(), h = height();
-        const qreal boxW = qMin<qreal>(w, 240.0);
-        const qreal ox = (w - boxW) * 0.5;
-        auto Pt = [&](qreal fx, qreal fy) {
-            return QPointF(ox + fx * boxW, fy * h);
-        };
-        // Lyra star field (y down): Vega on top, the classic parallelogram
-        // (epsilon / zeta / delta) + Sheliak (beta) & Sulafat (gamma).
-        const QPointF vega  = Pt(0.50, 0.14);
-        const QPointF eps   = Pt(0.66, 0.32);
-        const QPointF zeta  = Pt(0.40, 0.36);
-        const QPointF delta = Pt(0.68, 0.62);
-        const QPointF beta  = Pt(0.38, 0.82);
-        const QPointF gamma = Pt(0.66, 0.88);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const int w = width(), h = height();
 
+        // Real logo, square, centred and scaled to the panel height.
+        const int ls = h;
+        const QRect logoRect((w - ls) / 2, 0, ls, ls);
+        if (!logo_.isNull())
+            p.drawPixmap(logoRect, logo_);
+
+        // Twinkling stars scattered in the margins beside the logo.
         const qreal tw = twinkle_;
-
-        // Faint constellation lines.
-        p.setPen(QPen(QColor(150, 175, 225, 70), 1.2));
-        p.drawLine(vega, eps);
-        p.drawLine(vega, zeta);
-        p.drawLine(zeta, delta);
-        p.drawLine(eps, delta);
-        p.drawLine(zeta, beta);
-        p.drawLine(delta, gamma);
-        p.drawLine(beta, gamma);
-
-        // Harp strings between the two sides -- shimmer with the twinkle.
-        QColor sc(228, 212, 168, int(90 + 90 * tw));
-        p.setPen(QPen(sc, 1.0));
-        for (int i = 1; i <= 4; ++i) {
-            const qreal f = i / 5.0;
-            p.drawLine(zeta + (eps - zeta) * f, beta + (gamma - beta) * f);
-        }
-
-        // Stars with a glow that pulses on twinkle.
-        auto star = [&](const QPointF &c, qreal r, const QColor &col) {
-            const qreal gr = r * (2.0 + 2.2 * tw);
+        static const QPointF frac[] = {
+            {0.10, 0.24}, {0.05, 0.58}, {0.15, 0.82}, {0.21, 0.40},
+            {0.90, 0.22}, {0.95, 0.56}, {0.85, 0.80}, {0.79, 0.38},
+        };
+        for (const auto &f : frac) {
+            const QPointF c(f.x() * w, f.y() * h);
+            const qreal r  = 1.6;
+            const qreal gr = r * (2.0 + 2.5 * tw);
             QRadialGradient g(c, gr);
-            QColor glow = col; glow.setAlphaF(0.20 + 0.40 * tw);
+            QColor glow(200, 225, 255);
+            glow.setAlphaF(0.22 + 0.45 * tw);
             g.setColorAt(0.0, glow);
-            QColor edge = col; edge.setAlpha(0);
-            g.setColorAt(1.0, edge);
+            g.setColorAt(1.0, QColor(200, 225, 255, 0));
             p.setPen(Qt::NoPen);
             p.setBrush(g);
             p.drawEllipse(c, gr, gr);
-            p.setBrush(col);
+            p.setBrush(QColor(226, 236, 255));
             p.drawEllipse(c, r, r);
-        };
-        const QColor starC(215, 230, 255);
-        star(vega, 3.6, QColor(185, 212, 255));   // Vega -- brightest
-        star(eps, 2.0, starC);
-        star(zeta, 2.0, starC);
-        star(delta, 2.2, starC);
-        star(beta, 2.4, starC);
-        star(gamma, 2.4, starC);
+        }
     }
 
 private:
-    qreal twinkle_ = 0.0;
+    QPixmap logo_;
+    qreal   twinkle_ = 0.0;
 };
 
 } // namespace
@@ -566,22 +544,17 @@ int WdspNative::runWisdomCall(const QString &callDir,
         dlg->setWindowTitle(
             QCoreApplication::translate("wdsp", "Lyra — one-time setup"));
         dlg->setModal(true);
-        dlg->setMinimumSize(620, 380);
+        dlg->setMinimumSize(640, 420);
 
         auto *v = new QVBoxLayout(dlg);
-        v->setContentsMargins(30, 22, 30, 20);
+        v->setContentsMargins(30, 18, 30, 20);
         v->setSpacing(12);
 
-        // Branded art: the Lyra constellation + harp strings, flashed a
-        // few times by the twinkle timer below.
+        // Branded art: the real Lyra logo with stars twinkling around it,
+        // flashed a few times by the twinkle timer below.
         auto *art = new LyraSplashArt(dlg);
-        art->setFixedHeight(116);
+        art->setFixedHeight(168);
         v->addWidget(art);
-
-        auto *title = new QLabel(QStringLiteral("Lyra"), dlg);
-        title->setStyleSheet(QStringLiteral(
-            "font-size:26px; font-weight:800; letter-spacing:2px;"));
-        v->addWidget(title, 0, Qt::AlignHCenter);
 
         // Rotating 'while you wait' billboard.  Fixed min height so the
         // dialog doesn't jump as cards change.
@@ -606,11 +579,44 @@ int WdspNative::runWisdomCall(const QString &callDir,
         auto *status = new QLabel(QCoreApplication::translate("wdsp",
             "<b>Optimizing FFT plans — one-time setup.</b>  Lyra is "
             "<b>not ready yet</b>; it opens automatically when this "
-            "finishes.  <b>Please do not close anything.</b>"), dlg);
+            "finishes."), dlg);
         status->setWordWrap(true);
         status->setAlignment(Qt::AlignHCenter);
         status->setStyleSheet(QStringLiteral("font-size:11px;"));
         v->addWidget(status);
+
+        // The important 'do not close' line -- bigger, and its colour
+        // pulses red -> purple -> blue -> white to draw the eye.
+        auto *important = new QLabel(QCoreApplication::translate("wdsp",
+            "⚠  IMPORTANT — please do not close anything."), dlg);
+        important->setAlignment(Qt::AlignHCenter);
+        important->setStyleSheet(QStringLiteral(
+            "font-size:15px; font-weight:800;"));
+        v->addWidget(important);
+        auto *pulse = new QTimer(dlg);
+        pulse->setInterval(50);
+        QObject::connect(pulse, &QTimer::timeout, important,
+                         [important, phase = 0.0]() mutable {
+            static const QColor stops[] = {
+                QColor(0xFF, 0x3B, 0x30),   // red
+                QColor(0xB2, 0x4B, 0xF3),   // purple
+                QColor(0x2F, 0x81, 0xF7),   // blue
+                QColor(0xFF, 0xFF, 0xFF),   // white
+            };
+            phase += 0.035;
+            if (phase >= 4.0) phase -= 4.0;
+            const int seg   = int(phase) % 4;
+            const qreal f   = phase - int(phase);
+            const QColor &a = stops[seg];
+            const QColor &b = stops[(seg + 1) % 4];
+            const int r  = int(a.red()   + (b.red()   - a.red())   * f);
+            const int gg = int(a.green() + (b.green() - a.green()) * f);
+            const int bl = int(a.blue()  + (b.blue()  - a.blue())  * f);
+            important->setStyleSheet(QStringLiteral(
+                "font-size:15px; font-weight:800; color:rgb(%1,%2,%3);")
+                .arg(r).arg(gg).arg(bl));
+        });
+        pulse->start();
 
         // Persistent help links (always clickable, unlike the cycling
         // cards).
