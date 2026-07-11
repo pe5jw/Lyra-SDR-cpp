@@ -203,9 +203,44 @@ Just want to operate? You don't need to build anything.
 3. Launch Lyra. First start does a one-time FFT optimization (cached per
    machine), then auto-discovers your HL2 / HL2+ on the network.
 
-Requires Windows 10 (1809+) or 11, 64-bit. The build-from-source
-instructions below are only needed if you want to develop or build it
-yourself.
+Requires Windows 10 (1809+) or 11, 64-bit — see **System requirements**
+below. The build-from-source instructions further down are only needed if
+you want to develop or build it yourself.
+
+## System requirements
+
+Lyra is a native **64-bit Windows** app. Its panadapter and waterfall render
+on the GPU, so graphics capability matters more here than in a typical desktop
+app — but it runs comfortably on modest hardware, and integrated graphics are
+fine.
+
+| Component | Minimum | Recommended | Maxed+ |
+|---|---|---|---|
+| **OS** | Windows 10 64-bit, **v1809 (build 17763)**+; or Windows 11 | Windows 11 / Win10 22H2 | Windows 11, current |
+| **CPU — Intel** | 4th-gen Core (Haswell) or newer, e.g. i3-4000 | Core i5 / i7, 10th-gen+ | Core i7 / i9, 12th-gen+ |
+| **CPU — AMD** | Any Ryzen, or AVX-capable FX/A-series | Ryzen 5 / 7, 3000-series+ | Ryzen 7 / 9, 5000-series+ |
+| **Cores** | Dual (quad preferred) | Quad+ with AVX2 | High-core-count, AVX2 |
+| **RAM** | 4 GB (8 GB comfortable) | 16 GB | 32 GB |
+| **GPU** | DirectX 11 / OpenGL 3.3 (integrated OK) | **Vulkan 1.1-capable** | **Vulkan 1.3-capable** dedicated, ample VRAM |
+| &nbsp;&nbsp;NVIDIA | GeForce GT 700-series+ | GTX 10-series / RTX+ | RTX 30/40-series |
+| &nbsp;&nbsp;AMD | Radeon HD 7000 (GCN)+, incl. iGPU | RX 400/500 / Vega / RX 5000–9000 | RX 6000/7000/9000 (RDNA 2/3/4) |
+| &nbsp;&nbsp;Intel | HD 4000 (Ivy Bridge)+ / UHD / Iris | UHD 620 / Iris Xe / Arc | Arc A-series+ |
+| **Storage** | ~300 MB free (SSD recommended) | SSD, ~500 MB free | NVMe Gen4 SSD |
+| **Network** | 100 Mbit **wired** to the radio | Gigabit, dedicated NIC ideal | Dedicated 1/2.5 GbE, wired to the radio |
+| **Display** | 1366 × 768 | 1920 × 1080 | Dual/triple; 1440p or 4K |
+
+Lyra draws the spectrum and waterfall on the GPU. It works on any DirectX 11 /
+OpenGL-class card, but the **Vulkan** path is smoother, lower-CPU, and
+vendor-neutral (NVIDIA, AMD, and Intel alike) — that's why the higher tiers
+call for a Vulkan-capable GPU. The extra headroom in **Maxed+** isn't about
+*whether* it runs (Recommended is plenty) — it's about running everything at
+once (dual RX, the full TX rack, spots, high-refresh waterfalls on a big
+screen) with margin to spare.
+
+Two things that matter on any tier: a **wired** connection to the Hermes Lite
+is the single biggest factor in glitch-free audio (Wi-Fi in the radio path is
+the top cause of pops/dropouts), and the one-time first-run FFT optimization
+finishes quicker on a faster CPU.
 
 ## Getting help & reporting bugs
 

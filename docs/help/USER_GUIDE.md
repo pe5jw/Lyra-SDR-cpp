@@ -23,6 +23,7 @@ not programmers — if you can click a menu, you can use this.
 ## Contents
 
 - [Why "Lyra"?](#why-lyra)
+- [System requirements](#system-requirements)
 - [Getting started](#getting-started)
 - [The header (top toolbar)](#the-header-top-toolbar)
 - [The status bar (bottom — HL2 telemetry)](#the-status-bar-bottom--hl2-telemetry)
@@ -125,6 +126,53 @@ Python Lyra — same spirit, no Python and no GIL anywhere. Licensed
 **GPL v3 or later**, to align with the wider openHPSDR / WDSP ecosystem.
 
 73 and good DX.
+
+---
+
+## System requirements
+
+Lyra is a native **64-bit Windows** application. Its panadapter and waterfall
+render on the GPU, so graphics capability matters more here than in a typical
+desktop app — but Lyra runs comfortably on modest hardware, and integrated
+graphics are fine.
+
+| Component | Minimum | Recommended | Maxed+ |
+|---|---|---|---|
+| **Operating system** | Windows 10 64-bit, **v1809 (build 17763)** or newer; or Windows 11. (32-bit not supported.) | Windows 11, or Windows 10 22H2 | Windows 11, current release |
+| **CPU (Intel)** | 4th-gen Core (Haswell, ~2013) or newer — e.g. Core i3-4000 series | Core i5 / i7, 10th-gen or newer | Core i7 / i9, 12th-gen or newer |
+| **CPU (AMD)** | Any Ryzen, or an AVX-capable FX/A-series | Ryzen 5 / 7, 3000-series or newer | Ryzen 7 / 9, 5000-series or newer |
+| **Cores** | Dual-core (quad preferred) | Quad-core+ with AVX2 | High-core-count with AVX2 |
+| **Memory** | 4 GB (8 GB comfortable) | 16 GB | 32 GB |
+| **Graphics** | DirectX 11 / OpenGL 3.3-capable (integrated OK) | **Vulkan 1.1-capable** | **Vulkan 1.3-capable** dedicated GPU with ample VRAM |
+| &nbsp;&nbsp;• NVIDIA | GeForce GT 700-series or newer | GeForce GTX 10-series / RTX or newer | GeForce RTX 30/40-series |
+| &nbsp;&nbsp;• AMD | Radeon HD 7000 (GCN) or newer, incl. integrated | Radeon RX 400/500 / Vega / RX 5000–9000 (RDNA) | Radeon RX 6000/7000/9000 (RDNA 2/3/4) |
+| &nbsp;&nbsp;• Intel | HD Graphics 4000 (Ivy Bridge) or newer / UHD / Iris | UHD 620 / Iris Xe / Arc | Arc A-series or newer |
+| **Storage** | ~300 MB free (SSD recommended) | SSD, ~500 MB free | NVMe Gen4 SSD |
+| **Network** | 100 Mbit **wired** Ethernet to the radio | Gigabit Ethernet, ideally a dedicated NIC | Dedicated Gigabit / 2.5 GbE NIC, wired straight to the radio |
+| **Display** | 1366 × 768 | 1920 × 1080 | Dual / triple monitor; 1440p or 4K |
+
+**About the graphics tiers.** Lyra draws the spectrum and waterfall on the GPU.
+It works on any DirectX 11 / OpenGL-class card (the Minimum tier), but the
+**Vulkan** path is smoother, uses less CPU, and is vendor-neutral — it runs
+equally well on NVIDIA, AMD, and Intel. That's why Recommended and Maxed+ call
+for a Vulkan-capable GPU: it's what lets high-FPS waterfalls scale cleanly
+across large or multiple monitors.
+
+**What the higher tiers actually buy you.** Lyra runs fine on the Recommended
+spec — the extra CPU/GPU headroom in **Maxed+** isn't about *whether* it runs,
+it's about running *everything at once* without the machine breaking a sweat:
+dual receivers, the full TX speech-processing rack, spots, high-refresh
+spectrum and waterfall on a big screen, and comfortable margin for the heavier
+DSP features on the roadmap.
+
+**Two things that matter on any tier:**
+
+- On first launch Lyra tunes its FFT math to your CPU and caches it — a
+  one-time step that takes a few minutes (a faster CPU finishes sooner). You
+  can rebuild it later from **Settings → Backup & Restore** after a CPU change.
+- A **wired** connection to the Hermes Lite is the single biggest factor in
+  glitch-free audio. Wi-Fi in the radio path is the most common cause of pops
+  and dropouts.
 
 ---
 
@@ -2072,8 +2120,8 @@ and every preference (visuals, mode/bandwidths, TX chain, CW, spots,
 weather…) — to a single portable `.lyra` file, and it keeps **automatic
 dated snapshots** so you always have a known-good setup to fall back to.
 
-**Export** — *Export all settings to a file…* writes a `.lyra` you choose.
-Keep it as a backup, or hand it to another operator for your exact setup.
+**Export** — *Export to a file…* writes a `.lyra` you choose. Keep it as a
+backup, or hand it to another operator for your exact setup.
 
 **Snapshots** — Lyra drops an **automatic snapshot every N launches** (set
 the cadence and how many to keep on the tab; 0 launches turns auto off).
@@ -2102,6 +2150,16 @@ window.)
 **Safe to share.** A backup never includes your **radio's address** or the
 **graphics backend** — those are per-machine, so a file is always safe to
 move to another PC or send to a friend.
+
+**Share just a layout.** The same tab has a **Share a layout** group for when
+you only want to pass along your *screen arrangement* — where the panadapter,
+meters, tuning, and other panels sit — not your settings. **Export layout…**
+saves it to a small **`.lyralayout`** file (post it with a screenshot on
+Discord, or email a friend your setup); **Import layout…** drops a
+`.lyralayout` someone sent you straight onto your screen. Only the layout
+travels — never your settings, radio address, or window size — so a shared
+layout lands cleanly on any display. Importing applies it live; use **View →
+Layouts → Save current layout to** a slot afterward if you want to keep it.
 
 ---
 
