@@ -167,6 +167,89 @@ public:
         return s;
     }
 };
+
+// Profile-list variant: same cyan radio-mark + text as PickDelegate, plus a
+// filled bright-green "ACTIVE" pill at the right edge for the on-air profile
+// (flagged via Qt::UserRole + 1 == true).  A solid badge reads far more
+// strongly than coloured text on the selected row.
+class ProfilePickDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &opt,
+               const QModelIndex &idx) const override {
+        const bool sel     = opt.state & QStyle::State_Selected;
+        const bool hover   = opt.state & QStyle::State_MouseOver;
+        const bool enabled = opt.state & QStyle::State_Enabled;
+        const bool active  = idx.data(Qt::UserRole + 1).toBool();
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        if (sel)        p->fillRect(opt.rect, QColor(0x18, 0x3a, 0x49));
+        else if (hover) p->fillRect(opt.rect, QColor(0x20, 0x2a, 0x31));
+        // Radio indicator.
+        const int d  = 13;
+        const int cx = opt.rect.left() + 8 + d / 2;
+        const int cy = opt.rect.center().y();
+        const QColor ring = sel ? QColor(0x4f, 0xd0, 0xff)
+                                : QColor(0x62, 0x72, 0x7e);
+        p->setPen(QPen(ring, 1.6));
+        p->setBrush(Qt::NoBrush);
+        p->drawEllipse(QPointF(cx, cy), d / 2.0, d / 2.0);
+        if (sel) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(0x4f, 0xd0, 0xff));
+            p->drawEllipse(QPointF(cx, cy), d / 4.0, d / 4.0);
+        }
+        // Pill metrics (drawn right AFTER the profile name, not at the far
+        // right edge, so it sits close to the name).
+        QFont bf = opt.font;
+        bf.setBold(true);
+        bf.setPointSizeF(bf.pointSizeF() * 0.85);
+        const QFontMetrics pm(bf);
+        const QString badge = tr("ACTIVE");
+        const int pillW = pm.horizontalAdvance(badge) + 26;  // roomier
+        const int pillH = pm.height() + 4;
+        const int pillGap = 10;
+
+        // Text.
+        QColor fg = !enabled ? QColor(0x6b, 0x76, 0x7e)
+                             : (sel ? QColor(0xff, 0xff, 0xff)
+                                    : QColor(0xcf, 0xd8, 0xdc));
+        const QVariant fgv = idx.data(Qt::ForegroundRole);
+        if (fgv.canConvert<QBrush>()) fg = fgv.value<QBrush>().color();
+        p->setFont(opt.font);
+        const QFontMetrics fm(opt.font);
+        const int textLeft = opt.rect.left() + 8 + d + 8;
+        // Leave room for the pill (+ gaps) after the name when active.
+        const int textRight = active ? (opt.rect.right() - 6 - pillW - pillGap)
+                                     : (opt.rect.right() - 6);
+        const int availW = qMax(0, textRight - textLeft);
+        const QString text = idx.data(Qt::DisplayRole).toString();
+        const QString elided = fm.elidedText(text, Qt::ElideRight, availW);
+        p->setPen(fg);
+        p->drawText(QRect(textLeft, opt.rect.top(), availW, opt.rect.height()),
+                    Qt::AlignVCenter | Qt::AlignLeft, elided);
+
+        // Pill immediately after the name.
+        if (active) {
+            const int px = textLeft + fm.horizontalAdvance(elided) + pillGap;
+            const QRect pill(px, opt.rect.center().y() - pillH / 2,
+                             pillW, pillH);
+            p->setFont(bf);
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(0x1e, 0xd7, 0x60));   // bright green
+            p->drawRoundedRect(pill, pillH / 2.0, pillH / 2.0);
+            p->setPen(QColor(0x06, 0x2a, 0x12));      // dark text on the chip
+            p->drawText(pill, Qt::AlignCenter, badge);
+        }
+        p->restore();
+    }
+    QSize sizeHint(const QStyleOptionViewItem &opt,
+                   const QModelIndex &idx) const override {
+        QSize s = QStyledItemDelegate::sizeHint(opt, idx);
+        s.setHeight(qMax(s.height(), 24));
+        return s;
+    }
+};
 }  // namespace
 
 SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
@@ -1929,6 +2012,58 @@ QWidget *SettingsDialog::buildNetworkTab() {
     return page;
 }
 
+// Best-effort locate of an installed SDRLoggerPlus.exe (Rick + Brent's
+// companion logger).  The NSIS assisted installer lets the user change the
+// install dir, so the Windows uninstall-registry entry is authoritative;
+// falls back to the default per-user / Program Files locations.  Returns ""
+// if not found (and on non-Windows).
+static QString detectSdrLoggerPlusExe() {
+#ifdef _WIN32
+    const QStringList roots = {
+        QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\"
+                       "CurrentVersion\\Uninstall"),
+        QStringLiteral("HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\"
+                       "CurrentVersion\\Uninstall"),
+        QStringLiteral("HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Microsoft\\"
+                       "Windows\\CurrentVersion\\Uninstall"),
+    };
+    for (const QString &root : roots) {
+        QSettings reg(root, QSettings::NativeFormat);
+        const QStringList keys = reg.childGroups();
+        for (const QString &key : keys) {
+            const QString name = reg.value(key + "/DisplayName").toString();
+            if (!name.contains(QStringLiteral("SDRLoggerPlus"),
+                               Qt::CaseInsensitive))
+                continue;
+            const QString loc = reg.value(key + "/InstallLocation").toString();
+            if (!loc.isEmpty()) {
+                const QString exe =
+                    QDir(loc).filePath(QStringLiteral("SDRLoggerPlus.exe"));
+                if (QFileInfo::exists(exe))
+                    return QDir::toNativeSeparators(exe);
+            }
+            QString icon = reg.value(key + "/DisplayIcon").toString();
+            if (!icon.isEmpty()) {
+                icon = icon.section(QLatin1Char(','), 0, 0)
+                           .remove(QLatin1Char('"'));
+                if (QFileInfo::exists(icon))
+                    return QDir::toNativeSeparators(icon);
+            }
+        }
+    }
+    const QStringList bases = {
+        qEnvironmentVariable("LOCALAPPDATA") + "\\Programs\\SDRLoggerPlus",
+        qEnvironmentVariable("PROGRAMFILES")  + "\\SDRLoggerPlus",
+        qEnvironmentVariable("ProgramFiles(x86)") + "\\SDRLoggerPlus",
+    };
+    for (const QString &b : bases) {
+        const QString exe = b + "\\SDRLoggerPlus.exe";
+        if (QFileInfo::exists(exe)) return QDir::toNativeSeparators(exe);
+    }
+#endif
+    return QString();
+}
+
 QWidget *SettingsDialog::buildHardwareTab() {
     // Two-column layout (task #22, operator-flagged 3× — the Hardware
     // tab had grown to ~10 groups + 7 inline form rows + the Transmit
@@ -2245,6 +2380,119 @@ QWidget *SettingsDialog::buildHardwareTab() {
         viewRow->addWidget(viewBtn);
         viewRow->addStretch(1);
         v->addLayout(viewRow);
+
+        form->addRow(grp);
+    }
+
+    // --- Startup: auto-launch companion apps when Lyra opens ---
+    // Global (per-machine, QSettings "autostart/*"), independent of the
+    // per-profile companion launcher.  A promoted SDRLogger+ button (detect /
+    // launch / offer the download page) plus two generic browse-to-app slots.
+    {
+        auto *grp = new QGroupBox(tr("Startup — launch apps when Lyra opens"),
+                                  page);
+        auto *v = new QVBoxLayout(grp);
+        QSettings s;
+
+        // -- promoted SDRLogger+ row --
+        const QString sdrExe = detectSdrLoggerPlusExe();
+        const bool sdrInstalled = !sdrExe.isEmpty();
+        if (sdrInstalled)   // remember the resolved path for the startup hook
+            s.setValue(QStringLiteral("autostart/sdrlogger/path"), sdrExe);
+
+        auto *sdrRow = new QHBoxLayout();
+        auto *sdrBtn = new QPushButton(tr("SDRLogger+"), grp);
+        sdrBtn->setCursor(Qt::PointingHandCursor);
+        sdrBtn->setStyleSheet(QStringLiteral(
+            "QPushButton{background:#0c3a52; color:#7fe0ff; font-weight:bold;"
+            " border:1px solid #1f6f92; border-radius:6px; padding:6px 16px;}"
+            "QPushButton:hover{background:#124b69; border-color:#4fd0ff;}"));
+        sdrBtn->setToolTip(sdrInstalled
+            ? tr("SDRLogger+ is installed — click to launch it now.")
+            : tr("SDRLogger+ isn't installed — click to open the download "
+                 "page."));
+        auto *sdrChk = new QCheckBox(tr("Auto-start with Lyra"), grp);
+        sdrChk->setChecked(
+            s.value(QStringLiteral("autostart/sdrlogger/enabled"), false)
+                .toBool());
+        sdrChk->setEnabled(sdrInstalled);
+        auto *sdrStatus = new QLabel(sdrInstalled
+            ? tr("installed — our companion logger")
+            : tr("not installed — click the button to get it"), grp);
+        sdrStatus->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
+        sdrRow->addWidget(sdrBtn);
+        sdrRow->addWidget(sdrChk);
+        sdrRow->addWidget(sdrStatus, 1);
+        v->addLayout(sdrRow);
+
+        connect(sdrChk, &QCheckBox::toggled, grp, [sdrExe](bool on) {
+            QSettings s2;
+            s2.setValue(QStringLiteral("autostart/sdrlogger/enabled"), on);
+            if (on && !sdrExe.isEmpty())
+                s2.setValue(QStringLiteral("autostart/sdrlogger/path"), sdrExe);
+        });
+        connect(sdrBtn, &QPushButton::clicked, grp, [this, sdrExe]() {
+            if (!sdrExe.isEmpty()) {
+                lyra::profile::CompanionLauncher::launchDetached(sdrExe);
+            } else {
+                QMessageBox::information(this, tr("SDRLogger+"),
+                    tr("SDRLogger+ doesn't appear to be installed.\n\n"
+                       "Opening the download page — install it, then reopen "
+                       "this dialog to enable auto-start."));
+                QDesktopServices::openUrl(QUrl(QStringLiteral(
+                    "https://github.com/N8SDR1/SDRLoggerPlus")));
+            }
+        });
+
+        // -- two generic auto-launch slots --
+        auto addGenericRow = [this, grp, v](int idx) {
+            const QString base =
+                QStringLiteral("autostart/app%1/").arg(idx);
+            QSettings sr;
+            auto *row = new QHBoxLayout();
+            auto *chk = new QCheckBox(grp);
+            chk->setChecked(sr.value(base + "enabled", false).toBool());
+            chk->setToolTip(tr("Auto-start this program when Lyra opens."));
+            auto *path = new QLineEdit(grp);
+            path->setPlaceholderText(
+                tr("Path to a program (.exe / .bat / .cmd) to auto-start"));
+            path->setText(sr.value(base + "path").toString());
+            auto *browse = new QPushButton(tr("Browse…"), grp);
+            row->addWidget(chk);
+            row->addWidget(path, 1);
+            row->addWidget(browse);
+            v->addLayout(row);
+
+            auto save = [base, chk, path]() {
+                QSettings s2;
+                s2.setValue(base + "enabled", chk->isChecked());
+                s2.setValue(base + "path", path->text().trimmed());
+            };
+            connect(chk, &QCheckBox::toggled, grp, [save](bool) { save(); });
+            connect(path, &QLineEdit::editingFinished, grp,
+                    [save]() { save(); });
+            connect(browse, &QPushButton::clicked, grp,
+                    [this, path, save]() {
+                const QString p = QFileDialog::getOpenFileName(
+                    this, tr("Choose a program to auto-start"), path->text(),
+                    tr("Programs (*.exe *.bat *.cmd);;All files (*.*)"));
+                if (!p.isEmpty()) {
+                    path->setText(QDir::toNativeSeparators(p));
+                    save();
+                }
+            });
+        };
+        addGenericRow(1);
+        addGenericRow(2);
+
+        auto *hint = new QLabel(
+            tr("Launched a few seconds after Lyra opens.  Stays on this PC — "
+               "never part of an exported profile."), grp);
+        hint->setWordWrap(true);
+        hint->setStyleSheet(QStringLiteral("QLabel{color:#7c8b97;}"));
+        { QFont f = hint->font(); f.setPointSizeF(f.pointSizeF() * 0.92);
+          hint->setFont(f); }
+        v->addWidget(hint);
 
         form->addRow(grp);
     }
@@ -8043,6 +8291,7 @@ QWidget *SettingsDialog::buildProfilesTab() {
     auto *row = new QHBoxLayout();
     auto *list = new QListWidget(page);
     list->setSelectionMode(QAbstractItemView::SingleSelection);
+    list->setItemDelegate(new ProfilePickDelegate(list));  // radio-mark + ACTIVE pill
     row->addWidget(list, 1);
 
     auto *btnCol = new QVBoxLayout();
@@ -8072,6 +8321,168 @@ QWidget *SettingsDialog::buildProfilesTab() {
         return item ? item->data(Qt::UserRole).toString() : QString();
     };
 
+    // --- selected-profile summary + quick edit ---
+    // Radio-select a profile above; this shows its SAVED core-chain values
+    // and lets you edit + re-save WITHOUT going on air.  "Apply changes"
+    // writes the profile record only (a pure store mutation, never a live
+    // retune / mid-TX concern) — hit Load above to make it live.
+    auto *editGrp = new QGroupBox(tr("Selected profile — view & quick edit"), page);
+    auto *editV   = new QVBoxLayout(editGrp);
+    auto *editHdr = new QLabel(editGrp);
+    editHdr->setWordWrap(true);
+    editHdr->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
+    editV->addWidget(editHdr);
+
+    auto *editGrid = new QGridLayout();
+    editGrid->setHorizontalSpacing(14);
+    editV->addLayout(editGrid);
+
+    auto *rxBwSpin = new QSpinBox(editGrp);
+    rxBwSpin->setRange(0, 20000); rxBwSpin->setSingleStep(50);
+    rxBwSpin->setSuffix(tr(" Hz"));
+    auto *txBwSpin = new QSpinBox(editGrp);
+    txBwSpin->setRange(0, 20000); txBwSpin->setSingleStep(50);
+    txBwSpin->setSuffix(tr(" Hz"));
+    auto *loSpin = new QSpinBox(editGrp);
+    loSpin->setRange(0, 5000); loSpin->setSingleStep(10);
+    loSpin->setSuffix(tr(" Hz"));
+    // TX filter low mirrors the SAME shared low edge (Profile.filterLow —
+    // RX+TX share one low edge today, Task #53).  Shown for RX/TX symmetry;
+    // editing either box moves both.
+    auto *txLoSpin = new QSpinBox(editGrp);
+    txLoSpin->setRange(0, 5000); txLoSpin->setSingleStep(10);
+    txLoSpin->setSuffix(tr(" Hz"));
+    auto *lockChk = new QCheckBox(tr("Lock TX/RX BW"), editGrp);
+
+    auto *micCombo = new QComboBox(editGrp);
+    {
+        const QStringList toks = lyra::ui::Prefs::micSourceTokens();
+        for (int i = 0; i < toks.size(); ++i) {
+            micCombo->addItem(lyra::ui::Prefs::micSourceLabel(toks.at(i)),
+                              toks.at(i));
+            if (!lyra::ui::Prefs::micSourceEnabled(toks.at(i))) {
+                if (auto *m = qobject_cast<QStandardItemModel *>(micCombo->model()))
+                    if (auto *it = m->item(i))
+                        it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+            }
+        }
+    }
+    auto *micGainSpin = new QDoubleSpinBox(editGrp);
+    micGainSpin->setRange(-90.0, 40.0); micGainSpin->setSingleStep(0.5);
+    micGainSpin->setDecimals(1); micGainSpin->setSuffix(tr(" dB"));
+    auto *micBoostChk = new QCheckBox(tr("20 dB mic boost"), editGrp);
+
+    auto *agcCombo = new QComboBox(editGrp);
+    agcCombo->addItem(tr("Off"),    QStringLiteral("off"));
+    agcCombo->addItem(tr("Fast"),   QStringLiteral("fast"));
+    agcCombo->addItem(tr("Medium"), QStringLiteral("med"));
+    agcCombo->addItem(tr("Slow"),   QStringLiteral("slow"));
+
+    auto *levelerChk  = new QCheckBox(tr("Leveler on"), editGrp);
+    auto *phrotChk    = new QCheckBox(tr("PHROT on"), editGrp);
+    auto *autoMuteChk = new QCheckBox(tr("Auto-mute on TX"), editGrp);
+
+    // Grid: RX (cols 0/1) | TX (cols 2/3) columns, Lock beside the
+    // bandwidth row (col 4).
+    editGrid->addWidget(new QLabel(tr("RX bandwidth"), editGrp),  0, 0);
+    editGrid->addWidget(rxBwSpin,                                 0, 1);
+    editGrid->addWidget(new QLabel(tr("TX bandwidth"), editGrp),  0, 2);
+    editGrid->addWidget(txBwSpin,                                 0, 3);
+    editGrid->addWidget(lockChk,                                  0, 4);
+    editGrid->addWidget(new QLabel(tr("RX filter low"), editGrp), 1, 0);
+    editGrid->addWidget(loSpin,                                   1, 1);
+    editGrid->addWidget(new QLabel(tr("TX filter low"), editGrp), 1, 2);
+    editGrid->addWidget(txLoSpin,                                 1, 3);
+    editGrid->addWidget(new QLabel(tr("Mic source"), editGrp),    2, 0);
+    editGrid->addWidget(micCombo,                                 2, 1);
+    editGrid->addWidget(new QLabel(tr("Mic gain"), editGrp),      2, 2);
+    editGrid->addWidget(micGainSpin,                             2, 3);
+    editGrid->addWidget(new QLabel(tr("AGC"), editGrp),           3, 0);
+    editGrid->addWidget(agcCombo,                                 3, 1);
+    editGrid->addWidget(micBoostChk,                             3, 3);
+    editGrid->addWidget(levelerChk,                             4, 1);
+    editGrid->addWidget(phrotChk,                               4, 3);
+    editGrid->addWidget(autoMuteChk,                           5, 1);
+    editGrid->setColumnStretch(5, 1);
+
+    auto *editNotice = new QLabel(
+        tr("Edits the SAVED profile only — click Load above to apply it live."),
+        editGrp);
+    editNotice->setWordWrap(true);
+    {
+        QFont ef = editNotice->font();
+        ef.setPointSizeF(ef.pointSizeF() * 0.92);
+        editNotice->setFont(ef);
+        editNotice->setStyleSheet(QStringLiteral("QLabel{color:#7c8b97;}"));
+    }
+    auto *editDirtyLbl = new QLabel(tr("● You have unsaved changes"), editGrp);
+    editDirtyLbl->setStyleSheet(
+        QStringLiteral("QLabel{color:#f2b134; font-weight:bold;}"));
+    editDirtyLbl->setVisible(false);
+
+    auto *editBtnRow    = new QHBoxLayout();
+    auto *revertEditBtn = new QPushButton(tr("Revert"), editGrp);
+    auto *applyEditBtn  = new QPushButton(tr("Apply changes"), editGrp);
+    revertEditBtn->setToolTip(tr("Discard edits and reload this profile's "
+                                 "saved values."));
+    applyEditBtn->setToolTip(tr("Write these values back into the profile "
+                                "(does not change what's live)."));
+    editBtnRow->addWidget(editNotice, 1);
+    editBtnRow->addWidget(editDirtyLbl);
+    editBtnRow->addWidget(revertEditBtn);
+    editBtnRow->addWidget(applyEditBtn);
+    editV->addLayout(editBtnRow);
+    outer->addWidget(editGrp);
+
+    // Dirty-tracking: the quick-edit widgets differ from the profile's saved
+    // record.  Shows the amber notice + enables Apply/Revert only when there's
+    // something to save.  syncEdit() re-baselines (clean); the widget-change
+    // connects below re-evaluate live.
+    auto editDirty = [this, selectedName, rxBwSpin, txBwSpin, loSpin, lockChk,
+                      micCombo, micGainSpin, micBoostChk, agcCombo, levelerChk,
+                      phrotChk, autoMuteChk]() -> bool {
+        const QString name = selectedName();
+        if (name.isEmpty()) return false;
+        const lyra::profile::Profile p = profiles_->storedProfile(name);
+        if (p.name.isEmpty()) return false;
+        return rxBwSpin->value()   != p.rxBandwidth
+            || txBwSpin->value()   != p.txBandwidth
+            || loSpin->value()     != p.filterLow
+            || lockChk->isChecked() != p.bwLocked
+            || micCombo->currentData().toString() != p.micSource
+            || qAbs(micGainSpin->value() - p.micGainDb) > 0.05
+            || micBoostChk->isChecked() != p.micBoost
+            || agcCombo->currentData().toString() != p.agcMode
+            || levelerChk->isChecked()  != p.levelerOn
+            || phrotChk->isChecked()    != p.phrotEnabled
+            || autoMuteChk->isChecked() != p.autoMuteOnTx;
+    };
+    auto updateEditDirty = [editDirty, editDirtyLbl, applyEditBtn,
+                            revertEditBtn]() {
+        const bool d = editDirty();
+        editDirtyLbl->setVisible(d);
+        applyEditBtn->setEnabled(d);
+        revertEditBtn->setEnabled(d);
+    };
+    // RX/TX filter-low mirror the single shared low edge — editing either
+    // moves both so they always match (guarded so it can't loop).
+    connect(loSpin, QOverload<int>::of(&QSpinBox::valueChanged), editGrp,
+            [txLoSpin](int v) { if (txLoSpin->value() != v) txLoSpin->setValue(v); });
+    connect(txLoSpin, QOverload<int>::of(&QSpinBox::valueChanged), editGrp,
+            [loSpin](int v) { if (loSpin->value() != v) loSpin->setValue(v); });
+    // Re-evaluate dirty on any edit.
+    for (QSpinBox *s : {rxBwSpin, txBwSpin, loSpin, txLoSpin})
+        connect(s, QOverload<int>::of(&QSpinBox::valueChanged), editGrp,
+                [updateEditDirty](int) { updateEditDirty(); });
+    connect(micGainSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            editGrp, [updateEditDirty](double) { updateEditDirty(); });
+    for (QCheckBox *c : {lockChk, micBoostChk, levelerChk, phrotChk, autoMuteChk})
+        connect(c, &QCheckBox::toggled, editGrp,
+                [updateEditDirty](bool) { updateEditDirty(); });
+    for (QComboBox *cb : {micCombo, agcCombo})
+        connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), editGrp,
+                [updateEditDirty](int) { updateEditDirty(); });
+
     // --- companion-app launch (per-machine, NOT part of the profile) ---
     // SECURITY: this binding lives in QSettings under
     // profileLaunch/<profile>/* and is filtered out of every exported
@@ -8085,13 +8496,20 @@ QWidget *SettingsDialog::buildProfilesTab() {
         tr("Launch a program when this profile is selected"), compGrp);
     compForm->addRow(compEnable);
 
+    // Field widths capped so Name/Program/Arguments don't span the whole
+    // (now half-width) companion column.
+    constexpr int kCompFieldW = 340;
     auto *compName = new QLineEdit(compGrp);
     compName->setPlaceholderText(tr("e.g. VarAC"));
+    compName->setMaximumWidth(kCompFieldW);
     compForm->addRow(tr("Program name"), compName);
 
+    // The path field stays wider than Name/Arguments so a full
+    // C:\...\program.exe path is readable.
     auto *cmdRow  = new QHBoxLayout();
     auto *compCmd = new QLineEdit(compGrp);
     compCmd->setPlaceholderText(tr("Full path to the .exe / .bat / .cmd"));
+    compCmd->setMinimumWidth(560);
     auto *browseBtn = new QPushButton(tr("Browse…"), compGrp);
     cmdRow->addWidget(compCmd, 1);
     cmdRow->addWidget(browseBtn);
@@ -8099,6 +8517,7 @@ QWidget *SettingsDialog::buildProfilesTab() {
 
     auto *compArgs = new QLineEdit(compGrp);
     compArgs->setPlaceholderText(tr("Optional command-line arguments"));
+    compArgs->setMaximumWidth(kCompFieldW);
     compForm->addRow(tr("Arguments"), compArgs);
 
     auto *delayRow  = new QHBoxLayout();
@@ -8126,7 +8545,6 @@ QWidget *SettingsDialog::buildProfilesTab() {
         compHint->setFont(hf);
     }
     compForm->addRow(compHint);
-    outer->addWidget(compGrp);
 
     // --- per-family auto-recall bindings ---
     // Sidebands collapse (USB/LSB -> SSB, CWU/CWL -> CW, DIGU/DIGL ->
@@ -8150,7 +8568,13 @@ QWidget *SettingsDialog::buildProfilesTab() {
         if (++bindCol == 2) { bindCol = 0; ++bindRow; }
     }
     bindGrid->setColumnStretch(4, 1);   // push the 2 columns to the left
-    outer->addWidget(bindGrp);
+
+    // Companion (left) + Auto-recall (right) share one row so the lower half
+    // of the tab isn't two tall stacked bands.  Both top-aligned.
+    auto *bottomRow = new QHBoxLayout();
+    bottomRow->addWidget(compGrp, 1);
+    bottomRow->addWidget(bindGrp, 0, Qt::AlignTop);
+    outer->addLayout(bottomRow);
     outer->addStretch(1);
 
     // Push the selected profile's companion fields into the editor and
@@ -8194,9 +8618,74 @@ QWidget *SettingsDialog::buildProfilesTab() {
         companion_->setConfig(name, c);
     };
 
+    // Pull the SELECTED profile's saved core-chain values into the quick-edit
+    // widgets; disable the group when nothing is selected.
+    auto syncEdit = [this, selectedName, editGrp, editHdr, rxBwSpin, txBwSpin,
+                     loSpin, txLoSpin, lockChk, micCombo, micGainSpin,
+                     micBoostChk, agcCombo, levelerChk, phrotChk, autoMuteChk,
+                     updateEditDirty]() {
+        const QString name = selectedName();
+        const bool have = !name.isEmpty();
+        editGrp->setEnabled(have);
+        if (!have) {
+            editHdr->setText(tr("No profile selected."));
+            updateEditDirty();
+            return;
+        }
+        const lyra::profile::Profile p = profiles_->storedProfile(name);
+        const bool active = (name == profiles_->activeName());
+        editHdr->setText(active
+            ? tr("Editing “%1” — currently active; after Apply, Load it again "
+                 "to hear the change.").arg(name)
+            : tr("Editing “%1”").arg(name));
+        const QSignalBlocker b1(rxBwSpin), b2(txBwSpin), b3(loSpin), b4(lockChk),
+            b5(micCombo), b6(micGainSpin), b7(micBoostChk), b8(agcCombo),
+            b9(levelerChk), b10(phrotChk), b11(autoMuteChk), b12(txLoSpin);
+        rxBwSpin->setValue(p.rxBandwidth);
+        txBwSpin->setValue(p.txBandwidth);
+        loSpin->setValue(p.filterLow);
+        txLoSpin->setValue(p.filterLow);   // shared low edge — mirror
+        lockChk->setChecked(p.bwLocked);
+        { int i = micCombo->findData(p.micSource);
+          micCombo->setCurrentIndex(i < 0 ? 0 : i); }
+        micGainSpin->setValue(p.micGainDb);
+        micBoostChk->setChecked(p.micBoost);
+        { int i = agcCombo->findData(p.agcMode);
+          agcCombo->setCurrentIndex(i < 0 ? 2 : i); }  // 2 == "med" default
+        levelerChk->setChecked(p.levelerOn);
+        phrotChk->setChecked(p.phrotEnabled);
+        autoMuteChk->setChecked(p.autoMuteOnTx);
+        updateEditDirty();   // freshly synced == clean
+    };
+
+    // Write the quick-edit widgets back into the selected profile's stored
+    // record (never touches live state).  updateStoredProfile re-evaluates
+    // the "● modified" flag when the active profile's baseline moves.
+    auto applyEdit = [this, selectedName, rxBwSpin, txBwSpin, loSpin, lockChk,
+                      micCombo, micGainSpin, micBoostChk, agcCombo, levelerChk,
+                      phrotChk, autoMuteChk, updateEditDirty]() {
+        const QString name = selectedName();
+        if (name.isEmpty()) return;
+        lyra::profile::Profile p = profiles_->storedProfile(name);
+        if (p.name.isEmpty()) return;   // profile vanished under us
+        p.rxBandwidth  = rxBwSpin->value();
+        p.txBandwidth  = txBwSpin->value();
+        p.filterLow    = loSpin->value();
+        p.bwLocked     = lockChk->isChecked();
+        p.micSource    = micCombo->currentData().toString();
+        p.micGainDb    = micGainSpin->value();
+        p.micBoost     = micBoostChk->isChecked();
+        p.agcMode      = agcCombo->currentData().toString();
+        p.levelerOn    = levelerChk->isChecked();
+        p.phrotEnabled = phrotChk->isChecked();
+        p.autoMuteOnTx = autoMuteChk->isChecked();
+        profiles_->updateStoredProfile(p);
+        updateEditDirty();   // saved == clean again
+    };
+
     // Repopulate the list + per-mode combos + status from the store.
     // Captured raw pointers outlive the closures (children of the dialog).
-    auto refresh = [this, list, statusLbl, modeCombos, syncCompanion]() {
+    auto refresh = [this, list, statusLbl, modeCombos, syncCompanion, syncEdit]() {
         const QStringList names = profiles_->names();
         const QString active = profiles_->activeName();
         const QString def    = profiles_->defaultName();
@@ -8205,10 +8694,10 @@ QWidget *SettingsDialog::buildProfilesTab() {
         list->clear();
         for (const QString &n : names) {
             QString label = n;
-            if (n == active) label += tr("  (active)");
             if (n == def)    label += tr("  [default]");
             auto *item = new QListWidgetItem(label, list);
-            item->setData(Qt::UserRole, n);   // the raw name
+            item->setData(Qt::UserRole, n);            // the raw name
+            item->setData(Qt::UserRole + 1, n == active);  // drives ACTIVE pill
             if (n == active) {
                 QFont f = item->font();
                 f.setBold(true);
@@ -8241,6 +8730,7 @@ QWidget *SettingsDialog::buildProfilesTab() {
         }
 
         syncCompanion();   // selection may have moved with the list rebuild
+        syncEdit();        // re-sync the quick-edit panel to the selection
     };
 
     refresh();
@@ -8347,9 +8837,16 @@ QWidget *SettingsDialog::buildProfilesTab() {
     // --- companion-app field wiring ---
     // Reload the fields whenever the list selection moves.
     connect(list, &QListWidget::currentItemChanged, this,
-            [syncCompanion](QListWidgetItem *, QListWidgetItem *) {
+            [syncCompanion, syncEdit](QListWidgetItem *, QListWidgetItem *) {
         syncCompanion();
+        syncEdit();
     });
+
+    // Quick-edit Apply / Revert.
+    connect(applyEditBtn, &QPushButton::clicked, this,
+            [applyEdit]() { applyEdit(); });
+    connect(revertEditBtn, &QPushButton::clicked, this,
+            [syncEdit]() { syncEdit(); });
 
     // Enable tick: persist + re-gate the sub-controls.
     connect(compEnable, &QCheckBox::toggled, this,

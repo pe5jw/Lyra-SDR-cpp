@@ -146,6 +146,22 @@ void ProfileManager::onModeChanged(const QString &mode) {
     load(bound);
 }
 
+void ProfileManager::updateStoredProfile(const Profile &p) {
+    if (p.name.isEmpty() || !store_.contains(p.name)) return;
+    store_.put(p);   // overwrite the record; order/active/default untouched
+    // Editing the ACTIVE profile's saved record moves the baseline with it;
+    // live state is unchanged, so re-evaluate "● modified" (live vs new
+    // baseline).  Non-active edits don't touch the baseline -> no re-eval.
+    // Deliberately NO namesChanged emit: the name/order didn't change, and
+    // a rebuild would bounce the Settings list selection off the row the
+    // operator is editing.
+    if (p.name == store_.active()) {
+        baseline_ = p;
+        hasBaseline_ = true;
+        refreshModified();
+    }
+}
+
 void ProfileManager::refreshModified() {
     if (applying_) return;       // mid-apply: capture is transient, ignore
     const bool m = isModified();

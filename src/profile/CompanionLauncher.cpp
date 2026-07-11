@@ -93,7 +93,8 @@ bool CompanionLauncher::testLaunch(const QString &command, const QString &args) 
     return startApp(command, args);
 }
 
-bool CompanionLauncher::startApp(const QString &command, const QString &args) {
+bool CompanionLauncher::launchDetached(const QString &command,
+                                       const QString &args) {
     const QString cmd = command.trimmed();
     if (cmd.isEmpty()) return false;
     const QStringList argList =
@@ -101,17 +102,18 @@ bool CompanionLauncher::startApp(const QString &command, const QString &args) {
     const QString workDir = QFileInfo(cmd).absolutePath();
     const QString suffix  = QFileInfo(cmd).suffix().toLower();
 
-    bool ok = false;
     if (suffix == QLatin1String("bat") || suffix == QLatin1String("cmd")) {
         // A .bat/.cmd is not an executable — run it through the shell.
         QStringList full;
         full << QStringLiteral("/c") << cmd << argList;
-        ok = QProcess::startDetached(QStringLiteral("cmd.exe"), full, workDir);
-    } else {
-        ok = QProcess::startDetached(cmd, argList, workDir);
+        return QProcess::startDetached(QStringLiteral("cmd.exe"), full, workDir);
     }
+    return QProcess::startDetached(cmd, argList, workDir);
+}
 
-    const QString shown = QFileInfo(cmd).fileName();
+bool CompanionLauncher::startApp(const QString &command, const QString &args) {
+    const bool ok = launchDetached(command, args);
+    const QString shown = QFileInfo(command.trimmed()).fileName();
     if (ok) emit statusMessage(tr("Launched %1.").arg(shown));
     else    emit statusMessage(
         tr("Couldn't launch %1 — check the path.").arg(shown));

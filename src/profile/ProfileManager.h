@@ -64,6 +64,17 @@ public:
     Q_INVOKABLE void bindMode(const QString &family, const QString &name);
     Q_INVOKABLE void unbindMode(const QString &family);
 
+    // --- Settings quick-edit: view/edit a profile's SAVED values ---
+    // storedProfile() reads a stored record by name ({} if absent).
+    // updateStoredProfile() writes edited values back into that record.
+    // This is a PURE store mutation -- it does NOT apply to live state (the
+    // operator hits Load for that), so it can never surprise-retune or fight
+    // the mid-TX guard.  If the edited profile is the active one, its
+    // baseline moves with it and the "● modified" flag is re-evaluated
+    // against the unchanged live state.  No-op for an unknown name.
+    Profile storedProfile(const QString &name) const { return store_.get(name); }
+    void     updateStoredProfile(const Profile &p);
+
     // Map a specific demod mode to its binding family.  USB/LSB->SSB,
     // CWU/CWL->CW, DIGU/DIGL->Digital; AM/SAM/DSB/FM stand alone; any
     // other mode maps to itself.  onModeChanged() + the Settings bind

@@ -109,6 +109,7 @@ std::atomic<bool> g_shutdown_complete{false};
 #include "profile/ProfileManager.h"   // Stage-0 TX/RX profiles
 #include "profile/ProfileBindings.h"
 #include "profile/ProfileStore.h"
+#include "profile/CompanionLauncher.h"   // startup auto-launch (Settings → Hardware)
 #include <QSettings>
 #include "logbuffer.h"
 #include "theme.h"
@@ -1741,6 +1742,32 @@ int main(int argc, char *argv[])
             win->show();
             win->raise();
             win->activateWindow();
+        }
+    });
+
+    // --- Startup auto-launch (Settings → Hardware → Startup) ---
+    // Fire the operator's enabled companion apps a few seconds after the UI
+    // is up, so Lyra's CAT/TCI servers are listening first.  Fire-and-forget
+    // (closing Lyra never kills them).  Staggered so several apps don't fight
+    // for CPU/audio at once.  Runs regardless of which show()-path ran above.
+    QTimer::singleShot(2500, &app, [&app]() {
+        QSettings s;
+        struct Slot { const char *en; const char *path; const char *args; };
+        const Slot appSlots[] = {
+            {"autostart/sdrlogger/enabled", "autostart/sdrlogger/path", nullptr},
+            {"autostart/app1/enabled", "autostart/app1/path", nullptr},
+            {"autostart/app2/enabled", "autostart/app2/path", nullptr},
+        };
+        int n = 0;
+        for (const auto &sl : appSlots) {
+            if (!s.value(sl.en, false).toBool()) continue;
+            const QString path = s.value(sl.path).toString().trimmed();
+            if (path.isEmpty()) continue;
+            const QString args =
+                sl.args ? s.value(sl.args).toString() : QString();
+            QTimer::singleShot(n++ * 1500, &app, [path, args]() {
+                lyra::profile::CompanionLauncher::launchDetached(path, args);
+            });
         }
     });
 

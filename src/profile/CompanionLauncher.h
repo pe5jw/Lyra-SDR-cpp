@@ -50,6 +50,13 @@ public:
     // "Test" button.  Returns false + emits statusMessage on failure.
     bool   testLaunch(const QString &command, const QString &args);
 
+    // Fire-and-forget launch with no instance / no signals — used by the
+    // global startup auto-launch (Settings → Hardware → Startup), which has
+    // no per-profile launcher.  Same .bat/.cmd-through-cmd.exe + working-dir
+    // handling as the profile companion launch.  Returns true on spawn.
+    static bool launchDetached(const QString &command,
+                               const QString &args = QString());
+
 signals:
     void statusMessage(const QString &msg);
 
