@@ -33,6 +33,7 @@ namespace lyra::solar { class SolarService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
 namespace lyra::tx { class ClipBank; class VoiceKeyer; }
+namespace lyra::recorder { class RecorderEngine; }
 namespace lyra::ui {
 
 class ProfileUi;
@@ -132,6 +133,9 @@ private:
     // module, with the four service objects set as context properties
     // BEFORE the source loads.
     QQuickWidget *makeQuick(const QString &qmlFile);
+    // #201 — grab the panadapter+waterfall to a PNG in the active session
+    // folder (driven by RecorderEngine::snapshotDue while recording).
+    void captureRecorderSnapshot();
     // Wrap a QML panel in a movable/floatable/closable QDockWidget,
     // register it in docks_, and dock it into <area>.  <topic> drives
     // the title-bar "?" badge (Help guide / Settings).
@@ -236,6 +240,10 @@ private:
 
     QObject *discovery_  = nullptr;
     QObject *stream_     = nullptr;
+    // Session recorder (#201): engine + the always-visible status-bar "● REC"
+    // chip (shown only while recording; click-to-stop).
+    lyra::recorder::RecorderEngine *recorder_ = nullptr;
+    QToolButton                    *recChip_  = nullptr;
     QObject *wdsp_       = nullptr;
     QObject *wdspEngine_ = nullptr;
     Prefs   *prefs_      = nullptr;

@@ -50,6 +50,8 @@ struct RecorderConfig {
 
 class RecorderEngine : public QObject {
     Q_OBJECT
+    // QML-facing state (the Recorder panel + status chip bind to this).
+    Q_PROPERTY(bool recording READ isRecording NOTIFY recordingChanged)
 public:
     explicit RecorderEngine(QObject *parent = nullptr);
     ~RecorderEngine() override;

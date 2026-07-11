@@ -43,6 +43,8 @@
 #include "tx/ClipBank.h"
 #include "tx/ClipRecorder.h"         // #89 C1 — recorder() mic-record tap feed
 #include "tx/ClipRecorderPlayer.h"   // #89 B1 — player() seams (KeyFn/BlockedFn/fillBlock)
+#include "recorder/RecorderEngine.h" // #201 — session recorder engine
+#include <QImage>                    // #201 — panadapter snapshot grab
 #include "tx/VoiceKeyer.h"
 #include "wire/Ep6RecvThread.h"       // #89 B1 — ep6Thread().set_tx_clip_source(...)
 #include "settingsdialog.h"
@@ -325,6 +327,42 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         "Kill-test (§15.20): taskkill /F /IM lyra.exe mid-key; PA must "
         "drop to zero within ~13 sec (gateware EP2 watchdog)."));
     statusBar()->addPermanentWidget(hl2TelemLabel_);
+
+    // ── Session recorder (#201) — engine + always-visible "● REC" chip ──
+    // The engine is headless; the audio feed + Recorder control panel land in
+    // a later stage.  This wires the safety indicator (shown ONLY while
+    // recording, click-to-stop) + the pan/waterfall snapshot capture, and
+    // exposes the engine to QML (makeQuick sets the "Recorder" context prop).
+    recorder_ = new lyra::recorder::RecorderEngine(this);
+    recChip_ = new QToolButton(this);
+    recChip_->setAutoRaise(true);
+    recChip_->setCursor(Qt::PointingHandCursor);
+    recChip_->setToolTip(tr("Recording — click to stop."));
+    recChip_->setStyleSheet(QStringLiteral(
+        "QToolButton{color:#ff5555;font-family:Consolas,Menlo,monospace;"
+        "font-weight:bold;padding:0 8px;border:0;}"));
+    recChip_->hide();
+    statusBar()->addPermanentWidget(recChip_);
+    connect(recChip_, &QToolButton::clicked, this,
+            [this] { if (recorder_) recorder_->stop(); });
+    connect(recorder_, &lyra::recorder::RecorderEngine::recordingChanged, this,
+            [this](bool on) {
+                recChip_->setVisible(on);
+                if (on) recChip_->setText(tr("● REC 00:00:00"));
+            });
+    connect(recorder_, &lyra::recorder::RecorderEngine::elapsed, this,
+            [this](qint64 ms) {
+                const qint64 s = ms / 1000;
+                recChip_->setText(QStringLiteral("● REC %1:%2:%3")
+                    .arg(s / 3600,      2, 10, QLatin1Char('0'))
+                    .arg((s / 60) % 60, 2, 10, QLatin1Char('0'))
+                    .arg(s % 60,        2, 10, QLatin1Char('0')));
+            });
+    connect(recorder_, &lyra::recorder::RecorderEngine::error, this,
+            [this](const QString &m) { statusBar()->showMessage(m, 8000); });
+    connect(recorder_, &lyra::recorder::RecorderEngine::snapshotDue, this,
+            [this] { captureRecorderSnapshot(); });
+
     if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
         connect(st, &lyra::ipc::HL2Stream::statsChanged, this,
                 &MainWindow::refreshHl2TelemetryStrip);
@@ -765,6 +803,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("Clips"), clipBank_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("VoiceKeyer"), voiceKeyer_);
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Recorder"), recorder_);   // #201 session recorder
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -791,6 +831,25 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
                 this, SLOT(syncCollapsibleDock()));
     }
     return qw;
+}
+
+void MainWindow::captureRecorderSnapshot() {
+    // #201 — fired by RecorderEngine::snapshotDue while recording.  Grabs the
+    // panadapter dock's QQuickWidget framebuffer (the spectrum + waterfall as
+    // displayed — RX signal on receive, TX on transmit) to a PNG in the
+    // session folder, then records the manifest entry.  A no-op if the panel
+    // is hidden / not yet rendered (grabFramebuffer returns a null image).
+    if (!recorder_ || !recorder_->isRecording()) return;
+    QDockWidget *dock = docks_.value(QStringLiteral("panadapter"));
+    if (!dock) return;
+    auto *qw = dock->findChild<QQuickWidget *>();
+    if (!qw) return;
+    const QImage img = qw->grabFramebuffer();
+    if (img.isNull()) return;
+    const QString path = recorder_->reserveSnapshotFile();
+    if (!img.save(path, "PNG")) return;
+    const qint64 freq = stream_ ? stream_->property("rx1FreqHz").toLongLong() : 0;
+    recorder_->noteSnapshot(path, freq, prefs_ ? prefs_->mode() : QString());
 }
 
 void MainWindow::syncCollapsibleDock() {
