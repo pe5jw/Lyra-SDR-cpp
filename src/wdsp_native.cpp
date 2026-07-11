@@ -678,6 +678,14 @@ int WdspNative::runWisdomCall(const QString &callDir,
                 "<b>Tip · Calibrate</b><br>Zero-beat your radio against WWV "
                 "with the built-in frequency-calibration tool."),
             QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>Capture a few seconds of your band "
+                "noise, then subtract it — Lyra's captured-noise profile "
+                "pulls signals out of a noisy floor."),
+            QCoreApplication::translate("wdsp",
+                "<b>Tip · Logging</b><br>Pair Lyra with SDRLogger+ over the "
+                "Combo link — spots land on your panadapter and a CW macro "
+                "can log the QSO for you."),
+            QCoreApplication::translate("wdsp",
                 "<b>Almost ready…</b><br>This one-time step tunes the DSP "
                 "math for <i>your</i> CPU, so every launch after this is "
                 "quick."),
