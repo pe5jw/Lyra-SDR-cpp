@@ -44,6 +44,7 @@ not programmers — if you can click a menu, you can use this.
 - [Tuner (manual ATU memory)](#tuner-manual-atu-memory)
 - [Frequency calibration (WWV / time station)](#frequency-calibration-wwv--time-station)
 - [Profiles (TX/RX chain presets)](#profiles-txrx-chain-presets)
+- [Auto-starting apps at launch](#auto-starting-apps-at-launch)
 - [Solar / Propagation panel](#solar--propagation-panel)
 - [Weather alerts](#weather-alerts)
 - [Updates](#updates)
@@ -1886,13 +1887,23 @@ TX or Display panels). It has just three things:
 
 The complete manager lives in **Settings → Profiles**:
 
-- A **list** of your profiles (the active one is **bold** and tagged
-  `(active)`; the startup default is tagged `[default]`).
+- A **list** of your profiles — each with a **radio button**; click one to
+  select it. The active (on-air) profile shows a green **`ACTIVE`** badge;
+  the startup default is tagged `[default]`.
 - **Save** (overwrite active), **Save As…** (capture current settings to a
   new name), **Load** (recall the selected profile), **Rename…**,
   **Delete**, and **Set Default** (apply this profile automatically every
   time Lyra starts).
 - A status line showing the active profile and a `● modified` flag.
+- **View & quick edit** — under the list, a panel shows the selected
+  profile's core chain (**RX/TX bandwidth**, filter low, **Lock TX/RX BW**,
+  **mic source / gain / boost**, **AGC**, **Leveler**, **PHROT**,
+  **auto-mute on TX**). Change any of them and click **Apply changes** to
+  save them back into that profile; **Revert** discards your edits. A
+  `● You have unsaved changes` notice appears while edits are pending. This
+  edits the **saved** profile only — it does **not** change what's on the
+  air; click **Load** to apply it live. (The RX and TX *filter low* boxes
+  currently share one value, so editing either moves both.)
 - **Auto-recall by mode family** — one dropdown per family:
   **CW, SSB, Digital, AM, SAM, DSB, FM**. Bind a profile to a family and
   it's recalled automatically whenever you switch into a mode in that
@@ -1927,6 +1938,26 @@ The complete manager lives in **Settings → Profiles**:
   source, flat gain, wide filter) — then changing mode from USB to DIGU
   flips the whole chain for you, but leaves you on the frequency and
   sideband you chose.
+
+---
+
+## Auto-starting apps at launch
+
+**Settings → Hardware → "Startup — launch apps when Lyra opens"** lets you
+have companion programs open automatically a few seconds after Lyra starts
+(long enough for Lyra's CAT and TCI servers to come up first).
+
+- **SDRLogger+** — Lyra's companion logger. If it's installed, the status
+  reads *installed* and you can tick **Auto-start with Lyra**; the button
+  launches it now. If it isn't installed, the button opens the download
+  page so you can grab it.
+- **Two generic slots** — tick the box, **Browse** to any program
+  (`.exe`/`.bat`/`.cmd`), and it starts with Lyra too.
+
+These are **per-PC** settings, kept on your machine and never written into
+an exported profile. Launches are fire-and-forget — closing Lyra never
+closes the apps; close them yourself. (This is separate from the per-profile
+**Companion app** above, which fires only when you *select* that profile.)
 
 ---
 
