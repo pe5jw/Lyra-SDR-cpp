@@ -166,10 +166,14 @@ the **Radio** section. Or just use **▶ Start** on the toolbar:
 
 ### 4. First-launch note (one-time)
 
-The very first time Lyra runs (and after a settings reset), it builds
-optimized signal-processing plans ("FFT WISDOM"). A small window says so;
-it takes a few minutes once, then Lyra opens normally and every launch
-after is fast. Let it finish.
+The very first time Lyra runs (and after a settings reset), it tunes its
+signal-processing math for your CPU — a one-time "FFT optimization". A
+setup window appears with the Lyra logo, a few tips, and a progress bar;
+it takes a few minutes once, then Lyra opens **automatically** and every
+launch after is fast. **Please let it finish and don't close it** — the
+main window opens on its own when it's done. (You can force a fresh
+optimization later from **Settings → Backup & Restore → "Rebuild FFT
+optimization on next start"**, e.g. after a CPU change.)
 
 ### 5. Tune and listen
 
@@ -3907,7 +3911,7 @@ the GPL-licensed components it depends on:
   Used by WDSP internally; bundled as `libfftw3-3.dll` /
   `libfftw3f-3.dll`. Lyra's first-launch FFTW WISDOM build optimises
   FFT plans for the host CPU and caches them under
-  `%APPDATA%\Lyra\fftw\`.
+  `%LOCALAPPDATA%\N8SDR\Lyra-cpp\fftw\`.
 
 ### Contributors
 
