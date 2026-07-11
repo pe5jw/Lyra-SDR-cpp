@@ -215,7 +215,8 @@ inline bool isChipSummonedPanel(const QString &objectName) {
         || objectName == QLatin1String("cwconsole")
         || objectName == QLatin1String("cwdecoder")
         || objectName == QLatin1String("voicekeyer")
-        || objectName == QLatin1String("tuner");
+        || objectName == QLatin1String("tuner")
+        || objectName == QLatin1String("recorder");
 }
 
 // Global tooltip gate — swallows QWidget tooltip events app-wide when the
@@ -362,6 +363,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
             [this](const QString &m) { statusBar()->showMessage(m, 8000); });
     connect(recorder_, &lyra::recorder::RecorderEngine::snapshotDue, this,
             [this] { captureRecorderSnapshot(); });
+    // Supply the engine the CURRENT (freqHz, mode) at start time so the session
+    // folder + manifest are stamped without the engine reaching into the radio.
+    recorder_->setContextProvider([this]() -> QPair<qint64, QString> {
+        const qint64 f = stream_ ? stream_->property("rx1FreqHz").toLongLong() : 0;
+        return qMakePair(f, prefs_ ? prefs_->mode() : QString());
+    });
 
     if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
         connect(st, &lyra::ipc::HL2Stream::statsChanged, this,
@@ -482,11 +489,15 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         st->ep6Thread().set_mic_record_tap(
             [recorder](int n, const double *iq) { recorder->feedMicPairs(iq, n); });
         // #89 C2 — RX-record tap: the post-RX-DSP "what you heard" audio feeds
-        // the recorder while an RX clip records (lock-free no-op otherwise).
+        // the voice-keyer clip recorder while an RX clip records AND the #201
+        // session recorder while a session records (both lock-free no-ops
+        // otherwise — each gates on its own atomic).  One tap, two consumers.
         if (auto *we = qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_)) {
+            auto *sessionRec = recorder_;
             we->setRxRecordTap(
-                [recorder](const double *audio, int n) {
+                [recorder, sessionRec](const double *audio, int n) {
                     recorder->feedRxStereoDup(audio, n);
+                    if (sessionRec) sessionRec->feedAudioDoubles(audio, n, 2);
                 });
         }
     }
@@ -1153,6 +1164,18 @@ void MainWindow::buildDocks() {
                  QStringLiteral("freqcal"), Qt::BottomDockWidgetArea,
                  /*resizable=*/true);
     if (QDockWidget *d = docks_.value(QStringLiteral("freqcal"))) {
+        d->setFloating(true);
+        d->hide();
+    }
+    // #201 Session recorder — opt-in floating tool window (View → Recorder),
+    // hidden by default so it never clutters the front panel.  REC/⏹ + timer
+    // + snapshot toggle; the "● REC" status-bar chip is the always-on safety
+    // light.  Chip-summoned so a layout reset can't force it open.
+    addQuickDock(QStringLiteral("recorder"), tr("Recorder"),
+                 QStringLiteral("RecorderPanel.qml"),
+                 QStringLiteral("recorder"), Qt::RightDockWidgetArea,
+                 /*resizable=*/true);
+    if (QDockWidget *d = docks_.value(QStringLiteral("recorder"))) {
         d->setFloating(true);
         d->hide();
     }

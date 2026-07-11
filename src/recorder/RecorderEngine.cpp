@@ -287,6 +287,60 @@ void RecorderEngine::feedAudio(const float *in, int frames, int channels) {
     }
 }
 
+void RecorderEngine::feedAudioDoubles(const double *in, int frames, int channels) {
+    if (!recording_.load(std::memory_order_acquire) || !in || frames <= 0) return;
+    // Convert doubles → float in a fixed stack chunk, then hand each chunk to
+    // feedAudio (which does the channel-layout mapping).  No allocation.
+    constexpr int kChunk = 2048;                 // frames
+    float tmp[kChunk * 2];
+    const int ch = std::min(channels, 2);
+    int done = 0;
+    while (done < frames) {
+        const int n = std::min(kChunk, frames - done);
+        const int m = n * ch;
+        const double *src = in + size_t(done) * size_t(ch);
+        for (int i = 0; i < m; ++i) tmp[i] = float(src[i]);
+        feedAudio(tmp, n, ch);
+        done += n;
+    }
+}
+
+// ── QML control ──────────────────────────────────────────────────────────────
+void RecorderEngine::setContextProvider(std::function<QPair<qint64, QString>()> fn) {
+    ctxProvider_ = std::move(fn);
+}
+
+void RecorderEngine::toggle() {
+    if (recording_.load(std::memory_order_acquire)) {
+        stop();
+        return;
+    }
+    qint64 freqHz = 0;
+    QString mode;
+    if (ctxProvider_) {
+        const QPair<qint64, QString> ctx = ctxProvider_();
+        freqHz = ctx.first;
+        mode   = ctx.second;
+    }
+    start(freqHz, mode);
+}
+
+void RecorderEngine::setSnapshotsOn(bool on) {
+    if (cfg_.snapshotsOn == on) return;
+    cfg_.snapshotsOn = on;
+    saveConfig();
+    // Live-toggle the snapshot cadence if a session is already running.
+    if (recording_.load(std::memory_order_acquire)) {
+        if (on) {
+            const int ivl = std::max(1, int(60000.0 / cfg_.snapshotsPerMin));
+            snapTimer_->start(ivl);
+        } else {
+            snapTimer_->stop();
+        }
+    }
+    emit snapshotsOnChanged(on);
+}
+
 // ── writer thread ────────────────────────────────────────────────────────────
 void RecorderEngine::writerLoop() {
     std::vector<float> buf(65536);

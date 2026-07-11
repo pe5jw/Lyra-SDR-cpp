@@ -21,9 +21,11 @@
 #include <QJsonArray>
 #include <QMutex>
 #include <QObject>
+#include <QPair>
 #include <QString>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -52,6 +54,13 @@ class RecorderEngine : public QObject {
     Q_OBJECT
     // QML-facing state (the Recorder panel + status chip bind to this).
     Q_PROPERTY(bool recording READ isRecording NOTIFY recordingChanged)
+    // Live elapsed (ms) while recording — the panel timer binds to this and
+    // updates on the ~1 Hz elapsed() tick.
+    Q_PROPERTY(qint64 elapsedMs READ elapsedMs NOTIFY elapsed)
+    // Master snapshot on/off (audio-only when off).  The panel toggle binds
+    // here; persisted to QSettings on change.
+    Q_PROPERTY(bool snapshotsOn READ snapshotsOn WRITE setSnapshotsOn
+               NOTIFY snapshotsOnChanged)
 public:
     explicit RecorderEngine(QObject *parent = nullptr);
     ~RecorderEngine() override;
@@ -67,8 +76,22 @@ public:
 
     // ── State ───────────────────────────────────────────────────────────
     bool    isRecording() const { return recording_; }
+    bool    snapshotsOn() const { return cfg_.snapshotsOn; }
     QString sessionDir()  const { return sessionDir_; }
     qint64  elapsedMs()   const { return recording_ ? clock_.elapsed() : 0; }
+
+    // The panel-facing snapshot toggle (persists + live-updates the running
+    // snapshot timer if a session is active).
+    void    setSnapshotsOn(bool on);
+
+    // QML control: start (reading freq/mode from the context provider) if idle,
+    // else stop.  The panel REC/⏹ button and the status chip both call this.
+    Q_INVOKABLE void toggle();
+
+    // MainWindow installs a provider that returns the CURRENT (freqHz, mode) at
+    // start time — so toggle()/start() stamp the folder + manifest correctly
+    // without the engine reaching into the radio.  Set once at construction.
+    void setContextProvider(std::function<QPair<qint64, QString>()> fn);
 
     // Total bytes currently under the record root (for the storage-cap UI).
     qint64  recordingsSizeBytes() const;
@@ -82,6 +105,11 @@ public:
     // RT-safe (audio thread).  interleaved float [-1,+1]; channels 1 or 2.
     void feedAudio(const float *interleaved, int frames, int channels);
 
+    // RT-safe doubles variant — the WdspEngine RX-record tap hands post-RX-DSP
+    // audio as interleaved doubles (stereo-dup, L==R).  Converts to float in a
+    // fixed stack chunk (no allocation) and feeds feedAudio().
+    void feedAudioDoubles(const double *interleaved, int frames, int channels);
+
     // ── Snapshots (Stage 2 hooks) ───────────────────────────────────────
     // Reserve the next numbered PNG path in the session folder (does not
     // create the file).  The UI grabber saves its QImage there, then calls
@@ -94,6 +122,7 @@ signals:
     void recordingChanged(bool on);
     void elapsed(qint64 ms);          // ~1 Hz while recording (for the chip)
     void snapshotDue();               // Stage-2 UI grabs a frame on this
+    void snapshotsOnChanged(bool on);
     void error(const QString &msg);
     void sessionFinished(const QString &dir);
 
@@ -109,6 +138,9 @@ private:
     QString audioPath(int index) const;   // <sessionDir>/audio_001.wav
 
     RecorderConfig cfg_;
+
+    // MainWindow-supplied "(freqHz, mode) right now" — read at start().
+    std::function<QPair<qint64, QString>()> ctxProvider_;
 
     std::atomic<bool> recording_{false};
     std::atomic<bool> running_{false};      // writer thread run flag

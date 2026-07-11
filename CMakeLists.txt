@@ -429,6 +429,7 @@ qt_add_qml_module(lyra
         src/qml/CwDecoderPanel.qml
         src/qml/CalibrationPanel.qml
         src/qml/VoiceKeyerPanel.qml
+        src/qml/RecorderPanel.qml
         src/qml/TrashCan.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
