@@ -77,6 +77,21 @@ using fn_RXANBPSetShiftFrequency_t = void (*)(int channel, double fshift);
 using fn_RXASetMP_t            = void (*)(int channel, int mp);
 using fn_TXASetMP_t            = void (*)(int channel, int mp);
 using fn_WDSPwisdom_t          = int  (*)(char *directory);
+using fn_wisdom_get_status_t   = char *(*)();   // live "Planning FFT size N" string
+// WDSP impulse cache (impulse_cache.c -- Warren Pratt NR0V 2024 +
+// Richard Samphire MW0LGE 2025).  Caches computed filter impulse
+// responses (fir_bandpass / min-phase / EQ / filter-curve buckets,
+// FNV-1a hashed) to impulse_cache.dat so the per-launch filter
+// recompute the reference avoids is avoided here too.  SEPARATE from
+// FFTW wisdom: wisdom caches FFT *plans* (minutes); this caches filter
+// *impulse responses* (per-launch recompute).  All are
+// __declspec(dllexport) in impulse_cache.h -- soft-resolved (optional)
+// so a wdsp.dll predating the impulse cache still loads + runs.
+using fn_init_impulse_cache_t    = void (*)(int use);
+using fn_read_impulse_cache_t    = int  (*)(const char *path);
+using fn_save_impulse_cache_t    = int  (*)(const char *path);
+using fn_use_impulse_cache_t     = void (*)(int use);
+using fn_destroy_impulse_cache_t = void (*)();
 // Step 3e level-cal: AGC threshold/slope + panel gain.  SetRXAAGCThresh
 // computes the AGC max_gain from (thresh, size, rate) + the slope-
 // derived var_gain — replacing WDSP's hot create-time default
@@ -392,6 +407,12 @@ struct WdspApi {
     fn_RXASetMP_t            RXASetMP            = nullptr;  // #159 RX filter type
     fn_TXASetMP_t            TXASetMP            = nullptr;  // #159 TX filter type
     fn_WDSPwisdom_t          WDSPwisdom          = nullptr;
+    fn_wisdom_get_status_t   wisdom_get_status   = nullptr;   // optional
+    fn_init_impulse_cache_t    init_impulse_cache    = nullptr;   // optional
+    fn_read_impulse_cache_t    read_impulse_cache    = nullptr;   // optional
+    fn_save_impulse_cache_t    save_impulse_cache    = nullptr;   // optional
+    fn_use_impulse_cache_t     use_impulse_cache     = nullptr;   // optional
+    fn_destroy_impulse_cache_t destroy_impulse_cache = nullptr;   // optional
     fn_SetRXAAGCThresh_t     SetRXAAGCThresh     = nullptr;
     fn_SetRXAAGCSlope_t      SetRXAAGCSlope      = nullptr;
     fn_SetRXAPanelGain1_t    SetRXAPanelGain1    = nullptr;
@@ -594,6 +615,20 @@ private:
     // deferred the main window); false for the import (notice appears
     // only if it unexpectedly rebuilds a rejected cache).
     int runWisdomCall(const QString &callDir, bool showModalImmediately = false);
+
+    // WDSP impulse-cache lifecycle (reference radio.cs CreateDSP /
+    // DestroyDSP parity).  init runs inside ensureWisdom() AFTER the
+    // WDSPwisdom call + BEFORE any OpenChannel: init_impulse_cache(1)
+    // (default-on, no UI toggle for now) then read_impulse_cache() --
+    // UNLESS the FFT wisdom was just rebuilt, in which case the stale
+    // impulse_cache.dat is deleted + the read skipped (the cached
+    // impulses were hashed against the old plan world).  The matching
+    // save_impulse_cache() + destroy_impulse_cache() run in unload()
+    // (fires from ~WdspNative during app destruction, after every
+    // aboutToQuit channel-close handler).  impulseCacheInited_ gates
+    // the save so a never-inited / exports-absent load never touches it.
+    void initImpulseCache(const QString &dir, bool wisdomRebuilt);
+    bool impulseCacheInited_ = false;
 
     // We deliberately keep this as a `void*` so the header doesn't
     // drag windows.h through every translation unit that includes

@@ -36,7 +36,6 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
-#include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -300,6 +299,32 @@ bool WdspNative::resolveSymbols() {
     resolve(api_.RXASetMP,            "RXASetMP");           // #159 RX filter type
     resolve(api_.TXASetMP,            "TXASetMP");           // #159 TX filter type
     resolve(api_.WDSPwisdom,          "WDSPwisdom");
+    // wisdom_get_status is OPTIONAL -- only used to show live "Planning FFT
+    // size N" progress on the first-run splash.  Soft-resolve it directly so
+    // a WDSP build that lacks it (older/other) still loads normally; it is
+    // NOT counted against the required-symbol tally.
+    if (FARPROC pWs = ::GetProcAddress(mod, "wisdom_get_status"))
+        api_.wisdom_get_status =
+            reinterpret_cast<fn_wisdom_get_status_t>(pWs);
+    // WDSP impulse cache exports -- OPTIONAL (a wdsp.dll predating the
+    // impulse cache still loads + runs; the feature just stays off).
+    // Soft-resolve like wisdom_get_status, NOT the hard resolve() (which
+    // counts toward the required-symbol tally).
+    if (FARPROC p = ::GetProcAddress(mod, "init_impulse_cache"))
+        api_.init_impulse_cache =
+            reinterpret_cast<fn_init_impulse_cache_t>(p);
+    if (FARPROC p = ::GetProcAddress(mod, "read_impulse_cache"))
+        api_.read_impulse_cache =
+            reinterpret_cast<fn_read_impulse_cache_t>(p);
+    if (FARPROC p = ::GetProcAddress(mod, "save_impulse_cache"))
+        api_.save_impulse_cache =
+            reinterpret_cast<fn_save_impulse_cache_t>(p);
+    if (FARPROC p = ::GetProcAddress(mod, "use_impulse_cache"))
+        api_.use_impulse_cache =
+            reinterpret_cast<fn_use_impulse_cache_t>(p);
+    if (FARPROC p = ::GetProcAddress(mod, "destroy_impulse_cache"))
+        api_.destroy_impulse_cache =
+            reinterpret_cast<fn_destroy_impulse_cache_t>(p);
     resolve(api_.SetRXAAGCThresh,     "SetRXAAGCThresh");
     resolve(api_.SetRXAAGCSlope,      "SetRXAAGCSlope");
     resolve(api_.SetRXAPanelGain1,    "SetRXAPanelGain1");
@@ -403,6 +428,30 @@ bool WdspNative::resolveSymbols() {
 
 void WdspNative::unload() {
     if (handle_ == nullptr) return;
+
+    // WDSP impulse-cache save + teardown (reference DestroyDSP parity,
+    // radio.cs 164-180) -- runs while the DLL is still loaded.  unload()
+    // fires from ~WdspNative during QApplication destruction, i.e. AFTER
+    // app.exec() returns and every aboutToQuit channel-close handler has
+    // run, so no channel is computing filters concurrently.  save_ persists
+    // the impulses computed this session so the next launch skips the
+    // recompute; destroy_ frees the DLL-global cache + its critical
+    // section before FreeLibrary.  Guarded by impulseCacheInited_ so a
+    // never-inited / exports-absent load is a clean no-op.
+    if (impulseCacheInited_ && api_.save_impulse_cache) {
+        const QString file = QDir::cleanPath(
+            wisdomDir() + QStringLiteral("/impulse_cache.dat"));
+        const QByteArray fileBytes =
+            QDir::toNativeSeparators(file).toLocal8Bit();
+        const int rc = api_.save_impulse_cache(fileBytes.constData());
+        logWisdom(QStringLiteral(
+            "[wdsp] impulse-cache: save_impulse_cache(%1) rc=%2 "
+            "(rc=0 saved)").arg(file).arg(rc));
+    }
+    if (impulseCacheInited_ && api_.destroy_impulse_cache)
+        api_.destroy_impulse_cache();
+    impulseCacheInited_ = false;
+
     ::FreeLibrary(static_cast<HMODULE>(handle_));
     handle_ = nullptr;
     loadedFrom_.clear();
@@ -575,6 +624,31 @@ int WdspNative::runWisdomCall(const QString &callDir,
             "background:rgba(128,128,128,60);}"
             "QProgressBar::chunk{border-radius:4px;background:#2f81f7;}"));
         v->addWidget(bar);
+
+        // Live "Planning … FFT size N" progress, read straight from WDSP's
+        // wisdom_get_status() -- the SAME string Thetis prints to its
+        // console.  Shows real progress under the rotating tips so the
+        // operator sees the build genuinely advancing (reassuring on slow
+        // hardware where it can run many minutes).  Optional: only wired if
+        // the DLL exported the symbol (soft-resolved in resolveSymbols()).
+        auto *prog = new QLabel(dlg);
+        prog->setAlignment(Qt::AlignHCenter);
+        prog->setStyleSheet(QStringLiteral(
+            "font-family:Consolas,'Cascadia Mono',monospace;"
+            "font-size:11px; color:#7fd7ff;"));
+        v->addWidget(prog);
+        if (api_.wisdom_get_status) {
+            auto *progTimer = new QTimer(dlg);
+            progTimer->setInterval(200);
+            QObject::connect(progTimer, &QTimer::timeout, prog,
+                             [this, prog]() {
+                if (const char *s = api_.wisdom_get_status()) {
+                    const QString t = QString::fromLatin1(s).simplified();
+                    if (!t.isEmpty()) prog->setText(t);
+                }
+            });
+            progTimer->start();
+        }
 
         auto *status = new QLabel(QCoreApplication::translate("wdsp",
             "<b>Optimizing FFT plans — one-time setup.</b>  Lyra is "
@@ -772,6 +846,7 @@ bool WdspNative::ensureWisdom() {
             "[wdsp] wisdom: loading cached plans from %1").arg(dir));
         QElapsedTimer t; t.start();
         const int rc = runWisdomCall(dir);
+        const bool rebuilt = (rc == 1);
         if (rc == 1) {
             // WDSPwisdom returns 1 ONLY when it rebuilt the plans --
             // i.e. the cached file was present but REJECTED by FFTW
@@ -790,81 +865,114 @@ bool WdspNative::ensureWisdom() {
                 "[wdsp] wisdom: loaded cached plans in %1 ms (rc=%2)")
                 .arg(t.elapsed()).arg(rc));
         }
+        initImpulseCache(dir, rebuilt);
         return true;
     }
 
-    // ---- Slow path: no cache -> build in-process, then publish. ----
+    // ---- Slow path: no cache -> build IN PLACE, exactly like Thetis. ----
+    // Thetis (radio.cs CreateDSP) calls WDSPwisdom(finalDir) directly --
+    // WDSP writes wdspWisdom00 straight into the cache folder, no temp
+    // dir, no rename.  We mirror that: build directly into `dir`.  An
+    // earlier version built into a QTemporaryDir + MoveFileExW'd it into
+    // place for "atomicity", but that extra file op is (a) something
+    // Thetis does NOT do and (b) a second write/rename on %LOCALAPPDATA%
+    // that a folder-shield / antivirus can block AFTER the plan succeeds
+    // -- leaving the final wdspWisdom00 absent so every launch rebuilds.
+    // Thetis proves the atomicity is unnecessary: if a build is
+    // interrupted, the partial wdspWisdom00 is simply re-rejected by FFTW
+    // on the next launch and rebuilt -- the SAME self-correcting path as a
+    // missing file.  So: write in place, one operation, like Thetis.
     logWisdom(QStringLiteral(
-        "[wdsp] wisdom: building (one-time, may take several "
+        "[wdsp] wisdom: building IN PLACE (one-time, may take several "
         "minutes; a 'please wait' notice shows and Lyra stays "
-        "responsive)"));
-    logWisdom(QStringLiteral(
-        "[wdsp] wisdom: target dir = %1").arg(dir));
-
-    // Build into a private temp subdir on the SAME volume as the final
-    // cache, then atomically rename into place below -- so a killed or
-    // blocked build can never leave a truncated wdspWisdom00 that a later
-    // launch would feed to WDSP (which would silently drop into the
-    // in-process FFTW_PATIENT rebuild branch and freeze the GUI).
-    // "Present ⇒ valid."
-    QTemporaryDir buildTmp(
-        QDir(dir).filePath(QStringLiteral(".build-XXXXXX")));
-    buildTmp.setAutoRemove(true);
-    if (!buildTmp.isValid()) {
-        logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — could not create temp build "
-            "dir under %1: %2").arg(dir, buildTmp.errorString()));
-        return false;
-    }
-    const QString buildDir = buildTmp.path();
+        "responsive) -- writing directly to %1, Thetis-style").arg(dir));
 
     QElapsedTimer t; t.start();
     // Build the plans IN-PROCESS on a worker thread (no self-spawned
     // child -- that pattern trips antivirus SONAR: an unsigned exe
     // launching a copy of itself).  WDSPwisdom writes wdspWisdom00 into
-    // buildDir AND leaves the freshly-planned wisdom live in FFTW's
+    // `dir` AND leaves the freshly-planned wisdom live in FFTW's
     // process-global state, so once this returns the running process is
-    // ready -- NO separate re-import needed (unlike the old subprocess
-    // path, where the build happened in a child).  runWisdomCall keeps
-    // the GUI responsive + tames WDSP's AllocConsole.  Show the modal
-    // immediately: the caller (main.cpp) has deferred the main window for
-    // this build, so there is nothing to sit behind and no blank gap.
-    const int rc = runWisdomCall(buildDir, /*showModalImmediately=*/true);
+    // ready -- NO separate re-import needed.  runWisdomCall keeps the GUI
+    // responsive + tames WDSP's AllocConsole.  Show the modal immediately:
+    // main.cpp has deferred the main window for this build, so there is
+    // nothing to sit behind and no blank gap.
+    const int rc = runWisdomCall(dir, /*showModalImmediately=*/true);
 
-    // Verify the built file exists + is non-empty BEFORE publishing.
-    const QString builtFile =
-        QDir(buildDir).filePath(QString::fromLatin1(kWisdomFilename));
-    const QFileInfo builtInfo(builtFile);
-    if (!builtInfo.exists() || builtInfo.size() == 0) {
-        logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — no usable wisdom file in the "
-            "temp build dir %1 after WDSPwisdom (rc=%2) -- write blocked / "
-            "permissions?").arg(buildDir).arg(rc));
-        return false;
-    }
-    // Atomic publish for the NEXT launch's fast import: rename temp ->
-    // final (same volume).  MOVEFILE_WRITE_THROUGH flushes to disk before
-    // returning; REPLACE_EXISTING overwrites a stale cache.  On failure,
-    // log the EXACT Win32 error (e.g. 'Access is denied' = a folder
-    // shield / antivirus write block).
+    // Verify the file landed (Thetis just trusts the write; we log so a
+    // "rebuilds every launch" report has an unambiguous cause).  A missing
+    // / empty file here = the write itself was blocked (folder shield /
+    // permissions) -- the ONE thing an antivirus can still do, but now
+    // there is no separate rename step to also block.
     const QString finalFile = wisdomFilePath();
-    const std::wstring srcW =
-        QDir::toNativeSeparators(builtFile).toStdWString();
-    const std::wstring dstW =
-        QDir::toNativeSeparators(finalFile).toStdWString();
-    if (!::MoveFileExW(srcW.c_str(), dstW.c_str(),
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        const DWORD err = ::GetLastError();
+    const QFileInfo finalInfo(finalFile);
+    if (!finalInfo.exists() || finalInfo.size() == 0) {
         logWisdom(QStringLiteral(
-            "[wdsp] wisdom: BUILD FAILED — could not publish %1 -> %2: %3")
-            .arg(builtFile, finalFile, winError(err)));
+            "[wdsp] wisdom: BUILD FAILED — no usable wisdom file at %1 "
+            "after WDSPwisdom (rc=%2) -- the write was blocked "
+            "(antivirus folder shield / permissions?)")
+            .arg(finalFile).arg(rc));
         return false;
     }
     logWisdom(QStringLiteral(
-        "[wdsp] wisdom: built in %1 s (rc=%2) and published %3 bytes "
-        "to %4").arg(t.elapsed() / 1000).arg(rc)
-        .arg(builtInfo.size()).arg(finalFile));
+        "[wdsp] wisdom: built in %1 s (rc=%2), %3 bytes written to %4")
+        .arg(t.elapsed() / 1000).arg(rc)
+        .arg(finalInfo.size()).arg(finalFile));
+    // Wisdom was just built from scratch -> any pre-existing
+    // impulse_cache.dat is stale (hashed against the old plan world);
+    // treat as rebuilt so it is deleted + the read skipped.
+    initImpulseCache(dir, /*wisdomRebuilt=*/true);
     return true;
+}
+
+// ---------------------------------------------------------------
+// WDSP impulse cache init (reference radio.cs CreateDSP 143-158).
+// ---------------------------------------------------------------
+// Runs inside ensureWisdom() -- AFTER the WDSPwisdom call, BEFORE the
+// first OpenChannel (main.cpp: ensureWisdom() precedes openRx1() +
+// create_xmtr).  This is the exact ordering the reference uses:
+// WDSPwisdom -> [delete stale cache if rebuilt] -> init_impulse_cache
+// -> [read cache unless rebuilt] -> create channels.
+void WdspNative::initImpulseCache(const QString &dir, bool wisdomRebuilt) {
+    if (!api_.init_impulse_cache) {
+        logWisdom(QStringLiteral(
+            "[wdsp] impulse-cache: exports absent in this wdsp.dll -- "
+            "skipping (filters recompute per launch; harmless)"));
+        return;
+    }
+
+    const QString file =
+        QDir::cleanPath(dir + QStringLiteral("/impulse_cache.dat"));
+    const QByteArray fileBytes =
+        QDir::toNativeSeparators(file).toLocal8Bit();
+
+    // If the FFT wisdom was (re)built this launch, any existing cache is
+    // stale -- the cached impulses were hashed against the old plan
+    // world.  Delete it and skip the read (reference: radio.cs 137-146).
+    if (wisdomRebuilt) {
+        if (QFile::exists(file) && QFile::remove(file)) {
+            logWisdom(QStringLiteral(
+                "[wdsp] impulse-cache: wisdom rebuilt -> deleted stale %1")
+                .arg(file));
+        }
+    }
+
+    // Default-on, no operator toggle for now (use = 1).  A future
+    // Settings switch would call api_.use_impulse_cache(0/1) live.
+    api_.init_impulse_cache(1);
+    impulseCacheInited_ = true;
+
+    if (!wisdomRebuilt && api_.read_impulse_cache) {
+        const int rc = api_.read_impulse_cache(fileBytes.constData());
+        logWisdom(QStringLiteral(
+            "[wdsp] impulse-cache: init(1) + read(%1) rc=%2 "
+            "(0=loaded; -1=absent/incompatible -> filters recompute + "
+            "repopulate, saved at exit)").arg(file).arg(rc));
+    } else {
+        logWisdom(QStringLiteral(
+            "[wdsp] impulse-cache: init(1); read skipped "
+            "(wisdom rebuilt -> starting fresh, saved at exit)"));
+    }
 }
 
 } // namespace lyra::dsp
