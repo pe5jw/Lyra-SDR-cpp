@@ -638,16 +638,45 @@ int WdspNative::runWisdomCall(const QString &callDir,
                 "<b>Welcome to Lyra</b><br>A modern, Vulkan-accelerated "
                 "SDR transceiver for the Hermes&nbsp;Lite&nbsp;2 / 2+."),
             QCoreApplication::translate("wdsp",
-                "<b>Getting started</b><br>Click the panadapter to tune, "
+                "<b>Tip · Tuning</b><br>Click the panadapter to jump there, "
                 "drag the passband edges to set your filter, and "
                 "right-click to drop a notch."),
             QCoreApplication::translate("wdsp",
                 "<b>Did you know?</b><br>Lyra decodes CW on-screen — open "
                 "the <i>CW&nbsp;Dec</i> panel and it prints what it hears."),
             QCoreApplication::translate("wdsp",
+                "<b>Tip · CW</b><br>Build click-to-send CW macros in the CW "
+                "console — {CALL}, {RST} and {NAME} fill themselves in."),
+            QCoreApplication::translate("wdsp",
                 "<b>Did you know?</b><br>You can save and share whole "
                 "screen layouts: Settings → Backup&nbsp;&amp;&nbsp;Restore "
                 "→ Share&nbsp;a&nbsp;layout."),
+            QCoreApplication::translate("wdsp",
+                "<b>Tip · DX spots</b><br>Turn on Spots to see cluster / RBN "
+                "spots right on the panadapter — click one to tune it."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>Lyra has a full TX rack — "
+                "parametric EQ, a multiband combinator, tube-plate reverb "
+                "and a voice keyer."),
+            QCoreApplication::translate("wdsp",
+                "<b>Tip · Profiles</b><br>Save your whole TX chain as a "
+                "profile and switch it in one click — it can even launch "
+                "your logger with it."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>With CTUN you drag the tuning "
+                "marker onto a signal while the radio's centre stays put."),
+            QCoreApplication::translate("wdsp",
+                "<b>Tip · Noise</b><br>Stack NR, the noise blanker, ANF and "
+                "the auto-notch to dig weak signals out of the noise."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>The Tuner panel remembers your "
+                "manual ATU settings per band and per antenna."),
+            QCoreApplication::translate("wdsp",
+                "<b>Did you know?</b><br>Route audio to WSJT-X / FLDigi with "
+                "the built-in VAC, or drive Lyra over TCI from your logger."),
+            QCoreApplication::translate("wdsp",
+                "<b>Tip · Calibrate</b><br>Zero-beat your radio against WWV "
+                "with the built-in frequency-calibration tool."),
             QCoreApplication::translate("wdsp",
                 "<b>Almost ready…</b><br>This one-time step tunes the DSP "
                 "math for <i>your</i> CPU, so every launch after this is "
