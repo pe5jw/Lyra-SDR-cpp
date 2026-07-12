@@ -61,6 +61,9 @@ class RecorderEngine : public QObject {
     // here; persisted to QSettings on change.
     Q_PROPERTY(bool snapshotsOn READ snapshotsOn WRITE setSnapshotsOn
                NOTIFY snapshotsOnChanged)
+    // Snapshot rate (per minute) — the panel stepper + Settings both bind here.
+    Q_PROPERTY(int snapshotsPerMin READ snapshotsPerMin WRITE setSnapshotsPerMin
+               NOTIFY snapshotsPerMinChanged)
 public:
     explicit RecorderEngine(QObject *parent = nullptr);
     ~RecorderEngine() override;
@@ -77,12 +80,18 @@ public:
     // ── State ───────────────────────────────────────────────────────────
     bool    isRecording() const { return recording_; }
     bool    snapshotsOn() const { return cfg_.snapshotsOn; }
+    int     snapshotsPerMin() const { return int(cfg_.snapshotsPerMin + 0.5); }
     QString sessionDir()  const { return sessionDir_; }
     qint64  elapsedMs()   const { return recording_ ? clock_.elapsed() : 0; }
 
     // The panel-facing snapshot toggle (persists + live-updates the running
     // snapshot timer if a session is active).
     void    setSnapshotsOn(bool on);
+    void    setSnapshotsPerMin(int perMin);
+
+    // Panel "Settings…" shortcut — emits settingsRequested() for MainWindow to
+    // open Settings → Recording.  Keeps the panel decoupled from the dialog.
+    Q_INVOKABLE void requestSettings() { emit settingsRequested(); }
 
     // QML control: start (reading freq/mode from the context provider) if idle,
     // else stop.  The panel REC/⏹ button and the status chip both call this.
@@ -123,6 +132,8 @@ signals:
     void elapsed(qint64 ms);          // ~1 Hz while recording (for the chip)
     void snapshotDue();               // Stage-2 UI grabs a frame on this
     void snapshotsOnChanged(bool on);
+    void snapshotsPerMinChanged(int perMin);
+    void settingsRequested();         // panel gear → MainWindow opens Settings
     void error(const QString &msg);
     void sessionFinished(const QString &dir);
 

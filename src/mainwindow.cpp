@@ -363,6 +363,9 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
             [this](const QString &m) { statusBar()->showMessage(m, 8000); });
     connect(recorder_, &lyra::recorder::RecorderEngine::snapshotDue, this,
             [this] { captureRecorderSnapshot(); });
+    // Panel ⚙ shortcut → open Settings → Recording.
+    connect(recorder_, &lyra::recorder::RecorderEngine::settingsRequested, this,
+            [this] { openSettingsTopic(QStringLiteral("recorder")); });
     // Supply the engine the CURRENT (freqHz, mode) at start time so the session
     // folder + manifest are stamped without the engine reaching into the radio.
     recorder_->setContextProvider([this]() -> QPair<qint64, QString> {

@@ -341,6 +341,19 @@ void RecorderEngine::setSnapshotsOn(bool on) {
     emit snapshotsOnChanged(on);
 }
 
+void RecorderEngine::setSnapshotsPerMin(int perMin) {
+    perMin = std::clamp(perMin, 1, 30);
+    if (int(cfg_.snapshotsPerMin + 0.5) == perMin) return;
+    cfg_.snapshotsPerMin = perMin;
+    saveConfig();
+    // Re-arm the running cadence at the new rate.
+    if (recording_.load(std::memory_order_acquire) && cfg_.snapshotsOn) {
+        const int ivl = std::max(1, int(60000.0 / cfg_.snapshotsPerMin));
+        snapTimer_->start(ivl);
+    }
+    emit snapshotsPerMinChanged(perMin);
+}
+
 // ── writer thread ────────────────────────────────────────────────────────────
 void RecorderEngine::writerLoop() {
     std::vector<float> buf(65536);

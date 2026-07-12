@@ -6873,6 +6873,7 @@ bool SettingsDialog::selectTopic(const QString &topic) {
         {QStringLiteral("vox"),        QStringLiteral("VOX")},
         {QStringLiteral("cwconsole"),  QStringLiteral("CW")},
         {QStringLiteral("tuner"),      QStringLiteral("Tuner")},
+        {QStringLiteral("recorder"),   QStringLiteral("Recording")},
         {QStringLiteral("profiles"),   QStringLiteral("Profiles")},
         {QStringLiteral("meter"),      QStringLiteral("Meter")},
         {QStringLiteral("band"),       QStringLiteral("Bands")},
@@ -8004,10 +8005,18 @@ QWidget *SettingsDialog::buildRecordingTab() {
     QSpinBox *splitMin = new QSpinBox;
     splitMin->setRange(0, 600); splitMin->setValue(c0.splitMinutes);
     splitMin->setSuffix(tr(" min")); splitMin->setSpecialValueText(tr("off"));
-    QSpinBox *splitMB = new QSpinBox;
-    splitMB->setRange(0, 100000); splitMB->setValue(c0.splitMB);
-    splitMB->setSuffix(tr(" MB")); splitMB->setSpecialValueText(tr("off"));
-    splitMB->setSingleStep(50);
+    QComboBox *splitMB = new QComboBox;
+    splitMB->addItem(tr("off"), 0);
+    for (int mb : {5, 10, 15, 25})
+        splitMB->addItem(tr("%1 MB").arg(mb), mb);
+    {   // select the saved value (keep a legacy custom value if present)
+        int idx = splitMB->findData(c0.splitMB);
+        if (idx < 0) {
+            splitMB->addItem(tr("%1 MB").arg(c0.splitMB), c0.splitMB);
+            idx = splitMB->count() - 1;
+        }
+        splitMB->setCurrentIndex(idx);
+    }
     QSpinBox *hardMin = new QSpinBox;
     hardMin->setRange(0, 600); hardMin->setValue(c0.hardLimitMin);
     hardMin->setSuffix(tr(" min")); hardMin->setSpecialValueText(tr("off"));
@@ -8091,15 +8100,16 @@ QWidget *SettingsDialog::buildRecordingTab() {
         RecorderConfig c = recorder_->config();
         c.snapshotsPerMin = snapRate->value();
         c.splitMinutes    = splitMin->value();
-        c.splitMB         = splitMB->value();
+        c.splitMB         = splitMB->currentData().toInt();
         c.hardLimitMin    = hardMin->value();
         c.capMB           = capMB->value();
         c.autoPrune       = autoPrune->isChecked();
         recorder_->setConfig(c);
         refresh();
     };
-    for (QSpinBox *sb : {snapRate, splitMin, splitMB, hardMin, capMB})
+    for (QSpinBox *sb : {snapRate, splitMin, hardMin, capMB})
         connect(sb, &QSpinBox::valueChanged, this, [commit](int) { commit(); });
+    connect(splitMB, &QComboBox::currentIndexChanged, this, [commit](int) { commit(); });
     connect(autoPrune, &QCheckBox::toggled, this, [commit](bool) { commit(); });
 
     // Snapshot master toggle goes through the live setter (updates the running

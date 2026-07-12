@@ -1,14 +1,15 @@
 // Lyra — Session Recorder panel (#201, RECORDER_DESIGN.md).
 //
 // Opt-in dockable tool window (View → Recorder; NOT in the default shipped
-// layout).  A big REC / ⏹ button + live elapsed timer + a snapshot on/off
-// toggle.  The heavy config (path, split, storage cap) and the Sessions list
-// live on Settings → Recording (Stage 4); this panel is the one-press
-// operate surface.  The always-visible "● REC" status-bar chip (MainWindow)
-// is the independent "don't forget it's running" safety light.
+// layout).  Compact operate surface: a small Record/Stop button + live
+// elapsed timer, a snapshot on/off toggle with its rate, and a Settings
+// shortcut.  The heavy config (path, split, storage cap) and the Sessions
+// list live on Settings → Recording.  The always-visible "● REC" status-bar
+// chip (MainWindow) is the independent "don't forget it's running" light.
 //
-// Bindings: Recorder (recording / elapsedMs / snapshotsOn / toggle()) —
-// exposed as a context property by MainWindow::makeQuick.
+// Bindings: Recorder (recording / elapsedMs / snapshotsOn / snapshotsPerMin /
+// toggle() / requestSettings()) — exposed as a context property by
+// MainWindow::makeQuick.
 
 import QtQuick
 import QtQuick.Controls
@@ -16,8 +17,8 @@ import QtQuick.Layouts
 
 Rectangle {
     id: root
-    implicitWidth: 320
-    implicitHeight: 172
+    implicitWidth: 300
+    implicitHeight: 138
     color: "#0d141b"
     border.color: "#2a4a5a"
 
@@ -40,16 +41,17 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
-        spacing: 10
+        spacing: 8
 
+        // ── Title + status dot + Settings shortcut ──
         RowLayout {
             Layout.fillWidth: true
+            spacing: 6
             Text { text: "Session recorder"; color: root.cText
-                   font.pixelSize: 15; font.bold: true }
+                   font.pixelSize: 14; font.bold: true }
             Item { Layout.fillWidth: true }
-            // Live status dot — red + pulsing while recording.
             Rectangle {
-                width: 12; height: 12; radius: 6
+                width: 10; height: 10; radius: 5
                 color: root.recording ? root.cRed : "#33414d"
                 SequentialAnimation on opacity {
                     running: root.recording; loops: Animation.Infinite
@@ -57,42 +59,56 @@ Rectangle {
                     NumberAnimation { from: 0.25; to: 1.0; duration: 700 }
                 }
             }
-        }
-
-        // ── Elapsed timer ──
-        Text {
-            Layout.alignment: Qt.AlignHCenter
-            text: root.hhmmss(Recorder ? Recorder.elapsedMs : 0)
-            color: root.recording ? root.cRed : root.cMuted
-            font.pixelSize: 34; font.bold: true
-            font.family: "Consolas, Menlo, monospace"
-        }
-
-        // ── REC / Stop ──
-        Button {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 40
-            text: root.recording ? "■  Stop recording" : "●  Record"
-            enabled: Recorder !== null
-            onClicked: if (Recorder) Recorder.toggle()
-            contentItem: Text {
-                text: parent.text; color: "#04121a"
-                font.pixelSize: 15; font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: 8
-                color: root.recording ? root.cRed : root.cAccent
-                opacity: parent.down ? 0.8 : 1.0
+            ToolButton {
+                text: "⚙"
+                font.pixelSize: 15
+                implicitWidth: 26; implicitHeight: 26
+                ToolTip.visible: hovered
+                ToolTip.text: "Recording settings — folder, limits, sessions"
+                onClicked: if (Recorder) Recorder.requestSettings()
             }
         }
 
+        // ── Small Record/Stop button + live timer ──
         RowLayout {
             Layout.fillWidth: true
+            spacing: 10
+            Button {
+                id: recBtn
+                implicitHeight: 28
+                padding: 6
+                text: root.recording ? "■ Stop" : "● Rec"
+                enabled: Recorder !== null
+                onClicked: if (Recorder) Recorder.toggle()
+                contentItem: Text {
+                    text: recBtn.text; color: "#04121a"
+                    font.pixelSize: 13; font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    implicitWidth: 66
+                    radius: 6
+                    color: root.recording ? root.cRed : root.cAccent
+                    opacity: recBtn.down ? 0.8 : 1.0
+                }
+            }
+            Text {
+                text: root.hhmmss(Recorder ? Recorder.elapsedMs : 0)
+                color: root.recording ? root.cRed : root.cMuted
+                font.pixelSize: 22; font.bold: true
+                font.family: "Consolas, Menlo, monospace"
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // ── Snapshots: on/off + rate ──
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
             CheckBox {
                 id: snapChk
-                text: "Capture pan/waterfall snapshots"
+                text: "Snapshots"
                 checked: Recorder ? Recorder.snapshotsOn : true
                 onToggled: if (Recorder) Recorder.snapshotsOn = checked
                 contentItem: Text {
@@ -102,14 +118,22 @@ Rectangle {
                 }
             }
             Item { Layout.fillWidth: true }
+            SpinBox {
+                id: rateSpin
+                from: 1; to: 30
+                value: Recorder ? Recorder.snapshotsPerMin : 5
+                enabled: snapChk.checked
+                implicitWidth: 92
+                onValueModified: if (Recorder) Recorder.snapshotsPerMin = value
+            }
+            Text { text: "/ min"; color: root.cMuted; font.pixelSize: 12 }
         }
 
         Text {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            text: "Records RX audio to a timestamped session folder. "
-                  + "Path, auto-split, storage cap and the sessions list are on "
-                  + "Settings → Recording."
+            text: "Records RX audio + snapshots to a session folder. ⚙ for path, "
+                  + "auto-split, storage cap and the sessions list."
             color: root.cMuted; font.pixelSize: 11
         }
 
