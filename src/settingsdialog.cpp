@@ -8059,10 +8059,12 @@ QWidget *SettingsDialog::buildRecordingTab() {
     QHBoxLayout *btnRow = new QHBoxLayout;
     QPushButton *convertBtn = new QPushButton(tr("Convert to MP4"));
     QPushButton *openBtn    = new QPushButton(tr("Open folder"));
+    QPushButton *renameBtn  = new QPushButton(tr("Rename"));
     QPushButton *delBtn     = new QPushButton(tr("Delete"));
     QPushButton *refreshBtn = new QPushButton(tr("Refresh"));
     btnRow->addWidget(convertBtn);
     btnRow->addWidget(openBtn);
+    btnRow->addWidget(renameBtn);
     btnRow->addWidget(delBtn);
     btnRow->addStretch(1);
     btnRow->addWidget(refreshBtn);
@@ -8197,6 +8199,37 @@ QWidget *SettingsDialog::buildRecordingTab() {
                                : recorder_->recordRoot();
         QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
     });
+    connect(renameBtn, &QPushButton::clicked, this, [this, list, refresh]() {
+        QListWidgetItem *it = list->currentItem();
+        if (!it) return;
+        const QString oldPath = it->data(Qt::UserRole).toString();
+        QDir dir(oldPath);
+        const QString oldName = dir.dirName();
+        bool ok = false;
+        const QString newName = QInputDialog::getText(
+            this, tr("Rename session"), tr("New folder name:"),
+            QLineEdit::Normal, oldName, &ok).trimmed();
+        if (!ok || newName.isEmpty() || newName == oldName) return;
+        if (newName.contains(QLatin1Char('/')) ||
+            newName.contains(QLatin1Char('\\'))) {
+            QMessageBox::warning(this, tr("Rename session"),
+                                 tr("Use a simple folder name (no slashes)."));
+            return;
+        }
+        QDir parent(oldPath); parent.cdUp();
+        const QString newPath = parent.filePath(newName);
+        if (QFileInfo::exists(newPath)) {
+            QMessageBox::warning(this, tr("Rename session"),
+                tr("A session named “%1” already exists.").arg(newName));
+            return;
+        }
+        if (!QDir().rename(oldPath, newPath)) {
+            QMessageBox::warning(this, tr("Rename session"),
+                tr("Couldn't rename the folder — is it open in another window?"));
+            return;
+        }
+        refresh();
+    });
     connect(delBtn, &QPushButton::clicked, this, [this, list, refresh]() {
         QListWidgetItem *it = list->currentItem();
         if (!it) return;
@@ -8225,11 +8258,13 @@ QWidget *SettingsDialog::buildRecordingTab() {
         converter_->convert(it->data(Qt::UserRole).toString());
     });
     connect(converter_, &SessionConverter::busyChanged, convertBtn,
-            [this, convertBtn, openBtn, delBtn, refreshBtn, convBar](bool on) {
+            [this, convertBtn, openBtn, renameBtn, delBtn, refreshBtn,
+             convBar](bool on) {
         convBar->setVisible(on);
         if (on) convBar->setValue(0);
         convertBtn->setEnabled(!on && converter_->ffmpegAvailable());
         openBtn->setEnabled(!on);
+        renameBtn->setEnabled(!on);
         delBtn->setEnabled(!on);
         refreshBtn->setEnabled(!on);
         convertBtn->setText(on ? tr("Converting…") : tr("Convert to MP4"));

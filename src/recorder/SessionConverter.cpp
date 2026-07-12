@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -97,15 +98,34 @@ bool SessionConverter::convert(const QString &sessionDir) {
     const QStringList snaps =
         d.entryList({QStringLiteral("snap_*.png")}, QDir::Files, QDir::Name);
 
-    // Duration (for the progress % + per-snapshot on-screen time).
+    // Duration (progress %) + the per-snapshot capture times from the manifest
+    // — so each still lands on the video timeline at the moment it was actually
+    // taken (accurate audio sync), not just evenly spaced.
     durationSec_ = 0.0;
+    QStringList shotFiles;   // relative snap file names, in manifest order
+    QList<double> shotOffs;  // capture time (s) of each, from offsetSec
     {
         QFile mf(d.filePath(QStringLiteral("session.json")));
         if (mf.open(QIODevice::ReadOnly)) {
             const auto doc = QJsonDocument::fromJson(mf.readAll());
-            if (doc.isObject())
-                durationSec_ = doc.object().value(QStringLiteral("durationSec"))
-                                   .toDouble();
+            if (doc.isObject()) {
+                const QJsonObject root = doc.object();
+                durationSec_ = root.value(QStringLiteral("durationSec")).toDouble();
+                for (const QJsonValue &v : root.value(QStringLiteral("snapshots"))
+                                               .toArray()) {
+                    const QJsonObject s = v.toObject();
+                    const QString fn = s.value(QStringLiteral("file")).toString();
+                    if (fn.isEmpty() || !QFileInfo(d.filePath(fn)).exists())
+                        continue;   // any gap → fall back to even spacing
+                    shotFiles << fn;
+                    shotOffs  << s.value(QStringLiteral("offsetSec")).toDouble();
+                }
+                // Only trust the timeline if it covers every PNG on disk.
+                if (shotFiles.size() != snaps.size()) {
+                    shotFiles.clear();
+                    shotOffs.clear();
+                }
+            }
         }
     }
 
@@ -143,17 +163,35 @@ bool SessionConverter::convert(const QString &sessionDir) {
     const bool video = !snaps.isEmpty();
     QStringList args{QStringLiteral("-y")};
     if (video) {
-        const double perImg =
-            durationSec_ > 0.0 ? durationSec_ / snaps.size() : 2.0;
+        // Timed (manifest offsetSec) → each still sits at its real capture
+        // moment; otherwise space the PNGs evenly across the duration.
+        const bool timed = !shotFiles.isEmpty();
+        const QStringList &vFiles = timed ? shotFiles : snaps;
+        const int n = vFiles.size();
+        auto shotDur = [&](int i) -> double {
+            if (!timed)
+                return durationSec_ > 0.0 ? durationSec_ / n : 2.0;
+            // image i is the most-recent still for [its capture, the next
+            // capture); the first one also fills the pre-roll before it.
+            double dur;
+            if (n == 1)         dur = durationSec_ > 0.0 ? durationSec_ : 2.0;
+            else if (i == 0)    dur = shotOffs[1];
+            else if (i < n - 1) dur = shotOffs[i + 1] - shotOffs[i];
+            else                dur = (durationSec_ > shotOffs[i]
+                                           ? durationSec_ : shotOffs[i] + 2.0)
+                                      - shotOffs[i];
+            return dur < 0.05 ? 0.05 : dur;
+        };
         QString vContent;
-        for (const QString &s : snaps)
+        for (int i = 0; i < n; ++i)
             vContent += QStringLiteral("file '%1'\nduration %2\n")
-                            .arg(fwd(QFileInfo(d.filePath(s)).absoluteFilePath()))
-                            .arg(perImg, 0, 'f', 3);
+                            .arg(fwd(QFileInfo(d.filePath(vFiles[i]))
+                                         .absoluteFilePath()))
+                            .arg(shotDur(i), 0, 'f', 3);
         // concat demuxer honours the last image's duration only if it's
         // repeated once more.
         vContent += QStringLiteral("file '%1'\n")
-                        .arg(fwd(QFileInfo(d.filePath(snaps.last()))
+                        .arg(fwd(QFileInfo(d.filePath(vFiles.last()))
                                      .absoluteFilePath()));
         const QString vList = writeList(QStringLiteral(".mp4_vlist.txt"), vContent);
         if (vList.isEmpty()) {
