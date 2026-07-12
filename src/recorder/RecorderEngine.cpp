@@ -174,6 +174,13 @@ qint64 RecorderEngine::recordingsSizeBytes() const {
 bool RecorderEngine::start(qint64 freqHz, const QString &mode) {
     if (recording_.load()) return true;
 
+    // Don't record silence: refuse unless the radio is actually streaming.
+    if (canRecord_ && !canRecord_()) {
+        emit error(tr("Start the radio (▶ Start) before recording — there's no "
+                      "receive audio while the stream is stopped."));
+        return false;
+    }
+
     QString err;
     if (!ensureRootWritable(&err)) { emit error(err); return false; }
 

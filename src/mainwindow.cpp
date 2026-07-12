@@ -350,6 +350,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         const qint64 f = stream_ ? stream_->property("rx1FreqHz").toLongLong() : 0;
         return qMakePair(f, prefs_ ? prefs_->mode() : QString());
     });
+    // Refuse to record while the stream is stopped (would just capture silence).
+    recorder_->setCanRecordProbe([this]() -> bool {
+        auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_);
+        return st && st->isRunning();
+    });
 
     // #201 Stage 5 — offline MP4 converter.  Runs a below-normal-priority
     // ffmpeg as a separate process; the TX ⇄ convert mutual lock-out is

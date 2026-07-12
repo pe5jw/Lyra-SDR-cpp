@@ -102,6 +102,11 @@ public:
     // without the engine reaching into the radio.  Set once at construction.
     void setContextProvider(std::function<QPair<qint64, QString>()> fn);
 
+    // MainWindow installs a probe that returns true only while the radio is
+    // streaming — start() refuses (and emits error) otherwise, so we never
+    // record a silent WAV with the stream stopped.
+    void setCanRecordProbe(std::function<bool()> fn) { canRecord_ = std::move(fn); }
+
     // Total bytes currently under the record root (for the storage-cap UI).
     qint64  recordingsSizeBytes() const;
 
@@ -152,6 +157,8 @@ private:
 
     // MainWindow-supplied "(freqHz, mode) right now" — read at start().
     std::function<QPair<qint64, QString>()> ctxProvider_;
+    // MainWindow-supplied "is the radio streaming right now?" gate.
+    std::function<bool()> canRecord_;
 
     std::atomic<bool> recording_{false};
     std::atomic<bool> running_{false};      // writer thread run flag
