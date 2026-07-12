@@ -1557,30 +1557,35 @@ void MainWindow::buildToolbar() {
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
         }
-        // #201 Session-recorder live indicator — sits between RX DSP and
-        // Options.  Shown ONLY while recording ("● REC hh:mm:ss", red,
-        // click-to-stop) — the always-in-view "don't forget it's running"
-        // light.  Toolbar-added widgets re-show unreliably via
-        // widget->setVisible(), so we toggle the wrapping QAction instead.
+        // #201 Session recorder — ONE always-visible header chip between RX DSP
+        // and Options.  Idle: a "Recorder" launcher chip (click pops the panel
+        // out / hides it, same idiom as the DSP chips).  While recording: it
+        // morphs into the live red "● REC hh:mm:ss" indicator (still opens the
+        // panel — Stop lives there).
         if (recorder_) {
-            recChip_ = new QToolButton(tb);
-            recChip_->setAutoRaise(true);
-            recChip_->setCursor(Qt::PointingHandCursor);
-            recChip_->setText(tr("● REC 00:00:00"));
-            recChip_->setToolTip(tr("Recording in progress — click to stop."));
-            recChip_->setStyleSheet(QStringLiteral(
+            const QString recIdleQss = QString::fromLatin1(kTxDspChipQss);
+            const QString recRecQss = QStringLiteral(
                 "QToolButton{color:#ffffff;background:#b3261e;"
                 "border:1px solid #ff6b5e;border-radius:4px;padding:2px 9px;"
                 "margin:0 4px;font-weight:700;"
-                "font-family:Consolas,Menlo,monospace;}"));
-            connect(recChip_, &QToolButton::clicked, this,
-                    [this] { if (recorder_) recorder_->stop(); });
-            QAction *recAct = tb->addWidget(recChip_);
-            recAct->setVisible(false);
+                "font-family:Consolas,Menlo,monospace;}");
+            recChip_ = new QToolButton(tb);
+            recChip_->setCursor(Qt::PointingHandCursor);
+            recChip_->setText(tr("⏺ Recorder"));
+            recChip_->setStyleSheet(recIdleQss);
+            recChip_->setToolTip(tr("Open the Session Recorder panel.  Turns into "
+                                    "a live REC timer while recording."));
+            // Pop the Recorder panel out (or hide it) — it's a float-only dock.
+            connect(recChip_, &QToolButton::clicked, this, [this] {
+                if (QDockWidget *d = docks_.value(QStringLiteral("recorder")))
+                    d->toggleViewAction()->trigger();
+            });
+            tb->addWidget(recChip_);   // always visible
             connect(recorder_, &lyra::recorder::RecorderEngine::recordingChanged,
-                    recAct, [this, recAct](bool on) {
-                        if (on) recChip_->setText(tr("● REC 00:00:00"));
-                        recAct->setVisible(on);
+                    recChip_, [this, recIdleQss, recRecQss](bool on) {
+                        recChip_->setStyleSheet(on ? recRecQss : recIdleQss);
+                        recChip_->setText(on ? tr("● REC 00:00:00")
+                                             : tr("⏺ Recorder"));
                     });
             connect(recorder_, &lyra::recorder::RecorderEngine::elapsed, this,
                     [this](qint64 ms) {

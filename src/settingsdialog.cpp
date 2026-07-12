@@ -7957,9 +7957,10 @@ QWidget *SettingsDialog::buildRecordingTab() {
 
     QLabel *intro = new QLabel(tr(
         "Record the receive audio to a timestamped session folder, with "
-        "periodic panadapter/waterfall snapshots.  Open the <b>Recorder</b> "
-        "panel (View → Recorder) to start and stop; this page sets where the "
-        "sessions land and how they are limited, and lists what you've saved."));
+        "periodic panadapter/waterfall snapshots.  Click the <b>Recorder</b> "
+        "chip in the header to pop out the panel and start/stop; this page sets "
+        "where the sessions land and how they are limited, and lists what "
+        "you've saved."));
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
@@ -8050,12 +8051,15 @@ QWidget *SettingsDialog::buildRecordingTab() {
     QGroupBox *sessBox = new QGroupBox(tr("Recorded sessions"));
     QVBoxLayout *sv = new QVBoxLayout(sessBox);
     QListWidget *list = new QListWidget;
-    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Radio-button-style single-select rows (same PickDelegate as the Hardware
+    // radio chooser) — pick a session, then Convert / Open / Delete it.
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    list->setItemDelegate(new PickDelegate(list));
     QLabel *summary = new QLabel;
     QHBoxLayout *btnRow = new QHBoxLayout;
     QPushButton *convertBtn = new QPushButton(tr("Convert to MP4"));
     QPushButton *openBtn    = new QPushButton(tr("Open folder"));
-    QPushButton *delBtn     = new QPushButton(tr("Delete selected"));
+    QPushButton *delBtn     = new QPushButton(tr("Delete"));
     QPushButton *refreshBtn = new QPushButton(tr("Refresh"));
     btnRow->addWidget(convertBtn);
     btnRow->addWidget(openBtn);
@@ -8188,22 +8192,21 @@ QWidget *SettingsDialog::buildRecordingTab() {
 
     connect(refreshBtn, &QPushButton::clicked, this, [refresh]() { refresh(); });
     connect(openBtn, &QPushButton::clicked, this, [this, list]() {
-        const auto items = list->selectedItems();
-        const QString dir = items.isEmpty()
-            ? recorder_->recordRoot()
-            : items.first()->data(Qt::UserRole).toString();
+        QListWidgetItem *it = list->currentItem();
+        const QString dir = it ? it->data(Qt::UserRole).toString()
+                               : recorder_->recordRoot();
         QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
     });
     connect(delBtn, &QPushButton::clicked, this, [this, list, refresh]() {
-        const auto items = list->selectedItems();
-        if (items.isEmpty()) return;
+        QListWidgetItem *it = list->currentItem();
+        if (!it) return;
+        const QString dir = it->data(Qt::UserRole).toString();
         const auto ret = QMessageBox::question(
-            this, tr("Delete sessions"),
-            tr("Permanently delete %n selected session folder(s)?  This cannot "
-               "be undone.", "", int(items.size())));
+            this, tr("Delete session"),
+            tr("Permanently delete this session folder?  This cannot be "
+               "undone.\n\n%1").arg(QDir(dir).dirName()));
         if (ret != QMessageBox::Yes) return;
-        for (QListWidgetItem *it : items)
-            QDir(it->data(Qt::UserRole).toString()).removeRecursively();
+        QDir(dir).removeRecursively();
         refresh();
     });
 
@@ -8212,14 +8215,14 @@ QWidget *SettingsDialog::buildRecordingTab() {
     convertBtn->setEnabled(converter_->ffmpegAvailable() && !converter_->busy());
     connect(convertBtn, &QPushButton::clicked, this,
             [this, list, convStatus]() {
-        const auto items = list->selectedItems();
-        if (items.isEmpty()) {
+        QListWidgetItem *it = list->currentItem();
+        if (!it) {
             convStatus->setText(tr("Select a session to convert."));
             return;
         }
         convStatus->setText(QString());
         // One at a time; the engine refuses a second start.
-        converter_->convert(items.first()->data(Qt::UserRole).toString());
+        converter_->convert(it->data(Qt::UserRole).toString());
     });
     connect(converter_, &SessionConverter::busyChanged, convertBtn,
             [this, convertBtn, openBtn, delBtn, refreshBtn, convBar](bool on) {
