@@ -123,7 +123,9 @@ Rectangle {
                 from: 1; to: 30
                 value: Recorder ? Recorder.snapshotsPerMin : 5
                 enabled: snapChk.checked
-                implicitWidth: 92
+                implicitWidth: 58
+                implicitHeight: 26
+                font.pixelSize: 12
                 onValueModified: if (Recorder) Recorder.snapshotsPerMin = value
             }
             Text { text: "/ min"; color: root.cMuted; font.pixelSize: 12 }
