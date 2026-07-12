@@ -25,6 +25,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -97,6 +98,7 @@
 #include "metermodel.h"
 #include "tunermemory.h"
 #include "tx/VoiceKeyer.h"   // #89 recording options
+#include "recorder/RecorderEngine.h"   // #201 session recorder
 #include "profile/ProfileManager.h"
 #include "profile/CompanionLauncher.h"
 #include <QDesktopServices>
@@ -261,6 +263,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                DxClusterFeeder *dxCluster, MeterModel *meter,
                                TunerMemory *tuner,
                                lyra::tx::VoiceKeyer *voiceKeyer,
+                               lyra::recorder::RecorderEngine *recorder,
                                lyra::profile::ProfileManager *profiles,
                                lyra::profile::CompanionLauncher *companion,
                                lyra::cat::SerialPtt *serialPtt,
@@ -272,6 +275,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
       meter_(meter), tuner_(tuner), voiceKeyer_(voiceKeyer),
+      recorder_(recorder),
       profiles_(profiles), companion_(companion),
       serialCwKey_(serialCwKey),
       serialPtt_(serialPtt), catServers_(catServers) {
@@ -339,6 +343,9 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
         tabs_->addTab(wrapScroll(buildAudioTab()), tr("Audio"));
         tabs_->addTab(wrapScroll(buildDspTab()), tr("DSP"));  // #159 filter type
         tabs_->addTab(wrapScroll(buildNoiseTab()), tr("Noise"));
+    }
+    if (recorder_) {  // #201 session recorder — config + Sessions list
+        tabs_->addTab(wrapScroll(buildRecordingTab()), tr("Recording"));
     }
     // Visuals (panadapter / display appearance) sits with the RX-display group.
     tabs_->addTab(wrapScroll(buildVisualsTab()), tr("Visuals"));
@@ -7939,6 +7946,207 @@ QWidget *SettingsDialog::buildNoiseTab() {
 // (4096) — this surface is filter-TYPE only (group-delay latency lever),
 // not buffer/taps.  Writes go straight to WdspEngine, which persists them
 // in QSettings (dsp/<fam>_<dir>_mp) and re-applies on mode change / open.
+QWidget *SettingsDialog::buildRecordingTab() {
+    using lyra::recorder::RecorderConfig;
+    QWidget *page = new QWidget;
+    QVBoxLayout *outer = new QVBoxLayout(page);
+
+    QLabel *intro = new QLabel(tr(
+        "Record the receive audio to a timestamped session folder, with "
+        "periodic panadapter/waterfall snapshots.  Open the <b>Recorder</b> "
+        "panel (View → Recorder) to start and stop; this page sets where the "
+        "sessions land and how they are limited, and lists what you've saved."));
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    const RecorderConfig c0 = recorder_->config();
+
+    // Bytes → human-readable MB/GB (used by the sessions list + summary).
+    auto human = [](qint64 b) -> QString {
+        const double mb = double(b) / (1024.0 * 1024.0);
+        return mb >= 1024.0 ? QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 2)
+                            : QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
+    };
+
+    // ── Folder ──────────────────────────────────────────────────────────
+    QGroupBox *folderBox = new QGroupBox(tr("Recordings folder"));
+    QGridLayout *fg = new QGridLayout(folderBox);
+    QLineEdit *pathEdit = new QLineEdit;
+    pathEdit->setReadOnly(true);
+    pathEdit->setText(recorder_->recordRoot());
+    QPushButton *browseBtn  = new QPushButton(tr("Browse…"));
+    QPushButton *defaultBtn = new QPushButton(tr("Default"));
+    fg->addWidget(new QLabel(tr("Save to:")), 0, 0);
+    fg->addWidget(pathEdit,  0, 1);
+    fg->addWidget(browseBtn, 0, 2);
+    fg->addWidget(defaultBtn, 0, 3);
+    fg->setColumnStretch(1, 1);
+    outer->addWidget(folderBox);
+
+    // ── Snapshots ───────────────────────────────────────────────────────
+    QGroupBox *snapBox = new QGroupBox(tr("Snapshots"));
+    QGridLayout *sg = new QGridLayout(snapBox);
+    QCheckBox *snapOn = new QCheckBox(tr("Capture panadapter / waterfall snapshots"));
+    snapOn->setChecked(c0.snapshotsOn);
+    QSpinBox *snapRate = new QSpinBox;
+    snapRate->setRange(1, 30);
+    snapRate->setValue(int(c0.snapshotsPerMin + 0.5));
+    snapRate->setSuffix(tr(" / min"));
+    sg->addWidget(snapOn, 0, 0, 1, 2);
+    sg->addWidget(new QLabel(tr("Rate:")), 1, 0);
+    sg->addWidget(snapRate, 1, 1);
+    sg->setColumnStretch(2, 1);
+    outer->addWidget(snapBox);
+
+    // ── Auto-split & hard time limit ────────────────────────────────────
+    QGroupBox *limitBox = new QGroupBox(tr("Auto-split & time limit"));
+    QGridLayout *lg = new QGridLayout(limitBox);
+    QSpinBox *splitMin = new QSpinBox;
+    splitMin->setRange(0, 600); splitMin->setValue(c0.splitMinutes);
+    splitMin->setSuffix(tr(" min")); splitMin->setSpecialValueText(tr("off"));
+    QSpinBox *splitMB = new QSpinBox;
+    splitMB->setRange(0, 100000); splitMB->setValue(c0.splitMB);
+    splitMB->setSuffix(tr(" MB")); splitMB->setSpecialValueText(tr("off"));
+    splitMB->setSingleStep(50);
+    QSpinBox *hardMin = new QSpinBox;
+    hardMin->setRange(0, 600); hardMin->setValue(c0.hardLimitMin);
+    hardMin->setSuffix(tr(" min")); hardMin->setSpecialValueText(tr("off"));
+    lg->addWidget(new QLabel(tr("Split every:")),     0, 0); lg->addWidget(splitMin, 0, 1);
+    lg->addWidget(new QLabel(tr("…or every:")),       1, 0); lg->addWidget(splitMB,  1, 1);
+    lg->addWidget(new QLabel(tr("Hard stop after:")), 2, 0); lg->addWidget(hardMin,  2, 1);
+    lg->setColumnStretch(2, 1);
+    QLabel *hardNote = new QLabel(tr("The hard stop is the \"did I leave it running?\" guard."));
+    hardNote->setStyleSheet("color: palette(mid);");
+    lg->addWidget(hardNote, 3, 0, 1, 3);
+    outer->addWidget(limitBox);
+
+    // ── Storage cap ─────────────────────────────────────────────────────
+    QGroupBox *storeBox = new QGroupBox(tr("Storage cap"));
+    QGridLayout *stg = new QGridLayout(storeBox);
+    QSpinBox *capMB = new QSpinBox;
+    capMB->setRange(0, 1000000); capMB->setValue(int(c0.capMB));
+    capMB->setSuffix(tr(" MB")); capMB->setSpecialValueText(tr("no cap"));
+    capMB->setSingleStep(512);
+    QCheckBox *autoPrune = new QCheckBox(tr("Auto-delete oldest sessions when over the cap"));
+    autoPrune->setChecked(c0.autoPrune);
+    stg->addWidget(new QLabel(tr("Max total:")), 0, 0); stg->addWidget(capMB, 0, 1);
+    stg->addWidget(autoPrune, 1, 0, 1, 2);
+    stg->setColumnStretch(2, 1);
+    outer->addWidget(storeBox);
+
+    // ── Recorded sessions ───────────────────────────────────────────────
+    QGroupBox *sessBox = new QGroupBox(tr("Recorded sessions"));
+    QVBoxLayout *sv = new QVBoxLayout(sessBox);
+    QListWidget *list = new QListWidget;
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    QLabel *summary = new QLabel;
+    QHBoxLayout *btnRow = new QHBoxLayout;
+    QPushButton *openBtn    = new QPushButton(tr("Open folder"));
+    QPushButton *delBtn     = new QPushButton(tr("Delete selected"));
+    QPushButton *refreshBtn = new QPushButton(tr("Refresh"));
+    btnRow->addWidget(openBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(refreshBtn);
+    sv->addWidget(list);
+    sv->addWidget(summary);
+    sv->addLayout(btnRow);
+    outer->addWidget(sessBox, 1);
+
+    // Repopulate the list + summary from the record root on disk.
+    auto refresh = [this, list, summary, human]() {
+        list->clear();
+        const QString root = recorder_->recordRoot();
+        qint64 total = 0;
+        int n = 0;
+        const auto subs = QDir(root).entryInfoList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
+        for (const QFileInfo &sub : subs) {
+            qint64 sz = 0;
+            QDirIterator it(sub.absoluteFilePath(), QDir::Files,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext()) { it.next(); sz += it.fileInfo().size(); }
+            total += sz;
+            ++n;
+            auto *item = new QListWidgetItem(
+                QStringLiteral("%1   (%2)").arg(sub.fileName(), human(sz)));
+            item->setData(Qt::UserRole, sub.absoluteFilePath());
+            list->addItem(item);
+        }
+        const RecorderConfig c = recorder_->config();
+        const qint64 capBytes = qint64(c.capMB) * 1024 * 1024;
+        const bool over = c.capMB > 0 && total > capBytes;
+        QString txt = tr("%n session(s)", "", n) + QStringLiteral(" · ") + human(total);
+        if (c.capMB > 0)
+            txt += tr(" of %1 cap").arg(human(capBytes));
+        summary->setText(txt);
+        summary->setStyleSheet(over ? "color: #e06666;" : "color: palette(mid);");
+    };
+    refresh();
+
+    // Push the numeric/config widgets into the engine (preserving the live
+    // snapshotsOn/rate/audioRate the checkbox owns separately).
+    auto commit = [this, snapRate, splitMin, splitMB, hardMin, capMB,
+                   autoPrune, refresh]() {
+        RecorderConfig c = recorder_->config();
+        c.snapshotsPerMin = snapRate->value();
+        c.splitMinutes    = splitMin->value();
+        c.splitMB         = splitMB->value();
+        c.hardLimitMin    = hardMin->value();
+        c.capMB           = capMB->value();
+        c.autoPrune       = autoPrune->isChecked();
+        recorder_->setConfig(c);
+        refresh();
+    };
+    for (QSpinBox *sb : {snapRate, splitMin, splitMB, hardMin, capMB})
+        connect(sb, &QSpinBox::valueChanged, this, [commit](int) { commit(); });
+    connect(autoPrune, &QCheckBox::toggled, this, [commit](bool) { commit(); });
+
+    // Snapshot master toggle goes through the live setter (updates the running
+    // snapshot timer), and stays in sync if the panel toggles it.
+    connect(snapOn, &QCheckBox::toggled, recorder_,
+            [this](bool on) { recorder_->setSnapshotsOn(on); });
+    connect(recorder_, &lyra::recorder::RecorderEngine::snapshotsOnChanged,
+            snapOn, &QCheckBox::setChecked);
+
+    connect(browseBtn, &QPushButton::clicked, this, [this, pathEdit, refresh]() {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Choose recordings folder"), recorder_->recordRoot());
+        if (dir.isEmpty()) return;
+        RecorderConfig c = recorder_->config(); c.path = dir; recorder_->setConfig(c);
+        pathEdit->setText(recorder_->recordRoot());
+        refresh();
+    });
+    connect(defaultBtn, &QPushButton::clicked, this, [this, pathEdit, refresh]() {
+        RecorderConfig c = recorder_->config(); c.path.clear(); recorder_->setConfig(c);
+        pathEdit->setText(recorder_->recordRoot());
+        refresh();
+    });
+
+    connect(refreshBtn, &QPushButton::clicked, this, [refresh]() { refresh(); });
+    connect(openBtn, &QPushButton::clicked, this, [this, list]() {
+        const auto items = list->selectedItems();
+        const QString dir = items.isEmpty()
+            ? recorder_->recordRoot()
+            : items.first()->data(Qt::UserRole).toString();
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this, list, refresh]() {
+        const auto items = list->selectedItems();
+        if (items.isEmpty()) return;
+        const auto ret = QMessageBox::question(
+            this, tr("Delete sessions"),
+            tr("Permanently delete %n selected session folder(s)?  This cannot "
+               "be undone.", "", int(items.size())));
+        if (ret != QMessageBox::Yes) return;
+        for (QListWidgetItem *it : items)
+            QDir(it->data(Qt::UserRole).toString()).removeRecursively();
+        refresh();
+    });
+
+    return page;
+}
+
 QWidget *SettingsDialog::buildDspTab() {
     using DspFamily = lyra::dsp::WdspEngine::DspFamily;
     QWidget *page = new QWidget;

@@ -20,6 +20,7 @@ namespace lyra::wx  { class WxService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
 namespace lyra::tx  { class VoiceKeyer; }
+namespace lyra::recorder { class RecorderEngine; }
 
 namespace lyra::ui {
 
@@ -49,6 +50,7 @@ public:
                    SpotHoleFeeder *spotHole, DxClusterFeeder *dxCluster,
                    MeterModel *meter, TunerMemory *tuner,
                    lyra::tx::VoiceKeyer *voiceKeyer,
+                   lyra::recorder::RecorderEngine *recorder,
                    lyra::profile::ProfileManager *profiles,
                    lyra::profile::CompanionLauncher *companion,
                    lyra::cat::SerialPtt *serialPtt,
@@ -77,6 +79,7 @@ private:
     QWidget *buildTunerTab();    // manual-ATU memory editor + match window
     QWidget *buildTxTab();       // TX-1 component 5b: TR-sequencing
     QWidget *buildVoxTab();      // #91 VOX — voice-operated TX (own tab)
+    QWidget *buildRecordingTab();// #201 session recorder — config + Sessions list
     QWidget *buildPaGainTab();   // TX power model Stage 3: per-band PA Gain table
                                  // + cos² amplitude envelope (amp
                                  // hot-switch protection knobs)
@@ -105,6 +108,7 @@ private:
     MeterModel             *meter_     = nullptr;
     TunerMemory            *tuner_     = nullptr;
     lyra::tx::VoiceKeyer   *voiceKeyer_ = nullptr;   // #89 recording options
+    lyra::recorder::RecorderEngine *recorder_ = nullptr;  // #201 session recorder
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::profile::CompanionLauncher *companion_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;
