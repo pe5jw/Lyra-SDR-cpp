@@ -331,34 +331,11 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
 
     // ── Session recorder (#201) — engine + always-visible "● REC" chip ──
     // The engine is headless; the audio feed + Recorder control panel land in
-    // a later stage.  This wires the safety indicator (shown ONLY while
-    // recording, click-to-stop) + the pan/waterfall snapshot capture, and
-    // exposes the engine to QML (makeQuick sets the "Recorder" context prop).
+    // a later stage.  The live "● REC hh:mm:ss" safety indicator is built on
+    // the header toolbar (between the RX DSP and Options groups) so it's in
+    // plain view while recording — see the toolbar section below.  Here we
+    // create the engine, wire snapshots/errors, and expose it to QML.
     recorder_ = new lyra::recorder::RecorderEngine(this);
-    recChip_ = new QToolButton(this);
-    recChip_->setAutoRaise(true);
-    recChip_->setCursor(Qt::PointingHandCursor);
-    recChip_->setToolTip(tr("Recording — click to stop."));
-    recChip_->setStyleSheet(QStringLiteral(
-        "QToolButton{color:#ff5555;font-family:Consolas,Menlo,monospace;"
-        "font-weight:bold;padding:0 8px;border:0;}"));
-    recChip_->hide();
-    statusBar()->addPermanentWidget(recChip_);
-    connect(recChip_, &QToolButton::clicked, this,
-            [this] { if (recorder_) recorder_->stop(); });
-    connect(recorder_, &lyra::recorder::RecorderEngine::recordingChanged, this,
-            [this](bool on) {
-                recChip_->setVisible(on);
-                if (on) recChip_->setText(tr("● REC 00:00:00"));
-            });
-    connect(recorder_, &lyra::recorder::RecorderEngine::elapsed, this,
-            [this](qint64 ms) {
-                const qint64 s = ms / 1000;
-                recChip_->setText(QStringLiteral("● REC %1:%2:%3")
-                    .arg(s / 3600,      2, 10, QLatin1Char('0'))
-                    .arg((s / 60) % 60, 2, 10, QLatin1Char('0'))
-                    .arg(s % 60,        2, 10, QLatin1Char('0')));
-            });
     connect(recorder_, &lyra::recorder::RecorderEngine::error, this,
             [this](const QString &m) { statusBar()->showMessage(m, 8000); });
     connect(recorder_, &lyra::recorder::RecorderEngine::snapshotDue, this,
@@ -1561,6 +1538,41 @@ void MainWindow::buildToolbar() {
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
         }
+        // #201 Session-recorder live indicator — sits between RX DSP and
+        // Options.  Shown ONLY while recording ("● REC hh:mm:ss", red,
+        // click-to-stop) — the always-in-view "don't forget it's running"
+        // light.  Toolbar-added widgets re-show unreliably via
+        // widget->setVisible(), so we toggle the wrapping QAction instead.
+        if (recorder_) {
+            recChip_ = new QToolButton(tb);
+            recChip_->setAutoRaise(true);
+            recChip_->setCursor(Qt::PointingHandCursor);
+            recChip_->setText(tr("● REC 00:00:00"));
+            recChip_->setToolTip(tr("Recording in progress — click to stop."));
+            recChip_->setStyleSheet(QStringLiteral(
+                "QToolButton{color:#ffffff;background:#b3261e;"
+                "border:1px solid #ff6b5e;border-radius:4px;padding:2px 9px;"
+                "margin:0 4px;font-weight:700;"
+                "font-family:Consolas,Menlo,monospace;}"));
+            connect(recChip_, &QToolButton::clicked, this,
+                    [this] { if (recorder_) recorder_->stop(); });
+            QAction *recAct = tb->addWidget(recChip_);
+            recAct->setVisible(false);
+            connect(recorder_, &lyra::recorder::RecorderEngine::recordingChanged,
+                    recAct, [this, recAct](bool on) {
+                        if (on) recChip_->setText(tr("● REC 00:00:00"));
+                        recAct->setVisible(on);
+                    });
+            connect(recorder_, &lyra::recorder::RecorderEngine::elapsed, this,
+                    [this](qint64 ms) {
+                        const qint64 s = ms / 1000;
+                        recChip_->setText(QStringLiteral("● REC %1:%2:%3")
+                            .arg(s / 3600,      2, 10, QLatin1Char('0'))
+                            .arg((s / 60) % 60, 2, 10, QLatin1Char('0'))
+                            .arg(s % 60,        2, 10, QLatin1Char('0')));
+                    });
+        }
+
         // Operating toggles that are NOT part of a DSP rack — CTUN (a
         // tuning/display lock) and WF-ID (a TX courtesy ID).  Their own
         // labelled group with a leading separator so they don't read as
