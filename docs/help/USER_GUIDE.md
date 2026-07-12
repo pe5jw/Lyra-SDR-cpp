@@ -413,6 +413,9 @@ glowing look that takes advantage of your graphics card.
   Display panel). **Ctrl + wheel** zooms instead.
 - A small **frequency readout** follows your cursor (toggle in
   Settings → Visuals).
+- These gestures work on the **waterfall** below, too — **click** it to tune,
+  **wheel** to step, **Ctrl + wheel** to zoom. It shares the spectrum's
+  frequencies, so a click lands at the same spot either way.
 
 **The RX filter passband** is shown as a translucent box over the tuned
 signal. **Drag either edge** of the box to widen or narrow the receive
