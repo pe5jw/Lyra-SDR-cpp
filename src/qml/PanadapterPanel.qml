@@ -1521,6 +1521,44 @@ Item {
             palette: Prefs.waterfallPalette
             strengthColor: Prefs.waterfallColor
             speed: Prefs.waterfallSpeed
+
+            // Click-to-tune in the waterfall.  It shares the spectrum's exact
+            // frequency extent and width, so reuse the spectrum mouse's
+            // freqAtX / tuneCarrier helpers: a plain left click tunes RX1 to
+            // that point, and the wheel steps by the Panafall step (Ctrl+wheel
+            // zooms) — same feel as the spectrum.  A real drag is ignored so a
+            // stray wiggle can't retune.
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.CrossCursor
+                property bool dragged: false
+                property real downX: 0
+                onPressed: (m) => { dragged = false; downX = m.x }
+                onPositionChanged: (m) => {
+                    if (Math.abs(m.x - downX) > specMouse.dragThreshPx)
+                        dragged = true
+                }
+                onReleased: (m) => {
+                    if (dragged) return
+                    // Under CTUN, a click inside the passband must not jump the
+                    // 0-beat to the cursor (matches the spectrum).
+                    if (!(Stream.ctuneEnabled && specMouse.inPassband(m.x)))
+                        specMouse.tuneCarrier(specMouse.freqAtX(m.x))
+                }
+                onWheel: (wheel) => {
+                    if (wheel.modifiers & Qt.ControlModifier) {
+                        WdspEngine.setZoom(WdspEngine.zoom
+                            * (wheel.angleDelta.y > 0 ? 1.25 : 0.8))
+                    } else {
+                        var dir = wheel.angleDelta.y > 0 ? 1 : -1
+                        var carrier = Stream.rx1FreqHz + WdspEngine.markerOffsetHz
+                                      + (Stream.ritEnabled ? Stream.ritOffsetHz : 0)
+                        specMouse.tuneCarrier(carrier + dir * Prefs.panScrollStepHz)
+                    }
+                    wheel.accepted = true
+                }
+            }
         }
     }
 }
