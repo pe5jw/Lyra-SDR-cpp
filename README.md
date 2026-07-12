@@ -133,6 +133,15 @@ processing rack.  (Still on the roadmap: dual receiver / RX2 and PureSignal
 * **Panadapter + waterfall** — Vulkan/RHI scene-graph spectrum with
   glassy fill/glow, peak-hold markers, noise-floor line, palettes; click/
   drag/wheel tuning; draggable RX passband; collapsible waterfall.
+* **Session recorder** — capture a whole listening session to a timestamped
+  folder: the receive audio to WAV plus timed panadapter/waterfall snapshots,
+  driven from a header **Recorder** chip that turns into a live REC timer.
+  A low-priority offline **Convert to MP4** (uses ffmpeg if present) turns a
+  session into one video — the snapshots play as a slideshow synced to the
+  audio — with a Settings → Recording tab for the folder, snapshot rate,
+  auto-split, storage cap, and a Convert / Open / Rename / Delete sessions
+  list.  Recording ham radio you receive for personal use is normal; get the
+  other operators' OK before publishing.
 * **Dockable UI** — drag a panel by its title bar and a cyan zone previews
   where it lands: snap to an edge, split a neighbour, tab behind it, or
   float it free.  Cyan-on-hover resize separators; **four named layout

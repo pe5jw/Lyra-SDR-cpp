@@ -40,6 +40,10 @@ not programmers — if you can click a menu, you can use this.
 - [TX panel](#tx-panel)
 - [TX DSP rack (EQ + Speech + Combinator + Plating)](#tx-dsp-rack-eq--speech--combinator--plating)
 - [Voice keyer & recording](#voice-keyer--recording)
+- [Session recorder (RX audio + snapshots + MP4)](#session-recorder-rx-audio--snapshots--mp4)
+  - [Settings → Recording](#settings--recording)
+  - [Making an MP4 (the Convert button)](#making-an-mp4-the-convert-button)
+  - [Is it legal to record?](#is-it-legal-to-record)
 - [CW operating (paddle, keyboard, TCI)](#cw-operating-paddle-keyboard-tci)
   - [Reading CW — the RX decoder](#reading-cw--the-rx-decoder)
 - [Tuner (manual ATU memory)](#tuner-manual-atu-memory)
@@ -1555,6 +1559,92 @@ you're transmitting**, so you can ride it up or down mid-message.
 - **Maximum length** — caps any single recording (default **5 minutes**).
 - **Record countdown** — **Off / 5 s / 10 s**, the "get set" timer shown on
   the REC button.
+
+---
+
+## Session recorder (RX audio + snapshots + MP4)
+
+Where the voice keyer grabs short clips, the **session recorder** captures a
+whole listening session — the **receive audio** to a WAV, plus **timed
+snapshots of the panadapter/waterfall** — into one timestamped folder. You
+can later turn that folder into a single **MP4** where the snapshots play as a
+slideshow over the audio, handy for sharing a band opening or an unusual
+signal.
+
+**Open it from the `⏺ Recorder` chip in the header**, between the *RX DSP* and
+*Options* groups. Click it to pop out the **Recorder** panel (a floating tool
+window). While a recording is running, that same chip turns into a red
+**`● REC hh:mm:ss`** timer so you always know at a glance that it's rolling —
+click it to reopen the panel, where **Stop** lives.
+
+**The Recorder panel**
+
+- **● Rec / ■ Stop** — start or stop a session.
+- The **timer** shows elapsed time.
+- **Snapshots** — a checkbox plus a **/min** rate. Off = audio-only (no
+  images). The rate also lives in Settings and stays in sync.
+- **⚙** — jumps to **Settings → Recording** for the folder, limits, and the
+  saved-sessions list.
+
+> **You have to be on the air to record.** Recording needs live receive
+> audio, so **Record does nothing while the radio stream is stopped** — press
+> **▶ Start** in the header first. (Otherwise you'd just capture silence.)
+
+### Settings → Recording
+
+- **Recordings folder** — where sessions are saved (default
+  `Documents\Lyra\Recordings`). **Browse** to pick your own, **Default** to
+  go back.
+- **Snapshots** — master on/off and the capture **rate** (per minute).
+- **Auto-split** — start a fresh audio file every **N minutes** and/or every
+  **N MB** (both default **off**). Useful for very long sessions.
+- **Hard stop after** — an automatic stop (default **10 min**). This is the
+  "did I walk away and leave it running?" guard — set it to *off* only if you
+  really mean to record unattended.
+- **Storage cap** — a ceiling on the whole recordings folder (default
+  **5 GB**). When you're over it, Lyra **refuses to start a new recording**
+  rather than silently deleting anything; tick **Auto-delete oldest** if you'd
+  prefer a rolling "keep the newest" behaviour instead.
+- **Recorded sessions** — a radio-button list of what you've saved (name +
+  size), with **Convert to MP4**, **Open folder**, **Rename**, and
+  **Delete**. The line underneath shows how many sessions you have and how
+  much of the cap they use (it turns red when you're over).
+
+**What's in a session folder** — the raw pieces, always kept: `audio_001.wav`
+(and `_002…` if it split), `snap_0001.png`, `snap_0002.png`… and a small
+`session.json` that records when each snapshot was taken. The MP4 (if you make
+one) lands here too as `session.mp4`.
+
+### Making an MP4 (the Convert button)
+
+**Convert to MP4** builds one playable video from a session: the snapshots
+become a slideshow, each shown at the moment it was actually captured (so it
+lines up with the audio), with the receive audio underneath. An audio-only
+session (snapshots off) exports as a `session.m4a` instead.
+
+The conversion runs **in the background at low priority as a separate
+program**, so it never interrupts your receive audio — you can keep operating
+while it works; a progress bar tracks it.
+
+- **It needs ffmpeg.** Lyra doesn't bundle it. Put **`ffmpeg.exe`** next to
+  Lyra (or anywhere on your system **PATH**), or use the **Browse** button in
+  the *Video encoder (ffmpeg)* box on this page to point at it. It's a free
+  download from **ffmpeg.org/download**. Until Lyra finds it, that box shows
+  **"not found"** and Convert is disabled.
+- **Transmit is locked out while converting**, and Convert won't start while
+  you're transmitting — the encoder and the radio don't fight over the moment.
+
+### Is it legal to record?
+
+For most operators, yes — but you own the local details. Amateur radio is an
+**open service** (there's no expectation of privacy on the ham bands the way
+there is on a phone call), so recording the traffic **you receive** for your
+own use — a QSO, a band opening, a contest run — is normal and generally fine.
+Two common-sense cautions: some regions have their own rules about recording,
+and **before you publish** a recording (post a video, share a clip) it's
+courteous — and in some places required — to have the **consent** of the other
+operators you recorded. This isn't legal advice; when in doubt, check your
+own country's amateur regulations.
 
 ---
 
