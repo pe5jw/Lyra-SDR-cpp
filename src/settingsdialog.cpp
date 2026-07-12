@@ -26,6 +26,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
+#include <QProgressBar>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -99,6 +100,7 @@
 #include "tunermemory.h"
 #include "tx/VoiceKeyer.h"   // #89 recording options
 #include "recorder/RecorderEngine.h"   // #201 session recorder
+#include "recorder/SessionConverter.h" // #201 offline MP4 converter
 #include "profile/ProfileManager.h"
 #include "profile/CompanionLauncher.h"
 #include <QDesktopServices>
@@ -264,6 +266,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
                                TunerMemory *tuner,
                                lyra::tx::VoiceKeyer *voiceKeyer,
                                lyra::recorder::RecorderEngine *recorder,
+                               lyra::recorder::SessionConverter *converter,
                                lyra::profile::ProfileManager *profiles,
                                lyra::profile::CompanionLauncher *companion,
                                lyra::cat::SerialPtt *serialPtt,
@@ -275,7 +278,7 @@ SettingsDialog::SettingsDialog(Prefs *prefs, lyra::ipc::HL2Stream *stream,
       memory_(memory), eibi_(eibi), tci_(tci), spots_(spots),
       spotHole_(spotHole), dxCluster_(dxCluster),
       meter_(meter), tuner_(tuner), voiceKeyer_(voiceKeyer),
-      recorder_(recorder),
+      recorder_(recorder), converter_(converter),
       profiles_(profiles), companion_(companion),
       serialCwKey_(serialCwKey),
       serialPtt_(serialPtt), catServers_(catServers) {
@@ -8050,17 +8053,67 @@ QWidget *SettingsDialog::buildRecordingTab() {
     list->setSelectionMode(QAbstractItemView::ExtendedSelection);
     QLabel *summary = new QLabel;
     QHBoxLayout *btnRow = new QHBoxLayout;
+    QPushButton *convertBtn = new QPushButton(tr("Convert to MP4"));
     QPushButton *openBtn    = new QPushButton(tr("Open folder"));
     QPushButton *delBtn     = new QPushButton(tr("Delete selected"));
     QPushButton *refreshBtn = new QPushButton(tr("Refresh"));
+    btnRow->addWidget(convertBtn);
     btnRow->addWidget(openBtn);
     btnRow->addWidget(delBtn);
     btnRow->addStretch(1);
     btnRow->addWidget(refreshBtn);
+    // Convert progress (hidden until a conversion runs) + status line.
+    QProgressBar *convBar = new QProgressBar;
+    convBar->setRange(0, 100);
+    convBar->setVisible(false);
+    QLabel *convStatus = new QLabel;
+    convStatus->setStyleSheet("color: palette(mid);");
     sv->addWidget(list);
     sv->addWidget(summary);
     sv->addLayout(btnRow);
+    sv->addWidget(convBar);
+    sv->addWidget(convStatus);
     outer->addWidget(sessBox, 1);
+
+    // ── ffmpeg (the Convert dependency) ─────────────────────────────────
+    QGroupBox *ffBox = new QGroupBox(tr("Video encoder (ffmpeg)"));
+    QGridLayout *ffg = new QGridLayout(ffBox);
+    QLabel *ffPath = new QLabel;
+    QPushButton *ffBrowse = new QPushButton(tr("Browse…"));
+    QLabel *ffHint = new QLabel(tr(
+        "Convert-to-MP4 uses ffmpeg.  Put <b>ffmpeg.exe</b> next to Lyra or on "
+        "your PATH, or Browse to it.  Free download: "
+        "<a href=\"https://ffmpeg.org/download.html\">ffmpeg.org/download</a>."));
+    ffHint->setOpenExternalLinks(true);
+    ffHint->setWordWrap(true);
+    auto refreshFfLabel = [this, ffPath]() {
+        const QString p = converter_->ffmpegPath();
+        ffPath->setText(p.isEmpty()
+            ? tr("<b style='color:#e06666'>not found</b>")
+            : tr("<span style='color:#78d28c'>%1</span>").arg(p.toHtmlEscaped()));
+    };
+    refreshFfLabel();
+    ffg->addWidget(new QLabel(tr("ffmpeg:")), 0, 0);
+    ffg->addWidget(ffPath, 0, 1);
+    ffg->addWidget(ffBrowse, 0, 2);
+    ffg->addWidget(ffHint, 1, 0, 1, 3);
+    ffg->setColumnStretch(1, 1);
+    outer->addWidget(ffBox);
+    connect(ffBrowse, &QPushButton::clicked, this,
+            [this, refreshFfLabel, convertBtn]() {
+        const QString f = QFileDialog::getOpenFileName(
+            this, tr("Locate ffmpeg"), QString(),
+#ifdef Q_OS_WIN
+            tr("ffmpeg (ffmpeg.exe);;All files (*)"));
+#else
+            tr("ffmpeg (ffmpeg);;All files (*)"));
+#endif
+        if (f.isEmpty()) return;
+        converter_->setFfmpegPath(f);
+        refreshFfLabel();
+        convertBtn->setEnabled(!converter_->busy() &&
+                               converter_->ffmpegAvailable());
+    });
 
     // Repopulate the list + summary from the record root on disk.
     auto refresh = [this, list, summary, human]() {
@@ -8152,6 +8205,49 @@ QWidget *SettingsDialog::buildRecordingTab() {
         for (QListWidgetItem *it : items)
             QDir(it->data(Qt::UserRole).toString()).removeRecursively();
         refresh();
+    });
+
+    // ── Convert to MP4 (offline ffmpeg, below-normal priority) ──────────
+    using lyra::recorder::SessionConverter;
+    convertBtn->setEnabled(converter_->ffmpegAvailable() && !converter_->busy());
+    connect(convertBtn, &QPushButton::clicked, this,
+            [this, list, convStatus]() {
+        const auto items = list->selectedItems();
+        if (items.isEmpty()) {
+            convStatus->setText(tr("Select a session to convert."));
+            return;
+        }
+        convStatus->setText(QString());
+        // One at a time; the engine refuses a second start.
+        converter_->convert(items.first()->data(Qt::UserRole).toString());
+    });
+    connect(converter_, &SessionConverter::busyChanged, convertBtn,
+            [this, convertBtn, openBtn, delBtn, refreshBtn, convBar](bool on) {
+        convBar->setVisible(on);
+        if (on) convBar->setValue(0);
+        convertBtn->setEnabled(!on && converter_->ffmpegAvailable());
+        openBtn->setEnabled(!on);
+        delBtn->setEnabled(!on);
+        refreshBtn->setEnabled(!on);
+        convertBtn->setText(on ? tr("Converting…") : tr("Convert to MP4"));
+    });
+    connect(converter_, &SessionConverter::progressChanged, convBar,
+            &QProgressBar::setValue);
+    connect(converter_, &SessionConverter::finished, this,
+            [convStatus, refresh](const QString &, const QString &out) {
+        convStatus->setText(tr("Saved %1").arg(QDir::toNativeSeparators(out)));
+        refresh();
+    });
+    connect(converter_, &SessionConverter::error, this,
+            [convStatus](const QString &m) {
+        convStatus->setText(QStringLiteral("<span style='color:#e06666'>%1</span>")
+                                .arg(m.toHtmlEscaped()));
+    });
+    connect(converter_, &SessionConverter::ffmpegPathChanged, this,
+            [this, convertBtn, refreshFfLabel]() {
+        refreshFfLabel();
+        convertBtn->setEnabled(!converter_->busy() &&
+                               converter_->ffmpegAvailable());
     });
 
     return page;

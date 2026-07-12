@@ -20,7 +20,7 @@ namespace lyra::wx  { class WxService; }
 namespace lyra::profile { class ProfileManager; class CompanionLauncher; }
 namespace lyra::cat { class SerialPtt; class SerialCwKey; class CatServer; }
 namespace lyra::tx  { class VoiceKeyer; }
-namespace lyra::recorder { class RecorderEngine; }
+namespace lyra::recorder { class RecorderEngine; class SessionConverter; }
 
 namespace lyra::ui {
 
@@ -51,6 +51,7 @@ public:
                    MeterModel *meter, TunerMemory *tuner,
                    lyra::tx::VoiceKeyer *voiceKeyer,
                    lyra::recorder::RecorderEngine *recorder,
+                   lyra::recorder::SessionConverter *converter,
                    lyra::profile::ProfileManager *profiles,
                    lyra::profile::CompanionLauncher *companion,
                    lyra::cat::SerialPtt *serialPtt,
@@ -109,6 +110,7 @@ private:
     TunerMemory            *tuner_     = nullptr;
     lyra::tx::VoiceKeyer   *voiceKeyer_ = nullptr;   // #89 recording options
     lyra::recorder::RecorderEngine *recorder_ = nullptr;  // #201 session recorder
+    lyra::recorder::SessionConverter *converter_ = nullptr;  // #201 offline MP4
     lyra::profile::ProfileManager *profiles_ = nullptr;
     lyra::profile::CompanionLauncher *companion_ = nullptr;
     lyra::cat::SerialPtt   *serialPtt_ = nullptr;

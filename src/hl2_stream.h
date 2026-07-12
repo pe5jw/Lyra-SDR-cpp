@@ -904,6 +904,11 @@ public:
     bool    attOnTxEnabled()        const { return attOnTxEnabled_;        }
     bool    txInhibit()             const { return txInhibit_;             }
     int     attOnTxDb()             const { return attOnTxDb_;             }
+    // #201 — transient convert lockout: the offline MP4 converter blocks
+    // keying while it runs (separate from the operator's persisted
+    // txInhibit_).  Not persisted, not operator-facing.
+    bool    convertLockout()        const { return convertLockout_;        }
+    void    setConvertLockout(bool on) { convertLockout_ = on; }
     // #91 — VOX getters/setters.  Params echo VoxDetector::Params; the
     // detector + safety live on the Qt main thread (onVoxPoll sole
     // owner).  setVoxRxRmsLin is the anti-VOX RX-audio level feed,
@@ -2210,6 +2215,7 @@ private:
     static constexpr bool kDefaultAttOnTxEnabled = true;
     bool   attOnTxEnabled_         = kDefaultAttOnTxEnabled;
     bool   txInhibit_             = false;   // #94 External TX Inhibit (persisted)
+    bool   convertLockout_        = false;   // #201 transient MP4-convert keying lockout
     int    attOnTxDb_              = kAttOnTxDb;   // 0..31; default 31
     // #169 — SWR-protection state.  Operator surface persisted under
     // tx/swr*; the advanced blank/dwell/floor knobs are loaded from

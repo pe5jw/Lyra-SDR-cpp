@@ -261,6 +261,8 @@ qt_add_executable(lyra
     src/recorder/WavStreamWriter.cpp
     src/recorder/RecorderEngine.h
     src/recorder/RecorderEngine.cpp
+    src/recorder/SessionConverter.h
+    src/recorder/SessionConverter.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated

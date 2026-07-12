@@ -44,6 +44,7 @@
 #include "tx/ClipRecorder.h"         // #89 C1 — recorder() mic-record tap feed
 #include "tx/ClipRecorderPlayer.h"   // #89 B1 — player() seams (KeyFn/BlockedFn/fillBlock)
 #include "recorder/RecorderEngine.h" // #201 — session recorder engine
+#include "recorder/SessionConverter.h" // #201 — offline MP4 converter
 #include <QImage>                    // #201 — panadapter snapshot grab
 #include "tx/VoiceKeyer.h"
 #include "wire/Ep6RecvThread.h"       // #89 B1 — ep6Thread().set_tx_clip_source(...)
@@ -349,6 +350,22 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         const qint64 f = stream_ ? stream_->property("rx1FreqHz").toLongLong() : 0;
         return qMakePair(f, prefs_ ? prefs_->mode() : QString());
     });
+
+    // #201 Stage 5 — offline MP4 converter.  Runs a below-normal-priority
+    // ffmpeg as a separate process; the TX ⇄ convert mutual lock-out is
+    // enforced here (probe = don't start while keyed; lockout = block keying
+    // while converting) via HL2Stream, keeping the engine decoupled.
+    converter_ = new lyra::recorder::SessionConverter(this);
+    if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        converter_->setTxActiveProbe([st] { return st->moxActive(); });
+        converter_->setTxLockout([st](bool on) { st->setConvertLockout(on); });
+    }
+    connect(converter_, &lyra::recorder::SessionConverter::finished, this,
+            [this](const QString &, const QString &out) {
+                statusBar()->showMessage(tr("Saved %1").arg(out), 8000);
+            });
+    connect(converter_, &lyra::recorder::SessionConverter::error, this,
+            [this](const QString &m) { statusBar()->showMessage(m, 8000); });
 
     if (auto *st = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
         connect(st, &lyra::ipc::HL2Stream::statsChanged, this,
@@ -796,6 +813,8 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
         QStringLiteral("VoiceKeyer"), voiceKeyer_);
     qw->rootContext()->setContextProperty(
         QStringLiteral("Recorder"), recorder_);   // #201 session recorder
+    qw->rootContext()->setContextProperty(
+        QStringLiteral("Converter"), converter_); // #201 offline MP4 converter
     qw->setSource(QUrl(QStringLiteral("qrc:/qt/qml/Lyra/src/qml/") + qmlFile));
     // Diagnostic: if a panel's QML fails to load, the QQuickWidget goes
     // blank — dump the errors so we don't have to guess.
@@ -1376,7 +1395,7 @@ void MainWindow::ensureSettingsDialog() {
             qobject_cast<lyra::ipc::HL2Discovery *>(discovery_),
             usbBcd_, qobject_cast<lyra::dsp::WdspEngine *>(wdspEngine_),
             wx_, memory_, eibi_, tci_, spots_, spotHole_, dxCluster_, meter_, tuner_,
-            voiceKeyer_, recorder_,
+            voiceKeyer_, recorder_, converter_,
             profiles_, companion_, serialPtt_, serialCwKey_, catServers_, this);
     }
 }

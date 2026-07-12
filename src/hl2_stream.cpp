@@ -2828,6 +2828,12 @@ void HL2Stream::requestMox(bool on, PttSource source) {
         safetyLog(QStringLiteral("TX: keying BLOCKED — External TX Inhibit is on"));
         return;
     }
+    // #201 — no TX while the offline MP4 converter is running (TX ⇄ convert
+    // mutual lockout).  Transient; keyup always passes.
+    if (on && convertLockout_) {
+        safetyLog(QStringLiteral("TX: keying BLOCKED — a recording is converting to MP4"));
+        return;
+    }
     requestedMox_ = on;
     // Task #33 — Thetis-faithful PTT-source tracking (working
     // reference at TCIServer.cs:3537 routes TCI MOX through a
