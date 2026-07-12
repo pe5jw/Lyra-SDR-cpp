@@ -559,6 +559,33 @@ just toggle off). Tip: RIT/XIT are session-style fine offsets — for a fixed
 transmit split (a repeater, or working a DX pile-up up/down), use
 **SPLIT** (or the FM **RPT** button) instead.
 
+### Zero-beat markers — dead-tune a carrier
+
+A tiny Kenwood-style **± needle** that appears under the frequency readout
+and shows how far the strongest carrier in the passband sits from where
+you're dialed — so you can **dead-tune ("zero-beat")** onto a CW, AM, SAM,
+or FM signal **by eye** instead of by ear.
+
+- **Turn it on** in **Settings → Visuals → Show zero-beat markers** (off by
+  default). It then shows **only** in the carrier modes where it makes
+  sense — **CWU, CWL, AM, SAM, FM** — and stays hidden in SSB / digital.
+- **Read it** — the needle rides left/right of a centre detent over a
+  **±500 Hz** span, with the offset printed beside it. Tune until the needle
+  centres and the readout snaps to a green **● 0 Hz** — you're zero-beat.
+  The colour cues how close you are: **amber** (far) → **cyan** (within
+  ~45 Hz) → **green lock** (within 8 Hz). A grey **—** means no carrier is
+  strong enough to trust yet (it briefly holds the last lock through CW
+  keying gaps, then greys out).
+- It sits in the gap just above the SPLIT button, so switching into a CW
+  mode with it enabled never grows the Tuning panel nor nudges the
+  frequency readout — the layout stays put.
+
+**Also handy for the CW decoder.** In CW the needle reads the carrier's
+offset from your **CW Pitch**, so centring it lands the beat note exactly
+on the pitch the [RX CW decoder](#reading-cw--the-rx-decoder) listens at.
+The decoder has **no AFC**, so a needle-centred signal is the quickest way
+to put a station right on frequency for clean copy.
+
 ### CTUN — centre-tune lock
 
 The **CTUN** chip (top toolbar, in the **Options** group) freezes the
@@ -1860,6 +1887,24 @@ dim and a "switch to CW to decode" note shows.
 
 The decoder is a faithful port of **fldigi's** CW receiver (the W1HKJ
 open-source Morse engine), so if you know fldigi's CW behaviour, this is it.
+
+> **Quick copy — the 60-second recipe.** The one thing that matters is
+> putting the signal *on your pitch*; the rest is defaults.
+>
+> 1. **CW Dec** chip → set mode **CWU/CWL**.
+> 2. **Land the note on your CW pitch** — by ear, or turn on the
+>    [zero-beat needle](#zero-beat-markers--dead-tune-a-carrier) and centre
+>    it. There's **no AFC**, so this is the whole game — a signal on pitch
+>    copies, off-pitch doesn't.
+> 3. **Set Speed** near the fist (≈18 rag-chew, 30+ contest) and leave
+>    **Tracking on** — it learns and follows the real speed from there.
+> 4. **Only if copy is rough:** narrow **Bandwidth** to ~80–100 Hz to shake
+>    a close neighbour; flip **Matched filter** on for a steady signal in
+>    QRM; turn **Squelch** on and set it (watch the **Signal bar**) just
+>    under the signal peaks to kill `*` noise between stations.
+> 5. **Answer in one move** — double-click their call in the text → **His
+>    call**, and a `{CALL}` "Reply" macro is ready. Turn on **Match TX speed
+>    to RX WPM** to send back at their pace.
 
 **Tune the signal onto your CW pitch.** The decoder listens at the same
 single **CW Pitch** the rest of the radio uses, so just put the signal's
@@ -3953,6 +3998,15 @@ Drive the **mode** (Off / Live / timed / Hold) and **Decay** from the
 
 Peaks are drawn only inside your RX filter passband, so they track the
 signal you're actually listening to.
+
+### Zero-beat markers
+
+**Show zero-beat markers** (off by default) enables the small **± needle**
+under the frequency readout that helps you dead-tune a carrier. It appears
+only in the carrier modes — **CWU, CWL, AM, SAM, FM** — and is described in
+full under [Tuning panel → Zero-beat markers](#zero-beat-markers--dead-tune-a-carrier)
+(it's also the fastest way to land a signal on frequency for the CW decoder,
+which has no AFC).
 
 ### Noise-floor line
 

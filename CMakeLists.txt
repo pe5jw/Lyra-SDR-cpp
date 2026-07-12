@@ -217,6 +217,8 @@ qt_add_executable(lyra
     src/dsp/cw_fldigi/fldigi_cw.cpp
     src/dsp/FreqCalMeasure.h
     src/dsp/FreqCalMeasure.cpp
+    src/dsp/ZeroBeat.h
+    src/dsp/ZeroBeat.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
