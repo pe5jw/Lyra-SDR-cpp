@@ -22,6 +22,7 @@ not programmers — if you can click a menu, you can use this.
 
 ## Contents
 
+- [Start here — Quick Basics](#start-here--quick-basics)
 - [Why "Lyra"?](#why-lyra)
 - [System requirements](#system-requirements)
 - [Getting started](#getting-started)
@@ -99,6 +100,36 @@ not programmers — if you can click a menu, you can use this.
   - [Graphics backend](#graphics-backend)
 - [Settings → Weather](#settings--weather)
 - [Credits and References](#credits-and-references)
+
+---
+
+## Start here — Quick Basics
+
+Brand new to Lyra? This is the five-minute on-ramp — do these in order and
+you'll be listening, and talking, fast. Every step is covered in more depth
+in the sections that follow.
+
+**Currently supported:** Lyra is a native **Windows** app — Windows 10
+(64-bit, v1809+) or Windows 11, a DirectX 11 / OpenGL 3.3 GPU (built-in
+graphics are fine), and a **wired Ethernet** link to a Hermes Lite 2 / 2+.
+(See [System requirements](#system-requirements) for the full picture.)
+
+1. **Wire it up 🔌** — connect the radio to your PC with an **Ethernet cable**
+   (wired, not Wi-Fi) and power it on.
+2. **Launch & connect 📡** — open Lyra; it lists any radio it finds.
+   **Double-click your radio** to open it (or use **Add by IP** for a fixed
+   address). *First launch spends a few minutes tuning DSP to your CPU — a
+   one-time step; let it finish.*
+3. **Start the radio ▶️** — click **▶ Start** in the top header.
+4. **Hear a signal 🔊** — **Settings → Audio → Out**: pick **"HL2 audio jack
+   (AK4951)"** (headphones in the radio) or your **PC speakers/headset**, turn
+   the **Volume** up, then **click the panadapter/waterfall** to tune and set
+   the mode (USB above 10 MHz, LSB below, or AM/FM).
+5. **Talk 🎙️** — see [First voice setup (SSB / AM / FM)](#first-voice-setup-ssb--am--fm).
+
+**If something's off:** no radio found → check the **wired** cable + power;
+no audio → check the **Out** device and **Volume**; can't transmit → see
+[First voice setup](#first-voice-setup-ssb--am--fm).
 
 ---
 
