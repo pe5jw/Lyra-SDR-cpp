@@ -16,6 +16,8 @@
 
 <sub>Lyra running live — panadapter, waterfall, tuning cluster, CW console and meters. **[See the full tour →](https://n8sdr1.github.io/Lyra-SDR-cpp/)**</sub>
 
+<sub>Shot on a <b>2560&nbsp;×&nbsp;1440</b> display with every panel open — you'll want a big screen to reproduce it. Lyra needs <b>1600&nbsp;×&nbsp;900</b> for the panels you operate with, and <b>1920&nbsp;×&nbsp;1080</b> to have them all open at once. <a href="PC-Requirements">Full PC requirements →</a></sub>
+
 </div>
 
 > ### ⬇️ [**Download the latest installer →**](https://github.com/N8SDR1/Lyra-SDR-cpp/releases/latest)
