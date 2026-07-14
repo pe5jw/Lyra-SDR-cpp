@@ -62,6 +62,8 @@
 #include <QTextStream>
 #include <QDockWidget>
 #include <QGridLayout>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
@@ -249,6 +251,47 @@ inline QSize testWindowSize() {
         return QSize(w, h);
     }();
     return sz;
+}
+
+// The session layout is stored per DISPLAY SETUP, not in one global slot.
+//
+// A dock layout is only meaningful on the screen it was built for: panel widths
+// SUM across a dock row, so the arrangement that fits a 2560-wide desktop cannot
+// fit a 1366-wide laptop, and Qt will happily crush the panels to make it "fit".
+// With a single global slot, closing that crushed session overwrites the good
+// desktop arrangement and it is gone for good — one RDP session, one docking-
+// station unplug, one resolution change, and the operator has lost a layout they
+// spent an evening building.  That is the bug this key exists to make impossible.
+//
+// The key identifies the SETUP (every attached screen's available size, sorted),
+// not the window, so it is known at startup before anything is restored, and it
+// is stable across a reboot.  Each setup gets its own geometry + dock state +
+// panadapter split + undo history, and no setup can write over another's.
+//
+// Under LYRA_TEST_SIZE the key is the test size instead, so the diagnostic looks
+// like a fresh minimum-spec machine (falling back to the factory layout when
+// that setup has never been seen) rather than the dev box's own arrangement.
+inline QString layoutSlotKey() {
+    if (const QSize ts = testWindowSize(); ts.isValid())
+        return QStringLiteral("%1x%2").arg(ts.width()).arg(ts.height());
+    QStringList parts;
+    const auto screens = QGuiApplication::screens();
+    parts.reserve(screens.size());
+    for (const QScreen *sc : screens) {
+        // geometry(), NOT availableGeometry() — the latter shrinks when the
+        // taskbar is shown, so auto-hiding it would look like a brand-new
+        // display setup and drop the operator into the factory layout.  Screen
+        // resolution is the stable identity; the taskbar is not.
+        const QSize g = sc->geometry().size();
+        parts << QStringLiteral("%1x%2").arg(g.width()).arg(g.height());
+    }
+    parts.sort();   // screen enumeration order is not stable; the set is
+    return parts.isEmpty() ? QStringLiteral("unknown") : parts.join(QLatin1Char('_'));
+}
+
+// QSettings prefix for this setup's session layout, e.g. "session/2560x1400/".
+inline QString layoutSlotPrefix() {
+    return QStringLiteral("session/") + layoutSlotKey() + QLatin1Char('/');
 }
 
 // Global tooltip gate — swallows QWidget tooltip events app-wide when the
@@ -2347,33 +2390,98 @@ void MainWindow::refuseLayoutWrite() {
            "session and must not overwrite your real layout."), 6000);
 }
 
+// Clamp the window into the screen it landed on.  A geometry saved on a screen
+// that no longer exists (or is now smaller) otherwise restores a window that is
+// partly or wholly off the desktop — unreachable title bar, panels laid out for
+// pixels that aren't there.
+void MainWindow::fitWindowToScreen() {
+    // frameGeometry() only knows the window decoration once the window exists.
+    // restoreLayout() runs from the constructor, so defer until it's on screen —
+    // measuring before that gives an answer that is confidently wrong.
+    if (!isVisible()) {
+        QTimer::singleShot(0, this, &MainWindow::fitWindowToScreen);
+        return;
+    }
+    const QScreen *sc = screen();
+    if (!sc) sc = QGuiApplication::primaryScreen();
+    if (!sc) return;
+    const QRect avail = sc->availableGeometry();
+    if (isMaximized() || isFullScreen()) return;   // the WM already fits those
+
+    QRect g = frameGeometry();
+    if (avail.contains(g)) return;                 // already fine — leave it alone
+
+    g.setSize(g.size().boundedTo(avail.size()));
+    if (g.right()  > avail.right())  g.moveRight(avail.right());
+    if (g.bottom() > avail.bottom()) g.moveBottom(avail.bottom());
+    if (g.left()   < avail.left())   g.moveLeft(avail.left());
+    if (g.top()    < avail.top())    g.moveTop(avail.top());
+
+    // frameGeometry includes the WM decoration; setGeometry works in client
+    // coordinates, so carry the frame margins across.
+    const QMargins deco(geometry().left()   - frameGeometry().left(),
+                        geometry().top()    - frameGeometry().top(),
+                        frameGeometry().right()  - geometry().right(),
+                        frameGeometry().bottom() - geometry().bottom());
+    setGeometry(g.marginsRemoved(deco));
+    qInfo("[layout] restored window did not fit %dx%d — clamped to the screen",
+          avail.width(), avail.height());
+}
+
 void MainWindow::saveLayout() {
     if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
     QSettings s;
-    s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
-    s.setValue(QStringLiteral("ui/windowState"), saveState());
+    const QString p = layoutSlotPrefix();     // this display setup's own slot
+    s.setValue(p + QStringLiteral("geometry"), saveGeometry());
+    s.setValue(p + QStringLiteral("windowState"), saveState());
+    if (prefs_)
+        s.setValue(p + QStringLiteral("panadapterSplit"), prefs_->panadapterSplit());
+    saveLayoutUndoStack();
 }
 
 void MainWindow::restoreLayout() {
     QSettings s;
-    const QByteArray geo =
-        s.value(QStringLiteral("ui/geometry")).toByteArray();
+    const QString p = layoutSlotPrefix();
+
+    // One-time migration: an operator upgrading from a build with the single
+    // global slot keeps the layout they have.  Their current setup adopts it;
+    // the legacy keys are left in place (harmless, and a downgrade still works).
+    if (!s.contains(p + QStringLiteral("windowState"))
+        && s.contains(QStringLiteral("ui/windowState"))) {
+        s.setValue(p + QStringLiteral("geometry"),
+                   s.value(QStringLiteral("ui/geometry")));
+        s.setValue(p + QStringLiteral("windowState"),
+                   s.value(QStringLiteral("ui/windowState")));
+        s.setValue(p + QStringLiteral("panadapterSplit"),
+                   s.value(QStringLiteral("ui/panadapterSplit")));
+        qInfo("[layout] adopted the pre-existing layout into slot '%s'",
+              qUtf8Printable(layoutSlotKey()));
+    }
+
+    const QByteArray geo = s.value(p + QStringLiteral("geometry")).toByteArray();
     if (!geo.isEmpty()) {
         restoreGeometry(geo);   // includes the maximized/normal flag
+        fitWindowToScreen();
     } else {
-        // First run (no saved geometry): open maximized / full screen —
-        // the way the operator runs it (and old Lyra defaulted).  Once
-        // they size/maximize and close, saveGeometry() persists it.
+        // This display setup is new to us: open maximized / full screen — the
+        // way the operator runs it (and old Lyra defaulted).  Once they size or
+        // maximize and close, saveGeometry() persists it for THIS setup.
         setWindowState(windowState() | Qt::WindowMaximized);
     }
-    const QByteArray st =
-        s.value(QStringLiteral("ui/windowState")).toByteArray();
+    const QByteArray st = s.value(p + QStringLiteral("windowState")).toByteArray();
     if (!st.isEmpty()) {
         restoreState(st);
     } else {
-        // First run (no saved session): come up in the curated factory
-        // layout rather than the raw dock-creation order.
+        // No session for this setup: come up in the curated factory layout
+        // rather than the raw dock-creation order.
         restoreState(defaultWindowState());
+    }
+    // The panadapter/waterfall divider lives inside the panadapter dock's QML,
+    // so QMainWindow::saveState() knows nothing about it — carry it in the slot
+    // alongside.  Absent (new setup) leaves whatever Prefs loaded.
+    if (prefs_) {
+        const QVariant sp = s.value(p + QStringLiteral("panadapterSplit"));
+        if (sp.isValid()) prefs_->setPanadapterSplit(sp);
     }
     // Apply the persisted lock state (default unlocked).
     const bool locked =
@@ -2424,6 +2532,7 @@ void MainWindow::restoreUserLayout() {
         s.value(QStringLiteral("ui/userGeometry")).toByteArray();
     if (!geo.isEmpty()) {
         restoreGeometry(geo);
+        fitWindowToScreen();   // saved on a bigger screen? don't go off-desktop
     }
     restoreState(st);
     // Trust restoreState() for each dock's saved visibility — do NOT force-show
@@ -2449,10 +2558,7 @@ void MainWindow::flushLayoutToSettings() {
     // Persist the live dock arrangement + window geometry so an export or
     // snapshot taken mid-session reflects the current layout (it's otherwise
     // only written on close).  Cheap; safe to call anytime.
-    if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
-    QSettings s;
-    s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
-    s.setValue(QStringLiteral("ui/windowState"), saveState());
+    saveLayout();
 }
 
 void MainWindow::exportSettings() {
@@ -2681,7 +2787,10 @@ void MainWindow::recallNamedLayout(int slot) {
     }
     const QByteArray geo =
         s.value(base + QStringLiteral("geometry")).toByteArray();
-    if (!geo.isEmpty()) restoreGeometry(geo);
+    if (!geo.isEmpty()) {
+        restoreGeometry(geo);
+        fitWindowToScreen();   // saved on a bigger screen? don't go off-desktop
+    }
     restoreState(st);
     // Trust restoreState() for each dock's saved open/closed state.  An earlier
     // force-show of every non-chip panel here re-opened ANY panel the operator
@@ -2745,10 +2854,32 @@ void MainWindow::applyDefaultLayout() {
 // mis-dropped panel can be walked back.  Only the dock ARRANGEMENT is
 // captured — not the panadapter/waterfall QML divider (a separate
 // prefs_->panadapterSplit, which restoreState doesn't disturb) — so an undo
-// puts the panels back without touching the spectrum split.  Session-scoped:
-// the stack starts empty each launch (the layout itself is restored from
-// ui/userWindowState as before).
+// puts the panels back without touching the spectrum split.
+//
+// The stack is PERSISTED, per display setup, alongside that setup's layout.  An
+// undo that evaporates on exit is no use to an operator who only notices the
+// damage the next morning — which is exactly when they notice it.
 static constexpr int kLayoutUndoMax = 5;   // a few steps of headroom
+
+void MainWindow::loadLayoutUndoStack() {
+    layoutUndoStack_.clear();
+    const QVariantList v =
+        QSettings().value(layoutSlotPrefix() + QStringLiteral("undo")).toList();
+    for (const QVariant &e : v) {
+        const QByteArray b = e.toByteArray();
+        if (!b.isEmpty()) layoutUndoStack_.append(b);
+    }
+    while (layoutUndoStack_.size() > kLayoutUndoMax)
+        layoutUndoStack_.removeFirst();
+}
+
+void MainWindow::saveLayoutUndoStack() {
+    if (testWindowSize().isValid()) return;   // diagnostic run — writes nothing
+    QVariantList v;
+    v.reserve(layoutUndoStack_.size());
+    for (const QByteArray &b : std::as_const(layoutUndoStack_)) v.append(b);
+    QSettings().setValue(layoutSlotPrefix() + QStringLiteral("undo"), v);
+}
 
 void MainWindow::initLayoutUndo() {
     layoutSnapTimer_ = new QTimer(this);
@@ -2767,6 +2898,7 @@ void MainWindow::initLayoutUndo() {
                 this, &MainWindow::onLayoutMaybeChanged);
     }
     layoutCurrent_ = saveState();   // baseline = the just-restored arrangement
+    loadLayoutUndoStack();          // history from this setup's previous sessions
     refreshLayoutUndoAction();
 }
 
@@ -2783,6 +2915,7 @@ void MainWindow::commitLayoutSnapshot() {
     while (layoutUndoStack_.size() > kLayoutUndoMax)
         layoutUndoStack_.removeFirst();            // drop the oldest
     layoutCurrent_ = now;
+    saveLayoutUndoStack();                         // survives a restart
     refreshLayoutUndoAction();
 }
 
@@ -2801,6 +2934,7 @@ void MainWindow::undoLayoutChange() {
     // recallNamedLayout does.
     applyPanelLock(
         QSettings().value(QStringLiteral("ui/panelsLocked"), false).toBool());
+    saveLayoutUndoStack();
     refreshLayoutUndoAction();
     const int left = layoutUndoStack_.size();
     statusBar()->showMessage(

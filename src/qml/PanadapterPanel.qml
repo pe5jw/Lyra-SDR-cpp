@@ -137,20 +137,45 @@ Item {
         // save↔notify feedback loop.  Same approach old Lyra used for
         // its central spectrum/waterfall splitter.
         property bool _applying: false
+        // The waterfall height the operator actually chose, in pixels (-1 = none
+        // saved, use the 60/40 factory split).  restoreState() carries an
+        // ABSOLUTE height, so on a shorter dock than the one it was saved on it
+        // can be nearly all of it — the spectrum gets squeezed to a sliver and
+        // the operator can't see the signal they're tuning.  So we remember what
+        // they wanted and re-apply it clamped against the CURRENT height, every
+        // time the dock resizes.  Clamping once at startup is not enough: the
+        // SplitView has no meaningful height yet when the panel is constructed,
+        // so a one-shot clamp measures against a stale number and permanently
+        // shrinks the waterfall.
+        property real _wantWf: -1
         function applyFromPrefs() {
             _applying = true
-            var st = Prefs.panadapterSplit
-            if (st === undefined || st === null || st === "")
-                wf.SplitView.preferredHeight = splitV.height * 0.4   // factory 60/40
-            else
+            const st = Prefs.panadapterSplit
+            if (st === undefined || st === null || st === "") {
+                _wantWf = -1
+            } else {
                 splitV.restoreState(st)
+                _wantWf = wf.SplitView.preferredHeight
+            }
+            _applying = false
+            reflow()
+        }
+        function reflow() {
+            if (splitV.height <= 0 || splitV.resizing || _applying) return
+            _applying = true
+            const want = _wantWf > 0 ? _wantWf : splitV.height * 0.4   // factory 60/40
+            const hi = splitV.height * 0.6
+            const lo = splitV.height * 0.15
+            wf.SplitView.preferredHeight = Math.max(lo, Math.min(hi, want))
             _applying = false
         }
         Component.onCompleted: applyFromPrefs()
+        onHeightChanged: reflow()
         onResizingChanged: {
             // Persist only when the operator finishes dragging the handle.
             if (!resizing && !_applying) {
                 _applying = true
+                _wantWf = wf.SplitView.preferredHeight
                 Prefs.panadapterSplit = splitV.saveState()
                 _applying = false
             }
