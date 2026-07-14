@@ -217,7 +217,38 @@ inline bool isChipSummonedPanel(const QString &objectName) {
         || objectName == QLatin1String("cwdecoder")
         || objectName == QLatin1String("voicekeyer")
         || objectName == QLatin1String("tuner")
+        || objectName == QLatin1String("freqcal")
         || objectName == QLatin1String("recorder");
+}
+
+// Diagnostic: LYRA_TEST_SIZE=WxH opens the window at exactly that LOGICAL size.
+// Qt lays panels out in logical pixels, so a 1366x768 window on any dev machine
+// reproduces, number for number, what a minimum-spec operator sees full-screen —
+// the dev box's own resolution and DPI scaling drop out.
+//
+// While it is set the session is READ-ONLY with respect to layout: saveLayout()
+// and flushLayoutToSettings() both bail out.  Without that, closing the test
+// window would write the squeezed arrangement over the operator's real
+// ui/geometry + ui/windowState — and because the dev build shares
+// HKCU\Software\N8SDR\Lyra-cpp with the installed one, it would take their
+// installed layout down with it.  The diagnostic must not inflict the very
+// injury it exists to measure.
+//
+// Returns an invalid QSize when unset or unparseable, which disables all of it.
+inline QSize testWindowSize() {
+    static const QSize sz = []() -> QSize {
+        const QString v = QString::fromLatin1(qgetenv("LYRA_TEST_SIZE"))
+                              .trimmed().toLower();
+        if (v.isEmpty()) return {};
+        const QStringList wh = v.split(QLatin1Char('x'), Qt::SkipEmptyParts);
+        if (wh.size() != 2) return {};
+        bool okW = false, okH = false;
+        const int w = wh.at(0).toInt(&okW);
+        const int h = wh.at(1).toInt(&okH);
+        if (!okW || !okH || w < 320 || h < 240) return {};
+        return QSize(w, h);
+    }();
+    return sz;
 }
 
 // Global tooltip gate — swallows QWidget tooltip events app-wide when the
@@ -737,6 +768,18 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     buildMenus();      // File / View (dock toggles + Lock) / Help
     buildToolbar();
     restoreLayout();   // geometry + dock state + lock state
+    if (const QSize ts = testWindowSize(); ts.isValid()) {
+        // Un-maximize first: restoreLayout() may have set WindowMaximized, and
+        // resize() on a maximized window is ignored.
+        setWindowState(windowState() & ~Qt::WindowMaximized);
+        resize(ts);
+        setWindowTitle(windowTitle()
+                       + tr("  —  TEST %1×%2  ·  LAYOUT SAVING DISABLED")
+                             .arg(ts.width()).arg(ts.height()));
+        qWarning("[TEST] window forced to %dx%d logical px; saveLayout() and "
+                 "flushLayoutToSettings() are suppressed for this session",
+                 ts.width(), ts.height());
+    }
     initLayoutUndo();  // baseline snapshot + hook dock move/float signals
     // Backup & Restore — roll an automatic settings snapshot every N launches
     // (Settings → Backup & Restore).  Reads last session's persisted config,
@@ -2295,7 +2338,17 @@ void MainWindow::applyPanelLock(bool locked) {
     }
 }
 
+// Explicit operator-driven layout saves (View ▸ Save my layout / Save to slot N)
+// are refused out loud during a LYRA_TEST_SIZE run rather than silently no-op'd —
+// the title bar says LAYOUT SAVING DISABLED, and that has to be the whole truth.
+void MainWindow::refuseLayoutWrite() {
+    statusBar()->showMessage(
+        tr("Layout saving is disabled: this is a LYRA_TEST_SIZE diagnostic "
+           "session and must not overwrite your real layout."), 6000);
+}
+
 void MainWindow::saveLayout() {
+    if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
     QSettings s;
     s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     s.setValue(QStringLiteral("ui/windowState"), saveState());
@@ -2337,6 +2390,7 @@ void MainWindow::saveUserLayout() {
     // keys — separate from the ui/geometry+windowState session auto-save
     // so "Restore my saved layout" always returns to THIS deliberate
     // arrangement regardless of how the panels drift between sessions.
+    if (testWindowSize().isValid()) return refuseLayoutWrite();
     QSettings s;
     s.setValue(QStringLiteral("ui/userGeometry"), saveGeometry());
     s.setValue(QStringLiteral("ui/userWindowState"), saveState());
@@ -2395,6 +2449,7 @@ void MainWindow::flushLayoutToSettings() {
     // Persist the live dock arrangement + window geometry so an export or
     // snapshot taken mid-session reflects the current layout (it's otherwise
     // only written on close).  Cheap; safe to call anytime.
+    if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
     QSettings s;
     s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     s.setValue(QStringLiteral("ui/windowState"), saveState());
@@ -2588,6 +2643,7 @@ void MainWindow::refreshLayoutMenus() {
 }
 
 void MainWindow::saveNamedLayout(int slot) {
+    if (testWindowSize().isValid()) return refuseLayoutWrite();
     QSettings s;
     const QString base = QStringLiteral("layouts/%1/").arg(slot);
     QString cur = s.value(base + QStringLiteral("name")).toString();

@@ -183,6 +183,7 @@ private:
     void onNoUpdate();
     void onUpdateCheckFailed(const QString &reason);
     void applyPanelLock(bool locked);
+    void refuseLayoutWrite();          // LYRA_TEST_SIZE run: say no, out loud
     void saveLayout();                 // session auto-save (on close)
     void restoreLayout();              // session auto-restore (on launch)
     void flushLayoutToSettings();      // persist live geometry+dock state now
