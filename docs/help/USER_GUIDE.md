@@ -428,8 +428,10 @@ control panels in a row beneath).
 **Undo a bad drag.** Dropped a panel somewhere you didn't mean to?
 **View → Layouts → Undo layout change** puts it back where it came from.
 It remembers the last few arrangements, so you can step back a couple of
-times. (It starts fresh each launch and only tracks panel *moves* — it
-won't re-open a panel you closed; use the **View** menu for that.)
+times — and it now **survives a restart**, so a layout you wrecked just
+before closing is still recoverable the next morning. (It only tracks
+panel *moves* — it won't re-open a panel you closed; use the **View**
+menu for that.)
 
 **Named layouts.** **View → Layouts** gives you **four save-able slots**
 plus the built-in **Lyra default** — five arrangements you can recall in
@@ -445,9 +447,23 @@ one click:
 Recalling a layout restores only your main panels — it won't pop open the
 TX/RX DSP-rack or CW tool windows you reach from the header chips.
 
-Your window size, layout, and divider position are remembered between
-sessions (and survive a lock + restart). To move a layout to another PC
-or keep a backup, see
+**The factory arrangement** is the set of panels you need to operate a
+radio, and it is built to fit the minimum supported display (1600 × 900):
+the panadapter and waterfall across the top, then **Tuning · Meter ·
+Filters** side by side, with **Audio**, **Band** and **TX** below. The
+optional panels — Solar/Propagation, Display, Profiles and the tool
+windows — start closed, because at the minimum size there is nowhere for
+them to go. On a bigger screen open whatever you like from the **View**
+menu; see [System requirements](#system-requirements) for what fits at
+what size.
+
+**Your layout is remembered per monitor setup.** Lyra keeps a separate
+arrangement for each combination of screens you use it on, so plugging
+into a projector, undocking a laptop, or running it on a small second
+machine **cannot overwrite the layout you built on your main display** —
+each comes back the way you left it. Window size and the
+spectrum/waterfall divider are remembered the same way, and survive a
+lock + restart. To move a layout to another PC or keep a backup, see
 [Backing up & sharing your settings](#backing-up--sharing-your-settings).
 
 **Share a layout with someone.** **Settings → Backup & Restore → Share a
