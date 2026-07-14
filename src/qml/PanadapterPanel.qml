@@ -20,6 +20,15 @@ Item {
     implicitWidth: 600
     implicitHeight: 360
 
+    // Honest floor — see AudioPanel.  The implicit size above is what the
+    // panadapter PREFERS; this is the smallest it can be and still be usable:
+    // the spectrum's own 90px minimum, the waterfall's 60px, the frequency
+    // scale, and the dB labels down the sides.  Below ~560 wide the frequency
+    // labels start to collide, but it stays workable and click-to-tune still
+    // lands, so that is a legibility limit rather than a hard floor.
+    readonly property int lyraMinWidth:  320
+    readonly property int lyraMinHeight: 200
+
     // RX1 centre frequency.  The panadapter is always centred on the
     // tuned DDC freq, so this drives the frequency scale AND click-to-
     // tune.  Held in a LOCAL property updated via the rx1FreqChanged

@@ -824,6 +824,8 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
                  ts.width(), ts.height());
     }
     initLayoutUndo();  // baseline snapshot + hook dock move/float signals
+    if (!qEnvironmentVariableIsEmpty("LYRA_DUMP_MINS"))
+        QTimer::singleShot(1200, this, &MainWindow::dumpDockMinimums);
     // Backup & Restore — roll an automatic settings snapshot every N launches
     // (Settings → Backup & Restore).  Reads last session's persisted config,
     // so this is a genuine "last known good" you can fall back to.
@@ -842,6 +844,77 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
             16000);
         QSettings().setValue(QStringLiteral("ui/dockHintShown"), true);
     }
+}
+
+// LYRA_DUMP_MINS=1 — write out what every dock ACTUALLY needs, and what the
+// window as a whole therefore needs.  This is how the published minimum screen
+// size gets decided: by measuring the panels rather than estimating them.
+//
+// Read it like Qt does.  Panel widths SUM across a dock row; panel heights take
+// the MAX of the row.  So the window's minimum height is the sum of its rows'
+// tallest panels plus the panadapter plus the menu/toolbar/status chrome — and
+// that sum is what has to fit inside the screen's available height (i.e. what's
+// left after the taskbar).
+void MainWindow::dumpDockMinimums() {
+    const QString path = QCoreApplication::applicationDirPath()
+                         + QStringLiteral("/lyra_min_sizes.txt");
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream ts(&f);
+
+    ts << "Lyra dock minimum sizes (logical px)\n";
+    ts << "====================================\n\n";
+    ts << "qtMinW/qtMinH = what Qt currently enforces (dock, incl. title bar)\n"
+          "declW/declH   = the panel's own honest floor (QML lyraMinWidth/Height)\n"
+          "The width Qt reports is meaningless until declW is pushed as a real\n"
+          "minimum — SizeRootObjectToView throws the QML root's size away.\n\n";
+    ts << QStringLiteral("%1 %2 %3 %4 %5   %6\n")
+              .arg(QStringLiteral("dock"), -14)
+              .arg(QStringLiteral("qtMinW"), 7)
+              .arg(QStringLiteral("qtMinH"), 7)
+              .arg(QStringLiteral("declW"), 7)
+              .arg(QStringLiteral("declH"), 7)
+              .arg(QStringLiteral("state"));
+    ts << QString(62, QLatin1Char('-')) << "\n";
+
+    QStringList names = docks_.keys();
+    names.sort();
+    for (const QString &n : std::as_const(names)) {
+        QDockWidget *d = docks_.value(n);
+        if (!d) continue;
+        const QSize m = d->minimumSizeHint();
+        int dw = -1, dh = -1;
+        if (auto *qw = qobject_cast<QQuickWidget *>(d->widget())) {
+            if (QObject *r = qw->rootObject()) {
+                const QVariant vw = r->property("lyraMinWidth");
+                const QVariant vh = r->property("lyraMinHeight");
+                if (vw.isValid()) dw = vw.toInt();
+                if (vh.isValid()) dh = vh.toInt();
+            }
+        }
+        ts << QStringLiteral("%1 %2 %3 %4 %5   %6\n")
+                  .arg(n, -14)
+                  .arg(m.width(), 7)
+                  .arg(m.height(), 7)
+                  .arg(dw < 0 ? QStringLiteral("-") : QString::number(dw), 7)
+                  .arg(dh < 0 ? QStringLiteral("-") : QString::number(dh), 7)
+                  .arg(!d->isVisible()  ? QStringLiteral("closed")
+                       : d->isFloating() ? QStringLiteral("floating")
+                                         : QStringLiteral("docked"));
+    }
+
+    const QSize win = minimumSizeHint();
+    ts << "\nwindow minimumSizeHint : " << win.width() << " x " << win.height()
+       << "\nwindow size now        : " << width() << " x " << height() << "\n";
+    if (menuBar())   ts << "menu bar height        : " << menuBar()->height() << "\n";
+    if (statusBar()) ts << "status bar height      : " << statusBar()->height() << "\n";
+    for (const QScreen *sc : QGuiApplication::screens()) {
+        ts << "screen " << sc->geometry().width() << "x" << sc->geometry().height()
+           << "  available " << sc->availableGeometry().width() << "x"
+           << sc->availableGeometry().height() << "\n";
+    }
+    statusBar()->showMessage(tr("Wrote dock minimums to %1").arg(path), 10000);
+    qInfo("[mins] wrote %s", qUtf8Printable(path));
 }
 
 QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
@@ -936,23 +1009,30 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
     // Give Qt an honest minimum HEIGHT for the panel.
     //
     // SizeRootObjectToView stretches the QML root to the widget and DISCARDS the
-    // root's implicitHeight — so Qt is told this panel's minimum is essentially
-    // zero, and a dock row will happily come up shorter than the content needs.
+    // root's implicit size — so Qt is told this panel's minimum is essentially
+    // zero, and a dock row will happily come up smaller than the content needs.
     // The QQuickWidget then simply CLIPS what doesn't fit: the panel silently
-    // loses controls out the bottom edge, with no scrollbar and no cue that
-    // anything is missing (the Tuning panel's RIT/XIT row, DisplayPanel's Spec
-    // FPS and WF sliders).  Pushing the declared implicitHeight back to Qt as a
-    // real minimum makes that impossible — the row is forced tall enough.
+    // loses controls off its edge, with no scrollbar and no cue that anything is
+    // missing (the Tuning panel's RIT/XIT row, DisplayPanel's Spec FPS and WF
+    // sliders).  Pushing a real minimum back to Qt makes that impossible.
+    //
+    // Prefer the panel's declared `lyraMinHeight` — its honest FLOOR, measured
+    // from the content — over implicitHeight, which is only its PREFERRED size.
+    // Conflating the two overstates what a panel needs (the panadapter prefers
+    // 360px but is perfectly usable at 200), and an overstated minimum is how
+    // you end up with a window that refuses to fit the screen.
     //
     // HEIGHT only, deliberately.  Minimum heights take the MAX across a dock
     // row, so they cost at most the tallest panel in it.  Minimum WIDTHS SUM
-    // across a row, and the panels' declared implicit widths are not yet honest,
-    // so those land separately once the width budget is settled.
+    // across a row, so they are only safe once we know the whole budget adds up.
     //
     // Skipped for collapsible panels: syncCollapsibleDock() drives their height
     // from C++ and calls setMinimumHeight(0) on expand, which would delete this.
     if (root && !collapsible) {
-        const int h = qRound(root->property("implicitHeight").toReal());
+        const QVariant declared = root->property("lyraMinHeight");
+        const int h = declared.isValid()
+                          ? declared.toInt()
+                          : qRound(root->property("implicitHeight").toReal());
         if (h > 0) qw->setMinimumHeight(h);
     }
     return qw;

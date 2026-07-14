@@ -23,6 +23,14 @@ Rectangle {
     color: "#101820"
     border.color: "#2a4a5a"
 
+    // Honest floor, measured from the content — NOT the same thing as the
+    // implicit size above, which is only a preferred size.  MainWindow pushes
+    // these to Qt as the dock's real minimum, so a row can't come up too small
+    // and quietly clip controls off the edge.  Derived from the layout rather
+    // than hard-coded so it stays true as the panel changes.
+    readonly property int lyraMinWidth:  body.implicitWidth + 16
+    readonly property int lyraMinHeight: body.implicitHeight + 16
+
     readonly property color cAccent: "#00e5ff"
     readonly property color cText:   "#cdd9e5"
     readonly property color cMuted:  "#8a9aac"
@@ -61,6 +69,7 @@ Rectangle {
     }
 
     ColumnLayout {
+        id: body
         anchors.fill: parent
         anchors.margins: 8
         spacing: 5

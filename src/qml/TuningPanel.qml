@@ -38,6 +38,10 @@ Rectangle {
     color: "#101820"
     border.color: "#2a4a5a"
 
+    // Honest floor, measured from the content — see AudioPanel for the rationale.
+    readonly property int lyraMinWidth:  body.implicitWidth + 24
+    readonly property int lyraMinHeight: body.implicitHeight + 16
+
     // Local mirror of the wire (DDS) freq — signal-driven (a direct
     // binding to Stream.rx1FreqHz is unreliable in this QQuickWidget).
     property int centerHz: 0
@@ -150,6 +154,7 @@ Rectangle {
     }
 
     ColumnLayout {
+        id: body
         anchors.fill: parent
         anchors.leftMargin: 12
         anchors.rightMargin: 12

@@ -191,6 +191,7 @@ private:
     void saveLayout();                 // session auto-save (on close)
     void restoreLayout();              // session auto-restore (on launch)
     void fitWindowToScreen();          // clamp a restored window onto its screen
+    void dumpDockMinimums();           // LYRA_DUMP_MINS=1 → lyra_min_sizes.txt
     void flushLayoutToSettings();      // persist live geometry+dock state now
                                        // (so export/snapshot reflect the screen)
     // Operator-driven layout management (View menu), mirroring old Lyra:
