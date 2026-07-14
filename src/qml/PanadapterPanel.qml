@@ -169,13 +169,23 @@ Item {
             _applying = false
             reflow()
         }
+        // Re-apply the operator's chosen waterfall height against the CURRENT dock
+        // height.  The ONLY thing that may override their choice is a dock too
+        // short to honour it: the cap is what the spectrum itself declares it
+        // needs (SplitView.minimumHeight), nothing more.  An earlier version of
+        // this capped the waterfall at 60% of the dock, which quietly refused any
+        // taller waterfall the operator had deliberately dragged out and saved —
+        // it came back shrunk on every restart.  A percentage cap here is
+        // second-guessing; the SplitView's own minimums already stop either pane
+        // from vanishing (spectrum 90px, waterfall 60px), and they are the honest
+        // limit.  _wantWf is deliberately NOT rewritten when we cap, so the full
+        // height comes back the moment the dock is tall enough for it again.
         function reflow() {
             if (splitV.height <= 0 || splitV.resizing || _applying) return
             _applying = true
             const want = _wantWf > 0 ? _wantWf : splitV.height * 0.4   // factory 60/40
-            const hi = splitV.height * 0.6
-            const lo = splitV.height * 0.15
-            wf.SplitView.preferredHeight = Math.max(lo, Math.min(hi, want))
+            const hi = splitV.height - spectrumArea.SplitView.minimumHeight
+            wf.SplitView.preferredHeight = Math.min(hi, want)
             _applying = false
         }
         Component.onCompleted: applyFromPrefs()
