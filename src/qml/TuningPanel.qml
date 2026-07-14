@@ -286,105 +286,105 @@ Rectangle {
                         Item { Layout.fillWidth: true }
                     }
                 }
+              }
 
-                // Zero-beat needle — overlays into the row's slack just BELOW
-                // the freq box (anchored to it, NOT a Layout child) so turning
-                // it on never grows the Tuning panel nor nudges the freq
-                // readout upward.  A gap sits above the meter; the "Zero Beat"
-                // label rides underneath, dropping the pair down toward the
-                // SPLIT button.  Hidden unless enabled in Visuals AND in a
-                // lockable carrier mode (CW / AM / SAM / FM).
-                Item {
-                    id: zbStrip
-                    anchors.top: parent.bottom
-                    anchors.topMargin: 7
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.leftMargin: 2
-                    anchors.rightMargin: 2
-                    height: 30
-                    visible: Prefs.zeroBeatMarkers && WdspEngine.zeroBeatActive
-                    readonly property real rangeHz: 500
-                    readonly property bool locked: WdspEngine.zeroBeatValid
-                    readonly property real offHz:
-                        Math.max(-rangeHz, Math.min(rangeHz, WdspEngine.zeroBeatOffsetHz))
-                    readonly property color zbCol:
-                        !locked                 ? "#55708a"
-                        : Math.abs(offHz) <= 8  ? "#39e08a"
-                        : Math.abs(offHz) <= 45 ? "#00d8ff" : "#e8c477"
+              // Zero-beat needle strip — a Layout FLOW child of the VFO-A
+              // cluster (sibling of the freq box), NOT an anchored overlay.
+              // The v0.18.0 anchored-overlay form (anchors.top: vfoA.bottom)
+              // destabilised the VFO RowLayout and let the centre logo paint
+              // over the frequency readout — an unusable VFO for every user,
+              // zero-beat on or off.  As a plain flow child it collapses to
+              // zero height when hidden (the default, and every non-CW mode),
+              // so the panel is unchanged until zero-beat is enabled; when it
+              // is, the wrapper grows just enough to seat the needle + the
+              // "Zero Beat" caption below the freq box.  Shown only when the
+              // Visuals pref is on AND in a lockable carrier mode
+              // (CW / AM / SAM / FM).
+              Item {
+                id: zbStrip
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? 34 : 0
+                visible: Prefs.zeroBeatMarkers && WdspEngine.zeroBeatActive
+                readonly property real rangeHz: 500
+                readonly property bool locked: WdspEngine.zeroBeatValid
+                readonly property real offHz:
+                    Math.max(-rangeHz, Math.min(rangeHz, WdspEngine.zeroBeatOffsetHz))
+                readonly property color zbCol:
+                    !locked                 ? "#55708a"
+                    : Math.abs(offHz) <= 8  ? "#39e08a"
+                    : Math.abs(offHz) <= 45 ? "#00d8ff" : "#e8c477"
 
-                    Component.onCompleted:
+                Component.onCompleted:
+                    WdspEngine.setZeroBeatEnabled(Prefs.zeroBeatMarkers)
+                Connections {
+                    target: Prefs
+                    function onZeroBeatMarkersChanged() {
                         WdspEngine.setZeroBeatEnabled(Prefs.zeroBeatMarkers)
-                    Connections {
-                        target: Prefs
-                        function onZeroBeatMarkersChanged() {
-                            WdspEngine.setZeroBeatEnabled(Prefs.zeroBeatMarkers)
+                    }
+                }
+
+                Rectangle {
+                    id: zbTrack
+                    anchors.left: parent.left
+                    anchors.right: zbRead.left
+                    anchors.rightMargin: 8
+                    anchors.top: parent.top
+                    height: 18
+                    radius: 4
+                    color: "#080d15"
+                    border.width: 1
+                    border.color: "#1e2a38"
+
+                    Rectangle {   // centre detent
+                        width: 1.5; height: parent.height - 8
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: "#3a86a0"
+                    }
+                    Repeater {    // ± quarter ticks
+                        model: [0.25, 0.75]
+                        Rectangle {
+                            width: 1; height: zbTrack.height - 14
+                            x: zbTrack.width * modelData
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: "#22303e"
                         }
                     }
-
-                    Rectangle {
-                        id: zbTrack
-                        anchors.left: parent.left
-                        anchors.right: zbRead.left
-                        anchors.rightMargin: 8
-                        anchors.top: parent.top
-                        height: 18
-                        radius: 4
-                        color: "#080d15"
-                        border.width: 1
-                        border.color: "#1e2a38"
-
-                        Rectangle {   // centre detent
-                            width: 1.5; height: parent.height - 8
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: "#3a86a0"
-                        }
-                        Repeater {    // ± quarter ticks
-                            model: [0.25, 0.75]
-                            Rectangle {
-                                width: 1; height: zbTrack.height - 14
-                                x: zbTrack.width * modelData
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: "#22303e"
-                            }
-                        }
-                        Rectangle {   // the needle
-                            width: 3; radius: 1.5
-                            height: parent.height - 6
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: zbStrip.zbCol
-                            x: Math.round((zbTrack.width - width) / 2
-                               + (zbStrip.offHz / zbStrip.rangeHz)
-                                 * (zbTrack.width - width) / 2)
-                            Behavior on x { NumberAnimation { duration: 90 } }
-                        }
-                    }
-                    Label {
-                        id: zbRead
-                        anchors.right: parent.right
-                        anchors.verticalCenter: zbTrack.verticalCenter
-                        width: 62
-                        horizontalAlignment: Text.AlignRight
-                        font.family: "Consolas"
-                        font.pixelSize: 12
-                        font.bold: true
+                    Rectangle {   // the needle
+                        width: 3; radius: 1.5
+                        height: parent.height - 6
+                        anchors.verticalCenter: parent.verticalCenter
                         color: zbStrip.zbCol
-                        text: !zbStrip.locked ? "—"
-                              : Math.abs(zbStrip.offHz) <= 8 ? "● 0 Hz"
-                              : (zbStrip.offHz > 0 ? "+" : "")
-                                + Math.round(zbStrip.offHz) + " Hz"
+                        x: Math.round((zbTrack.width - width) / 2
+                           + (zbStrip.offHz / zbStrip.rangeHz)
+                             * (zbTrack.width - width) / 2)
+                        Behavior on x { NumberAnimation { duration: 90 } }
                     }
-                    Label {          // caption under the meter
-                        anchors.horizontalCenter: zbTrack.horizontalCenter
-                        anchors.top: zbTrack.bottom
-                        anchors.topMargin: 1
-                        text: qsTr("Zero Beat")
-                        font.pixelSize: 11
-                        font.bold: true
-                        font.letterSpacing: 0.5
-                        color: "#8de04a"
-                    }
+                }
+                Label {
+                    id: zbRead
+                    anchors.right: parent.right
+                    anchors.verticalCenter: zbTrack.verticalCenter
+                    width: 62
+                    horizontalAlignment: Text.AlignRight
+                    font.family: "Consolas"
+                    font.pixelSize: 12
+                    font.bold: true
+                    color: zbStrip.zbCol
+                    text: !zbStrip.locked ? "—"
+                          : Math.abs(zbStrip.offHz) <= 8 ? "● 0 Hz"
+                          : (zbStrip.offHz > 0 ? "+" : "")
+                            + Math.round(zbStrip.offHz) + " Hz"
+                }
+                Label {          // caption under the meter
+                    anchors.horizontalCenter: zbTrack.horizontalCenter
+                    anchors.top: zbTrack.bottom
+                    anchors.topMargin: 1
+                    text: qsTr("Zero Beat")
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.letterSpacing: 0.5
+                    color: "#8de04a"
                 }
               }
             }
@@ -393,12 +393,22 @@ Rectangle {
 
             Image {
                 source: "qrc:/qt/qml/Lyra/src/assets/logo/lyra-icon-256.png"
-                Layout.fillHeight: true
+                // Fixed square footprint, centred by the flanking fillWidth
+                // spacers.  The old `Layout.fillHeight` + `Layout.preferredWidth:
+                // height` form coupled the logo's WIDTH to its own layout-driven
+                // HEIGHT; that feedback could mis-resolve and jam the logo a
+                // third of the way across the VFO row with dead grey space
+                // beside it (v0.18.0 report).  A fixed preferred+maximum size,
+                // plus a bounded sourceSize so the 256px asset's implicit size
+                // can't drive the layout, removes the coupling entirely.
+                Layout.preferredWidth: 132
                 Layout.preferredHeight: 132
-                Layout.preferredWidth: height   // square, as tall as the row
+                Layout.maximumWidth: 140
                 Layout.maximumHeight: 140
                 Layout.alignment: Qt.AlignVCenter
                 fillMode: Image.PreserveAspectFit
+                sourceSize.width: 140
+                sourceSize.height: 140
                 smooth: true
                 mipmap: true
             }
