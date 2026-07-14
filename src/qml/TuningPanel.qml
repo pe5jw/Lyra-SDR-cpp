@@ -417,10 +417,20 @@ Rectangle {
 
             // VFO-B slot — empty (reserved, no dead widget) in simplex;
             // SPLIT fills it with the TX VFO cluster (no relayout).
+            //
+            // The reservation is deliberate: it keeps the logo centred and stops
+            // the row re-laying out when SPLIT toggles.  But it is 360px, and
+            // when the panel is too narrow to afford it the reservation is what
+            // squeezes VFO-A's readout — paying a third of the row for an empty
+            // hole is not a trade worth making on a small screen.  So hold the
+            // slot while there is room for the whole row, and give it back when
+            // there isn't.  Wide panels behave exactly as before.
             Item {
                 id: vfoBSlot
-                Layout.preferredWidth: 360
-                Layout.maximumWidth: 360
+                readonly property bool reserve:
+                    Stream.splitEnabled || root.width >= 900
+                Layout.preferredWidth: reserve ? 360 : 0
+                Layout.maximumWidth: reserve ? 360 : 0
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
 
@@ -563,6 +573,10 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: splitBtn.checked ? "#00e5ff" : "#cdd9e5"
                     font: splitBtn.font
+                    // A custom contentItem drops the style's default eliding, so
+                    // a squeezed button paints its label out over its neighbours.
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("SPLIT — receive on VFO A, transmit on VFO B "
                     + "(same band).  Set VFO B to your TX freq; key and the red "
@@ -651,6 +665,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: rptBtn.checked ? "#00e5ff" : "#cdd9e5"
                     font: rptBtn.font
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("Repeater — TX on VFO B = VFO A ± offset, RX on "
                     + "A.  Pick the shift direction + offset and (if needed) the "
@@ -703,6 +719,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: ctcssBtn.checked ? "#ff9a3c" : "#cdd9e5"
                     font: ctcssBtn.font
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("Send a CTCSS sub-audible access tone — required "
                     + "by tone-protected repeaters.  Pick the tone at right.")
@@ -774,6 +792,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: ritBtn.checked ? "#00e5ff" : "#cdd9e5"
                     font: ritBtn.font
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("RIT — Receiver Incremental Tuning.  Shifts "
                     + "only the RX by the offset; TX stays put.  Chase an "
@@ -843,6 +863,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: xitBtn.checked ? "#00e5ff" : "#cdd9e5"
                     font: xitBtn.font
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("XIT — Transmitter Incremental Tuning.  Shifts "
                     + "only the TX by the offset; RX stays put.  PureSignal "

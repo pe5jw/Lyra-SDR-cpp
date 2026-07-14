@@ -53,6 +53,10 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             font: btn.font
+            // A custom contentItem drops the style's default eliding, so a
+            // squeezed toggle paints its label out over its neighbours.
+            elide: Text.ElideRight
+            clip: true
         }
     }
 
@@ -105,6 +109,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: autoBtn.checked ? root.cOn : root.cText
                     font.pixelSize: 12
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("Auto-LNA — backs the LNA off on ADC overload and "
                     + "creeps it back when the band clears (rides the overload edge).\n"
@@ -212,6 +218,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                     color: monBtn.checked ? root.cOn : root.cText
                     font.pixelSize: 12
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("Monitor — hear your own processed TX audio "
                     + "(post-rack: Speech / EQ / Combinator / Plating) on the "
@@ -263,7 +271,9 @@ Rectangle {
                 contentItem: Text { text: outBtn.text; color: root.cText
                     font.pixelSize: 12
                     horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter }
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    clip: true }
                 ToolTip.text: {
                     var d = WdspEngine.audioOutputDevices()
                     var i = WdspEngine.audioDeviceIndex
@@ -413,6 +423,11 @@ Rectangle {
                 id: agcCell
                 Layout.preferredHeight: 26
                 implicitWidth: agcRow.implicitWidth + 16
+                // agcRow is anchors.centerIn, not filled, so it keeps its
+                // implicit width when the layout squeezes this cell — and
+                // without a clip the AGC readout paints straight out over the
+                // DSP toggles beside it.  Clip so it degrades instead.
+                clip: true
                 radius: 4
                 color: agcMa.containsMouse ? "#16242e" : "transparent"
                 border.width: 1
@@ -668,6 +683,8 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     font: capBtn.font
+                    elide: Text.ElideRight
+                    clip: true
                 }
                 ToolTip.text: qsTr("Capture the band's noise spectrum over the chosen "
                     + "window — do it on a quiet, signal-free frequency. Click again to cancel.")

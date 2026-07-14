@@ -925,11 +925,35 @@ QQuickWidget *MainWindow::makeQuick(const QString &qmlFile) {
     // to the title strip (SizeRootObjectToView ignores QML implicitHeight, so
     // C++ has to clamp the widget).  Stash the host widget on the root so the
     // slot can find it via sender(); panels start expanded (no-op until used).
-    if (QObject *root = qw->rootObject();
-        root && root->property("collapsed").isValid()) {
+    QObject *root = qw->rootObject();
+    const bool collapsible = root && root->property("collapsed").isValid();
+    if (collapsible) {
         root->setProperty("_lyraHostQw", QVariant::fromValue<QObject *>(qw));
         connect(root, SIGNAL(collapsedChanged()),
                 this, SLOT(syncCollapsibleDock()));
+    }
+
+    // Give Qt an honest minimum HEIGHT for the panel.
+    //
+    // SizeRootObjectToView stretches the QML root to the widget and DISCARDS the
+    // root's implicitHeight — so Qt is told this panel's minimum is essentially
+    // zero, and a dock row will happily come up shorter than the content needs.
+    // The QQuickWidget then simply CLIPS what doesn't fit: the panel silently
+    // loses controls out the bottom edge, with no scrollbar and no cue that
+    // anything is missing (the Tuning panel's RIT/XIT row, DisplayPanel's Spec
+    // FPS and WF sliders).  Pushing the declared implicitHeight back to Qt as a
+    // real minimum makes that impossible — the row is forced tall enough.
+    //
+    // HEIGHT only, deliberately.  Minimum heights take the MAX across a dock
+    // row, so they cost at most the tallest panel in it.  Minimum WIDTHS SUM
+    // across a row, and the panels' declared implicit widths are not yet honest,
+    // so those land separately once the width budget is settled.
+    //
+    // Skipped for collapsible panels: syncCollapsibleDock() drives their height
+    // from C++ and calls setMinimumHeight(0) on expand, which would delete this.
+    if (root && !collapsible) {
+        const int h = qRound(root->property("implicitHeight").toReal());
+        if (h > 0) qw->setMinimumHeight(h);
     }
     return qw;
 }

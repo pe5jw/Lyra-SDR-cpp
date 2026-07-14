@@ -73,6 +73,10 @@ Rectangle {
             font.pixelSize: 13
             font.bold: true
             color: cb.chipActive ? cb.activeText : "#5ec8ff"
+            // Without this the band label paints outside its shrinking chip and
+            // the whole row smears together at narrow widths.
+            elide: Text.ElideRight
+            clip: true
         }
     }
 
