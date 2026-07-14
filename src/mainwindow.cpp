@@ -104,7 +104,6 @@
 #include <QCoreApplication>
 
 #include "updatechecker.h"
-#include "default_layout.h"
 #include "wxservice.h"
 #include "wxindicator.h"
 #include "solarservice.h"
@@ -816,9 +815,12 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
         // resize() on a maximized window is ignored.
         setWindowState(windowState() & ~Qt::WindowMaximized);
         resize(ts);
+        // Say WHICH layout this session came up in, right in the title bar —
+        // a screenshot then answers "did the factory layout actually apply?"
+        // without anyone having to infer it from the pixels.
         setWindowTitle(windowTitle()
-                       + tr("  —  TEST %1×%2  ·  LAYOUT SAVING DISABLED")
-                             .arg(ts.width()).arg(ts.height()));
+                       + tr("  —  TEST %1×%2  ·  LAYOUT SAVING DISABLED  ·  %3")
+                             .arg(ts.width()).arg(ts.height()).arg(layoutSource_));
         qWarning("[TEST] window forced to %dx%d logical px; saveLayout() and "
                  "flushLayoutToSettings() are suppressed for this session",
                  ts.width(), ts.height());
@@ -2547,6 +2549,20 @@ void MainWindow::restoreLayout() {
     QSettings s;
     const QString p = layoutSlotPrefix();
 
+    // A LYRA_TEST_SIZE session shows what a FRESH machine of that size gets.  So
+    // it builds the factory layout outright and never reads a saved slot — not
+    // this setup's, not a migrated one, none.  Reading the store here made the
+    // diagnostic depend on whatever happened to be in QSettings, which is the one
+    // thing it must NOT depend on: the question is "what does a new operator
+    // see?", and a new operator has nothing saved.
+    if (testWindowSize().isValid()) {
+        applyDefaultLayout();
+        layoutSource_ = QStringLiteral("FACTORY (diagnostic run — no slot read)");
+        qInfo("[layout] %s", qUtf8Printable(layoutSource_));
+        applyPanelLock(s.value(QStringLiteral("ui/panelsLocked"), false).toBool());
+        return;
+    }
+
     // One-time migration: an operator upgrading from a build with the single
     // global slot keeps the layout they have.  Their current setup adopts it;
     // the legacy keys are left in place (harmless, and a downgrade still works).
@@ -2575,11 +2591,16 @@ void MainWindow::restoreLayout() {
     const QByteArray st = s.value(p + QStringLiteral("windowState")).toByteArray();
     if (!st.isEmpty()) {
         restoreState(st);
+        layoutSource_ = QStringLiteral("restored slot '%1'").arg(layoutSlotKey());
     } else {
-        // No session for this setup: come up in the curated factory layout
-        // rather than the raw dock-creation order.
-        restoreState(defaultWindowState());
+        // No session for this display setup: come up in the factory layout
+        // rather than the raw dock-creation order.  Built, not restored from a
+        // snapshot — see applyDefaultLayout().
+        applyDefaultLayout();
+        layoutSource_ = QStringLiteral("FACTORY (slot '%1' was empty)")
+                            .arg(layoutSlotKey());
     }
+    qInfo("[layout] %s", qUtf8Printable(layoutSource_));
     // The panadapter/waterfall divider lives inside the panadapter dock's QML,
     // so QMainWindow::saveState() knows nothing about it — carry it in the slot
     // alongside.  Absent (new setup) leaves whatever Prefs loaded.
@@ -2913,44 +2934,89 @@ void MainWindow::recallNamedLayout(int slot) {
 }
 
 void MainWindow::applyDefaultLayout() {
-    // Built-in (factory) arrangement: panadapter on top, the control
-    // panels in a row beneath.  Re-adding a dock to an area repositions
-    // it, so this is a clean reset regardless of where the operator
-    // dragged things.  Mirrors buildDocks()'s placement.
-    static const char *kBottom[] = {"tuning", "audio", "display", "band"};
-    // Clean slate for the always-on main panels only.  Chip-summoned rack/CW
-    // panels are left untouched here — the embedded factory state governs
-    // their (hidden) visibility, so reset doesn't pop them all open.
-    for (auto *dock : std::as_const(docks_)) {
-        if (isChipSummonedPanel(dock->objectName())) continue;
-        dock->setFloating(false);
-        dock->show();
+    // The factory arrangement — BUILT, not restored from a captured blob.
+    //
+    // It used to be a QMainWindow::saveState() snapshot embedded in the source.
+    // A snapshot is a photograph of one machine's screen: that one was 2560px
+    // wide, taken on the author's desktop, with the floating tool windows parked
+    // at x = 2580..4518 — i.e. on his second monitor.  Every new operator
+    // inherited it, and on a smaller screen Qt crushed the panels to make it fit.
+    // Placing the docks in code instead makes the default correct at ANY window
+    // size, and it stays correct when the panel set changes, with no capture-and-
+    // re-embed ritual.
+    //
+    // The arrangement is the one that fits the published 1600x900 minimum:
+    //
+    //   +---------------------------------------------------------+
+    //   |  PANADAPTER  +  waterfall                               |
+    //   +--------------------+----------+-------------------------+
+    //   |  TUNING            |  METER   |  FILTERS                |
+    //   +--------------------+----------+-------------------------+
+    //   |  AUDIO                                                  |
+    //   +---------------------------------------------------------+
+    //   |  BAND                                                   |
+    //   +---------------------------------------------------------+
+    //   |  TX                                                     |
+    //   +---------------------------------------------------------+
+    //
+    // Audio (needs ~1258px) and TX (~1056px) are wide enough that nothing fits
+    // beside them at 1600, so they each take a full row.  Display, Profiles and
+    // Solar/Propagation are CLOSED: they don't fit alongside the rest at the
+    // minimum, and the published spec says so plainly.  One click in the View
+    // menu opens any of them on a bigger screen.
+    auto dock = [this](const char *n) {
+        return docks_.value(QLatin1String(n));
+    };
+    QDockWidget *pan = dock("panadapter");
+    QDockWidget *tun = dock("tuning");
+    QDockWidget *met = dock("meter");
+    QDockWidget *flt = dock("modefilter");
+    QDockWidget *aud = dock("audio");
+    QDockWidget *bnd = dock("band");
+    QDockWidget *tx  = dock("tx");
+
+    // Clean slate — but only for the always-on panels.  Chip-summoned rack/CW
+    // tool windows keep whatever state they're in, so a reset doesn't pop all
+    // of them open in the operator's face.
+    for (auto *d : std::as_const(docks_)) {
+        if (isChipSummonedPanel(d->objectName())) continue;
+        d->setFloating(false);
+        removeDockWidget(d);   // also hides it; re-shown below if it's in the set
     }
-    // Prefer the curated factory layout (operator's embedded arrangement).
-    // Fall back to the programmatic placement below only if it fails to
-    // apply (e.g. a future build whose dock object names changed).
-    if (restoreState(defaultWindowState())) {
-        for (auto *dock : std::as_const(docks_)) {
-            if (!isChipSummonedPanel(dock->objectName())) dock->show();
-        }
-        if (prefs_) {
-            // Ship the curated panadapter/waterfall split with the layout.
-            prefs_->setPanadapterSplit(defaultPanadapterSplit());
-        }
-        return;
-    }
-    if (auto *pan = docks_.value(QStringLiteral("panadapter"))) {
-        addDockWidget(Qt::TopDockWidgetArea, pan);
-    }
-    for (const char *name : kBottom) {
-        if (auto *d = docks_.value(QLatin1String(name))) {
-            addDockWidget(Qt::BottomDockWidgetArea, d);
-        }
-    }
-    // Factory split (invalid QVariant → QML restores the 60/40 default).
-    if (prefs_) {
-        prefs_->setPanadapterSplit(QVariant());
-    }
+
+    if (pan) { addDockWidget(Qt::TopDockWidgetArea, pan);    pan->show(); }
+    if (tun) { addDockWidget(Qt::BottomDockWidgetArea, tun); tun->show(); }
+
+    // Do the VERTICAL splits first, so each row spans the full width.  Splitting
+    // row 1 horizontally first would nest the later rows INSIDE the Tuning
+    // column instead of below it.
+    if (tun && aud) { splitDockWidget(tun, aud, Qt::Vertical);   aud->show(); }
+    if (aud && bnd) { splitDockWidget(aud, bnd, Qt::Vertical);   bnd->show(); }
+    if (bnd && tx)  { splitDockWidget(bnd, tx,  Qt::Vertical);   tx->show();  }
+    // Now subdivide row 1.
+    if (tun && met) { splitDockWidget(tun, met, Qt::Horizontal); met->show(); }
+    if (met && flt) { splitDockWidget(met, flt, Qt::Horizontal); flt->show(); }
+
+    // Proportions.  resizeDocks normalises, so these read as ratios rather than
+    // pixels — but they're the panels' honest widths and heights, so on a
+    // 1600x900 screen they land at close to their natural size.  Row 1's Tuning
+    // share is sized for a SPLIT VFO pair, not just simplex, so turning SPLIT on
+    // doesn't shove the row out of shape.
+    // Filters needs 539px for its TX-BW combo to be reachable, so give it a
+    // little headroom rather than exactly its floor — the separators and frame
+    // eat a few pixels, and a panel that is one combo short of usable is no
+    // better than one that's half missing.  Tuning takes the slack: it has the
+    // most give (its VFO-B slot only claims space when SPLIT is on).
+    if (tun && met && flt)
+        resizeDocks({tun, met, flt}, {800, 220, 580}, Qt::Horizontal);
+    if (pan && tun && aud && bnd && tx)
+        resizeDocks({pan, tun, aud, bnd, tx}, {300, 224, 122, 112, 64},
+                    Qt::Vertical);
+
+    // Factory split (invalid QVariant → the QML restores its 60/40 default,
+    // proportional rather than the absolute pixel height a snapshot would bake
+    // in).
+    if (prefs_) prefs_->setPanadapterSplit(QVariant());
 }
 
 // ── Layout undo (randol request) ─────────────────────────────────────────

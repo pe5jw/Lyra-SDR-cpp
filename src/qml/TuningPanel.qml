@@ -176,6 +176,10 @@ Rectangle {
             ColumnLayout {
                 Layout.preferredWidth: 360
                 Layout.maximumWidth: 360
+                // A real floor, so the readout can't be crushed to nothing when
+                // the row is squeezed — 300px still seats the LED digits and the
+                // Step/Mode combos beneath them.
+                Layout.minimumWidth: 300
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 4
 
@@ -406,9 +410,22 @@ Rectangle {
                 // beside it (v0.18.0 report).  A fixed preferred+maximum size,
                 // plus a bounded sourceSize so the 256px asset's implicit size
                 // can't drive the layout, removes the coupling entirely.
-                Layout.preferredWidth: 132
+                //
+                // The logo is DECORATION, and it must never be the thing that
+                // forces an overlap.  When a RowLayout's children can't fit even
+                // at their MINIMUM widths, Qt Quick Layouts overflows and lets
+                // them overlap — and the Image's minimum was its 140px
+                // sourceSize, which is how the logo ended up painted across the
+                // frequency readout on a narrow panel.  A minimum of zero means
+                // it gives way and scales down under pressure instead, so the
+                // readout — which the operator actually needs — always wins.
+                // It only disappears entirely when the panel is too narrow for
+                // it to mean anything.
+                visible: root.width >= 760
+                Layout.preferredWidth: visible ? 132 : 0
                 Layout.preferredHeight: 132
-                Layout.maximumWidth: 140
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: visible ? 140 : 0
                 Layout.maximumHeight: 140
                 Layout.alignment: Qt.AlignVCenter
                 fillMode: Image.PreserveAspectFit
@@ -436,6 +453,7 @@ Rectangle {
                     Stream.splitEnabled || root.width >= 900
                 Layout.preferredWidth: reserve ? 360 : 0
                 Layout.maximumWidth: reserve ? 360 : 0
+                Layout.minimumWidth: Stream.splitEnabled ? 300 : 0
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
 

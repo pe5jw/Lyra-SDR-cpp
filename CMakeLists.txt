@@ -328,7 +328,6 @@ qt_add_executable(lyra
     src/mainwindow.cpp
     src/dockdragcontroller.h
     src/dockdragcontroller.cpp
-    src/default_layout.h
     src/prefs.h
     src/prefs.cpp
     src/settingsdialog.h

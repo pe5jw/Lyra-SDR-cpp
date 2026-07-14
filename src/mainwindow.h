@@ -278,6 +278,7 @@ private:
     bool                        spaceConsumedPress_ = false; // space-PTT: swallow paired release/repeats
     QAction                    *layoutRecallActs_[4]{};   // named-layout recall slots
     QAction                    *layoutSaveActs_[4]{};      // named-layout save slots
+    QString                     layoutSource_;   // which layout this session came up in
     // Layout-undo state (persisted per display setup; see initLayoutUndo).
     QAction                    *layoutUndoAct_ = nullptr;   // View → Layouts → Undo
     QList<QByteArray>           layoutUndoStack_;            // pre-change states, newest last
