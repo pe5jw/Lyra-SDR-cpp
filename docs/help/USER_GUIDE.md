@@ -2559,8 +2559,9 @@ country to override just the bands that differ:
 - **United Kingdom** — replaces 60 m with the UK's own set of permitted
   segments (per the RSGB / Ofcom band plan), which differ from the plain
   WRC-15 band.
-- **Canada** — uses the WRC-15 60 m band rather than the US channels (Canada
-  is in IARU Region 2 but does not use the US channel plan).
+- **Canada** — full 160 m–6 m Canadian mode boundaries (per RAC), including
+  Canada's own **five fixed 60 m channels** (Canada is in IARU Region 2 but
+  channelizes 60 m rather than using the WRC-15 band).
 
 The overlay paints a thin strip across the **top of the panadapter**:
 
@@ -2583,22 +2584,48 @@ The overlay paints a thin strip across the **top of the panadapter**:
 - **Band-edge warning lines** — red dashed lines at each band's edges, so
   you can see at a glance when you're tuning toward the edge of an
   allocation.
+- **License-class edges (US)** — *(optional, off by default)* amber dashed
+  markers at the US phone sub-band boundaries where each license class
+  (**Extra / Advanced / General / Tech**) gains privileges — e.g. the 20 m
+  phone edges at 14.150 (Extra) / 14.175 (Advanced) / 14.225 (General).
+  A passive reference so you can see where your class's limits fall; it's
+  US-only (nothing draws for other regions). You are responsible for
+  knowing your own class limits.
 
-Each of those four layers has its own checkbox here so you can show only
-what you want. They're all on by default. **Segment colors** — the four
-swatch buttons (CW / DIG / SSB / FM) let you recolor each mode category;
-click a swatch to pick a color, or choose the original color to clear the
-override.
+Each layer has its own checkbox here so you can show only what you want
+(all on by default except the license-class edges). **Segment colors** —
+the four swatch buttons (CW / DIG / SSB / FM) let you recolor each mode
+category; click a swatch to pick a color, or choose the original color to
+clear the override.
 
-As you tune, Lyra shows a brief message at the **bottom of the window**
-when you cross a band edge — "In band: 40m (US)" when you're inside an
-allocation, or "⚠ Out of band — X.XXX MHz is outside the US amateur
-allocations" when you're not. (Gated on the band-edge layer above.)
+**Warn on transmit out of band** *(on by default)* — a separate safety
+option, independent of the visual layers above, so turning the overlay
+lines off to declutter never disables it. When you key up, if any part of
+your **transmit signal** falls outside your region's amateur allocation,
+Lyra shows a large, pulsing warning banner across the panadapter:
+
+- It checks your **occupied bandwidth**, not just the dial frequency —
+  Lyra works out where your signal actually reaches from your mode and TX
+  filter. So a wide signal that spills past a band edge warns even when the
+  carrier reads in band (e.g. a 6 kHz USB signal at 14.345 reaches 14.351,
+  1 kHz over the 20 m edge, and warns — while 4 kHz at the same dial does
+  not).
+- It **re-checks live while you're transmitting** — if you roll the dial or
+  change bandwidth mid-transmit and cross the edge, the banner appears
+  immediately, and clears the moment you're back in band or un-key.
+- It uses your **actual transmit frequency** — VFO B when you're in split.
+- On **60 m** (channel-only in the US and Canada) it also warns when you're
+  **off channel** (parked between the five channels) or when your signal is
+  **too wide for the 2.8 kHz channel** — so set TX bandwidth to 2.8 kHz or
+  narrower on 60 m.
+- If you enable the **11 m / CB band** and tune within it, the banner stays
+  silent there — you're deliberately on a non-amateur band, so Lyra doesn't
+  nag you about the amateur allocations.
 
 > The band plan is **advisory only** — the HL2 is unlocked and Lyra will
-> tune anywhere it can receive. Sub-band boundaries vary by license class
-> and country and change over time; verify against your own regulator
-> before transmitting near an edge. The strip is a navigation aid, not a
+> transmit anywhere you tune; **nothing here inhibits transmit**. Sub-band
+> boundaries vary by license class and country and change over time; verify
+> against your own regulator. The overlay and the warning are aids, not a
 > legal reference.
 
 ### Shortwave broadcasters (EiBi)
