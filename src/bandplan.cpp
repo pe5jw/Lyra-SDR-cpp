@@ -383,6 +383,45 @@ QVariantList BandPlan::edges(double centerHz, double spanHz) const {
     return out;
 }
 
+QVariantList BandPlan::classEdges(double centerHz, double spanHz) const {
+    QVariantList out;
+    // US-only: the FCC phone sub-band edges are license-class dependent,
+    // which is unusual worldwide (most administrations gate classes by
+    // power + whole-band access, not sub-band boundaries).  For every other
+    // region we return nothing so the QML overlay draws no class markers.
+    if (spanHz <= 0 || region() != QLatin1String("US")) return out;
+
+    // Phone sub-band edges that OPEN as license class rises (ARRL/FCC band
+    // chart).  The label names the class gaining phone privileges at that
+    // boundary.  The Extra-class outer edges that coincide with a whole-band
+    // edge are already drawn by edges(); listed here only where they are an
+    // in-band boundary (e.g. 80/20/15m Extra phone starts).
+    static const struct { double hz; const char *label; } marks[] = {
+        {3600000.0,  "EXTRA"},   // 80m
+        {3700000.0,  "ADV"},
+        {3800000.0,  "GEN"},
+        {7125000.0,  "EXT/ADV"}, // 40m
+        {7175000.0,  "GEN"},
+        {14150000.0, "EXTRA"},   // 20m
+        {14175000.0, "ADV"},
+        {14225000.0, "GEN"},
+        {21200000.0, "EXTRA"},   // 15m
+        {21225000.0, "ADV"},
+        {21275000.0, "GEN"},
+        {28500000.0, "TECH"},    // 10m — Technician phone upper limit
+    };
+    const double lo = centerHz - spanHz / 2;
+    const double hi = centerHz + spanHz / 2;
+    for (const auto &m : marks) {
+        if (m.hz < lo || m.hz > hi) continue;
+        QVariantMap e;
+        e["freq"]  = m.hz;
+        e["label"] = QString::fromLatin1(m.label);
+        out.append(e);
+    }
+    return out;
+}
+
 QString BandPlan::ncdxfStation(double freqHz) const {
     // 5 NCDXF beacon bands (kHz), in the canonical rotation order.
     static const int bandKhz[5] = {14100, 18110, 21150, 24930, 28200};
@@ -441,6 +480,49 @@ QVariantList BandPlan::cbChannels(double centerHz, double spanHz) const {
         out.append(m);
     }
     return out;
+}
+
+bool BandPlan::inCbBand(double freqHz) const {
+    // US CB plan spans Ch1 26.965 MHz … Ch40 27.405 MHz; a ~10 kHz guard on
+    // each side covers on-channel AM/SSB operation at the band edges.  Pure
+    // range test — caller gates on cbBandEnabled.
+    return freqHz >= 26955000.0 && freqHz <= 27415000.0;
+}
+
+QString BandPlan::channelStatus(double carrierHz, double minFHz,
+                                double maxFHz) const {
+    const QString reg = region();
+    if (reg == QLatin1String("NONE")) return QString();
+    const qint64 car = qint64(carrierHz);
+    for (const Band &b : bandsFor(reg, country())) {
+        if (car < b.lo || car >= b.hi) continue;   // carrier not in this band
+        // Channelized band?  (any CH* sub-segment, e.g. US/Canada 60m.)
+        bool channelized = false;
+        for (const Seg &s : b.segs)
+            if (QString::fromLatin1(s.label).startsWith(QLatin1String("CH"))) {
+                channelized = true; break;
+            }
+        if (!channelized) return QString();   // ordinary band — no channel rule
+        // On a channel?  (carrier within a CH sub-segment window.)
+        qint64 chLo = 0, chHi = 0;
+        bool onChan = false;
+        for (const Seg &s : b.segs) {
+            if (!QString::fromLatin1(s.label).startsWith(QLatin1String("CH")))
+                continue;
+            if (car >= s.lo && car < s.hi) {
+                chLo = s.lo; chHi = s.hi; onChan = true; break;
+            }
+        }
+        if (!onChan) return QStringLiteral("offchannel");
+        // On a channel — does the emission fit within it?  Small 50 Hz guard
+        // for float/rounding slop only: a true 2.8 kHz signal (maxF == chHi)
+        // passes, but 3 kHz (200 Hz over the 2.8 kHz channel) correctly flags.
+        const double guard = 50.0;
+        if (minFHz < double(chLo) - guard || maxFHz > double(chHi) + guard)
+            return QStringLiteral("toowide");
+        return QString();   // on channel and within width — OK
+    }
+    return QString();   // carrier not in a band (normal out-of-band handles it)
 }
 
 QString BandPlan::bandContaining(double freqHz) const {
