@@ -198,13 +198,68 @@ const QVector<Band> &countryBands(const QString &country) {
         return uk;
     }
     if (country == QLatin1String("CA")) {
-        // Canada (ISED): the WRC-15 5351.5-5366.5 kHz band, same as
-        // IARU R1 -- NOT the US 5-channel plan, even though Canada is
-        // IARU Region 2 (the "US" base bucket).
+        // Canada (RAC / ISED band plan, rac.ca).  Canada sits in IARU
+        // Region 2 so it fell through to the US/FCC base table for every
+        // band except 60m -- but the Canadian sub-band boundaries differ
+        // from the US ones on most HF bands (most visibly 40m, where
+        // phone is permitted from 7.040 vs 7.125 in the US).  This full
+        // table replaces the US band-for-band.  Mode regions only
+        // (CW / DIG / SSB / FM) -- Canada's licence-class structure is
+        // not modelled.  SSTV / beacon / satellite / repeater micro-
+        // slices are folded into their surrounding phone/FM region.
         static const QVector<Band> ca = {
-            {"60m", 5351500, 5366500, {
-                {5351500, 5354000, "CW",  "CW/DIG"},
-                {5354000, 5366500, "SSB", "SSB"}}},
+            {"160m", 1800000, 2000000, {
+                {1800000, 1840000, "CW",  "CW/DIG"},
+                {1840000, 2000000, "SSB", "SSB"}}},
+            {"80m", 3500000, 4000000, {
+                {3500000, 3580000, "CW",  "CW"},
+                {3580000, 3600000, "DIG", "DIG"},
+                {3600000, 4000000, "SSB", "SSB"}}},
+            // Canada 60m per RAC (rac.ca/60metres): 5 channels, NOT a
+            // continuous band.  Ch3 is the wider WRC-15 5351.5-5366.5
+            // slice.  (This reverses the previous Lyra override, which
+            // showed the R1-style continuous band -- flagged to operator.)
+            {"60m", 5330500, 5406300, {
+                {5330500, 5333300, "SSB", "CH1"},
+                {5346500, 5349300, "SSB", "CH2"},
+                {5351500, 5366500, "SSB", "CH3"},
+                {5371500, 5374300, "SSB", "CH4"},
+                {5403500, 5406300, "SSB", "CH5"}}},
+            {"40m", 7000000, 7300000, {
+                {7000000, 7035000, "CW",  "CW"},
+                {7035000, 7040000, "CW",  "CW/DIG"},
+                {7040000, 7070000, "SSB", "SSB"},
+                {7070000, 7125000, "DIG", "DIG"},
+                {7125000, 7300000, "SSB", "SSB"}}},
+            {"30m", 10100000, 10150000, {
+                {10100000, 10130000, "CW",  "CW"},
+                {10130000, 10150000, "DIG", "DIG"}}},
+            {"20m", 14000000, 14350000, {
+                {14000000, 14070000, "CW",  "CW"},
+                {14070000, 14112000, "DIG", "DIG"},
+                {14112000, 14350000, "SSB", "SSB"}}},
+            {"17m", 18068000, 18168000, {
+                {18068000, 18095000, "CW",  "CW"},
+                {18095000, 18110000, "DIG", "DIG"},
+                {18110000, 18168000, "SSB", "SSB"}}},
+            {"15m", 21000000, 21450000, {
+                {21000000, 21070000, "CW",  "CW"},
+                {21070000, 21125000, "DIG", "DIG"},
+                {21125000, 21150000, "CW",  "CW"},
+                {21150000, 21450000, "SSB", "SSB"}}},
+            {"12m", 24890000, 24990000, {
+                {24890000, 24925000, "CW",  "CW"},
+                {24925000, 24940000, "DIG", "DIG"},
+                {24940000, 24990000, "SSB", "SSB"}}},
+            {"10m", 28000000, 29700000, {
+                {28000000, 28070000, "CW",  "CW"},
+                {28070000, 28320000, "DIG", "CW/DIG"},
+                {28320000, 29300000, "SSB", "SSB"},
+                {29300000, 29700000, "FM",  "FM"}}},
+            {"6m", 50000000, 54000000, {
+                {50000000, 50100000, "CW",  "CW"},
+                {50100000, 51000000, "SSB", "SSB"},
+                {51000000, 54000000, "FM",  "FM"}}},
         };
         return ca;
     }
