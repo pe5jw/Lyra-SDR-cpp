@@ -2113,7 +2113,35 @@ void HL2Stream::applyTxPower_(int requestedRaw) {
     const int    ceiling = wattsDriveCeilingRaw_();
     const int    capped = std::min(requestedRaw, ceiling);
     const double rv  = radioVolumeFor_(capped);
-    const int    byte = static_cast<int>(std::lround(255.0 * rv));
+    // #170c — CW watts-cap fold.  On CW key-down the gateware SUBSTITUTES a
+    // full-scale carrier for the WDSP TX-I/Q path (hl2_rtl_radio.v:1145,
+    // `tx_i = tx_cw_key ? {1'b0, tx_cwlevel[18:4]} : y2_i`), which BYPASSES
+    // the ChannelMaster fixed digital gain set just below — so in CW the
+    // coarse AD9866 drive byte is the ONLY host power lever.  For a low cap
+    // most of the watts-cap attenuation lives in that (bypassed) fixed gain,
+    // so an SSB/TUN-calibrated ceiling under-protects CW (operator bench:
+    // 3 W cap -> ~5.5 W CW).  Fix: when the cap is armed AND we're in CW,
+    // FOLD the fixed-gain factor into the coarse byte (byte carries rv*rv =
+    // the same total digital scaling SSB gets across the byte + fine stages),
+    // so the coarse byte alone honours the cap.  Coarse-DAC quantisation errs
+    // the folded byte LOW, so CW stays at/under the cap.  Uncapped CW is
+    // untouched (no surprise power change when the cap is off).  NOTE: TUN
+    // uses the postgen tone through y2_i (fixed gain ACTIVE, not the keyed
+    // carrier), so capped TUN in CW mode sits a touch under the cap — safe;
+    // refine with a CW-keyed servo learn (option B) if the operator wants it.
+    const bool cwFold = capActive_()
+        && (txMode_.load(std::memory_order_relaxed) == 3      // WDSP CWL
+         || txMode_.load(std::memory_order_relaxed) == 4);    // WDSP CWU
+    // rv*rv folds the fine gain into the coarse byte; kCwCapHeadroom is a
+    // conservative amplitude margin covering the coarse-DAC quantisation +
+    // PA-curve residual so the folded byte lands UNDER the cap on any band.
+    // Bench (N8SDR HL2+, 20 m, 3 W cap): bare rv*rv left CW at ~3.7 W (0.7 W
+    // over); an ~0.85 amplitude margin (power ~0.85^[2..3]) clears it with a
+    // safety cushion.  Protective cap -> deliberately errs low.  Reclaim the
+    // residual exactly with a CW-keyed servo learn (option B) if wanted.
+    constexpr double kCwCapHeadroom = 0.85;
+    const double byteRv = cwFold ? rv * rv * kCwCapHeadroom : rv;
+    const int    byte = static_cast<int>(std::lround(255.0 * byteRv));
     if (lyra::wire::prn != nullptr) lyra::wire::set_drive_level(byte);
     lyra::wire::SetTXFixedGainRun(0, 1);
     lyra::wire::SetTXFixedGain(0, rv, rv);
@@ -3922,6 +3950,11 @@ void HL2Stream::setTxMode(int wdspMode) {
     // #107 — re-derive the CTCSS run state on the mode edge: the FM sub-tone
     // runs only in FM (WDSP mode 5) and only when the operator enabled it.
     applyCtcssRun();
+    // #170c — re-derive the TX drive byte on the mode edge: the CW watts-cap
+    // fold in applyTxPower_ folds the (gateware-bypassed) fixed gain into the
+    // coarse byte only in CW, so entering/leaving CW must re-push the byte.
+    // Wire-guarded + TX-inert at RX (gateware acts on drive only while keyed).
+    applyTxPower_(txDriveLevel_.load(std::memory_order_relaxed));
     std::function<void(int)> fwd;
     {
         std::lock_guard<std::mutex> lk(txControlMtx_);
