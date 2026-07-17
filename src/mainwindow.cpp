@@ -517,6 +517,37 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // #50 TX parametric EQ model (drives EqPanel.qml, "Eq" context property).
     // Routes the TX mic rack through eqModel_->engine() (CMaster TX hook).
     eqModel_ = new EqModel(EqModel::Side::Tx, this);
+    // TX-rack standalone persistence (bug fix 2026-07-17).  The TX EQ (and the
+    // speech / combinator / plate stages below) are #49 profile fields, but —
+    // unlike the RX EQ further down and EVERY Prefs-backed field (bandwidth,
+    // mode, gains …) — they had NO independent QSettings persistence.  So on
+    // restart the Prefs fields restored while the TX rack reset to flat/default,
+    // leaving the active profile HALF-applied and the "● modified" light falsely
+    // lit (live flat EQ != the active profile's stored curve).  Field report
+    // (John S Williams): saved AM 9K profile, restart -> bandwidth restores, TX
+    // EQ reverts flat, orange on; re-loading the profile fixes it.  Mirror the
+    // RX EQ idiom: restore the live TX rack from QSettings at construction +
+    // persist on every edit, so the rack survives restart exactly like the
+    // bandwidth does.  A profile load still overwrites the rack as a unit (and
+    // writes back here), and the startup default-apply (main.cpp) still wins
+    // when a default profile is set.
+    {
+        QSettings s;
+        const QString js = s.value(QStringLiteral("txeq/state")).toString();
+        if (!js.isEmpty()) {
+            const auto doc = QJsonDocument::fromJson(js.toUtf8());
+            if (doc.isObject()) eqModel_->loadState(doc.object());
+        }
+        auto save = [this]() {
+            QSettings st;
+            st.setValue(QStringLiteral("txeq/state"),
+                        QString::fromUtf8(QJsonDocument(eqModel_->saveState())
+                                              .toJson(QJsonDocument::Compact)));
+        };
+        connect(eqModel_, &EqModel::bandsChanged, this, save);
+        connect(eqModel_, &EqModel::bypassChanged, this, save);
+        connect(eqModel_, &EqModel::makeupDbChanged, this, save);
+    }
 
     // #176 CW macro bank (drives CwConsolePanel.qml, "CwMacros" context
     // property + the F1-F12 global accelerators in keyPressEvent).  Owns the
@@ -612,16 +643,67 @@ MainWindow::MainWindow(QObject *discovery, QObject *stream,
     // #88 speech-rack model (drives SpeechPanel.qml) — Auto-AGC + De-esser,
     // pre-EQ in the mic rack (wired via SendpTxSpeechProcessor in main.cpp).
     speechModel_ = new SpeechModel(this);
+    // Standalone persistence (see the TX EQ note above) — survive restart.
+    {
+        QSettings s;
+        const QString js = s.value(QStringLiteral("txspeech/state")).toString();
+        if (!js.isEmpty()) {
+            const auto doc = QJsonDocument::fromJson(js.toUtf8());
+            if (doc.isObject()) speechModel_->loadState(doc.object());
+        }
+        connect(speechModel_, &SpeechModel::changed, this, [this]() {
+            QSettings st;
+            st.setValue(QStringLiteral("txspeech/state"),
+                        QString::fromUtf8(QJsonDocument(speechModel_->saveState())
+                                              .toJson(QJsonDocument::Compact)));
+        });
+    }
 
     // #51 combinator model (drives CombinatorPanel.qml) — 5-band multiband
     // comp + SBC, after the EQ in the mic rack.  Wire-INERT until Stage 3
     // routes the rack through it (SendpTxCombinatorProcessor).
     combinatorModel_ = new CombinatorModel(this);
+    // Standalone persistence (see the TX EQ note above) — survive restart.
+    // Only the real state edits persist (bypass / params); metersChanged is a
+    // poll tick and selectedBandChanged is UI-only, so neither is wired.
+    {
+        QSettings s;
+        const QString js = s.value(QStringLiteral("txcombinator/state")).toString();
+        if (!js.isEmpty()) {
+            const auto doc = QJsonDocument::fromJson(js.toUtf8());
+            if (doc.isObject()) combinatorModel_->loadState(doc.object());
+        }
+        auto save = [this]() {
+            QSettings st;
+            st.setValue(QStringLiteral("txcombinator/state"),
+                        QString::fromUtf8(QJsonDocument(combinatorModel_->saveState())
+                                              .toJson(QJsonDocument::Compact)));
+        };
+        connect(combinatorModel_, &CombinatorModel::bypassChanged, this, save);
+        connect(combinatorModel_, &CombinatorModel::paramsChanged, this, save);
+    }
 
     // #52 plate-reverb model (drives PlatePanel.qml) — last native rack
     // stage, after the Combinator.  Wire-INERT until Stage 3 registers
     // SendpTxPlateProcessor.
     plateModel_ = new PlateModel(this);
+    // Standalone persistence (see the TX EQ note above) — survive restart.
+    {
+        QSettings s;
+        const QString js = s.value(QStringLiteral("txplate/state")).toString();
+        if (!js.isEmpty()) {
+            const auto doc = QJsonDocument::fromJson(js.toUtf8());
+            if (doc.isObject()) plateModel_->loadState(doc.object());
+        }
+        auto save = [this]() {
+            QSettings st;
+            st.setValue(QStringLiteral("txplate/state"),
+                        QString::fromUtf8(QJsonDocument(plateModel_->saveState())
+                                              .toJson(QJsonDocument::Compact)));
+        };
+        connect(plateModel_, &PlateModel::bypassChanged, this, save);
+        connect(plateModel_, &PlateModel::paramsChanged, this, save);
+    }
 
     // DX-cluster spots (pushed over TCI; drawn on the panadapter).
     spots_ = new SpotStore(prefs_, qobject_cast<lyra::ipc::HL2Stream *>(stream_),
