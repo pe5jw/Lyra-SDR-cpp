@@ -50,6 +50,7 @@
 #include "wire/Ep6RecvThread.h"       // #89 B1 — ep6Thread().set_tx_clip_source(...)
 #include "settingsdialog.h"
 #include "dockdragcontroller.h"
+#include "panelrack.h"
 #include "usb_bcd.h"
 
 #include <QAction>
@@ -1425,6 +1426,27 @@ void MainWindow::buildDocks() {
                   QStringLiteral("propagation"), Qt::BottomDockWidgetArea);
 }
 
+// ── Optional grouped-panel rack (Settings → Visuals → Panel layout) ──────────
+// Reparent a set of member docks OUT of the main window and into a fixed-
+// membership PanelRack window; strip their main-window drag filter (a rack
+// member doesn't move / float out) and restore the rack's saved geometry +
+// which members are shown.  The rack is owned by `this`.
+lyra::ui::PanelRack *MainWindow::buildRack(const QString &objName,
+                                           const QString &title,
+                                           const QStringList &members) {
+    auto *rack = new lyra::ui::PanelRack(objName, title, this);
+    for (const QString &m : members) {
+        QDockWidget *d = docks_.value(m);
+        if (!d) continue;
+        removeDockWidget(d);                        // detach from the main window
+        if (QWidget *tbar = d->titleBarWidget())
+            tbar->removeEventFilter(dragController_);  // not draggable in a rack
+        rack->addMember(d, d->toggleViewAction());
+    }
+    rack->restore();                                // geometry + member visibility
+    return rack;
+}
+
 void MainWindow::buildMenus() {
     // File — Settings (stub) + Exit.
     QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
@@ -1452,6 +1474,7 @@ void MainWindow::buildMenus() {
         applyPanelLock(on);
         QSettings().setValue(QStringLiteral("ui/panelsLocked"), on);
     });
+
 
     // Layout management: four operator-designed, named layout slots plus the
     // built-in Lyra factory default = five recallable arrangements.  Save
@@ -1712,19 +1735,11 @@ void MainWindow::buildToolbar() {
     // resizable) and a click (or closing it) tucks it away — the chip stays
     // in sync.  What's open + where rides Save-my-layout (saveState keys on
     // each dock's objectName).  #51 Combinator / #52 Plate add their names
-    // here when their docks land.
+    // here when their docks land.  In grouped mode (Settings → Visuals) the
+    // whole DSP / Options set is housed in one saved "rack" window instead,
+    // reached from a single chip.
     {
-        tb->addSeparator();
-        auto *txDspLabel = new QLabel(tr("TX DSP:"), tb);
-        txDspLabel->setContentsMargins(8, 0, 4, 0);
-        txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
-                                  "movable window; layout is remembered."));
-        tb->addWidget(txDspLabel);
-        // Style each launcher as a proper boxed button (was flat text-only,
-        // indistinguishable from a label until hover).  Checked = that
-        // stage's panel is open — fill with the accent so "what's on" reads
-        // at a glance.  Per-button stylesheet keeps the rest of the toolbar
-        // (Start/Stop, Update, clocks) on the default look.
+        // Boxed-chip stylesheet shared by every chip in this strip.
         static const char *kTxDspChipQss =
             "QToolButton{border:1px solid #3a4750;border-radius:4px;"
             "padding:2px 9px;margin:0 2px;color:#cfd8dc;background:#1c252b;}"
@@ -1732,6 +1747,42 @@ void MainWindow::buildToolbar() {
             "QToolButton:checked{background:#2e7d9a;border-color:#7fd6ef;"
             "color:#ffffff;font-weight:600;}"
             "QToolButton:checked:hover{background:#3690ad;}";
+        const bool dspGrouped = prefs_ && prefs_->dspPanelsGrouped();
+        const bool optGrouped = prefs_ && prefs_->optionsPanelsGrouped();
+        // Reparent a set of member docks into a PanelRack + add one bespoke
+        // checkable chip that shows / hides that rack window.
+        auto makeRackChip = [&](const QString &objName, const QString &label,
+                                const QStringList &members)
+                            -> QPair<lyra::ui::PanelRack *, QToolButton *> {
+            lyra::ui::PanelRack *rack = buildRack(objName, label, members);
+            auto *chip = new QToolButton(tb);
+            chip->setText(label);
+            chip->setCheckable(true);
+            chip->setObjectName(QStringLiteral("txDspChip"));
+            chip->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
+            chip->setToolTip(tr("Show / hide the %1 window (grouped panels).")
+                                 .arg(label));
+            chip->setChecked(rack->openByDefault());
+            tb->addWidget(chip);
+            connect(chip, &QToolButton::toggled, this, [rack](bool on) {
+                if (on) { rack->show(); rack->raise(); rack->activateWindow(); }
+                else    { rack->hide(); rack->store(); }
+            });
+            connect(rack, &lyra::ui::PanelRack::closed, chip, [chip]() {
+                QSignalBlocker b(chip); chip->setChecked(false);
+            });
+            if (rack->openByDefault()) { rack->show(); rack->raise(); }
+            return { rack, chip };
+        };
+
+        // ---- DSP panels: individual chips, OR one "DSP Rack" chip ----
+        if (!dspGrouped) {
+        tb->addSeparator();
+        auto *txDspLabel = new QLabel(tr("TX DSP:"), tb);
+        txDspLabel->setContentsMargins(8, 0, 4, 0);
+        txDspLabel->setToolTip(tr("Mic-rack panels — click to open one as a "
+                                  "movable window; layout is remembered."));
+        tb->addWidget(txDspLabel);
         for (const char *nm : {"txspeech", "txeq", "txcombinator", "txplate"}) {
             if (QDockWidget *d = docks_.value(QString::fromLatin1(nm))) {
                 QAction *act = d->toggleViewAction();
@@ -1764,6 +1815,22 @@ void MainWindow::buildToolbar() {
                 btn->setObjectName(QStringLiteral("txDspChip"));
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
+        }
+        } else {
+            // Grouped: one chip opens the DSP Rack window holding the whole set.
+            tb->addSeparator();
+            auto *dspLabel = new QLabel(tr("DSP:"), tb);
+            dspLabel->setContentsMargins(8, 0, 4, 0);
+            dspLabel->setToolTip(tr("DSP panels grouped into one window "
+                                    "(Settings → Visuals → Panel layout)."));
+            tb->addWidget(dspLabel);
+            auto dr = makeRackChip(QStringLiteral("dsprack"), tr("DSP Rack"),
+                                   QStringList{ QStringLiteral("txspeech"),
+                                                QStringLiteral("txeq"),
+                                                QStringLiteral("txcombinator"),
+                                                QStringLiteral("txplate"),
+                                                QStringLiteral("rxeq") });
+            dspRack_ = dr.first; dspRackChip_ = dr.second;
         }
         // #201 Session recorder — ONE always-visible header chip between RX DSP
         // and Options.  Idle: a "Recorder" launcher chip (click pops the panel
@@ -1856,6 +1923,10 @@ void MainWindow::buildToolbar() {
                         QSettings().setValue(QStringLiteral("ui/ctunEnabled"), on);
                     });
         }
+        // ---- Options panels: individual chips, OR one "Options" chip ----
+        // (Tuner / CW / CW Dec / Voice Keyer.  CTUN, Freq Cal and WF-ID always
+        // stay individual — they are not part of the grouped set.)
+        if (!optGrouped) {
         // Tuner launcher — manual-ATU memory panel (operating tool, not a DSP
         // rack), so it sits in Options.  The chip IS the dock's toggleViewAction.
         if (QDockWidget *d = docks_.value(QStringLiteral("tuner"))) {
@@ -1900,6 +1971,15 @@ void MainWindow::buildToolbar() {
                 btn->setObjectName(QStringLiteral("txDspChip"));
                 btn->setStyleSheet(QString::fromLatin1(kTxDspChipQss));
             }
+        }
+        } else {
+            // Grouped: one chip opens the Options Rack window.
+            auto orr = makeRackChip(QStringLiteral("optionsrack"), tr("Options"),
+                                    QStringList{ QStringLiteral("tuner"),
+                                                 QStringLiteral("cwconsole"),
+                                                 QStringLiteral("cwdecoder"),
+                                                 QStringLiteral("voicekeyer") });
+            optionsRack_ = orr.first; optionsRackChip_ = orr.second;
         }
         // Frequency Calibration launcher — floating WWV/time-station instrument.
         // Explicit QToolButton (like WF-ID) rather than the dock's
@@ -2460,6 +2540,15 @@ void MainWindow::applyPanelLock(bool locked) {
         // keep working.  Mirrors DockDragController's float-only predicate.
         const QString on = dock->objectName();
         if (isChipSummonedPanel(on)) {
+            // A chip panel currently housed in a grouped rack re-tiles / tabs
+            // INSIDE the rack (Movable + Closable) but never floats OUT of it —
+            // the rack's own no-tear-out controller manages that, so leave its
+            // features alone regardless of the main-window lock.
+            if (qobject_cast<lyra::ui::PanelRack *>(dock->window())) {
+                dock->setFeatures(QDockWidget::DockWidgetMovable
+                                  | QDockWidget::DockWidgetClosable);
+                continue;
+            }
             dock->setFeatures(kUnlockedFeatures);
             if (QWidget *tb = dock->titleBarWidget()) {
                 tb->setCursor(moveCursor());   // rack docks always draggable
@@ -2546,6 +2635,9 @@ void MainWindow::saveLayout() {
     if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
     QSettings s;
     const QString p = layoutSlotPrefix();     // this display setup's own slot
+    // Grouped-rack panels are children of their rack window, not the main
+    // window, so main-window saveState() naturally omits them; each rack
+    // persists its own geometry/state separately.
     s.setValue(p + QStringLiteral("geometry"), saveGeometry());
     s.setValue(p + QStringLiteral("windowState"), saveState());
     if (prefs_)
@@ -3140,6 +3232,9 @@ void MainWindow::refreshLayoutUndoAction() {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveLayout();
+    // Persist each grouped rack's geometry + open state so it recalls next launch.
+    if (dspRack_)     dspRack_->store();
+    if (optionsRack_) optionsRack_->store();
 
     // Task #47 — QML null-safety on shutdown teardown.
     //
