@@ -2571,13 +2571,25 @@ void HL2Stream::onHwPttPoll() {
     // stale edge.  (Manual/foot-switch TX in CW is a future break-in-mode
     // option, matching the reference's Semi/Manual paths.)
     const int tm = txMode_.load(std::memory_order_relaxed);
-    // Suppress host MOX off the key line ONLY in QSK (firmware-keyer CW):
-    // gateware keys autonomously, host stays RX (reference QSKEnabled gate).
-    // Semi/Manual DO host-MOX off this line (Semi = MOX while keying; Manual =
-    // foot-switch PTT) — matching the reference's per-break-in-mode behaviour.
-    const bool cwQskNoHostMox =
-        cwFwKeyer_ && (tm == 3 || tm == 4) && cwBreakInMode_ == 0;  // 0 = QSK
-    if (!hwPttEnabled_.load(std::memory_order_acquire) || cwQskNoHostMox) {
+    // Suppress host MOX off the key line WHENEVER the firmware keyer is armed
+    // in CW — in EVERY break-in mode, not just QSK.  #186 (operator BY-2 in the
+    // HL2+ KEY jack, break-in = Semi): the HL2 gateware keyer keys the carrier
+    // AUTONOMOUSLY and REQUIRES the wire MOX bit = 0 to do so (Protocol.md: "The
+    // MOX bit must be sent as zero when sending CW").  On the HL2, QSK / Semi /
+    // Manual differ ONLY in the gateware's `cw_hang_time` (the CWHANG state) —
+    // NONE of them want the host to assert MOX.  The old QSK-only gate (copied
+    // from the reference's `!QSKEnabled` PollPTT gate) let Semi/Manual forward
+    // the paddle's key line to host MOX -> full SSB MOX_TX -> the gateware's
+    // iambic keyer was bypassed and each lever just gated the carrier ("acts
+    // like 2 keys", operator + bench cwwire log: MOX=1 while CWMode=IAMBIC-A).
+    // The reference's per-mode host-MOX split is a reference-architecture quirk,
+    // not right for the HL2 firmware keyer.  Break-in behaviour is preserved:
+    // the operator's Semi 295 ms hang is delivered by the gateware, host stays
+    // RX.  (A non-firmware-keyer path — cwFwKeyer_ off, e.g. external straight
+    // key / foot-switch PTT — still host-MOXes off this line, unchanged.)
+    const bool cwFwKeyerNoHostMox =
+        cwFwKeyer_ && (tm == 3 || tm == 4);   // firmware keyer armed in CW
+    if (!hwPttEnabled_.load(std::memory_order_acquire) || cwFwKeyerNoHostMox) {
         // Gate closed (opt-in off) OR QSK CW — keep lastHwPttLevel_ tracking
         // the wire so a re-enable / mode change doesn't fire a spurious edge.
         lastHwPttLevel_ = (lyra::wire::prn->ptt_in != 0);
