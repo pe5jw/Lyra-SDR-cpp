@@ -124,6 +124,10 @@ bool isMachineSpecificKey(const QString &k) {
     // The next-launch factory-reset sentinel is transient control state — a
     // backup that carried it true would wipe itself on the next start.
     if (k == QStringLiteral("app/factoryResetPending")) return true;
+    // Same class: the one-shot "reset the layout after a repeated startup
+    // crash" sentinel.  A restored backup carrying it true would purge the
+    // layout on the next launch for no reason.
+    if (k == QStringLiteral("ui/uiSafeReset")) return true;
     if (k == QStringLiteral("radio/lastIp"))       return true;
     if (k.startsWith(QStringLiteral("lastRadio/"))) return true;
     if (k.startsWith(QStringLiteral("profileLaunch/"))) return true;
