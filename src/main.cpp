@@ -265,11 +265,22 @@ int main(int argc, char *argv[])
         const bool envForced =
             !qEnvironmentVariable("LYRA_GRAPHICS").trimmed().isEmpty();
         int safeDepth = s.value(QStringLiteral("ui/gfxSafeDepth"), 0).toInt();
+        const int prevSafeDepth = safeDepth;
         if (crashed && !envForced) {
             safeDepth = std::min(safeDepth + 1, 2);   // 1 = OpenGL, 2 = Software
             s.setValue(QStringLiteral("ui/gfxSafeDepth"), safeDepth);
             s.setValue(QStringLiteral("ui/gfxSafeMode"), true);
             gfxCrashRecovered = true;
+            // The software rasterizer was ALREADY in force on the previous
+            // launch and it STILL crashed during UI build -> the fault is not
+            // the graphics backend.  Escalate one more rung: on this launch the
+            // window skips its persisted layout and comes up in the factory
+            // arrangement (restoreLayout() consumes ui/uiSafeReset).  A bad
+            // remembered layout — e.g. one saved by an older build — can
+            // otherwise lock a tester out with no on-screen way back.  Every
+            // non-layout setting (station, radio, DSP profiles, ...) is kept.
+            if (prevSafeDepth >= 2)
+                s.setValue(QStringLiteral("ui/uiSafeReset"), true);
         }
         s.setValue(QStringLiteral("ui/gfxStartupPending"), true);
         s.sync();                          // flush to registry before we risk a crash
@@ -1143,6 +1154,13 @@ int main(int argc, char *argv[])
     QTimer::singleShot(2000, win, [safeBoot]() {
         QSettings s;
         s.setValue(QStringLiteral("ui/gfxStartupPending"), false);
+        // A completed launch also consumes any pending one-shot UI-safe-reset:
+        // the layout was already rebuilt from the factory this session, so the
+        // operator's NEXT launch restores normally.  Authoritative clear here
+        // (fires only once the window has survived) — belt-and-suspenders to
+        // restoreLayout()'s own clear, so a recovered launch can never end up
+        // resetting the layout on every subsequent start.
+        s.remove(QStringLiteral("ui/uiSafeReset"));
         // A successful --safe boot also clears the graphics crash-ladder, so the
         // operator's NEXT normal launch retries their real backend from scratch
         // instead of staying pinned to the software rasterizer.

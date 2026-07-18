@@ -294,6 +294,26 @@ inline QString layoutSlotPrefix() {
     return QStringLiteral("session/") + layoutSlotKey() + QLatin1Char('/');
 }
 
+// Remove every persisted window-layout key so a crash-recovery launch can come
+// up in the factory arrangement: this display's whole session slot subtree
+// (geometry / windowState / panadapterSplit / named slots / undo), the legacy
+// single-slot keys (which restoreLayout() would otherwise re-migrate into the
+// slot and re-crash on), the user-default-layout keys, and the grouped-panel
+// rack windows.  Non-layout settings — station, radio, DSP/TX profiles,
+// calibration, colours — are deliberately left untouched.
+inline void purgeSavedLayoutKeys() {
+    QSettings s;
+    s.beginGroup(QStringLiteral("session/") + layoutSlotKey());
+    s.remove(QString());   // empty key clears every key in the current group
+    s.endGroup();
+    for (const char *k :
+         {"ui/geometry", "ui/windowState", "ui/panadapterSplit",
+          "ui/userGeometry", "ui/userWindowState", "ui/userPanadapterSplit"})
+        s.remove(QLatin1String(k));
+    s.remove(QStringLiteral("panelRack"));   // grouped-panel rack windows subtree
+    s.sync();
+}
+
 // Global tooltip gate — swallows QWidget tooltip events app-wide when the
 // operator turns tooltips off (Settings → Visuals).  QML ToolTips gate
 // themselves on Prefs.tooltipsEnabled; this covers the QtWidgets side
@@ -2741,6 +2761,26 @@ void MainWindow::restoreLayout() {
         applyDefaultLayout();
         layoutSource_ = QStringLiteral("FACTORY (diagnostic run — no slot read)");
         qInfo("[layout] %s", qUtf8Printable(layoutSource_));
+        applyPanelLock(s.value(QStringLiteral("ui/panelsLocked"), false).toBool());
+        return;
+    }
+
+    // Repeated-startup-crash recovery (see the RHI safe-mode ladder in main()).
+    // If a prior launch crashed during UI build even in the software renderer,
+    // the fault is very likely a persisted window layout this build can't
+    // restore (e.g. one saved by an older Lyra).  Purge the saved layout and
+    // come up in the factory arrangement so a bad remembered layout can never
+    // lock a tester out with no on-screen way back — every other setting is
+    // kept.  One-shot: the flag is cleared here so a normal restore resumes
+    // next launch.
+    if (s.value(QStringLiteral("ui/uiSafeReset"), false).toBool()) {
+        s.remove(QStringLiteral("ui/uiSafeReset"));
+        s.sync();
+        purgeSavedLayoutKeys();
+        applyDefaultLayout();
+        layoutSource_ =
+            QStringLiteral("FACTORY (layout reset after repeated startup crash)");
+        qWarning("[layout] %s", qUtf8Printable(layoutSource_));
         applyPanelLock(s.value(QStringLiteral("ui/panelsLocked"), false).toBool());
         return;
     }
