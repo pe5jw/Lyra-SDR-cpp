@@ -75,6 +75,10 @@ qt_add_executable(lyra
     src/wdsp_engine.cpp
     src/mic_source.h
     src/mic_source.cpp
+    # Multi-rig Stage 1 — per-family capability descriptor (inert
+    # scaffolding; see docs/architecture/multi_rig_design.md).
+    src/rig/RadioCapabilities.h
+    src/rig/RadioCapabilities.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h
