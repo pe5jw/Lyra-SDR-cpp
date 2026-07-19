@@ -2461,7 +2461,20 @@ int HL2Stream::txAnalyzerOffsetHz() const {
     // TX carrier paints at (VFO B − VFO A) from centre — on the red VFO-B
     // marker — instead of stuck at centre (the operator-caught split bug).
     const int nco = txDdsHzForTune(txFreqHz_.load(std::memory_order_relaxed));
-    return nco - static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed));
+    // Paint offset = NCO − the DISPLAY centre.  The panadapter is centred on
+    // rx1FreqHz_ (VFO A) ONLY when CTUN is off; under CTUN the display is
+    // LOCKED at ctuneCenterHz_ and the VFO marker slides to (rx1 − centre).
+    // Subtracting rx1 (the pre-CTUN assumption) painted the TX carrier at the
+    // frozen display centre instead of on the VFO marker whenever CTUN shifted
+    // the dial off the locked centre — the tester/operator "TX stuck on the
+    // CTUN-engage freq" report.  It is a DISPLAY offset only: the RF NCO
+    // (set_tx_freq) tracks the dial correctly regardless.  Use the locked
+    // centre as the display reference when CTUN is engaged.
+    const quint32 ctr = ctuneCenterHz_.load(std::memory_order_relaxed);
+    const int displayCenter =
+        (ctr != 0) ? static_cast<int>(ctr)
+                   : static_cast<int>(rx1FreqHz_.load(std::memory_order_relaxed));
+    return nco - displayCenter;
 }
 
 void HL2Stream::setTuneEnabled(bool on) {
