@@ -86,5 +86,21 @@ void migrateGroupToActiveRig(const QString &groupPrefix) {
     s.sync();
 }
 
+void migrateKeyToActiveRig(const QString &flatKey) {
+    const QString id = registry::activeRigId();
+    if (id.isEmpty() || flatKey.isEmpty()) return;
+
+    const QString scopedKey = QStringLiteral("rig/%1/%2").arg(id, flatKey);
+
+    QSettings s;
+    if (s.contains(scopedKey)) return;   // already migrated
+    if (!s.contains(flatKey))  return;   // nothing to relocate
+
+    ensureSnapshot();
+    s.setValue(scopedKey, s.value(flatKey));
+    s.remove(flatKey);                   // snapshot covers recovery
+    s.sync();
+}
+
 } // namespace migrate
 } // namespace lyra::rig

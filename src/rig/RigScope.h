@@ -52,5 +52,13 @@ namespace migrate {
 // relocation so the pre-migration config is recoverable.
 void migrateGroupToActiveRig(const QString &groupPrefix);
 
+// Relocate ONE exact per-rig key (e.g. "meter/calDb") from its legacy flat
+// location to rig/<id>/<key>.  For a per-rig setting that lives inside a
+// MIXED group (e.g. meter/ holds hardware cal AND UI prefs), so the
+// whole-group move would wrongly drag shared UI prefs into the rig
+// namespace.  Same snapshot-gated, idempotent, no-op-when-absent semantics
+// as migrateGroupToActiveRig, but on a single exact key.
+void migrateKeyToActiveRig(const QString &flatKey);
+
 } // namespace migrate
 } // namespace lyra::rig
