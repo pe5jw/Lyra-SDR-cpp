@@ -253,6 +253,18 @@ inline QSize testWindowSize() {
     return sz;
 }
 
+// Safe boot (--safe / LYRA_SAFE, set in main()): a GUARANTEED, NON-DESTRUCTIVE
+// way in.  If the operator's saved layout is itself what crashes the restore,
+// replaying it under safe boot would defeat the hatch — so restoreLayout() comes
+// up in the factory arrangement for this session, and (exactly like the
+// LYRA_TEST_SIZE diagnostic) the layout store is READ-ONLY: saveLayout() bails,
+// so the operator's real slot is left untouched and restores normally on their
+// next NORMAL launch.  Distinct from the ui/uiSafeReset crash-recovery path,
+// which deliberately PURGES a slot proven bad by repeated crashes.
+inline bool safeBootLayout() {
+    return qEnvironmentVariableIsSet("LYRA_SAFE");
+}
+
 // The session layout is stored per DISPLAY SETUP, not in one global slot.
 //
 // A dock layout is only meaningful on the screen it was built for: panel widths
@@ -2691,8 +2703,9 @@ void MainWindow::applyPanelLock(bool locked) {
 // the title bar says LAYOUT SAVING DISABLED, and that has to be the whole truth.
 void MainWindow::refuseLayoutWrite() {
     statusBar()->showMessage(
-        tr("Layout saving is disabled: this is a LYRA_TEST_SIZE diagnostic "
-           "session and must not overwrite your real layout."), 6000);
+        tr("Layout saving is disabled for this session (safe boot, or a "
+           "LYRA_TEST_SIZE diagnostic) so it can't overwrite your real "
+           "layout."), 6000);
 }
 
 // Clamp the window into the screen it landed on.  A geometry saved on a screen
@@ -2735,6 +2748,7 @@ void MainWindow::fitWindowToScreen() {
 
 void MainWindow::saveLayout() {
     if (testWindowSize().isValid()) return;   // diagnostic run — see testWindowSize()
+    if (safeBootLayout()) return;             // safe boot is READ-ONLY — see safeBootLayout()
     QSettings s;
     const QString p = layoutSlotPrefix();     // this display setup's own slot
     // Grouped-rack panels are children of their rack window, not the main
@@ -2761,6 +2775,20 @@ void MainWindow::restoreLayout() {
         applyDefaultLayout();
         layoutSource_ = QStringLiteral("FACTORY (diagnostic run — no slot read)");
         qInfo("[layout] %s", qUtf8Printable(layoutSource_));
+        applyPanelLock(s.value(QStringLiteral("ui/panelsLocked"), false).toBool());
+        return;
+    }
+
+    // Safe boot (--safe / LYRA_SAFE): come up in the factory arrangement without
+    // touching the saved slot, so the hatch is a guaranteed way in even when the
+    // operator's remembered layout is what crashes the restore.  saveLayout()
+    // bails under safe boot (see safeBootLayout()), so this is fully
+    // non-destructive — their layout restores normally next normal launch.
+    if (safeBootLayout()) {
+        applyDefaultLayout();
+        layoutSource_ =
+            QStringLiteral("FACTORY (safe boot — saved layout left untouched)");
+        qWarning("[layout] %s", qUtf8Printable(layoutSource_));
         applyPanelLock(s.value(QStringLiteral("ui/panelsLocked"), false).toBool());
         return;
     }
@@ -2845,7 +2873,7 @@ void MainWindow::saveUserLayout() {
     // keys — separate from the ui/geometry+windowState session auto-save
     // so "Restore my saved layout" always returns to THIS deliberate
     // arrangement regardless of how the panels drift between sessions.
-    if (testWindowSize().isValid()) return refuseLayoutWrite();
+    if (testWindowSize().isValid() || safeBootLayout()) return refuseLayoutWrite();
     QSettings s;
     s.setValue(QStringLiteral("ui/userGeometry"), saveGeometry());
     s.setValue(QStringLiteral("ui/userWindowState"), saveState());
@@ -3096,7 +3124,7 @@ void MainWindow::refreshLayoutMenus() {
 }
 
 void MainWindow::saveNamedLayout(int slot) {
-    if (testWindowSize().isValid()) return refuseLayoutWrite();
+    if (testWindowSize().isValid() || safeBootLayout()) return refuseLayoutWrite();
     QSettings s;
     const QString base = QStringLiteral("layouts/%1/").arg(slot);
     QString cur = s.value(base + QStringLiteral("name")).toString();
@@ -3238,7 +3266,10 @@ void MainWindow::applyDefaultLayout() {
     // Factory split (invalid QVariant → the QML restores its 60/40 default,
     // proportional rather than the absolute pixel height a snapshot would bake
     // in).
-    if (prefs_) prefs_->setPanadapterSplit(QVariant());
+    // Under safe boot the layout store is read-only — setPanadapterSplit(QVariant())
+    // would remove the persisted ui/panadapterSplit key, so skip it (the operator's
+    // real slot keeps its own split, restored on the next normal launch).
+    if (prefs_ && !safeBootLayout()) prefs_->setPanadapterSplit(QVariant());
 }
 
 // ── Layout undo (randol request) ─────────────────────────────────────────
@@ -3266,7 +3297,7 @@ void MainWindow::loadLayoutUndoStack() {
 }
 
 void MainWindow::saveLayoutUndoStack() {
-    if (testWindowSize().isValid()) return;   // diagnostic run — writes nothing
+    if (testWindowSize().isValid() || safeBootLayout()) return;   // read-only session — writes nothing
     QVariantList v;
     v.reserve(layoutUndoStack_.size());
     for (const QByteArray &b : std::as_const(layoutUndoStack_)) v.append(b);

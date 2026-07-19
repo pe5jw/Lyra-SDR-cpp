@@ -240,6 +240,7 @@ int main(int argc, char *argv[])
     // that the previous startup crashed — used to show a one-time notice once
     // the window is up.  gfxSafeBackend names the backend safe mode forced.
     bool    gfxCrashRecovered = false;
+    bool    layoutResetThisLaunch = false;
     QString gfxSafeBackend;
     {
         using RI = QSGRendererInterface;
@@ -265,22 +266,43 @@ int main(int argc, char *argv[])
         const bool envForced =
             !qEnvironmentVariable("LYRA_GRAPHICS").trimmed().isEmpty();
         int safeDepth = s.value(QStringLiteral("ui/gfxSafeDepth"), 0).toInt();
-        const int prevSafeDepth = safeDepth;
-        if (crashed && !envForced) {
-            safeDepth = std::min(safeDepth + 1, 2);   // 1 = OpenGL, 2 = Software
-            s.setValue(QStringLiteral("ui/gfxSafeDepth"), safeDepth);
-            s.setValue(QStringLiteral("ui/gfxSafeMode"), true);
-            gfxCrashRecovered = true;
-            // The software rasterizer was ALREADY in force on the previous
-            // launch and it STILL crashed during UI build -> the fault is not
-            // the graphics backend.  Escalate one more rung: on this launch the
-            // window skips its persisted layout and comes up in the factory
-            // arrangement (restoreLayout() consumes ui/uiSafeReset).  A bad
-            // remembered layout — e.g. one saved by an older build — can
-            // otherwise lock a tester out with no on-screen way back.  Every
-            // non-layout setting (station, radio, DSP profiles, ...) is kept.
-            if (prevSafeDepth >= 2)
+        const int prevSafeDepth = safeDepth;   // depth the PREVIOUS launch ran at
+        // Consecutive-incomplete-start counter — reset to 0 by the +2s success
+        // timer once the window survives.  Drives the layout-reset rung on the
+        // envForced path (where the graphics ladder can't run, so depth alone
+        // can't gate it).
+        int crashCount = s.value(QStringLiteral("ui/startupCrashCount"), 0).toInt();
+        if (crashed) {
+            crashCount = std::min(crashCount + 1, 99);
+            s.setValue(QStringLiteral("ui/startupCrashCount"), crashCount);
+            // Graphics step-down (auto/D3D11 -> OpenGL -> software), UNLESS the
+            // operator pinned a backend via LYRA_GRAPHICS — we never fight an
+            // explicit choice.
+            if (!envForced) {
+                safeDepth = std::min(safeDepth + 1, 2);   // 1 = OpenGL, 2 = Software
+                s.setValue(QStringLiteral("ui/gfxSafeDepth"), safeDepth);
+                s.setValue(QStringLiteral("ui/gfxSafeMode"), true);
+                gfxCrashRecovered = true;
+            }
+            // Layout-reset rung — restoreLayout() consumes ui/uiSafeReset and
+            // comes up factory, keeping every non-layout setting.  A bad
+            // remembered layout (e.g. one saved by an older build) crashes UI
+            // construction no matter the graphics backend, so the graphics
+            // ladder never clears it; this is the lever that does.  Fire it once
+            // we've EITHER (a) already RUN at the software rasterizer on the
+            // previous launch and STILL crashed (prevSafeDepth >= 2) — so the
+            // fault is provably not the backend, and we don't tear down a good
+            // layout for a graphics-only fault that the software renderer would
+            // have fixed on its own — OR (b) the operator PINNED a backend
+            // (LYRA_GRAPHICS), so the ladder can't run at all and we've now
+            // crashed twice.  Case (b) is deliberately decoupled from the
+            // graphics gate so a pinned-backend tester is never locked out of
+            // the layout rescue; the !envForced qualifier on (a) keeps a
+            // sticky-high safeDepth from short-circuiting (b)'s two-crash gate.
+            if ((!envForced && prevSafeDepth >= 2) || (envForced && crashCount >= 2)) {
                 s.setValue(QStringLiteral("ui/uiSafeReset"), true);
+                layoutResetThisLaunch = true;
+            }
         }
         s.setValue(QStringLiteral("ui/gfxStartupPending"), true);
         s.sync();                          // flush to registry before we risk a crash
@@ -1151,9 +1173,13 @@ int main(int argc, char *argv[])
     // during UI build never reaches the event loop, so the sentinel stays set
     // and the NEXT launch steps down to a safer backend.  Also cleared on a
     // clean quit; a hard crash reaches neither, which is the whole point.
-    QTimer::singleShot(2000, win, [safeBoot]() {
+    QTimer::singleShot(2000, win, [safeBoot, layoutResetThisLaunch]() {
         QSettings s;
         s.setValue(QStringLiteral("ui/gfxStartupPending"), false);
+        // The window survived — this launch was clean, so the consecutive-crash
+        // counter resets (envForced layout-reset rung + the recovering notice
+        // both key off it).
+        s.remove(QStringLiteral("ui/startupCrashCount"));
         // A completed launch also consumes any pending one-shot UI-safe-reset:
         // the layout was already rebuilt from the factory this session, so the
         // operator's NEXT launch restores normally.  Authoritative clear here
@@ -1163,8 +1189,12 @@ int main(int argc, char *argv[])
         s.remove(QStringLiteral("ui/uiSafeReset"));
         // A successful --safe boot also clears the graphics crash-ladder, so the
         // operator's NEXT normal launch retries their real backend from scratch
-        // instead of staying pinned to the software rasterizer.
-        if (safeBoot) {
+        // instead of staying pinned to the software rasterizer.  Likewise a
+        // launch that recovered via the LAYOUT reset: the graphics ladder only
+        // climbed to software as collateral of the layout crash, so clear it too
+        // and hand back the operator's real backend next launch — if graphics
+        // was genuinely bad as well, the ladder simply re-climbs and self-heals.
+        if (safeBoot || layoutResetThisLaunch) {
             s.setValue(QStringLiteral("ui/gfxSafeMode"), false);
             s.setValue(QStringLiteral("ui/gfxSafeDepth"), 0);
         }
@@ -1174,8 +1204,23 @@ int main(int argc, char *argv[])
         QSettings().setValue(QStringLiteral("ui/gfxStartupPending"), false);
     });
     // One-time notice if this launch recovered from a startup crash (deferred
-    // so the main window paints first, then the dialog pops over it).
-    if (gfxCrashRecovered) {
+    // so the main window paints first, then the dialog pops over it).  A layout
+    // reset is the more informative thing to tell the operator when it happened,
+    // so it takes precedence over the graphics-safe-mode notice.
+    if (layoutResetThisLaunch) {
+        QTimer::singleShot(500, win, [win]() {
+            QMessageBox box(win);
+            box.setIcon(QMessageBox::Information);
+            box.setWindowTitle(QObject::tr("Startup recovery"));
+            box.setText(QObject::tr(
+                "Lyra couldn't start the last few times, so your panel "
+                "<b>layout was reset to defaults</b> to get you running again."
+                "\n\nEvery other setting — station, radio, DSP, profiles — was "
+                "kept.  Rearrange the panels whenever you like and they'll be "
+                "remembered again."));
+            box.exec();
+        });
+    } else if (gfxCrashRecovered) {
         QTimer::singleShot(500, win, [win, gfxSafeBackend]() {
             const QString name = (gfxSafeBackend == QStringLiteral("software"))
                 ? QObject::tr("Software (no GPU)") : QObject::tr("OpenGL");
