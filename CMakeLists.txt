@@ -83,6 +83,9 @@ qt_add_executable(lyra
     # in Stage 3).
     src/rig/RigRegistry.h
     src/rig/RigRegistry.cpp
+    # Multi-rig Stage 3 — active-rig key routing + snapshot-gated migration.
+    src/rig/RigScope.h
+    src/rig/RigScope.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h

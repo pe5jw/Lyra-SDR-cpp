@@ -17,6 +17,7 @@
 #include "wxservice.h"
 
 #include "backup.h"
+#include "rig/RigScope.h"       // multi-rig Stage 3 — per-rig key routing (cal/)
 #include "wdsp_native.h"
 
 #include <QApplication>
@@ -4117,7 +4118,9 @@ QWidget *SettingsDialog::buildCalibrationTab() {
                 [this] { stream_->setFreqCorrection(1.0); });
         connect(prevBtn, &QPushButton::clicked, this, [this] {
             const double prev = QSettings()
-                .value(QStringLiteral("cal/freqCorrectionPrev"), 1.0).toDouble();
+                .value(lyra::rig::scope::rigKey(
+                           QStringLiteral("cal/freqCorrectionPrev")),
+                       1.0).toDouble();
             stream_->setFreqCorrection(prev);
         });
         // Keep the spin + readout in sync with any source (manual entry,
@@ -4191,7 +4194,9 @@ QWidget *SettingsDialog::buildCalibrationTab() {
         stationSpin->setRange(0.1, 30.0);
         stationSpin->setSuffix(tr(" MHz"));
         stationSpin->setValue(
-            QSettings().value(QStringLiteral("cal/stationMHz"), 10.0).toDouble());
+            QSettings().value(
+                lyra::rig::scope::rigKey(QStringLiteral("cal/stationMHz")),
+                10.0).toDouble());
         stationSpin->setMaximumWidth(200);
         mform->addRow(tr("or exact frequency:"), stationSpin);
 
@@ -4242,7 +4247,9 @@ QWidget *SettingsDialog::buildCalibrationTab() {
         connect(measureBtn, &QPushButton::toggled, this,
                 [this, stationSpin, stationCombo, savedFreq, savedMode, autoTuned]
                 (bool on) {
-            QSettings().setValue(QStringLiteral("cal/stationMHz"), stationSpin->value());
+            QSettings().setValue(
+                lyra::rig::scope::rigKey(QStringLiteral("cal/stationMHz")),
+                stationSpin->value());
             engine_->setFreqCalMeasuring(on);
             if (!on && *autoTuned) {                    // Stop → put the dial back
                 stream_->setRx1FreqHz(*savedFreq);

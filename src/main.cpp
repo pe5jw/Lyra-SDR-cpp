@@ -111,6 +111,8 @@ std::atomic<bool> g_shutdown_complete{false};
 #include "profile/ProfileBindings.h"
 #include "profile/ProfileStore.h"
 #include "profile/CompanionLauncher.h"   // startup auto-launch (Settings → Hardware)
+#include "rig/RigRegistry.h"   // multi-rig Stage 2 — rig identity/registry
+#include "rig/RigScope.h"      // multi-rig Stage 3 — seed + snapshot-gated migration
 #include <QSettings>
 #include "logbuffer.h"
 #include "theme.h"
@@ -212,6 +214,18 @@ int main(int argc, char *argv[])
             s.sync();
             qInfo("[factory-reset] cleared all settings to defaults");
         }
+    }
+
+    // Multi-rig (Stage 2/3): seed the rig registry from the remembered
+    // single radio (additive/idempotent), then relocate the per-rig config
+    // GROUPS routed so far under the active rig's namespace — snapshot-gated,
+    // once.  Runs before any subsystem reads a per-rig key.  On a fresh
+    // install (no remembered radio) the seed is a no-op and every routed key
+    // stays at its legacy flat location, so behavior is unchanged.
+    // Routed groups (grow one per stage): cal/.
+    {
+        lyra::rig::registry::seedFromLegacyRadio();
+        lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("cal/"));
     }
 
     // Safe-boot hatch: `--safe` (or LYRA_SAFE=1 in the environment) forces the

@@ -20,6 +20,7 @@
 #include "wire/FrameComposer.h" // §5 control-plane mapping: set_rx_freq / set_tx_freq / set_rx_step_attn_db (P4.b RX side)
 #include "wire/TxGain.h"        // SetTXFixedGain/Run — TX power model Stage 2 fine drive
 #include "bands.h"              // amateurBands / bandIndexForFreq — TX power model Stage 3
+#include "rig/RigScope.h"       // multi-rig Stage 3 — per-rig key routing (cal/)
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -236,7 +237,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // tune already lands corrected.  Default 1.0 = exact no-op.
     {
         const double f =
-            QSettings().value(QStringLiteral("cal/freqCorrection"), 1.0).toDouble();
+            QSettings().value(
+                lyra::rig::scope::rigKey(QStringLiteral("cal/freqCorrection")),
+                1.0).toDouble();
         freqCorrection_.store(f, std::memory_order_relaxed);
         lyra::wire::set_freq_correction(f);
     }
@@ -1676,8 +1679,8 @@ void HL2Stream::setFreqCorrection(double factor) {
     lyra::wire::set_freq_correction(factor);
     QSettings s;
     // Snapshot the prior value for one-level "Restore previous" undo.
-    s.setValue(QStringLiteral("cal/freqCorrectionPrev"), old);
-    s.setValue(QStringLiteral("cal/freqCorrection"), factor);
+    s.setValue(lyra::rig::scope::rigKey(QStringLiteral("cal/freqCorrectionPrev")), old);
+    s.setValue(lyra::rig::scope::rigKey(QStringLiteral("cal/freqCorrection")), factor);
     // Re-tune so the change takes effect immediately — mirror of the
     // reference's FreqCorrectionChanged re-applying to every VFO.
     pushEffectiveRxFreq();
