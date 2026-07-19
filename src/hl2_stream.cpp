@@ -379,13 +379,13 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // that the original PA defensive clear was over-conservatively
     // also guarding against).
     paOn_.store(
-        QSettings().value(QStringLiteral("tx/paEnabled"), false).toBool(),
+        QSettings().value(lyra::rig::scope::rigKey(QStringLiteral("tx/paEnabled")), false).toBool(),
         std::memory_order_relaxed);
     // Task #39 — HL2 +20 dB hardware Mic Boost (codec analog PGA).
     // Persisted across launches; NOT defensively cleared on
     // open/close (it's voice-chain calibration, not a safety gate).
     micBoost_.store(
-        QSettings().value(QStringLiteral("tx/micBoost"), false).toBool(),
+        QSettings().value(lyra::rig::scope::rigKey(QStringLiteral("tx/micBoost")), false).toBool(),
         std::memory_order_relaxed);
     // HL2 "Band Volts" output (MI0BOT / Ramdor gateware): persisted
     // across launches, seeded into the C0=0x00 frame's dither bit now so
@@ -406,7 +406,7 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     // to emit a carrier).
     txDriveLevel_.store(
         std::min(maxDriveRaw(),
-                 std::clamp(QSettings().value(QStringLiteral("tx/driveLevel"),
+                 std::clamp(QSettings().value(lyra::rig::scope::rigKey(QStringLiteral("tx/driveLevel")),
                                               0).toInt(), 0, 255)),
         std::memory_order_relaxed);
     // TX power model Stage 3 — load the per-band PA Gain table (Thetis
@@ -457,7 +457,7 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
         }
         // Stage 3b — the single watts Max cap (0 = off).
         maxOutputW_.store(
-            s.value(QStringLiteral("tx/maxOutputW"), 0.0).toDouble(),
+            s.value(lyra::rig::scope::rigKey(QStringLiteral("tx/maxOutputW")), 0.0).toDouble(),
             std::memory_order_relaxed);
         // Cap arm gate (2026-07-03) — persisted; only meaningful with a value.
         // MIGRATION (safety): a cap set by a pre-arm-gate version has no
@@ -2213,7 +2213,7 @@ void HL2Stream::setMaxOutputW(double watts) {
     if (watts < 0.0) watts = 0.0;
     if (watts == maxOutputW_.load(std::memory_order_relaxed)) return;
     maxOutputW_.store(watts, std::memory_order_relaxed);
-    QSettings().setValue(QStringLiteral("tx/maxOutputW"), watts);
+    QSettings().setValue(lyra::rig::scope::rigKey(QStringLiteral("tx/maxOutputW")), watts);
     emit maxOutputWChanged(watts);
     // Clearing the cap value disarms it — an "armed but no value" state is
     // meaningless, and re-arming after re-setting a value is one explicit
@@ -2286,7 +2286,7 @@ void HL2Stream::setTxDriveLevel(int level) {
     if (prev == clamped) return;
     // §5 (TX): prn->tx[0].drive_level (compose_case_10 C1).
     applyTxPower_(clamped);   // Stage 3 — RadioVolume drives the byte + fixed gain
-    QSettings().setValue(QStringLiteral("tx/driveLevel"), clamped);
+    QSettings().setValue(lyra::rig::scope::rigKey(QStringLiteral("tx/driveLevel")), clamped);
     emit txDriveLevelChanged(clamped);
     // Operator-facing percent for the log line (gateware actually
     // resolves to 16 coarse steps, but the percent is the operator's
@@ -2338,7 +2338,7 @@ void HL2Stream::setPaEnabled(bool on) {
     // §5 (TX): ApolloTuner/ApolloFilt globals + prn->tx[0].pa
     // (compose_case_10 C2 bit3 active-high PA-enable + C3 legacy bit).
     if (lyra::wire::prn != nullptr) lyra::wire::set_pa_on(on);
-    QSettings().setValue(QStringLiteral("tx/paEnabled"), on);
+    QSettings().setValue(lyra::rig::scope::rigKey(QStringLiteral("tx/paEnabled")), on);
     emit paEnabledChanged(on);
     safetyLog(QStringLiteral("TX: PA enable -> %1")
               .arg(on ? QStringLiteral("ON  (RF possible on next key)")
@@ -2361,7 +2361,7 @@ void HL2Stream::setMicBoost(bool on) {
     // Persisted to QSettings; recalled on stream open.
     const bool prev = micBoost_.exchange(on, std::memory_order_relaxed);
     if (prev == on) return;
-    QSettings().setValue(QStringLiteral("tx/micBoost"), on);
+    QSettings().setValue(lyra::rig::scope::rigKey(QStringLiteral("tx/micBoost")), on);
     emit micBoostChanged(on);
     safetyLog(QStringLiteral("TX: Mic Boost -> %1")
               .arg(on ? QStringLiteral("ON  (+20 dB HW)")

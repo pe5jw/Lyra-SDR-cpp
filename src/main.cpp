@@ -239,6 +239,12 @@ int main(int argc, char *argv[])
                               "panadapter/waterfallDbMin", "panadapter/waterfallDbMax",
                               "panadapter/txWaterfallDbMin", "panadapter/txWaterfallDbMax"})
             lyra::rig::migrate::migrateKeyToActiveRig(QLatin1String(k));
+        // S4e — per-rig TX hardware: watts cap, global drive fallback, PA
+        // arm (new rig defaults PA-off = safer), mic boost.  Per-band drive
+        // already lives in band_mem/.
+        for (const auto *k : {"tx/maxOutputW", "tx/driveLevel",
+                              "tx/paEnabled", "tx/micBoost"})
+            lyra::rig::migrate::migrateKeyToActiveRig(QLatin1String(k));
     }
 
     // Safe-boot hatch: `--safe` (or LYRA_SAFE=1 in the environment) forces the
