@@ -150,7 +150,13 @@ Reuse the existing Profiles apply machinery (#49):
 
 ## 8. Migration of the existing single-rig config (highest risk)
 
-First launch of the multi-rig build runs a **one-shot, snapshot-gated**
+**Sequencing (refined at Stage 2):** the identity/registry seed is
+additive and lands in Stage 2 (inert). The **actual key relocation fires
+in Stage 3, co-located with the read-routing** — so the running app never
+reads a per-rig key that has just been moved out from under it. The
+snapshot-gated one-shot below is therefore a Stage-3 action.
+
+First activation of the multi-rig path runs a **one-shot, snapshot-gated**
 migration:
 
 1. Take an auto-snapshot first (the backup engine already does snapshots
@@ -172,9 +178,12 @@ careful pass + test before it ships.
 - **Stage 1** — `RadioCapabilities` struct + HL2 population. No behavior
   change; pure scaffolding, testable today.
 - **Stage 2** — rig registry + `rigs/active` + label/MAC identity +
-  the §8 migration (snapshot-gated).
-- **Stage 3** — route the per-rig key reads/writes through the active
-  `rigId` (the namespacing).
+  legacy seed. **Additive/inert** (nothing reads it yet). The §8
+  relocation is NOT fired here.
+- **Stage 3** — fire the §8 snapshot-gated relocation of the per-rig keys
+  under `rig/<rigId>/…` AND route the reads/writes through the active
+  `rigId`, together, so the app never reads a moved key. Wire the seed +
+  switch flow.
 - **Stage 4** — rig picker UI + switch flow (reuse Profiles) + backup
   rig-awareness (§7).
 - **Separate workstream (after):** the Protocol 2 wire engine — the

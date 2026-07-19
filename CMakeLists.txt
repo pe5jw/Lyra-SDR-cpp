@@ -79,6 +79,10 @@ qt_add_executable(lyra
     # scaffolding; see docs/architecture/multi_rig_design.md).
     src/rig/RadioCapabilities.h
     src/rig/RadioCapabilities.cpp
+    # Multi-rig Stage 2 — rig registry + identity (inert; seeded/routed
+    # in Stage 3).
+    src/rig/RigRegistry.h
+    src/rig/RigRegistry.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h
