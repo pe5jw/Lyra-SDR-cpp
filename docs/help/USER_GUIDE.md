@@ -648,7 +648,9 @@ while the dial marker slides to where you're listening — ideal for watching a
 fixed slice of spectrum (a pile-up, a net, an FT8 window) and clicking
 signals across it. Tune past the edge of the span and it re-centres on the
 new dial automatically. Click again to release and return to normal
-scroll-tuning. RX1; works in any receive mode.
+scroll-tuning. RX1; works in any receive mode. When you **transmit** with
+CTUN engaged, your transmit signal shows on the VFO marker where you're
+tuned — not the frozen display centre.
 
 ---
 
