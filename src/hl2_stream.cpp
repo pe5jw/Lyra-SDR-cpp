@@ -4555,7 +4555,7 @@ void HL2Stream::applyOcEdit() {
 
 void HL2Stream::saveOcSettings() const {
     QSettings s;
-    s.beginGroup(QStringLiteral("oc"));
+    s.beginGroup(lyra::rig::scope::rigKey(QStringLiteral("oc")));
     s.setValue(QStringLiteral("present"), true);
     const int n = oc_.nBands();
     for (int b = 0; b < n; ++b) {
@@ -4582,7 +4582,7 @@ void HL2Stream::saveOcSettings() const {
 
 void HL2Stream::loadOcSettings() {
     QSettings s;
-    s.beginGroup(QStringLiteral("oc"));
+    s.beginGroup(lyra::rig::scope::rigKey(QStringLiteral("oc")));
     if (!s.value(QStringLiteral("present"), false).toBool()) {
         s.endGroup();
         return;   // never edited -> keep the N2ADR seed (byte-identical)

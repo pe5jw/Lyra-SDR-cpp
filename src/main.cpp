@@ -222,11 +222,12 @@ int main(int argc, char *argv[])
     // once.  Runs before any subsystem reads a per-rig key.  On a fresh
     // install (no remembered radio) the seed is a no-op and every routed key
     // stays at its legacy flat location, so behavior is unchanged.
-    // Routed groups (grow one per stage): cal/, band_mem/.
+    // Routed groups (grow one per stage): cal/, band_mem/, oc/.
     {
         lyra::rig::registry::seedFromLegacyRadio();
         lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("cal/"));
         lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("band_mem/"));
+        lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("oc/"));
     }
 
     // Safe-boot hatch: `--safe` (or LYRA_SAFE=1 in the environment) forces the
