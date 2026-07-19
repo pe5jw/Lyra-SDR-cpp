@@ -232,6 +232,13 @@ int main(int argc, char *argv[])
         lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("oc/"));
         lyra::rig::migrate::migrateKeyToActiveRig(QStringLiteral("meter/pwrRatedMaxW"));
         lyra::rig::migrate::migrateKeyToActiveRig(QStringLiteral("meter/calDb"));
+        // S4d — panadapter dB-scale defaults (RX+TX spectrum & waterfall
+        // floor/ceiling).  Closes the S4a "never-visited band" fallback gap.
+        for (const auto *k : {"panadapter/dbMin", "panadapter/dbMax",
+                              "panadapter/txDbMin", "panadapter/txDbMax",
+                              "panadapter/waterfallDbMin", "panadapter/waterfallDbMax",
+                              "panadapter/txWaterfallDbMin", "panadapter/txWaterfallDbMax"})
+            lyra::rig::migrate::migrateKeyToActiveRig(QLatin1String(k));
     }
 
     // Safe-boot hatch: `--safe` (or LYRA_SAFE=1 in the environment) forces the
