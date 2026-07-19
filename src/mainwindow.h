@@ -211,6 +211,7 @@ private:
     void rebuildRigMenu();
     void switchRig(const QString &rigId);
     void addRigInteractive();
+    void renameActiveRig();
     QMenu *rigMenu_ = nullptr;
     // Layout undo (randol request): snapshot the dock arrangement before each
     // change so a bad drag-drop can be walked back a step or two (View →

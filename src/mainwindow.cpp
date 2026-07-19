@@ -1791,6 +1791,9 @@ void MainWindow::rebuildRigMenu() {
     }
     rigMenu_->addSeparator();
     rigMenu_->addAction(tr("Add rig…"), this, &MainWindow::addRigInteractive);
+    if (!active.isEmpty())
+        rigMenu_->addAction(tr("Rename active rig…"), this,
+                            &MainWindow::renameActiveRig);
     rigMenu_->addAction(tr("Manage rigs (Settings → Hardware)…"),
                         this, &MainWindow::openSettings);
 }
@@ -1871,6 +1874,21 @@ void MainWindow::addRigInteractive() {
     QMessageBox::information(this, tr("Add rig"),
         tr("Added rig \"%1\". Pick it from the Rig menu to switch "
            "(Lyra restarts to load it).").arg(label));
+}
+
+void MainWindow::renameActiveRig() {
+    const QString id = lyra::rig::registry::activeRigId();
+    if (id.isEmpty())
+        return;
+    auto r = lyra::rig::registry::rig(id);
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this, tr("Rename rig"), tr("Rig name:"),
+        QLineEdit::Normal, r.label, &ok).trimmed();
+    if (!ok || name.isEmpty() || name == r.label)
+        return;
+    r.label = name;
+    lyra::rig::registry::upsertRig(r);
 }
 
 void MainWindow::openSettingsTopic(const QString &topic) {

@@ -65,6 +65,12 @@ void removeRig(const QString &rigId);
 // Returns "" for an empty MAC (caller assigns a synthetic id if needed).
 QString rigIdForMac(const QString &mac);
 
+// Map an HPSDR discovery board-name string (e.g. "HermesLite", "Orion")
+// to a RadioFamily.  Used by the discovery→rig hook so opening a radio
+// stamps its rig profile with the right family.  Unknown/absent → Hl2
+// (the only shipping hardware today).
+RadioFamily familyForBoardName(const QString &boardName);
+
 // Find-or-create a rig by MAC.  Returns the rigId.  If it already exists,
 // refreshes label/family/lastIp from any non-empty argument.  Pure
 // identity — never relocates config.

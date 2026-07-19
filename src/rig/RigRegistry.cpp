@@ -36,18 +36,6 @@ RadioFamily familyFromToken(const QString &t) {
     return RadioFamily::Unknown;
 }
 
-// Map a legacy discovery board-name string (lastRadio/boardName) to a
-// family.  Only HL2/ANAN-P1 ship today; anything else (or empty) on an
-// existing single-radio install is treated as HL2 — the only hardware
-// the operator base actually runs — so the seed can't misfile a real
-// user's remembered radio.
-RadioFamily familyFromLegacyBoardName(const QString &boardName) {
-    if (boardName.startsWith(QStringLiteral("HermesLite")))
-        return RadioFamily::Hl2;
-    if (boardName.startsWith(QStringLiteral("Orion")))
-        return RadioFamily::AnanP1;
-    return RadioFamily::Hl2;  // conservative default for existing installs
-}
 
 QString rigGroup(const QString &rigId) {
     return QStringLiteral("%1/%2").arg(QLatin1String(kGroup), rigId);
@@ -63,6 +51,17 @@ QString activeRigId() {
 
 void setActiveRigId(const QString &rigId) {
     QSettings().setValue(QLatin1String(kActive), rigId);
+}
+
+RadioFamily familyForBoardName(const QString &boardName) {
+    // Only HL2/ANAN-P1 ship today; anything else (or empty) is treated as
+    // HL2 — the only hardware in the field — so the discovery→rig hook and
+    // the legacy seed can't misfile a real user's radio.
+    if (boardName.startsWith(QStringLiteral("HermesLite")))
+        return RadioFamily::Hl2;
+    if (boardName.startsWith(QStringLiteral("Orion")))
+        return RadioFamily::AnanP1;
+    return RadioFamily::Hl2;
 }
 
 QString rigIdForMac(const QString &mac) {
@@ -162,7 +161,7 @@ QString seedFromLegacyRadio() {
     if (mac.isEmpty())
         return QString();   // nothing remembered — no seed to do
 
-    const RadioFamily family = familyFromLegacyBoardName(boardName);
+    const RadioFamily family = familyForBoardName(boardName);
     const QString lastIp     = QSettings().value(QStringLiteral("radio/lastIp"))
                                    .toString();
     const QString label      = capabilitiesFor(family).familyName;

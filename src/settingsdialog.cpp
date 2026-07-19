@@ -18,6 +18,7 @@
 
 #include "backup.h"
 #include "rig/RigScope.h"       // multi-rig Stage 3 — per-rig key routing (cal/)
+#include "rig/RigRegistry.h"    // multi-rig — discovery→rig auto-create/remove
 #include "wdsp_native.h"
 
 #include <QApplication>
@@ -2717,6 +2718,16 @@ QWidget *SettingsDialog::buildHardwareTab() {
                         it->data(Qt::UserRole + 5).toBool(),
                         it->data(Qt::UserRole + 6).toInt());
                 }
+                // Multi-rig: create/update this radio's rig profile (family
+                // from the discovered board, lastIp = this ip) so opening a
+                // radio populates the Rig menu.  Empty label → ensureRig
+                // defaults it to the family name on first meet, keeps any
+                // operator-set name on update.
+                lyra::rig::registry::ensureRig(
+                    it->data(Qt::UserRole + 1).toString(),
+                    lyra::rig::registry::familyForBoardName(
+                        it->data(Qt::UserRole + 2).toString()),
+                    QString(), ip);
                 stream_->open(ip);
             };
             connect(openBtn, &QPushButton::clicked, radioBox,
@@ -2772,6 +2783,14 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (!it) return;
             const QString ip = it->data(Qt::UserRole).toString();
             if (discovery_) discovery_->forgetRadio(ip);
+            // Multi-rig: also drop this radio's rig profile (by MAC) so it
+            // leaves the Rig menu.  Never removes the ACTIVE rig from under
+            // the running config — that would orphan the live namespace.
+            const QString rigId = lyra::rig::registry::rigIdForMac(
+                it->data(Qt::UserRole + 1).toString());
+            if (!rigId.isEmpty()
+                    && rigId != lyra::rig::registry::activeRigId())
+                lyra::rig::registry::removeRig(rigId);
             delete list->takeItem(list->row(it));
             status->setText(tr("Removed %1.").arg(ip));
             refresh();
