@@ -1874,8 +1874,13 @@ int main(int argc, char *argv[])
         // doesn't have to Discover every launch.  Independent of the
         // WDSP load above — the RX/wire path works regardless.  If the
         // radio is off/unreachable the UI just shows "RX stalled".
-        const QString lastIp =
-            QSettings().value(QStringLiteral("radio/lastIp")).toString();
+        // Multi-rig: auto-connect to the ACTIVE rig's radio.  The rig's
+        // lastIp is kept current by HL2Stream::open; fall back to the legacy
+        // global radio/lastIp (fresh installs / the seeded HL2 rig).
+        QString lastIp =
+            lyra::rig::registry::rig(lyra::rig::registry::activeRigId()).lastIp;
+        if (lastIp.isEmpty())
+            lastIp = QSettings().value(QStringLiteral("radio/lastIp")).toString();
         // Auto-start-on-launch opt-out (Settings → Hardware).  Default ON
         // (historical behaviour).  When the operator unticks it Lyra loads
         // but waits for an explicit Start instead of opening the radio.

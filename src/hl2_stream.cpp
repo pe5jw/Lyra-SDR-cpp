@@ -21,6 +21,7 @@
 #include "wire/TxGain.h"        // SetTXFixedGain/Run — TX power model Stage 2 fine drive
 #include "bands.h"              // amateurBands / bandIndexForFreq — TX power model Stage 3
 #include "rig/RigScope.h"       // multi-rig Stage 3 — per-rig key routing (cal/)
+#include "rig/RigRegistry.h"    // multi-rig — keep the active rig's lastIp current
 
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
@@ -934,6 +935,16 @@ void HL2Stream::open(const QString &ip) {
     // Radio memory: remember this radio so the next launch can
     // auto-connect without a Discover (read in main()).
     QSettings().setValue(QStringLiteral("radio/lastIp"), ip);
+    // Multi-rig: keep the ACTIVE rig's lastIp current so a rig switch — and
+    // the next launch's auto-connect — targets the radio this rig was last on.
+    if (const QString activeRig = lyra::rig::registry::activeRigId();
+            !activeRig.isEmpty()) {
+        auto r = lyra::rig::registry::rig(activeRig);
+        if (r.isValid() && r.lastIp != ip) {
+            r.lastIp = ip;
+            lyra::rig::registry::upsertRig(r);
+        }
+    }
 
     // Step 14 Stage 1 — wire-layer init.  Reference-faithful per
     // the 2026-06-06 operator audit that caught the prior

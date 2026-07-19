@@ -37,6 +37,7 @@
 #include "logdialog.h"
 #include "hl2_discovery.h"
 #include "hl2_stream.h"
+#include "rig/RigRegistry.h"   // multi-rig — the Rig menu (switch active rig)
 #include "wdsp_engine.h"
 #include "prefs.h"
 #include "CwMacroModel.h"
@@ -80,6 +81,7 @@
 #include <QTextEdit>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QUuid>
 #include <QCursor>
 #include <QPixmap>
 #include <QQmlContext>
@@ -1575,6 +1577,13 @@ void MainWindow::buildMenus() {
     fileMenu->addAction(tr("E&xit"), QKeySequence(QKeySequence::Quit),
                         this, &QWidget::close);
 
+    // Rig — switch between saved radio profiles (multi-rig).  Rebuilt from
+    // the rig registry each time it opens; the active rig is checked.
+    // Switching sets the active rig and offers a restart to load its
+    // settings (restart-to-load MVP; live hot-reload is a later refinement).
+    rigMenu_ = menuBar()->addMenu(tr("&Rig"));
+    connect(rigMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildRigMenu);
+
     // View — one show/hide toggle per dock + Lock panels.
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     for (auto it = docks_.cbegin(); it != docks_.cend(); ++it) {
@@ -1760,6 +1769,108 @@ void MainWindow::showHelp(const QString &topic) {
         helpDlg_ = new HelpDialog(this);
     }
     helpDlg_->showTopic(topic);
+}
+
+// ── Multi-rig: the "Rig" menu ──────────────────────────────────────────────
+
+void MainWindow::rebuildRigMenu() {
+    rigMenu_->clear();
+    const QString active = lyra::rig::registry::activeRigId();
+    const auto rigs = lyra::rig::registry::rigs();
+    if (rigs.isEmpty()) {
+        QAction *none = rigMenu_->addAction(tr("(no rigs yet)"));
+        none->setEnabled(false);
+    }
+    for (const auto &r : rigs) {
+        const QString label = r.label.isEmpty() ? r.rigId : r.label;
+        QAction *a = rigMenu_->addAction(label);
+        a->setCheckable(true);
+        a->setChecked(r.rigId == active);
+        const QString id = r.rigId;
+        connect(a, &QAction::triggered, this, [this, id]() { switchRig(id); });
+    }
+    rigMenu_->addSeparator();
+    rigMenu_->addAction(tr("Add rig…"), this, &MainWindow::addRigInteractive);
+    rigMenu_->addAction(tr("Manage rigs (Settings → Hardware)…"),
+                        this, &MainWindow::openSettings);
+}
+
+void MainWindow::switchRig(const QString &rigId) {
+    if (rigId.isEmpty() || rigId == lyra::rig::registry::activeRigId())
+        return;   // already active — nothing to do
+
+    // Mid-TX guard — never yank the config or restart while keyed.
+    if (auto *s = qobject_cast<lyra::ipc::HL2Stream *>(stream_)) {
+        if (s->moxActive() || s->cwKeyingActive()) {
+            QMessageBox::warning(this, tr("Switch rig"),
+                tr("Can't switch rigs while transmitting — unkey first."));
+            return;
+        }
+    }
+
+    const auto r = lyra::rig::registry::rig(rigId);
+    const QString label = r.label.isEmpty() ? rigId : r.label;
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Switch rig"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(tr("Switch to \"%1\"?").arg(label));
+    box.setInformativeText(
+        tr("Lyra loads a rig's settings at startup, so it will restart to "
+           "switch. Restart now, or switch on the next launch?"));
+    QAbstractButton *restartBtn =
+        box.addButton(tr("Restart now"), QMessageBox::AcceptRole);
+    QAbstractButton *laterBtn =
+        box.addButton(tr("Later"), QMessageBox::ActionRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+    QAbstractButton *clicked = box.clickedButton();
+    if (clicked != restartBtn && clicked != laterBtn)
+        return;   // Cancel / closed — leave the active rig unchanged
+
+    lyra::rig::registry::setActiveRigId(rigId);
+    if (clicked == restartBtn) {
+        // Relaunch a fresh instance, then close cleanly.  The new instance
+        // seeds/loads the now-active rig and auto-connects to its lastIp.
+        QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                QCoreApplication::arguments().mid(1));
+        close();
+    }
+    // "Later" — active rig recorded; loads on the next manual restart.
+}
+
+void MainWindow::addRigInteractive() {
+    bool ok = false;
+    const QString label = QInputDialog::getText(
+        this, tr("Add rig"), tr("Rig name:"),
+        QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok || label.isEmpty())
+        return;
+    const QString mac = QInputDialog::getText(
+        this, tr("Add rig"),
+        tr("MAC address (optional — e.g. aa:bb:cc:dd:ee:ff).\n"
+           "Leave blank to pre-stage a rig before its hardware is present."),
+        QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok)
+        return;
+
+    QString rigId;
+    if (!mac.isEmpty())
+        rigId = lyra::rig::registry::ensureRig(
+            mac, lyra::rig::RadioFamily::Unknown, label);
+    if (rigId.isEmpty()) {
+        // MAC-less (or unparseable MAC): synthesise a stable profile id.
+        rigId = QStringLiteral("rig_")
+                + QUuid::createUuid().toString(QUuid::Id128);
+        lyra::rig::RigProfile p;
+        p.rigId = rigId;
+        p.label = label;
+        p.mac   = mac;   // may be empty
+        lyra::rig::registry::upsertRig(p);
+    }
+    QMessageBox::information(this, tr("Add rig"),
+        tr("Added rig \"%1\". Pick it from the Rig menu to switch "
+           "(Lyra restarts to load it).").arg(label));
 }
 
 void MainWindow::openSettingsTopic(const QString &topic) {
