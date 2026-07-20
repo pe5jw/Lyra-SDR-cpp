@@ -2773,38 +2773,42 @@ QWidget *SettingsDialog::buildHardwareTab() {
             // No-op while already connected (Close first to switch radios).
             auto openItem = [this, status](QListWidgetItem *it) {
                 if (!it || stream_->isRunning()) return;
-                const QString ip = it->data(Qt::UserRole).toString();
-                const int proto  = it->data(Qt::UserRole + 7).toInt();
+                const QString ip    = it->data(Qt::UserRole).toString();
+                const QString mac   = it->data(Qt::UserRole + 1).toString();
+                const QString board = it->data(Qt::UserRole + 2).toString();
+                const int     proto = it->data(Qt::UserRole + 7).toInt();
+
+                // Multi-rig: create/update this radio's rig identity (family
+                // by protocol + board, lastIp = this ip) so it appears in the
+                // Rig picker.  Done for BOTH protocols — a P2 rig we can't
+                // open yet still gets its identity now; the P2 wire engine
+                // fills in receive later.  Empty label → ensureRig defaults
+                // it to the family name on first meet, keeps any operator-set
+                // name on update.
+                lyra::rig::registry::ensureRig(
+                    mac, lyra::rig::registry::familyForDiscovery(proto, board),
+                    QString(), ip);
+
                 // The stream is the P1 (Metis) engine.  A P2 radio (Brick /
-                // ANAN G2) is discovered and listed, but opening it needs the
-                // P2 receive engine (separate, deferred work) — refuse here
+                // ANAN G2) is registered above but can't be opened here yet —
+                // the P2 receive engine is separate, deferred work.  Refuse
                 // rather than fail obscurely on the wrong wire protocol.
                 if (proto == 2) {
                     status->setText(
-                        tr("%1 is a Protocol-2 radio — receive support is in "
-                           "progress; can't open it yet.").arg(ip));
+                        tr("%1 is a Protocol-2 radio — registered; receive "
+                           "support is in progress, can't open it yet.").arg(ip));
                     return;
                 }
+
                 if (discovery_) {
                     discovery_->rememberRadio(
-                        ip, it->data(Qt::UserRole + 1).toString(),
-                        it->data(Qt::UserRole + 2).toString(),
+                        ip, mac, board,
                         it->data(Qt::UserRole + 3).toInt(),
                         it->data(Qt::UserRole + 4).toInt(),
                         it->data(Qt::UserRole + 5).toBool(),
                         it->data(Qt::UserRole + 6).toInt(),
                         proto);
                 }
-                // Multi-rig: create/update this radio's rig profile (family
-                // from the discovered board, lastIp = this ip) so opening a
-                // radio populates the Rig menu.  Empty label → ensureRig
-                // defaults it to the family name on first meet, keeps any
-                // operator-set name on update.
-                lyra::rig::registry::ensureRig(
-                    it->data(Qt::UserRole + 1).toString(),
-                    lyra::rig::registry::familyForBoardName(
-                        it->data(Qt::UserRole + 2).toString()),
-                    QString(), ip);
                 stream_->open(ip);
             };
             connect(openBtn, &QPushButton::clicked, radioBox,
