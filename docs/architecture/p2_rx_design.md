@@ -147,12 +147,19 @@ until the gate passes.
 
 - **🔴 DDS phase word, not Hz.** `phase = Hz × 2³² / 122.88 MHz`. A raw-Hz
   write tunes wildly wrong. Verify the ETH freq path in `FrameComposer`.
-- **🔴 Brick2 sample-rate gain quirk.** deskHPSDR `new_protocol.c:2580`:
-  *"Brick2 P2: 48 kHz delivers higher IQ amplitude (~+29 dB vs ≥96 kHz)."*
-  A Brick-specific level offset **Thetis and the Saturn `P2Session` do
-  NOT model.** Miss it and Brick RX is ~29 dB hot at 48 k vs 96 k+. The
-  Stage-3/5 gate must check **RX-level parity across rates**, not at one
-  rate. Model it in the P2 capability/profile layer, not the DSP.
+- **Brick2 sample-rate gain quirk — DOES NOT APPLY to Lyra (verified
+  2026-07-20).** deskHPSDR `p2_iq_sample_gain` (`new_protocol.c:2576`)
+  applies a **−29 dB correction ONLY at `sample_rate == 48000` on a
+  Hermes-class device** (the Brick); it returns unity (`1.0`) for every
+  rate ≥ 96 k — there is no per-rate ladder. **Lyra's IQ receive rate set
+  is `{96k, 192k, 384k}` with 48 k deliberately excluded** (`prefs.cpp:327`
+  validates to those three, default 192 k; `ModeFilterPanel.qml:98`
+  `rateVals: [96000,192000,384000]`, comment "48 k excluded"). So at every
+  rate Lyra can select, the Brick applies no correction and we are clean.
+  **Invariant to hold:** do NOT add a 48 k IQ option for P2 rigs. If that
+  ever changes, port the −29 dB (`0.0354813389`) Hermes-only@48k factor
+  into the P2 capability/profile layer. Kept here as the reason the P2
+  rate set must stay ≥ 96 k.
 - **Alex-deaf front end.** All-zero RX/TX filter words = noise floor only.
   Stage 4 exists specifically for this.
 - **Brick3 diversity DDC enable.** deskHPSDR `p2_diversity_brick3_mode_active`
@@ -186,8 +193,9 @@ until the gate passes.
    word, or raw Hz? (Read first; fix if raw.)
 2. Brick DDC count / legal rates as *this* unit reports them (discovery
    said 2 rx) vs what deskHPSDR enables for `HERMES_MODE_BRICK`.
-3. The exact +29 dB@48k correction constant + which rates it applies to
-   (deskHPSDR is the source; confirm against our unit's levels).
+3. ~~The exact +29 dB@48k correction constant~~ — RESOLVED: N/A, Lyra's
+   IQ rate set is `{96/192/384}k`, 48 k excluded (see §6). Just keep it
+   that way for P2 rigs.
 4. Which `src/wire/` ETH branches are complete vs stubbed `DEFERRED` —
    an inventory pass at Stage 2/3 start (Network.cpp, NetworkProto1.cpp,
    Ep6RecvThread.cpp, RadioNet.cpp).
