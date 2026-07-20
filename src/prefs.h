@@ -338,6 +338,17 @@ class Prefs : public QObject {
     // startup + on change.  Persisted: hw/processPriority.
     Q_PROPERTY(int processPriority READ processPriority
                WRITE setProcessPriority NOTIFY processPriorityChanged)
+    // Reduce TX drive in the digital data modes (DIGU/DIGL).  Opt-in
+    // (digitalDriveEnabled, default OFF).  digitalDrivePct is the fraction
+    // of the band's set drive to transmit at while in DIGU/DIGL (10..100,
+    // default 100 = no change).  The reduction is transient (emit-time) —
+    // the operator's per-band set drive + dial are untouched, and it stays
+    // under the Max-Drive cap.  Persisted: tx/digitalDriveEnabled +
+    // tx/digitalDrivePct.
+    Q_PROPERTY(bool digitalDriveEnabled READ digitalDriveEnabled
+               WRITE setDigitalDriveEnabled NOTIFY digitalDriveEnabledChanged)
+    Q_PROPERTY(int  digitalDrivePct READ digitalDrivePct
+               WRITE setDigitalDrivePct NOTIFY digitalDrivePctChanged)
 
     // Task #33 — TX mic source.  Operator-selected via Settings → TX
     // → Mic Source.  Token strings match the TCI v2 TRX source-token
@@ -594,6 +605,10 @@ public:
     void setAutoStartOnLaunch(bool on);
     int  processPriority() const { return processPriority_; }
     void setProcessPriority(int level);
+    bool digitalDriveEnabled() const { return digitalDriveEnabled_; }
+    void setDigitalDriveEnabled(bool on);
+    int  digitalDrivePct() const { return digitalDrivePct_; }
+    void setDigitalDrivePct(int pct);
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
@@ -704,6 +719,8 @@ signals:
     void spaceBarPttEnabledChanged();
     void autoStartOnLaunchChanged();
     void processPriorityChanged();
+    void digitalDriveEnabledChanged();
+    void digitalDrivePctChanged();
     void micSourceChanged();
     void tooltipsEnabledChanged();
 
@@ -780,6 +797,8 @@ private:
     bool    cursorReadout_;
     bool    zeroBeatMarkers_ = false;
     int     processPriority_ = 0;   // 0 Normal / 1 Above Normal / 2 High
+    bool    digitalDriveEnabled_ = false;
+    int     digitalDrivePct_ = 100;   // 10..100 % of set drive in DIGU/DIGL
     bool    dspPanelsGrouped_ = false;
     bool    optionsPanelsGrouped_ = false;
     double  zoom_;

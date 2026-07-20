@@ -5780,6 +5780,55 @@ QWidget *SettingsDialog::buildTxTab() {
         col3->addWidget(grp);      // §15.28 — TUNE + MODES column (Tune)
     }
 
+    // ── Digital modes: reduce TX drive in DIGU/DIGL ──────────────
+    // Opt-in checkbox + a "% of set drive" spinbox.  The reduction is
+    // transient (HL2Stream applies it in applyTxPower_ only while keyed in
+    // a digital mode) — the operator's per-band set drive + dial are
+    // untouched, and it composes under the Max-TX-drive cap (both only
+    // reduce).  Bound to Prefs; main.cpp forwards the values to the wire.
+    {
+        auto *grp = new QGroupBox(tr("Digital modes"), page);
+        auto *form = new QFormLayout(grp);
+
+        auto *en = new QCheckBox(
+            tr("Reduce TX drive in digital modes (DIGU/DIGL)"), grp);
+        en->setChecked(prefs_->digitalDriveEnabled());
+        en->setToolTip(tr("When on, transmit at a fraction of the band's set "
+                          "drive while in the digital data modes — back off on "
+                          "FT8/JS8/etc. without touching your voice drive. "
+                          "Off = no change."));
+        form->addRow(en);
+
+        auto *pct = new QSpinBox(grp);
+        pct->setRange(10, 100);
+        pct->setSuffix(tr(" %"));
+        pct->setValue(prefs_->digitalDrivePct());
+        pct->setEnabled(prefs_->digitalDriveEnabled());
+        pct->setToolTip(tr("Digital-mode TX drive as a percentage of the "
+                           "band's set drive. Stays under the Max-TX-drive "
+                           "cap; your dial and per-band drive are unchanged."));
+        form->addRow(tr("Digital drive:"), pct);
+
+        connect(en, &QCheckBox::toggled, grp, [this, pct](bool on) {
+            prefs_->setDigitalDriveEnabled(on);
+            pct->setEnabled(on);
+        });
+        connect(prefs_, &Prefs::digitalDriveEnabledChanged, en,
+                [this, en, pct]() {
+            if (en->isChecked() != prefs_->digitalDriveEnabled())
+                en->setChecked(prefs_->digitalDriveEnabled());
+            pct->setEnabled(prefs_->digitalDriveEnabled());
+        });
+        connect(pct, qOverload<int>(&QSpinBox::valueChanged), grp,
+                [this](int v) { prefs_->setDigitalDrivePct(v); });
+        connect(prefs_, &Prefs::digitalDrivePctChanged, pct, [this, pct]() {
+            if (pct->value() != prefs_->digitalDrivePct())
+                pct->setValue(prefs_->digitalDrivePct());
+        });
+
+        col3->addWidget(grp);      // TUNE + MODES column (Digital modes)
+    }
+
     // ── Mic + ALC (TXA input/output gain stages) group ───────────
     // TX-1 component 8a — operator-tunable WDSP TXA gain stages.
     //
