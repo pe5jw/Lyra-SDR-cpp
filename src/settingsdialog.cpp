@@ -8,6 +8,7 @@
 #include "hl2_stream.h"
 #include "palettes.h"
 #include "prefs.h"
+#include "win_perf.h"   // Performance group — network-throttle read/set
 #include "time_stations.h"
 #include "logdialog.h"
 
@@ -2418,6 +2419,67 @@ QWidget *SettingsDialog::buildHardwareTab() {
         viewRow->addWidget(viewBtn);
         viewRow->addStretch(1);
         v->addLayout(viewRow);
+
+        form->addRow(grp);
+    }
+
+    // --- Performance (per-PC; helps hold the HL2 wire cadence under load) ---
+    // Two machine-local knobs that address the "another app running alongside
+    // Lyra causes PA chatter / distorted TX" class of report: the EP2 writer
+    // thread misses its ~2.6 ms send window when a busy foreground app starves
+    // the CPU or the network stack.  Neither is per-rig.
+    {
+        auto *grp = new QGroupBox(tr("Performance"), page);
+        auto *g = new QGridLayout(grp);
+        g->setColumnStretch(1, 1);
+
+        // Process priority — SetPriorityClass on the Lyra process.
+        g->addWidget(new QLabel(tr("Process priority"), grp), 0, 0);
+        auto *prio = new QComboBox(grp);
+        prio->addItem(tr("Normal (default)"));   // index 0
+        prio->addItem(tr("Above Normal"));       // index 1
+        prio->addItem(tr("High"));               // index 2
+        prio->setCurrentIndex(prefs_->processPriority());
+        prio->setToolTip(tr("Raise Lyra's Windows process priority so it "
+                            "competes better with a busy app (e.g. a browser) "
+                            "for the CPU. Higher helps on weaker machines; "
+                            "applies immediately, no restart."));
+        connect(prio, QOverload<int>::of(&QComboBox::activated), grp,
+                [this](int idx) { prefs_->setProcessPriority(idx); });
+        connect(prefs_, &Prefs::processPriorityChanged, prio, [this, prio]() {
+            if (prio->currentIndex() != prefs_->processPriority())
+                prio->setCurrentIndex(prefs_->processPriority());
+        });
+        g->addWidget(prio, 0, 1);
+
+        // Network throttle — machine-wide HKLM value; needs elevation to
+        // change (one UAC prompt), reads freely.  State reflects the live
+        // registry, not a Lyra pref.
+        auto *thr = new QCheckBox(
+            tr("Disable Windows network throttling"), grp);
+        thr->setChecked(lyra::perf::networkThrottleDisabled());
+        thr->setToolTip(tr("Windows caps non-multimedia network traffic to "
+                           "~10 packets/ms, which can starve the HL2's UDP "
+                           "stream and cause audio glitches / TX distortion. "
+                           "Disabling it is the standard SDR fix. Machine-wide "
+                           "change (asks for admin); takes effect after a "
+                           "reboot."));
+        connect(thr, &QCheckBox::toggled, grp, [this, thr](bool on) {
+            lyra::perf::setNetworkThrottleDisabled(on);
+            // Reflect the ACTUAL registry state (the user may have declined
+            // the UAC prompt, or the value may already differ).
+            const bool actual = lyra::perf::networkThrottleDisabled();
+            if (thr->isChecked() != actual) {
+                const QSignalBlocker block(thr);
+                thr->setChecked(actual);
+            }
+        });
+        g->addWidget(thr, 1, 0, 1, 2);
+
+        auto *note = new QLabel(
+            tr("Network-throttle change applies after a reboot."), grp);
+        note->setStyleSheet(QStringLiteral("QLabel{color:#8fa6ba;}"));
+        g->addWidget(note, 2, 0, 1, 2);
 
         form->addRow(grp);
     }

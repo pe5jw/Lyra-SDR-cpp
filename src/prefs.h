@@ -331,6 +331,13 @@ class Prefs : public QObject {
                WRITE setAutoStartOnLaunch NOTIFY autoStartOnLaunchChanged)
     Q_PROPERTY(bool spaceBarPttEnabled READ spaceBarPttEnabled
                WRITE setSpaceBarPttEnabled NOTIFY spaceBarPttEnabledChanged)
+    // Process priority — SetPriorityClass on the Lyra process.  Helps Lyra
+    // hold the HL2 wire cadence when a busy foreground app (browser, etc.)
+    // is competing for the CPU.  0 = Normal (Windows default) / 1 = Above
+    // Normal / 2 = High.  Per-PC (machine-local), NOT per-rig.  Applied at
+    // startup + on change.  Persisted: hw/processPriority.
+    Q_PROPERTY(int processPriority READ processPriority
+               WRITE setProcessPriority NOTIFY processPriorityChanged)
 
     // Task #33 — TX mic source.  Operator-selected via Settings → TX
     // → Mic Source.  Token strings match the TCI v2 TRX source-token
@@ -585,6 +592,8 @@ public:
     void setSpaceBarPttEnabled(bool on);
     bool autoStartOnLaunch() const { return autoStartOnLaunch_; }
     void setAutoStartOnLaunch(bool on);
+    int  processPriority() const { return processPriority_; }
+    void setProcessPriority(int level);
 
     QString micSource() const { return micSource_; }
     void    setMicSource(const QString &token);
@@ -694,6 +703,7 @@ signals:
     void hwPttEnabledChanged();
     void spaceBarPttEnabledChanged();
     void autoStartOnLaunchChanged();
+    void processPriorityChanged();
     void micSourceChanged();
     void tooltipsEnabledChanged();
 
@@ -769,6 +779,7 @@ private:
     QVariant panadapterSplit_;
     bool    cursorReadout_;
     bool    zeroBeatMarkers_ = false;
+    int     processPriority_ = 0;   // 0 Normal / 1 Above Normal / 2 High
     bool    dspPanelsGrouped_ = false;
     bool    optionsPanelsGrouped_ = false;
     double  zoom_;

@@ -5,6 +5,7 @@
 #include "palettes.h"
 #include "grid.h"
 #include "rig/RigScope.h"   // multi-rig Stage 4d — per-rig panadapter dB-scale keys
+#include "win_perf.h"       // process-priority apply (Settings → Hardware → Performance)
 
 #include <QSettings>
 
@@ -112,6 +113,7 @@ constexpr auto kHwPttEnabled = "tx/hw_ptt_enabled";
 // Task #157 — space-bar PTT opt-out (default ON / historical behaviour).
 constexpr auto kSpaceBarPttEnabled = "tx/space_bar_ptt_enabled";
 constexpr auto kAutoStartOnLaunch  = "hw/autoStartOnLaunch";
+constexpr auto kProcessPriority    = "hw/processPriority";
 constexpr auto kMicSource    = "tx/mic_source";
 constexpr auto kTooltipsEnabled = "ui/tooltips_enabled";
 // Task #74 — TUN separate-drive toggle + value.  Operator-tuned in
@@ -299,6 +301,11 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     spaceBarPttEnabled_ = s.value(kSpaceBarPttEnabled, true).toBool();
     tooltipsEnabled_    = s.value(kTooltipsEnabled, true).toBool();
     autoStartOnLaunch_  = s.value(kAutoStartOnLaunch, true).toBool();
+    // Process priority (per-PC).  Clamp to the valid 0..2 range, then apply
+    // to the running process so the persisted choice takes effect at launch.
+    processPriority_ = s.value(kProcessPriority, 0).toInt();
+    if (processPriority_ < 0 || processPriority_ > 2) processPriority_ = 0;
+    lyra::perf::applyProcessPriority(processPriority_);
     // Task #33 — TX mic source token.  Validate against the known
     // token list; an unknown value (older Lyra, mistyped QSettings)
     // falls back to "mic1" so we never autoload into an inactive
@@ -1255,6 +1262,16 @@ void Prefs::setAutoStartOnLaunch(bool on) {
         autoStartOnLaunch_ = on;
         QSettings().setValue(kAutoStartOnLaunch, on);
         emit autoStartOnLaunchChanged();
+    }
+}
+
+void Prefs::setProcessPriority(int level) {
+    if (level < 0 || level > 2) level = 0;
+    if (level != processPriority_) {
+        processPriority_ = level;
+        QSettings().setValue(kProcessPriority, level);
+        lyra::perf::applyProcessPriority(level);   // live-apply, no restart
+        emit processPriorityChanged();
     }
 }
 
