@@ -2663,7 +2663,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
         // board/gw/rx info — and a re-Discover refreshes BUSY/rx state.
         auto addRadio = [list](const QString &ip, const QString &mac,
                                const QString &board, int codeVer, int betaVer,
-                               bool busy, int numRxs) {
+                               bool busy, int numRxs, int protocol) {
             QListWidgetItem *it = nullptr;
             for (int i = 0; i < list->count(); ++i)
                 if (list->item(i)->data(Qt::UserRole).toString() == ip) {
@@ -2673,9 +2673,10 @@ QWidget *SettingsDialog::buildHardwareTab() {
             if (!it)
                 it = new QListWidgetItem(list);
             it->setText(
-                tr("%1  —  %2  (gw v%3.%4, %5 rx)%6")
+                tr("%1  —  %2  (%7, gw v%3.%4, %5 rx)%6")
                     .arg(ip, board).arg(codeVer).arg(betaVer).arg(numRxs)
-                    .arg(busy ? tr("  [BUSY]") : QString()));
+                    .arg(busy ? tr("  [BUSY]") : QString())
+                    .arg(protocol == 2 ? tr("P2") : tr("P1")));
             it->setData(Qt::UserRole,     ip);
             it->setData(Qt::UserRole + 1, mac);
             it->setData(Qt::UserRole + 2, board);
@@ -2683,6 +2684,7 @@ QWidget *SettingsDialog::buildHardwareTab() {
             it->setData(Qt::UserRole + 4, betaVer);
             it->setData(Qt::UserRole + 5, busy);
             it->setData(Qt::UserRole + 6, numRxs);
+            it->setData(Qt::UserRole + 7, protocol);
         };
 
         // Show the remembered radio on open so the operator sees what
@@ -2696,7 +2698,8 @@ QWidget *SettingsDialog::buildHardwareTab() {
                          r.value(QStringLiteral("codeVersion")).toInt(),
                          r.value(QStringLiteral("betaVersion")).toInt(),
                          r.value(QStringLiteral("busy")).toBool(),
-                         r.value(QStringLiteral("numRxs")).toInt());
+                         r.value(QStringLiteral("numRxs")).toInt(),
+                         r.value(QStringLiteral("protocol"), 1).toInt());
             }
         }
 
@@ -2753,8 +2756,8 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     });
             connect(discovery_, &lyra::ipc::HL2Discovery::radioFound, radioBox,
                     [addRadio](QString ip, QString mac, QString board,
-                               int cv, int bv, bool busy, int nr) {
-                        addRadio(ip, mac, board, cv, bv, busy, nr);
+                               int cv, int bv, bool busy, int nr, int proto) {
+                        addRadio(ip, mac, board, cv, bv, busy, nr, proto);
                     });
             connect(discovery_, &lyra::ipc::HL2Discovery::scanFinished, radioBox,
                     [status](int count) {
@@ -2768,9 +2771,20 @@ QWidget *SettingsDialog::buildHardwareTab() {
         if (stream_) {
             // Open one list item — shared by the Open button AND double-click.
             // No-op while already connected (Close first to switch radios).
-            auto openItem = [this](QListWidgetItem *it) {
+            auto openItem = [this, status](QListWidgetItem *it) {
                 if (!it || stream_->isRunning()) return;
                 const QString ip = it->data(Qt::UserRole).toString();
+                const int proto  = it->data(Qt::UserRole + 7).toInt();
+                // The stream is the P1 (Metis) engine.  A P2 radio (Brick /
+                // ANAN G2) is discovered and listed, but opening it needs the
+                // P2 receive engine (separate, deferred work) — refuse here
+                // rather than fail obscurely on the wrong wire protocol.
+                if (proto == 2) {
+                    status->setText(
+                        tr("%1 is a Protocol-2 radio — receive support is in "
+                           "progress; can't open it yet.").arg(ip));
+                    return;
+                }
                 if (discovery_) {
                     discovery_->rememberRadio(
                         ip, it->data(Qt::UserRole + 1).toString(),
@@ -2778,7 +2792,8 @@ QWidget *SettingsDialog::buildHardwareTab() {
                         it->data(Qt::UserRole + 3).toInt(),
                         it->data(Qt::UserRole + 4).toInt(),
                         it->data(Qt::UserRole + 5).toBool(),
-                        it->data(Qt::UserRole + 6).toInt());
+                        it->data(Qt::UserRole + 6).toInt(),
+                        proto);
                 }
                 // Multi-rig: create/update this radio's rig profile (family
                 // from the discovered board, lastIp = this ip) so opening a
@@ -2820,7 +2835,10 @@ QWidget *SettingsDialog::buildHardwareTab() {
                     tr("Enter a valid IPv4 address (e.g. 192.168.1.50)."));
                 return;
             }
-            addRadio(ip, QString(), tr("manual"), 0, 0, false, 0);
+            // Protocol unknown until the probe replies (which sends BOTH P1
+            // and P2 and re-renders this row with the real protocol); the
+            // placeholder assumes P1.
+            addRadio(ip, QString(), tr("manual"), 0, 0, false, 0, 1);
             for (int i = 0; i < list->count(); ++i)
                 if (list->item(i)->data(Qt::UserRole).toString() == ip) {
                     list->setCurrentRow(i);

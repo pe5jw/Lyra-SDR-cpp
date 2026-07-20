@@ -2676,10 +2676,16 @@ void MainWindow::scanAndOpenFirst() {
         disc, &lyra::ipc::HL2Discovery::radioFound, this,
         [this, st, disc](const QString &fip, const QString &mac,
                          const QString &board, int code, int beta,
-                         bool busy, int numRxs) {
+                         bool busy, int numRxs, int proto) {
+            // Auto-connect drives the P1 HL2Stream.  A P2 radio (Brick /
+            // ANAN G2) is reported by discovery but can't be opened here
+            // yet — the P2 receive engine is separate, deferred work.
+            // Leave the one-shot armed so a subsequent P1 reply in the
+            // same sweep still auto-connects.
+            if (proto != 1) return;
             QObject::disconnect(scanConn_);
             QObject::disconnect(scanDoneConn_);
-            disc->rememberRadio(fip, mac, board, code, beta, busy, numRxs);
+            disc->rememberRadio(fip, mac, board, code, beta, busy, numRxs, proto);
             if (connStatus_)
                 connStatus_->setText(tr("Connecting to %1…").arg(fip));
             st->open(fip);
