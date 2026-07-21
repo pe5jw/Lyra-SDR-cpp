@@ -3,7 +3,14 @@
 // Laid out to match old Lyra's DSP+AUDIO panel: THREE rows.
 //   Row 1 — LEVELS:  LNA · Auto · AF · Vol · MUTE · Bal · Out
 //   Row 2 — DSP:     [NB BIN NR ANF LMS SQ APF NF] · notch counter · AGC
+//                    · SQ threshold
 //   Row 3 — NR:      NR Mode · AEPF · NPE · Cap · source · DSP Settings…
+//
+// The SQ threshold sits on row 2 beside the AGC readout rather than with
+// the other conditional sliders on row 3.  Row 3 carries LMS / NB / APF /
+// BIN, all of which appear only when their block is engaged, so with
+// several on at once they squeeze each other; row 2 has the headroom and
+// the slider lands under the SQ toggle that summons it.
 //
 // Controls whose WDSP backend is wired ship live (Vol, MUTE, NR enable,
 // NR Mode 1-4, AEPF, NPE, AGC-mode cycle).  Controls whose backend is
@@ -480,6 +487,29 @@ Rectangle {
                 }
             }
 
+            // Squelch threshold — appears only when SQ is engaged.  Lives
+            // here rather than on row 3 with the other conditional sliders:
+            // row 3 already carries LMS / NB / APF / BIN and they crowd each
+            // other once several DSP blocks are on together.
+            Item { width: 8; visible: WdspEngine.squelchEnabled }
+            Label { text: qsTr("SQ:"); color: root.cText; font.pixelSize: 11
+                    visible: WdspEngine.squelchEnabled }
+            LyraSlider {
+                id: sqSlider
+                visible: WdspEngine.squelchEnabled
+                from: 0; to: 100; stepSize: 1
+                value: Math.round(WdspEngine.squelchThreshold * 100)
+                Layout.preferredWidth: 110
+                onMoved: WdspEngine.setSquelchThreshold(value / 100.0)
+                ToolTip.text: qsTr("Squelch threshold — higher = tighter (only stronger signals open it).\n"
+                    + "Typical sweet spot 10–30; routes to SSQL / FM-SQ / AM-SQ by mode.")
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
+            }
+            Label { visible: WdspEngine.squelchEnabled
+                    text: Math.round(WdspEngine.squelchThreshold * 100)
+                    color: "#50d0ff"; font.family: "Consolas"; font.bold: true
+                    Layout.preferredWidth: 26 }
+
             Item { Layout.fillWidth: true }
 
             // ── CW sidetone monitor (#105) — gateware HW sidetone level,
@@ -583,26 +613,6 @@ Rectangle {
                     text: Math.round(WdspEngine.lmsStrength * 100) + "%"
                     color: "#50d0ff"; font.family: "Consolas"; font.bold: true
                     Layout.preferredWidth: 34 }
-
-            // Squelch threshold — appears only when SQ is engaged.
-            Item { width: 8; visible: WdspEngine.squelchEnabled }
-            Label { text: qsTr("SQ:"); color: root.cText; font.pixelSize: 11
-                    visible: WdspEngine.squelchEnabled }
-            LyraSlider {
-                id: sqSlider
-                visible: WdspEngine.squelchEnabled
-                from: 0; to: 100; stepSize: 1
-                value: Math.round(WdspEngine.squelchThreshold * 100)
-                Layout.preferredWidth: 120
-                onMoved: WdspEngine.setSquelchThreshold(value / 100.0)
-                ToolTip.text: qsTr("Squelch threshold — higher = tighter (only stronger signals open it).\n"
-                    + "Typical sweet spot 10–30; routes to SSQL / FM-SQ / AM-SQ by mode.")
-                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
-            }
-            Label { visible: WdspEngine.squelchEnabled
-                    text: Math.round(WdspEngine.squelchThreshold * 100)
-                    color: "#50d0ff"; font.family: "Consolas"; font.bold: true
-                    Layout.preferredWidth: 26 }
 
             // NB strength — appears only when NB is engaged.
             Item { width: 8; visible: WdspEngine.nbEnabled }
