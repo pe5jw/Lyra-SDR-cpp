@@ -695,7 +695,6 @@ void HL2Stream::setAutoLna(bool on)
     QSettings().setValue(QStringLiteral("rx/autoLna"), on);
     if (on) {
         overloadLevel_ = 0;
-        recovering_ = false;
         holdClock_.restart();
         emit logLine(QStringLiteral("[hl2] Auto-LNA on"));
     } else {
@@ -775,34 +774,40 @@ void HL2Stream::onAutoLnaTick()
     }
 
     const int g = lnaGainDb_.load(std::memory_order_relaxed);
+
+    // Two branches, mirroring the reference's if / else-if exactly.
+    // There is deliberately NO third "transient overload — hold, don't
+    // recover" branch: the reference has none, and adding one stalls
+    // the creep every time a single window clips, which on a busy band
+    // is most of them.
     if (sustained) {
-        // Sustained overload — back off 3 dB to protect the ADC.  Reset
-        // recovery so the next pull-up waits the full hold time.
-        const int ng = std::max(g - 3, kLnaMinDb);
-        if (ng != g) {
-            applyLnaGainNoPersist(ng);
-            emit logLine(QStringLiteral("[hl2] Auto-LNA back-off → %1 dB").arg(ng));
+        // Overload confirmed — one 3 dB step off, guarded so the loop
+        // stops where the reference stops rather than running to the
+        // slider's floor.
+        if (g > kAutoLnaBackoffMinDb) {
+            applyLnaGainNoPersist(g - 3);
+            emit logLine(QStringLiteral("[hl2] Auto-LNA back-off → %1 dB")
+                         .arg(g - 3));
         }
-        recovering_ = false;
+        // The clock restarts whether or not the step was taken — the
+        // reference resets it outside its own guard, so a pinned-at-the-
+        // floor loop still waits a full hold before creeping again.
         holdClock_.restart();
-    } else if (ov) {
-        // Transient overload (not yet sustained) — hold, don't recover.
-        recovering_ = false;
-    } else if (autoLnaUndo_) {
-        // Band clear.  The FIRST pull-up waits the operator's full hold
-        // time (so a brief lull doesn't yank gain back up); subsequent
-        // steps creep at the brisker recover cadence so we climb back
-        // quickly.  Pull-downs above are unaffected by this.
-        const qint64 need = recovering_
-            ? static_cast<qint64>(kAutoLnaRecoverMs)
-            : static_cast<qint64>(autoLnaHoldSec_) * 1000;
-        if (holdClock_.elapsed() >= need) {
-            if (g < kLnaMaxDb) {
-                applyLnaGainNoPersist(g + 1);
-            }
-            recovering_ = true;
-            holdClock_.restart();
+    } else if (autoLnaUndo_
+               && holdClock_.elapsed()
+                      > static_cast<qint64>(autoLnaHoldSec_) * 1000) {
+        // Band clear — creep back 1 dB per HOLD interval.  Every step
+        // waits the operator's full hold time; there is no accelerated
+        // recovery cadence.  Lyra previously sped subsequent pull-ups up
+        // to 1 s "so the operator isn't left deaf for minutes", which
+        // recovers four times faster than the reference at the default
+        // 4 s hold and is why the gain kept re-pinning at the ceiling:
+        // it climbed back to maximum between bursts faster than
+        // intermittent clipping could pull it down.
+        if (g < kAutoLnaCreepMaxDb) {
+            applyLnaGainNoPersist(g + 1);
         }
+        holdClock_.restart();
     }
 }
 
@@ -930,7 +935,6 @@ void HL2Stream::open(const QString &ip) {
     statsClock_.start();   // baseline for actual-elapsed dg/s
     // Auto-LNA / overload monitor: fresh accumulator + hold clock.
     overloadLevel_ = 0;
-    recovering_ = false;
     // Stage 2b2: adcOverloadNow_ retired (Auto-LNA reads
     // prn->adc[0].adc_overload direct in onAutoLnaTick).
     holdClock_.start();

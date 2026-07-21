@@ -1833,7 +1833,6 @@ private:
     int                  autoLnaHoldSec_ = 4;      // "Undo N s" creep interval
     QTimer               autoLnaTimer_;
     QElapsedTimer        holdClock_;               // since last auto gain change
-    bool                 recovering_     = false;  // creeping gain back up
     // External filter board (N2ADR).  ocC2_ is the frame-0 C2 byte the
     // EP2 writer reads each send (= 7-bit OC pattern << 1; C2[0] stays 0).
     // filterBoardEnabled_ / ocPattern_ are main-thread state (the
@@ -2088,11 +2087,26 @@ private:
     static constexpr int     kEp2RateHz    = 380;
     // Auto-LNA overload-poll cadence (matches the reference ~400 ms loop).
     static constexpr int     kAutoLnaPeriodMs = 400;
-    // Once recovery begins (after the hold time confirms the band is
-    // clear), creep gain back up at this brisker fixed cadence so the
-    // operator isn't left deaf for minutes — pull-DOWNs still honor the
-    // operator's hold-time setting; only the pull-UP is sped up.
-    static constexpr int     kAutoLnaRecoverMs = 1000;
+    // Auto-LNA travel limits, ported exactly from the reference's
+    // HL2 auto-attenuator guards.
+    //
+    // The reference works in ATTENUATION dB (HL2 range -28..32, where
+    // negative attenuation is gain) and writes `wire = 31 - att`.  Lyra's
+    // operator axis is GAIN dB and writes `wire = gain + 12`.  Equating
+    // the two wire expressions gives the exact correspondence:
+    //
+    //     gain + 12 = 31 - att   =>   att = 19 - gain
+    //
+    // so the reference's two guards translate as:
+    //     `if (att < 28)  att += 3`  (may still back off)  -> gain > -9
+    //     `if (att > -28) att--`     (may still creep up)  -> gain < +47
+    //
+    // Note +47, NOT the kLnaMaxDb +48 ceiling the manual slider allows:
+    // the reference's auto loop stops one step short of the hardware
+    // ceiling, and the whole point of this port is to travel exactly as
+    // far as the reference travels and no further.
+    static constexpr int     kAutoLnaBackoffMinDb = -9;   // att 28
+    static constexpr int     kAutoLnaCreepMaxDb   = 47;   // att -28
     // ---- TX-0c-fsm: TR-sequencing delays (ms) -----------------------
     // Defaults pulled from the operator's working-station DB export
     // (HL2+/AK4951 bench-validated, hot-switch-safe for typical 1 kW
