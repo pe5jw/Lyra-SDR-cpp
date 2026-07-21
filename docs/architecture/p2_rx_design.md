@@ -89,6 +89,38 @@ the WDSP ports are the sole attributed code).
 | **Jerry / KD4YAL `P2Session`** | `Y:/Claude local/SDRProject/lyra-cpp-p2saturn` — `src/wire/P2Session.{h,cpp}` | **Bench-verified session/handshake** on a live ANAN-G2. Exact wire facts: ports, phase word, sequence-zero rule, watchdog bit, Alex-deaf trap. Hermes-class handshake = our Brick. |
 | **ramdor / Thetis** | `D:/sdrprojects/ramdor-Thetis` — `ChannelMaster/network.c` | Canonical P2 client the whole ecosystem regresses against; the ported `src/wire/` structure already mirrors it. |
 
+### 4.1 Collaboration (Jerry KD4YAL — accepted collaborator 2026-07-20)
+
+Division of labor agreed in writing:
+- **Jerry:** G2 / Saturn end + the **bench regression harness**.
+- **Rick (us):** **Brick + multi-rig integration** (this doc).
+- **Shared:** the P2 wire engine — both boards validate against it.
+- **First joint task (before either builds further):** identity-layer
+  unification — his `HardwareCatalog` rows fold into our
+  `RadioCapabilities` / `RigRegistry` (identity authority is ours). "Just
+  a data table," clean/fast. See §9 for his schema inputs.
+
+### 4.2 Confirmed wire map (Jerry, bench-verified on G2; supersedes "confirm at impl time")
+
+Ports (all radio↔PC on the one session socket; the alias pattern is
+deliberate — p2app's "late-P2 compatibility for Thetis/piHPSDR," shared
+by default unless a client requests distinct ports):
+
+| Port | Dir | Carries |
+|---|---|---|
+| 1024 | both | general (cmd=0) + discovery (cmd=2), dispatched by **byte [4]** |
+| 1025 | both | DDC-specific config (PC→radio) / **HP STATUS (radio→PC)** |
+| 1026 | both | DUC-specific config (PC→radio) / mic audio (radio→PC) |
+| 1027 | both | **HP CONTROL (PC→radio)** / wideband ADC0 (radio→PC, opt) |
+| 1028 | both | **speaker audio (PC→radio)** / wideband ADC1 (radio→PC, opt) |
+| 1029 | PC→radio | TX/DUC IQ (TX — out of P2-2 scope) |
+| 1035+n | radio→PC | **per-DDC IQ** (n = 0..9 on Saturn) |
+
+Packet sizes: general/discovery **60 B**, DDC-specific **1444 B**,
+DUC-specific 60 B, high-priority **1444 B out / 60 B status**, speaker
+**260 B** (4 B seq + 64 stereo 16-bit), DDC IQ **1444 B** (16 B header +
+238 × 24-bit I/Q). Resolves the §3.1-class port citation.
+
 ---
 
 ## 5. Stages (RX-only) + acceptance gates
@@ -107,6 +139,13 @@ until the gate passes.
   (claim lease) + HP `run=1` keepalive timer (~100 ms) + parse the
   incoming HP-status (`:1025`) → emit an "active" state = Lyra's
   equivalent of `P2Session::started`.
+- **🔴 NOT a drop-in port (Jerry).** His `P2Session` is a `QThread` +
+  `QUdpSocket` — a Qt event loop on the wire thread. That **violates our
+  locked rule** (`hl2_stream.h`: native WinSock2 + a dedicated
+  `std::jthread`, no Qt event loop on the wire path, ever). It was the
+  fast solo-bring-up path, not what lands in the ETH branches. Converging
+  = **rewrite off Qt sockets onto native WinSock2**, not relocating the
+  facts. Study his handshake for the *sequence*; write the transport ours.
 - **Gate:** on the link-local bench, opening the Brick produces a
   sustained HP-status stream (seq incrementing) and holds for minutes
   without dropping (proves the lease + keepalive + the Windows UDP
@@ -134,6 +173,15 @@ until the gate passes.
 ### Stage 5 — wire to the existing RX chain + un-guard
 - Confirm IQ flows through WDSP / audio / panadapter unchanged (the DSP
   side is protocol-agnostic, so this should be ~free once IQ lands).
+- **🔴 The audio-tee landmine (Jerry hit it twice on the G2).** When P2
+  RX audio is wired into the same `dispatchAudioFrame → OutBound(0)` tee
+  the P1 path uses, **`OutBound` (and its ring lifecycle in
+  `destroy_obbuffs`) silently assumes a P1 session created the rings
+  first.** Driving that tee with no P1 session live = **null-deref**;
+  closing P1 after a P2 session ran = **dangling pointer into freed
+  memory**. He patched both as documented deviations in `ObBuffs.cpp` —
+  **fix at the root** (own the ring lifecycle independent of P1), don't
+  rediscover it on the bench.
 - Only now relax the P2-1 open/`switchRig` guards for RX so a P2 rig can
   be opened + made active. Set `maxReceivers` / audio-path defaults from
   discovery + `capabilitiesFor(BrickP2)`.
@@ -166,14 +214,25 @@ until the gate passes.
   — the Brick's STM32 wants extra DDCs (DDC2/DDC3) enabled in some modes,
   unlike a stock ANAN. Out of scope for single-RX P2-2 but note it so a
   future diversity/RX2 pass doesn't rediscover it.
-- **Windows UDP flow-state.** Jerry's `P2Session` keeps a periodic resend
-  (~5 s) so Windows doesn't expire the flow state for the radio→PC `:1025`
-  stream — bench-proven necessary (zero status packets arrive without it
-  on a default-firewall host).
+- **Windows UDP flow-state (Jerry, Windows-only note).** Windows Firewall
+  drops inbound UDP unless the host recently sent outbound to that exact
+  remote port, so the HP-status stream (radio→PC `:1025`) goes silent
+  unless something periodically sends **TO `:1025`**. The DDC-specific
+  resend does this incidentally **today** — but if the P2-3/P2-4 composer
+  ever stops sending DDC-specific on some idle path, status drops with no
+  warning (short of a strict inbound firewall rule). Keep a deliberate
+  keepalive-to-:1025, don't rely on the incidental one.
 - **Sample layout / endianness.** P2 IQ = 238 × (3B I + 3B Q) BE signed
   24-bit — different from P1's EP6 slot layout. The unpack is new code.
-- **Sequence rule.** Control packets (general, HP) send sequence **always
-  zero**; only data streams increment. The radio must not dedupe control.
+  (Normalization constant is a Stage-3 bench detail: deskHPSDR builds a
+  24-bit-aligned int × `1/2²³`; confirm the net ±1 scaling on our unit.)
+- **🔴 Sequence rule — unit-test it.** Control packets (general, HP) send
+  sequence **always zero**; only data streams increment. The radio must
+  not dedupe control on sequence — and the hardened p2app's own
+  regression notes cite a **real bug** where a client that deduped
+  control-on-sequence **froze frequency / drive updates after the first
+  packet**. Whatever P2 composer lands gets a unit test asserting
+  control-sequence stays 0 and repeated same-sequence control is applied.
 
 ---
 
@@ -202,10 +261,34 @@ until the gate passes.
 
 ---
 
-## 9. Convergence note
+## 9. Convergence / identity unification — the first joint task
 
 P2-2 keeps the identity layer P2-1 established: one `RigRegistry`
 (Rick's), not Jerry's parallel `HardwareCatalog`. The Brick opens as its
 registered `brick_p2` rig; `capabilitiesFor(BrickP2)` supplies the family
-defaults; the P2 quirks (rate gain, DDC map) live in the capability /
-profile layer, never leaking into the protocol-agnostic DSP.
+defaults; the P2 quirks (DDC map; rate gain — N/A per §6) live in the
+capability / profile layer, never leaking into the protocol-agnostic DSP.
+
+**This is the agreed first joint task (Jerry): fold his `HardwareCatalog`
+rows into `RadioCapabilities` / `RigRegistry` before either side builds
+further.** His schema inputs (do these when the identity schema is next
+touched — likely a `multi_rig_design.md` amendment, not P2-2 code):
+
+- **`audioRoute` needs a FOURTH state.** Today's `AudioPath` is
+  `PcSound` / `RadioJack` (2). The G2 bring-up added **"radio"** — RX
+  audio streamed back to the radio's own **on-board speaker/amplifier**
+  (260 B packets → `:1028`, confirmed by watching the radio's speaker-FIFO
+  drain in the status stream, not just by ear). This is distinct from
+  `RadioJack` (a physical headphone jack on the unit).
+- **Gate "radio" by a CAPABILITY, not operator preference.** Add a
+  `hasAudioAmplifierP2` capability (Jerry's, from Thetis
+  `HasAudioAmplifier`: P2 + {7000D, 8000D, Anvelina, G2, G2-1K,
+  RedPitaya}). **The Brick almost certainly reads false** — so
+  `capabilitiesFor()` gates whether the "radio" route is even offerable,
+  rather than letting it be picked on hardware that can't do it.
+- **Keep `firstSeen` / `lastSeen` / `schemaVersion`** on the rig record —
+  free now, and `schemaVersion` saves a migration headache the first time
+  this shape changes.
+
+Jerry offered to file these as inline PR comments if that's easier —
+operator's call.
