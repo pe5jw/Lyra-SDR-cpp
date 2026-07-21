@@ -742,14 +742,25 @@ void HL2Stream::onAutoLnaTick()
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
-    // Sample overload INSTANTANEOUSLY at poll time (most-recent
-    // address-0 frame), matching the reference HL2 poll — a window-OR
-    // over-triggered on a strong front end and pinned gain to the floor.
-    // Stage 2b2: read adc_overload direct from telemetry struct
-    // (Ep6RecvThread writes ControlBytesIn[1]&0x01 into adc[0]
-    // per HL2 single-frame assignment semantics, networkproto1.c:502).
+    // "Did the ADC clip at all since the last tick?"  Consume-and-clear
+    // the sticky latch the receive path sets, rather than sampling the
+    // per-frame overload field at poll time.
+    //
+    // Sampling instantaneously CANNOT work here: the radio rewrites
+    // that field on every EP6 frame (thousands per second) while this
+    // loop runs at 400 ms, and genuine overload is intermittent — the
+    // converter clips on peaks.  The poll therefore lands on a clean
+    // frame nearly every time, the level counter decays, and the loop
+    // concludes the band is quiet and creeps gain UP into hard
+    // clipping — the exact opposite of its job (bench-reported: gain
+    // walks to +48 in ~5 s with both overload lamps solid).
+    //
+    // The hysteresis below is what keeps this from over-triggering:
+    // a lone transient lifts the level by one and then decays, so a
+    // back-off still needs ~1.6 s of continuously clipping windows.
     const bool ov = (lyra::wire::prn != nullptr
-                  && lyra::wire::prn->adc[0].adc_overload != 0);
+                  && lyra::wire::prn->adc[0].adc_overload_seen.exchange(
+                         0, std::memory_order_relaxed) != 0);
     overloadLevel_ = ov ? std::min(overloadLevel_ + 1, 5)
                         : std::max(overloadLevel_ - 1, 0);
     // Lamp + back-off both key on SUSTAINED overload (level > 3 ≈ 1.6 s
