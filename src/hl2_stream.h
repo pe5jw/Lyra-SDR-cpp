@@ -165,6 +165,9 @@ class HL2Stream : public QObject {
     // Live ADC-overload indicator — true when the HL2 gateware reported
     // ADC clipping in the last ~400 ms window (EP6 status C1 bit 0).
     Q_PROPERTY(bool adcOverload   READ adcOverload    NOTIFY adcOverloadChanged)
+    // 0 = silent, 1 = overload seen recently (decaying), 2 = confirmed and
+    // the auto-attenuator is acting.  See onAutoLnaTick().
+    Q_PROPERTY(int  adcOverloadTier READ adcOverloadTier NOTIFY adcOverloadChanged)
     // External filter board (N2ADR): when enabled, the per-band OC
     // pattern is driven on frame-0 C2 so the board's RX band-pass +
     // 3 MHz HPF relays follow the band (front-end protection).  ocBits
@@ -731,7 +734,8 @@ public:
     bool    autoLna()           const { return autoLnaEnabled_; }
     bool    autoLnaUndo()       const { return autoLnaUndo_; }
     int     autoLnaHoldSec()    const { return autoLnaHoldSec_; }
-    bool    adcOverload()       const { return adcOverload_; }
+    bool    adcOverload()       const { return adcOverloadTier_ >= 2; }
+    int     adcOverloadTier()   const { return adcOverloadTier_; }
     // Operator gain bounds = the AD9866 LNA hardware range in full-range
     // mode (HL2 wiki: code 0…60 → −12…+48 dB; frame-11 C4 bit 6 = the
     // full-range enable, which Lyra sets).  +48 is the true ceiling
@@ -1826,7 +1830,7 @@ private:
     // posture: int=0 at startup until the first telemetry frame
     // arrives (no -1 sentinel; the formulas natively cope with
     // raw=0 → quiet temp/voltage rather than NaN).
-    bool                 adcOverload_    = false;
+    int                  adcOverloadTier_ = 0;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;
     bool                 autoLnaUndo_    = true;

@@ -791,8 +791,27 @@ void HL2Stream::onAutoLnaTick()
     }
 
     const bool sustained = ov && overloadLevel_ > 3;
-    if (sustained != adcOverload_) {
-        adcOverload_ = sustained;
+
+    // Three-rung operator ladder, mirroring the reference exactly:
+    //
+    //   silent  counter at zero — nothing seen
+    //   yellow  counter > 0 — overload seen recently, now decaying
+    //           (`console.cs:21511-21513`, the sWarning text gate)
+    //   red     THIS poll is dirty AND counter > 3 — confirmed, and the
+    //           auto-attenuator acts on it this same tick
+    //           (`console.cs:21502`, which sits inside the
+    //            `if (_adc_overloaded[i])` block opened at :21496 —
+    //            hence the `ov &&`, and hence red and act are the same
+    //            condition, not two different ones)
+    //
+    // The yellow rung is what persists through the decay; red tracks the
+    // action.  Suppression when the auto-attenuator owns the front end is
+    // the operator-facing half and lives in the panel (see AudioPanel).
+    const int tier = sustained          ? 2
+                   : (overloadLevel_ > 0 ? 1
+                                         : 0);
+    if (tier != adcOverloadTier_) {
+        adcOverloadTier_ = tier;
         emit adcOverloadChanged();
     }
     if (!autoLnaEnabled_) {
@@ -1438,7 +1457,7 @@ void HL2Stream::close() {
     statsTimer_.stop();
     autoLnaTimer_.stop();
     hwPttTimer_.stop();   // Stage 2b2-fix-v2 — HW-PTT poll
-    if (adcOverload_) { adcOverload_ = false; emit adcOverloadChanged(); }
+    if (adcOverloadTier_) { adcOverloadTier_ = 0; emit adcOverloadChanged(); }
     onStatsTick();  // flush the final window so the UI shows true totals
     running_.store(false, std::memory_order_release);
     emit runningChanged();
