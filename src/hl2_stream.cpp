@@ -711,8 +711,13 @@ void HL2Stream::setAutoLna(bool on)
     autoLnaEnabled_ = on;
     QSettings().setValue(QStringLiteral("rx/autoLna"), on);
     if (on) {
-        overloadLevel_ = 0;
-        holdClock_.restart();
+        // The reference's auto-enable setter sets `_band_change = true`
+        // and swaps the preamp label to "A-ATT" — nothing else
+        // (`console.cs:21354-21363`).  It does NOT clear the overload
+        // counter or restart the hold clock, which we used to do; a
+        // counter carried across the enable is deliberate, so enabling
+        // Auto into an already-clipping band acts immediately.
+        bandChange_ = true;
         emit logLine(QStringLiteral("[hl2] Auto-LNA on"));
     } else {
         // Leave the gain where auto left it.
@@ -865,6 +870,11 @@ void HL2Stream::onAutoLnaTick()
     // the creep every time a single window clips, which on a busy band
     // is most of them.
     if (sustained) {
+        // First confirmed overload ends the fast acquire — we have found
+        // the edge, so hand back to the hold-paced creep.  The reference
+        // clears the flag BEFORE its step guard (`console.cs:21694`), so
+        // it clears even when the guard blocks the step.
+        bandChange_ = false;
         // Overload confirmed — one 3 dB step off, guarded so the loop
         // stops where the reference stops rather than running to the
         // slider's floor.
@@ -877,9 +887,18 @@ void HL2Stream::onAutoLnaTick()
         // reference resets it outside its own guard, so a pinned-at-the-
         // floor loop still waits a full hold before creeping again.
         holdClock_.restart();
-    } else if (autoLnaUndo_
-               && holdClock_.elapsed()
-                      > static_cast<qint64>(autoLnaHoldSec_) * 1000) {
+    } else if (bandChange_
+               || (autoLnaUndo_
+                   && holdClock_.elapsed()
+                          > static_cast<qint64>(autoLnaHoldSec_) * 1000)) {
+        // `bandChange_ ||` is the reference's fast acquire
+        // (`console.cs:21748-21749`): after a band change or an
+        // auto-enable it creeps 1 dB EVERY poll — bypassing both the
+        // undo flag and the hold timer — until the first confirmed
+        // overload clears the flag.  Land on a new band, climb quickly
+        // to the edge, then settle into the slow hold-paced creep.
+        // Note it ignores autoLnaUndo_ deliberately: even with Undo off
+        // the reference still performs the post-band-change acquire.
         // Band clear — creep back 1 dB per HOLD interval.  Every step
         // waits the operator's full hold time; there is no accelerated
         // recovery cadence.  Lyra previously sped subsequent pull-ups up

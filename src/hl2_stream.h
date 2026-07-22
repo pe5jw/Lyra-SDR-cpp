@@ -731,6 +731,8 @@ public:
     bool    ctuneEnabled()      const { return ctuneCenterHz_.load(std::memory_order_relaxed) != 0; }
     quint32 ctuneCenterHz()     const { return ctuneCenterHz_.load(std::memory_order_relaxed); }
     int     lnaGainDb()         const { return lnaGainDb_.load(std::memory_order_relaxed); }
+    // Band changed — arm Auto-LNA's fast acquire (see onAutoLnaTick).
+    void    noteBandChange()          { bandChange_ = true; }
     bool    autoLna()           const { return autoLnaEnabled_; }
     bool    autoLnaUndo()       const { return autoLnaUndo_; }
     int     autoLnaHoldSec()    const { return autoLnaHoldSec_; }
@@ -1841,6 +1843,11 @@ private:
     int                  adcOverloadTier_ = 0;
     int                  overloadLevel_  = 0;      // 0..5 confirm accumulator
     bool                 autoLnaEnabled_ = false;
+    // Reference `_band_change`: set on band select and on auto-enable,
+    // cleared by the first confirmed overload.  While set, the creep
+    // ignores both the undo flag and the hold timer — a fast acquire up
+    // to the overload edge after landing on a new band.
+    bool                 bandChange_     = false;
     bool                 autoLnaUndo_    = true;
     int                  autoLnaHoldSec_ = 4;      // "Undo N s" creep interval
     QTimer               autoLnaTimer_;
