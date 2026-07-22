@@ -1833,6 +1833,10 @@ private:
     int                  autoLnaHoldSec_ = 4;      // "Undo N s" creep interval
     QTimer               autoLnaTimer_;
     QElapsedTimer        holdClock_;               // since last auto gain change
+    // LYRA_LNA_DEBUG counters — main-thread only, same owner as the
+    // tick that reads them; no synchronisation needed.
+    int                  lnaDbgPolls_    = 0;
+    int                  lnaDbgOvPolls_  = 0;
     // External filter board (N2ADR).  ocC2_ is the frame-0 C2 byte the
     // EP2 writer reads each send (= 7-bit OC pattern << 1; C2[0] stays 0).
     // filterBoardEnabled_ / ocPattern_ are main-thread state (the
@@ -2085,8 +2089,27 @@ private:
     // → 2.6316 ms period.  Same cadence the verified HL2 wire-
     // protocol references all fire.
     static constexpr int     kEp2RateHz    = 380;
-    // Auto-LNA overload-poll cadence (matches the reference ~400 ms loop).
-    static constexpr int     kAutoLnaPeriodMs = 400;
+    // Auto-LNA overload-poll cadence.
+    //
+    // The reference polls at 100 ms (`console.cs:21921`, `await
+    // Task.Delay(100)`), and `checkOverloadsAndSync()` runs on EVERY
+    // iteration — only the sequence-error check sits on a 1-in-5 divisor.
+    // Combined with the `level > 3` trigger (which needs the counter to
+    // reach 4) that gives the confirmation window the author documents in
+    // `ReleaseNotes.txt:119`:
+    //
+    //   "auto rx step attenuation will only happen when there has been at
+    //    least 400ms of adc overload and it moves from a yellow to red
+    //    warning"
+    //
+    // i.e. 4 cycles x 100 ms = 400 ms CUMULATIVE.  The in-code comment at
+    // `console.cs:21502` garbles this into "3 cycles ... around 400ms"
+    // per-cycle; that stale comment is what this constant was originally
+    // built from, which stretched our confirmation window to 1.6 s.
+    //
+    // The hold/creep timing is clock-based (QElapsedTimer against
+    // autoLnaHoldSec_), not poll-counted, so it is unaffected by this.
+    static constexpr int     kAutoLnaPeriodMs = 100;
     // Auto-LNA travel limits, ported exactly from the reference's
     // HL2 auto-attenuator guards.
     //

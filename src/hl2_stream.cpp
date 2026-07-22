@@ -730,12 +730,13 @@ void HL2Stream::setAutoLnaHoldSec(int sec)
     emit autoLnaChanged();
 }
 
-// 400 ms overload monitor + Auto-LNA loop (main thread).  Always runs
+// 100 ms overload monitor + Auto-LNA loop (main thread).  Always runs
 // while the stream is up so the overload lamp tracks regardless of
 // Auto; gain is only touched when Auto is enabled.  Gain-sense mirror
 // of the reference HERMESLITE auto-attenuator: confirm sustained
-// overload (>3 cycles), back off 3 dB; when clear, creep +1 dB per
-// hold interval up to the +48 ceiling (ride the overload edge).
+// overload (level > 3, i.e. 4 x 100 ms = the documented 400 ms
+// confirmation window), back off 3 dB; when clear, creep +1 dB per
+// hold interval up to the +47 travel limit (ride the overload edge).
 void HL2Stream::onAutoLnaTick()
 {
     if (!running_.load(std::memory_order_acquire)) {
@@ -747,7 +748,7 @@ void HL2Stream::onAutoLnaTick()
     //
     // Sampling instantaneously CANNOT work here: the radio rewrites
     // that field on every EP6 frame (thousands per second) while this
-    // loop runs at 400 ms, and genuine overload is intermittent — the
+    // loop runs at 100 ms, and genuine overload is intermittent — the
     // converter clips on peaks.  The poll therefore lands on a clean
     // frame nearly every time, the level counter decays, and the loop
     // concludes the band is quiet and creeps gain UP into hard
@@ -764,6 +765,31 @@ void HL2Stream::onAutoLnaTick()
                         : std::max(overloadLevel_ - 1, 0);
     // Lamp + back-off both key on SUSTAINED overload (level > 3 ≈ 1.6 s
     // of genuine clipping), matching the reference "red after 3 cycles".
+    // Diagnostic (LYRA_LNA_DEBUG=1): one line per ~2 s reporting how
+    // many polls in that span saw the clip flag, the level counter and
+    // the live gain.  This exists to answer one question the operator
+    // cannot see from the panel — whether the radio is reporting
+    // overload AT ALL — because the flag is far less sensitive than
+    // "the converter clipped": the gateware clears its clip counter on
+    // every response frame and only reports once that counter reaches
+    // three, and the bit rides only one response slot in four.  If
+    // ovPolls stays 0 while gain sits at the ceiling on a strong band,
+    // the control loop is fine and the flag is never arriving.
+    static const bool kLnaDebug = qEnvironmentVariableIsSet("LYRA_LNA_DEBUG");
+    if (kLnaDebug) {
+        if (ov) ++lnaDbgOvPolls_;
+        if (++lnaDbgPolls_ >= 20) {         // 20 x 100 ms = 2 s
+            emit logLine(QStringLiteral(
+                "[lna] ovPolls %1/20  level %2  gain %3 dB  auto %4")
+                .arg(lnaDbgOvPolls_).arg(overloadLevel_)
+                .arg(lnaGainDb_.load(std::memory_order_relaxed))
+                .arg(autoLnaEnabled_ ? QStringLiteral("ON")
+                                     : QStringLiteral("OFF")));
+            lnaDbgPolls_ = 0;
+            lnaDbgOvPolls_ = 0;
+        }
+    }
+
     const bool sustained = ov && overloadLevel_ > 3;
     if (sustained != adcOverload_) {
         adcOverload_ = sustained;
