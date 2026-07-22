@@ -1781,7 +1781,13 @@ private:
     // strong starting gain that's still below the +48 hardware ceiling,
     // with Auto-LNA (default on) backing it off on overload.  Overridden
     // from QSettings in the ctor once the operator sets it.
-    std::atomic<int>     lnaGainDb_{31};
+    // Fresh-install RX LNA gain.  The reference starts at attenuation 0
+    // (`console.cs:11022`, `_rx1_attenuator_data = 0`), and att = 19 - gain,
+    // so its default is +19 dB.  Ours was 31 — which is the reference's
+    // WIRE value for att 0 (31 - 0), not its gain — leaving us 12 dB hotter
+    // than the reference on a fresh install.  Keep this in step with the
+    // QSettings fallback in the constructor.
+    std::atomic<int>     lnaGainDb_{19};
     // ADC-overload telemetry + Auto-LNA (standard HF SDR pattern, gain-sense).
     // adcOverloadNow_ holds the ADC0 overload bit from the MOST RECENT
     // EP6 address-0 status frame (direct overwrite — NOT a window-OR

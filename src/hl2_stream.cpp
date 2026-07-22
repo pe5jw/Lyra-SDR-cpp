@@ -294,7 +294,9 @@ HL2Stream::HL2Stream(QObject *parent) : QObject(parent) {
     updateOcPattern();
     // RX1 LNA gain (AD9866 PGA) — restore the operator's last setting.
     lnaGainDb_.store(
-        std::clamp(QSettings().value(QStringLiteral("rx/lnaGainDb"), 31).toInt(),
+        // Fallback = the reference's fresh-install gain, +19 dB (its
+        // att 0; att = 19 - gain).  Mirrors lnaGainDb_'s initialiser.
+        std::clamp(QSettings().value(QStringLiteral("rx/lnaGainDb"), 19).toInt(),
                    kLnaMinDb, kLnaMaxDb),
         std::memory_order_relaxed);
     // Auto-LNA: restore enable + undo + hold time.  Fresh-install
