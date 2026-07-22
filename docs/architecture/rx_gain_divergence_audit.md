@@ -453,8 +453,45 @@ the operator's own Thetis uses **4 s**. At 4 s the approach is four
 times slower, so the loop should sit just under the clip point rather
 than pumping.
 
-**Not yet tested:** the MOX gate (row 17) — no transmit in either
-capture.
+## Third capture — hold 4 s, with transmit and band changes
+
+**Hold 4 s settles the limit cycle.** `up` alternates 1 / 0 per window
+= 1 dB per ~4.4 s. The excursion went from 28→34→28 every 5-7 s (hold
+1) to 27→32 every ~15-20 s, with long flat stretches. Tracking rather
+than hunting.
+
+**Row 17 (MOX gate) CONFIRMED on hardware.** Key-down 08:29:32.739 →
+key-up 08:29:41.730:
+
+```
+08:29:33.486  up 1  gain 31  elapsed 1966
+08:29:35.673  up 0  gain 31  elapsed 4153   past the 4000 ms hold
+08:29:37.861  up 0  gain 31  elapsed 6341   still no creep
+08:29:40.048  up 0  gain 31  elapsed 8529   still no creep
+```
+
+Gain frozen for the whole transmission AND `elapsed` climbing past the
+hold threshold three times without a creep — the gate is returning
+before the creep branch, not merely coinciding with an idle loop.
+Second key (08:31:25-30) identical at 47 dB, elapsed 5905.
+
+**Band restore visible and correct.** `set 47 dB (manual / band
+restore)` → six back-offs in 550 ms (`dn 6`) → settled 29. The stored
+per-band value was too hot for that band; corrected in half a second.
+
+**The original "pinned at +48" is explained.** On 20 m the loop crept
+32→47 and parked 90 s with `ovPolls 0` throughout — nothing clipping.
+Climbing to the travel limit on a quiet band is exactly what the
+reference does (creep to att −28 when clear). It only read as a fault
+because the loop had no voice in the log.
+
+**Known, faithful, worth remembering:** the overload counter runs
+during transmit (reference does the same — `checkOverloadsAndSync` is
+ungated, only the RX *action* sits inside `if (!_mox)`). So TX-coupling
+clips accumulate while keyed and can act on the first poll after
+unkey — observed once here, 32→29 immediately post-keyup. ATT-on-TX was
+engaged, so this is likely the T/R transition rather than steady
+coupling. The creep walks it back.
 
 ## Standing rules for anyone working this list
 
