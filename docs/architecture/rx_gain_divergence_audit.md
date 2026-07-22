@@ -408,6 +408,54 @@ undocumented PGA code 63) is unreachable on our axis and needs a
 current-tag `console.cs` to settle. UNVERIFIED #2 (1 dB/code) still
 gates every dB figure here.
 
+---
+
+# Bench results (2026-07-22, N8SDR HL2+, 40 m)
+
+First captures with a working log path. Everything below is measured,
+not inferred.
+
+**The loop works.** The clip flag arrives (`ovPolls` 0-9 of 20). On a
+real signal back-off ran **48 -> 27 dB in 656 ms** (seven 3 dB steps,
+one per poll while the counter held above 3). The band-change fast
+acquire climbed ~12 dB in ~1.2 s after a retune, then found the edge
+and backed off. Band restores and manual sets are now labelled.
+
+**A 96 s stretch parked at 47 dB had `ovPolls 0` throughout** — nothing
+was clipping. Sitting at the ceiling with no overload is correct, and
+is a different situation from the original "pinned at +48" report: the
+moment a genuine overload appeared, the loop shed 20 dB in under a
+second.
+
+**The "creep runs at half rate" anomaly was an ERROR OF MINE, not a
+defect.** I measured ~2.06 s/dB in the first capture and compared it
+against a hold value of 1 s read from the registry *after* the run.
+The second capture's own log shows `hold 2 s` for its first two windows
+and `hold 1 s` thereafter — the operator had changed it in between. The
+step counters settle it: **hold 1 -> `up 2` per window; hold 2 -> `up 1`**,
+i.e. ~1.09 s/dB and ~2.19 s/dB. The arithmetic was correct all along.
+Recorded because the instinct to go hunting for a phantom bug was
+strong, and only measuring stopped it.
+
+**The one real finding is a limit cycle at short hold values.** The
+whole second capture is this shape repeating every ~5-7 s:
+
+```
+28 -> 30 -> 32 -> 34    creep at ~2 dB/s (hold 1 s)
+34 -> 31 -> 28          back-off, 2 steps
+```
+
+It never settles. This is faithful — the reference sawtooths the same
+way at a 1 s hold — but it is not a useful setting on a live band. The
+creep reaches the overload edge in ~3 s, gets knocked down ~6 dB, and
+starts over. Reference default hold is **5 s** (`console.cs:21337`);
+the operator's own Thetis uses **4 s**. At 4 s the approach is four
+times slower, so the loop should sit just under the clip point rather
+than pumping.
+
+**Not yet tested:** the MOX gate (row 17) — no transmit in either
+capture.
+
 ## Standing rules for anyone working this list
 
 - Cite both sides. A claim with a citation on only one side is a hypothesis.
