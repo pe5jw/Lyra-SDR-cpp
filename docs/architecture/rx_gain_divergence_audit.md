@@ -493,6 +493,51 @@ unkey — observed once here, 32→29 immediately post-keyup. ATT-on-TX was
 engaged, so this is likely the T/R transition rather than steady
 coupling. The creep walks it back.
 
+---
+
+# TX / ATT-on-TX cluster (2026-07-22)
+
+**Done:** row 30 (`6299d4a`) and row 32's false tooltip (same commit).
+Row 37 needs no work — the round-2 verification established the
+reference DOES write per key, same shape we do; the original row was
+wrong.
+
+**Rows 38, 49, 50 are PureSignal-coupled and deliberately DEFERRED to
+the PS work.** Not skipped — blocked, for a reason worth writing down.
+
+The reference's keydown force (`console.cs:30308-30314`) is:
+
+```csharp
+int txAtt = getTXstepAttenuatorForBand(_tx_band);
+if ((!chkFWCATUBypass.Checked && _forceATTwhenPSAoff) ||
+    (mode == CWL || mode == CWU)) txAtt = 31;
+SetupForm.ATTOnRX1 = getRX1stepAttenuatorForBand(rx1_band);
+SetupForm.ATTOnTX  = txAtt;
+```
+
+Both gates on the first disjunct depend on state Lyra does not have:
+a PureSignal auto-cal flag and an ATU-bypass setting. Row 50's
+interlock (`console.cs:19154` — the operator cannot switch ATT-on-TX
+off while the PS auto-attenuator holds it engaged) is inert without PS
+by definition. Row 38's per-band TX attenuator only earns its keep once
+the value can legitimately differ per band, which is what row 49
+introduces.
+
+Building them now means inventing two PS-shaped settings and guessing
+their semantics. That is the failure mode this whole audit exists to
+stop. They land with PureSignal, against real PS state, with the
+mechanism above already captured so the work does not start cold.
+
+The one piece that is NOT PS-dependent — CW forcing 31 — is currently
+moot: our ATT-on-TX applies 31 on every keydown regardless of mode, so
+CW already gets the reference's forced value. It stops being moot the
+moment row 49 introduces per-band values below 31.
+
+**Also still open, unrelated to PS:** row 32's actual range (we expose
+0..31, reference allows −28..31 on this hardware — the negative half is
+TX-time gain); rows 52 / 53 (minor); the dead `AttOnTxPolicy` class
+(44 / 54) still compiled and never constructed.
+
 ## Standing rules for anyone working this list
 
 - Cite both sides. A claim with a citation on only one side is a hypothesis.
