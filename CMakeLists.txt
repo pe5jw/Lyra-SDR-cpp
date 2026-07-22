@@ -318,7 +318,16 @@ qt_add_executable(lyra
     src/mainwindow.cpp
     src/dockdragcontroller.h
     src/dockdragcontroller.cpp
-    src/default_layout.h
+    src/panelrack.h
+    src/panelrack.cpp
+    src/dsp/ZeroBeat.h
+    src/dsp/ZeroBeat.cpp
+    src/recorder/RecorderEngine.h
+    src/recorder/RecorderEngine.cpp
+    src/recorder/SessionConverter.h
+    src/recorder/SessionConverter.cpp
+    src/recorder/WavStreamWriter.h
+    src/recorder/WavStreamWriter.cpp
     src/prefs.h
     src/prefs.cpp
     src/settingsdialog.h
