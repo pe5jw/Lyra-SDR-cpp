@@ -818,6 +818,23 @@ void HL2Stream::onAutoLnaTick()
         return;
     }
 
+    // Do not touch RX gain while transmitting.
+    //
+    // The reference wraps its ENTIRE RX auto-attenuator block in
+    // `if (!_mox)` (`console.cs:21641`).  Only the counter/step-shift
+    // update at the top of handleOverload (`:21572-21585`) and the
+    // poll itself run while keyed — which is why the gate belongs
+    // here, after the tier update, not at the top of the tick.
+    //
+    // Without it the loop is driven by TX coupling into the front end
+    // rather than by band conditions: the converter clips on our own
+    // transmit, the loop backs the LNA off, and the result lands on
+    // the wire at unkey — gain moved for a reason that has nothing to
+    // do with what we are receiving.
+    if (mox_.load(std::memory_order_acquire)) {
+        return;
+    }
+
     const int g = lnaGainDb_.load(std::memory_order_relaxed);
 
     // Two branches, mirroring the reference's if / else-if exactly.
