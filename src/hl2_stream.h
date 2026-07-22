@@ -1857,6 +1857,13 @@ private:
     // tick that reads them; no synchronisation needed.
     int                  lnaDbgPolls_    = 0;
     int                  lnaDbgOvPolls_  = 0;
+    // Creep / back-off steps taken inside the current debug window.
+    // Measured rather than inferred: with a 1 s hold and a 100 ms poll
+    // the creep should fire ~2x per 20-poll window, and a bench capture
+    // showed ~1.  Counting the actual steps settles that without
+    // guessing at the cause.
+    int                  lnaDbgCreeps_   = 0;
+    int                  lnaDbgBackoffs_ = 0;
     // External filter board (N2ADR).  ocC2_ is the frame-0 C2 byte the
     // EP2 writer reads each send (= 7-bit OC pattern << 1; C2[0] stays 0).
     // filterBoardEnabled_ / ocPattern_ are main-thread state (the

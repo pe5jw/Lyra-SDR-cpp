@@ -670,7 +670,7 @@ void HL2Stream::setLnaGainDb(int db)
     QSettings().setValue(QStringLiteral("rx/lnaGainDb"), db);
     emit lnaGainChanged();
     emit lnaSetByOperator(db);   // manual change → BandMemory saves per-band
-    emit logLine(QStringLiteral("[hl2] LNA gain %1 dB").arg(db));
+    lnaLog(QStringLiteral("set %1 dB (manual / band restore)").arg(db));
 }
 
 // Auto-LNA's gain write.  Persists exactly as a manual set does.
@@ -807,13 +807,20 @@ void HL2Stream::onAutoLnaTick()
         if (ov) ++lnaDbgOvPolls_;
         if (++lnaDbgPolls_ >= 20) {         // 20 x 100 ms = 2 s
             lnaLog(QStringLiteral(
-                "ovPolls %1/20  level %2  gain %3 dB  auto %4")
-                .arg(lnaDbgOvPolls_).arg(overloadLevel_)
+                "ovPolls %1/20  up %2  dn %3  level %4  gain %5 dB  "
+                "hold %6 s  elapsed %7 ms  auto %8")
+                .arg(lnaDbgOvPolls_)
+                .arg(lnaDbgCreeps_).arg(lnaDbgBackoffs_)
+                .arg(overloadLevel_)
                 .arg(lnaGainDb_.load(std::memory_order_relaxed))
+                .arg(autoLnaHoldSec_)
+                .arg(holdClock_.elapsed())
                 .arg(autoLnaEnabled_ ? QStringLiteral("ON")
                                      : QStringLiteral("OFF")));
-            lnaDbgPolls_ = 0;
+            lnaDbgPolls_   = 0;
             lnaDbgOvPolls_ = 0;
+            lnaDbgCreeps_ = 0;
+            lnaDbgBackoffs_ = 0;
         }
     }
 
@@ -879,6 +886,7 @@ void HL2Stream::onAutoLnaTick()
         // stops where the reference stops rather than running to the
         // slider's floor.
         if (g > kAutoLnaBackoffMinDb) {
+            ++lnaDbgBackoffs_;
             applyLnaGainAuto(g - 3);
             lnaLog(QStringLiteral("back-off -> %1 dB").arg(g - 3));
         }
@@ -907,6 +915,7 @@ void HL2Stream::onAutoLnaTick()
         // it climbed back to maximum between bursts faster than
         // intermittent clipping could pull it down.
         if (g < kAutoLnaCreepMaxDb) {
+            ++lnaDbgCreeps_;
             applyLnaGainAuto(g + 1);
         }
         holdClock_.restart();
