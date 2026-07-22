@@ -370,6 +370,44 @@ HL2 tree the operator actually runs. A/B against installed Thetis on HL2
 will show our detector catching clips theirs misses. That is expected and
 correct — not a bug to chase.
 
+---
+
+# Implementation status (2026-07-22)
+
+Operator directive: do exactly as the reference does, end to end, no
+invented behaviour. Decisions A/B/C taken, then the RX rows worked in
+order. Every commit built clean.
+
+| row | what | commit |
+|---|---|---|
+| A | overload accumulate — follow OFFICIAL Thetis, keep the latch, one code path | `5b0e3c0` (doc) |
+| 5, 6 | poll at 100 ms → the documented 400 ms confirmation window | `e296c59` |
+| 51a/b/c, C | three-rung ladder (silent / amber / red) + A-ATT state cue replacing the alarm while Auto owns the front end | `b5f990a` |
+| — | LNA + Vol sliders trimmed so row 1 fits the wider cue | `31023b2` |
+| 17 | no gain writes while transmitting (`!_mox` gate on the ACTION, poll+counter+tier stay live) | `aa5112f` |
+| 21, 22 | Auto owns the band's gain: steps persist through the same path a manual set uses; disable leaves the gain where Auto left it | `d6603f9` |
+| 29 | default gain +19 dB (reference att 0), was 31 — the reference's WIRE value used as gain | `7120d85` |
+| 16, 20 | `_band_change` fast acquire after band change / auto-enable; enable no longer clears the counter or hold clock | `ae24326` |
+| 4 | false comment naming the wrong field | this commit |
+
+**Operator-visible behaviour changes to expect at the bench:**
+1. Auto-LNA **overwrites the stored per-band LNA value** as it works.
+   Turn Auto off → gain stays where Auto put it. Change band → you get
+   what Auto last settled on there, not a remembered manual number.
+2. With Auto ON there is **no overload lamp** — an `A-ATT` cue in its
+   place. With Auto OFF you get the full ladder, including the new
+   amber "clipped recently, settling" rung.
+3. Landing on a new band (or switching Auto on) now **climbs fast** to
+   the overload edge instead of crawling 1 dB per hold interval.
+4. Confirmation is 400 ms, not 1.6 s — Auto reacts ~4× sooner.
+
+**Still open on this surface** (TX / ATT-on-TX cluster — the
+PureSignal-relevant one): rows 30, 32, 37, 38, 49, 50, plus the minor
+12 / 52 / 53 and the dead `AttOnTxPolicy` (44 / 54). Row 27 (att=32 →
+undocumented PGA code 63) is unreachable on our axis and needs a
+current-tag `console.cs` to settle. UNVERIFIED #2 (1 dB/code) still
+gates every dB figure here.
+
 ## Standing rules for anyone working this list
 
 - Cite both sides. A claim with a citation on only one side is a hypothesis.

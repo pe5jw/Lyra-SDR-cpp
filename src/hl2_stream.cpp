@@ -1038,8 +1038,11 @@ void HL2Stream::open(const QString &ip) {
     statsClock_.start();   // baseline for actual-elapsed dg/s
     // Auto-LNA / overload monitor: fresh accumulator + hold clock.
     overloadLevel_ = 0;
-    // Stage 2b2: adcOverloadNow_ retired (Auto-LNA reads
-    // prn->adc[0].adc_overload direct in onAutoLnaTick).
+    // Stage 2b2: adcOverloadNow_ retired.  onAutoLnaTick does NOT read
+    // prn->adc[0].adc_overload — it consume-and-clears the sticky
+    // adc_overload_seen latch the receive path sets, which is what the
+    // reference's OR-accumulate + getAndReset pair does.  (An earlier
+    // revision of this comment named the wrong field.)
     holdClock_.start();
     // Stage 2b2-fix: statsTimer_/autoLnaTimer_ .start() MOVED to
     // the very END of open() (after create_rnet + ep6Thread_.start),
