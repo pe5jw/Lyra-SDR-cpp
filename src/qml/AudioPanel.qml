@@ -89,7 +89,11 @@ Rectangle {
             Label { text: qsTr("LNA"); color: root.cMuted }
             LyraSlider {
                 id: lnaSlider
-                Layout.preferredWidth: 120
+                // 120 -> 100: the A-ATT state cue is wider than the 10 px
+                // overload dot it replaces, which pushed the Out button off
+                // the right edge of row 1.  Trimmed here and on Vol rather
+                // than shrinking the readouts.
+                Layout.preferredWidth: 100
                 from: -12; to: 48; stepSize: 1; snapMode: Slider.SnapAlways
                 value: Stream.lnaGainDb
                 onMoved: Stream.setLnaGainDb(value)
@@ -209,7 +213,8 @@ Rectangle {
             Label { text: qsTr("Vol"); color: root.cMuted }
             LyraSlider {
                 id: volSlider
-                Layout.preferredWidth: 150
+                // 150 -> 126, paired with the LNA trim above (see there).
+                Layout.preferredWidth: 126
                 from: 0.0; to: 1.0
                 value: WdspEngine.volume
                 onMoved: WdspEngine.setVolume(value)
