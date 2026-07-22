@@ -341,9 +341,34 @@ MI0BOT's separately-authored HL2 loops never received it.
 answers here. *Official Thetis* and the HL2 branch's own sibling loop
 OR-accumulate — which is exactly what our `adc_overload_seen` latch does, so
 the latch is **not an invention**, it is the same fix arrived at
-independently. Only the MI0BOT HL2 loop point-samples. Replicating
-bug-for-bug means deliberately removing a fix the reference's own maintainer
-wrote. **Operator decision, not to be made silently.**
+independently. Only the MI0BOT HL2 loop point-samples.
+
+### DECISION A — operator-locked 2026-07-22: follow OFFICIAL Thetis
+
+**OR-accumulate. Keep the latch. One code path, no per-rig branch.**
+
+Rationale, in the operator's order:
+1. ANAN family support is the direction of travel (Jerry's work) and is the
+   larger install base; the ANAN path runs the generic loop = accumulate.
+2. Accumulate is the **upstream-maintained** semantics — MW0LGE wrote the
+   fix and tags it `[2.10.3.13]MW0LGE`.
+3. It is **strictly more informative**: it cannot miss a clip the
+   point-sample catches, only the reverse.
+4. A per-rig branch would encode a **merge accident** as if it were a
+   hardware distinction, and every future reader would go looking for the
+   hardware reason. If a genuine per-rig difference ever appears it belongs
+   in the capability struct (§6.7), not scattered branches.
+
+**Honest qualification (an earlier overstatement, corrected):** PureSignal
+does NOT require accumulate. The operator runs MI0BOT on HL2, so PS-A's TX
+branch (`console.cs:21593`) has been reading the *point-sampled* flag on
+that bench and works. The case for official is convergence and maintenance,
+not a PS defect.
+
+**Recorded deviation:** this is a deliberate, documented divergence from the
+HL2 tree the operator actually runs. A/B against installed Thetis on HL2
+will show our detector catching clips theirs misses. That is expected and
+correct — not a bug to chase.
 
 ## Standing rules for anyone working this list
 
