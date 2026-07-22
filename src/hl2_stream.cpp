@@ -3102,9 +3102,18 @@ void HL2Stream::fsmAdvance() {
         savedTxStepAttn_ = txStepAttnDb_.load(std::memory_order_relaxed);
         // §15.31: operator-gated ATT-on-TX.  Enabled → force the
         // configured protective value (default 31 dB → wire min LNA
-        // gain); disabled → axis 0 (= the reference's SetTxAttenData(0)
-        // "no ATT on TX" posture, RX-ADC unprotected during TX).
-        setTxStepAttnDb(attOnTxEnabled_ ? attOnTxDb_ : 0);
+        // gain).
+        //
+        // Disabled → kAttOnTxDisabledDb, NOT 0.  We used to pass 0
+        // here with a comment claiming it matched the reference's
+        // SetTxAttenData(0) "unprotected" posture.  Both halves were
+        // wrong: the reference's disabled branch skips the `31 - x`
+        // inversion, so its 0 reaches the wire as 0 = PGA code 0 =
+        // -12 dB = MAXIMUM attenuation, while our 0 went through the
+        // composer's inversion to wire 31 = +19 dB.  That left the
+        // front end 31 dB hotter than the reference in the one state
+        // an operator would least expect it.  See kAttOnTxDisabledDb.
+        setTxStepAttnDb(attOnTxEnabled_ ? attOnTxDb_ : kAttOnTxDisabledDb);
         // Switch the OC pattern to the TX-side per-band bits FIRST so
         // the external filter board's relays have the mox_delay window
         // (~15 ms) to settle into TX configuration before the MOX bit
@@ -3116,8 +3125,11 @@ void HL2Stream::fsmAdvance() {
         updateOcPattern(/*transmitting=*/true);
         emit logLine(QStringLiteral(
             "TX: keydown — ATT-on-TX %1, mox_delay %2 ms")
-            .arg(attOnTxEnabled_ ? QStringLiteral("%1 dB").arg(attOnTxDb_)
-                                 : QStringLiteral("off"))
+            .arg(attOnTxEnabled_
+                     ? QStringLiteral("%1 dB").arg(attOnTxDb_)
+                     : QStringLiteral("off (%1 dB — the reference's "
+                                      "disabled branch is still max "
+                                      "attenuation)").arg(kAttOnTxDisabledDb))
             .arg(moxDelayMs_));
         QTimer::singleShot(moxDelayMs_, this,
                            [this]() { fsmKeydownPostMox(); });
@@ -3708,10 +3720,13 @@ void HL2Stream::setAttOnTxEnabled(bool on) {
     QSettings().setValue(QStringLiteral("tx/attOnTxEnabled"), on);
     emit attOnTxEnabledChanged(on);
     if (mox_.load(std::memory_order_relaxed))
-        setTxStepAttnDb(on ? attOnTxDb_ : 0);
+        setTxStepAttnDb(on ? attOnTxDb_ : kAttOnTxDisabledDb);
     safetyLog(QStringLiteral("TX: ATT-on-TX -> %1")
               .arg(on ? QStringLiteral("ON (%1 dB)").arg(attOnTxDb_)
-                      : QStringLiteral("off (RX-ADC unprotected on TX)")));
+                      : QStringLiteral("off (%1 dB — the reference's "
+                                       "disabled branch is still max "
+                                       "attenuation, not unprotected)")
+                            .arg(kAttOnTxDisabledDb)));
 }
 
 // #94 External TX Inhibit — hard operator lockout of all keying.  Gated at

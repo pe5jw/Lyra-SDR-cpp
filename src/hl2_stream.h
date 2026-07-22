@@ -2415,6 +2415,19 @@ private:
     // turns into wire (31-31)&0x3F | 0x40 = 0x40 = min-LNA on the
     // FAST_LNA arbiter = max RX-ADC protection during TX coupling.
     static constexpr int     kAttOnTxDb       = 31;
+    // Axis value used when ATT-on-TX is DISABLED.
+    //
+    // The reference's disabled branch calls SetTxAttenData(0) WITHOUT
+    // the `31 - x` inversion its enabled branch uses
+    // (`console.cs:19173`, `:10670`, and both MOX edges `:30325` /
+    // `:30411`), so tx_step_attn reaches the wire as raw 0 -> C4 0x40
+    // -> PGA code 0 -> -12 dB -> MAXIMUM attenuation.  Disabling
+    // ATT-on-TX does not leave the front end open in the reference; it
+    // lands on the same byte as ATT-on-TX at its 31 dB maximum.
+    //
+    // Our axis is attenuation-sense with the inversion in the composer,
+    // so the equivalent value is 31, not 0.
+    static constexpr int     kAttOnTxDisabledDb = 31;
     // TX safety timeout range — see public section above (canonical
     // bounds exposed for the Settings UI).
 
