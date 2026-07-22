@@ -216,7 +216,10 @@ from a scroll position rather than re-read.
 |---|---|---|---|---|
 | 49 | 4 · **per-key CW / PS-off force-to-31** | `if ((!chkFWCATUBypass.Checked && _forceATTwhenPSAoff) \|\| CurrentDSPMode == CWL \|\| CWU) txAtt = 31;` on **every** keydown — `console.cs:30309-30312` | Static `attOnTxDb_`, no CW branch, no PS-A gating — `hl2_stream.cpp:3006` | **MAJOR — directly PureSignal-relevant.** This is the "Force ATT on Tx to 31 when PS-A off" behaviour, which the operator's own station export has ticked |
 | 50 | 4 · ATT-on-TX off-switch interlock | `if (!value && _auto_attTX_when_not_in_ps) return;` — the operator **cannot** disable ATT-on-TX while the PS auto-attenuator has it engaged — `console.cs:19154` | No interlock; a mid-PS toggle is accepted and applied live — `hl2_stream.cpp:3604-3613`, `:3610` | MAJOR (PS) |
-| 51 | 1 · reference lamp/act split | Warning/red is `level > 3` **alone** (`console.cs:21502`); the *act* condition is `overloaded && level > 3` (`:21685`) | Lamp uses the **act** form `ov && overloadLevel_ > 3` (`hl2_stream.cpp:792`) → our lamp extinguishes on the first clean poll | MINOR — but it means **you can be backing off with the lamp dark** |
+| ~~51~~ | ~~1 · reference lamp/act split~~ | **WITHDRAWN — round 3. THERE IS NO SPLIT.** `:21502` sits *inside* `if (_adc_overloaded[i])` (opened `:21496`, closed `:21503`), so it reduces to `_adc_overloaded[i] && level > 3` — algebraically identical to `:21685`. Round 1 and round 2 both read the line without its braces | Our lamp (`hl2_stream.cpp:792`) implements the reference's red rung **exactly** | NOT A DIVERGENCE |
+| 51a | 1 · **missing yellow tier** | Three-rung ladder: silent / **yellow** `sWarning` on `level > 0` (`console.cs:21511-21513`) / **red** on `overloaded && level > 3`. Yellow persists ~5 polls while the counter unwinds | Only the red rung exists — no intermediate "overload seen recently" state | MINOR |
+| 51b | 1 · **warning suppressed on our exact config** | `if (Model != HERMESLITE \|\| AutoAttRX1 == false) infoBar.Warning(...)` — on **HL2 with auto-att on, NO overload indication is painted at all**; the preamp label reads `"A-ATT"` instead (`console.cs:21342-21348`, `:21522-21524`) | Red lamp shown unconditionally — `qml/AudioPanel.qml:136-146` | MAJOR — a faithful port **removes** our lamp in the default configuration |
+| 51c | 1 · confirmation-window intent | `ReleaseNotes.txt:119`: *"auto rx step attenuation will only happen when there has been at least 400ms of adc overload and it moves from a yellow to red warning"* — 4 cycles × 100 ms = **400 ms cumulative**. The `:21502` comment garbles this into "3 cycles… around 400ms" per-cycle | 4 cycles × 400 ms = **1.6 s** — 4× the documented design window | MAJOR — this is the real cadence divergence, and it now has a **documented target** |
 | 52 | 4 · TX-att ADC fan-out | `SetTxAttenData` writes `tx_step_attn` to **all** `MAX_ADC` — `netInterface.c:1034-1037` | `adc[0]` only — `FrameComposer.cpp:221`; `adc[1]/[2]` stay at the create-time 31 forever | MINOR (inert on HL2 — only `adc[0]` is composed) |
 | 53 | 4 · RX per-band snapshot on key | Snapshots RX1's per-band step-att on the MOX edge — `console.cs:30313` | No RX-side per-band save/restore across a key cycle | MINOR |
 | 54 | 5 · dead class ≠ live path | — | `AttOnTxPolicy`'s keyup hook is a deliberate **no-op** (`tx/AttOnTxPolicy.cpp:81-88`) while the live path **restores** (`hl2_stream.cpp:3247`) — resurrecting the dead class would change behaviour | MINOR (see row 44) |
@@ -300,6 +303,47 @@ TX coupling clips ADC0, and the result lands on the wire at unkey; (2) **row
 loop must then re-walk, neither of which the reference does; (3) row 16 is a
 *reference-favourable* divergence (it creeps **faster** after band change),
 so it cannot explain a stuck ceiling.
+
+---
+
+# Round 3 — the three "reference-side bugs", investigated (2026-07-22)
+
+Operator asked whether items 1 and 2 existed in earlier releases, and put a
+third agent on item 3. All three answers changed the picture.
+
+**Bug 3 — DOES NOT EXIST.** See rows 51 / 51a / 51b / 51c above. Round 1
+and round 2 both misread brace scope. The replacement findings (missing
+yellow tier, warning suppressed on HL2+auto-att, the documented 400 ms
+window) are worth more than the "bug" was.
+
+**Bug 1 — DELIBERATE, and MI0BOT-specific.** MI0BOT release notes,
+v2.10.3.8 (11 May 2023): *"Increased receiver Attenuate to full range, 32dB
+max attenuation."* `ramdor-Thetis` has **no HERMESLITE branch** in the
+step-att setter (`Maximum` is 61 or 31 only), confirming the widening came
+with the HL2 fork. Open sliver: "32 dB" most likely means *32 steps (0-31)*,
+which would make `Maximum = 32` an off-by-one producing the out-of-range
+wire code 63. Needs `console.cs` from a current tag to settle; unreachable
+on our axis either way.
+
+**Bug 2 — REAL, STILL LIVE UPSTREAM, and it is a merge gap.** Fetched
+`networkproto1.c` from MI0BOT **master** (past 2.10.3.14 and
+2.10.3.15-beta1): the generic loop OR-accumulates, `MetisReadThreadMainLoop
+_HL2` still plain-assigns. `ramdor-Thetis` has **no HL2 loops at all**
+(no `MetisReadThreadMainLoop_HL2`, no `WriteMainLoop_HL2`), so on ramdor HL2
+runs the generic loop and **gets the OR-accumulate**.
+
+History: MW0LGE fixed the accumulate in official Thetis 2.10.3.13
+(`ReleaseNotes.txt:130` — *"issues handling the highprio network packet
+(1025) meant that ADC overloads could be missed. This is now resolved."*);
+MI0BOT's separately-authored HL2 loops never received it.
+
+**Consequence for "do as the reference does":** the phrase has two different
+answers here. *Official Thetis* and the HL2 branch's own sibling loop
+OR-accumulate — which is exactly what our `adc_overload_seen` latch does, so
+the latch is **not an invention**, it is the same fix arrived at
+independently. Only the MI0BOT HL2 loop point-samples. Replicating
+bug-for-bug means deliberately removing a fix the reference's own maintainer
+wrote. **Operator decision, not to be made silently.**
 
 ## Standing rules for anyone working this list
 
