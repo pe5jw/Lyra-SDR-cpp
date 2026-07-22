@@ -718,7 +718,7 @@ void HL2Stream::setAutoLna(bool on)
         // counter carried across the enable is deliberate, so enabling
         // Auto into an already-clipping band acts immediately.
         bandChange_ = true;
-        emit logLine(QStringLiteral("[hl2] Auto-LNA on"));
+        lnaLog(QStringLiteral("Auto ON"));
     } else {
         // Leave the gain where auto left it.
         //
@@ -730,8 +730,8 @@ void HL2Stream::setAutoLna(bool on)
         // "manual" set point here was ours, not the reference's, and it
         // fought the persistence model: it snapped the gain back to a
         // number auto had already superseded.
-        emit logLine(QStringLiteral("[hl2] Auto-LNA off, holding %1 dB")
-                     .arg(lnaGainDb_.load(std::memory_order_relaxed)));
+        lnaLog(QStringLiteral("Auto OFF, holding %1 dB")
+               .arg(lnaGainDb_.load(std::memory_order_relaxed)));
     }
     emit autoLnaChanged();
 }
@@ -806,8 +806,8 @@ void HL2Stream::onAutoLnaTick()
     if (kLnaDebug) {
         if (ov) ++lnaDbgOvPolls_;
         if (++lnaDbgPolls_ >= 20) {         // 20 x 100 ms = 2 s
-            emit logLine(QStringLiteral(
-                "[lna] ovPolls %1/20  level %2  gain %3 dB  auto %4")
+            lnaLog(QStringLiteral(
+                "ovPolls %1/20  level %2  gain %3 dB  auto %4")
                 .arg(lnaDbgOvPolls_).arg(overloadLevel_)
                 .arg(lnaGainDb_.load(std::memory_order_relaxed))
                 .arg(autoLnaEnabled_ ? QStringLiteral("ON")
@@ -880,8 +880,7 @@ void HL2Stream::onAutoLnaTick()
         // slider's floor.
         if (g > kAutoLnaBackoffMinDb) {
             applyLnaGainAuto(g - 3);
-            emit logLine(QStringLiteral("[hl2] Auto-LNA back-off → %1 dB")
-                         .arg(g - 3));
+            lnaLog(QStringLiteral("back-off -> %1 dB").arg(g - 3));
         }
         // The clock restarts whether or not the step was taken — the
         // reference resets it outside its own guard, so a pinned-at-the-
@@ -914,16 +913,28 @@ void HL2Stream::onAutoLnaTick()
     }
 }
 
-// ── Safety-event log mirror ─────────────────────────────────────────
-// emit logLine() (UI log dock) AND qInfo() / qCritical() (stderr +
-// any installed file handler).  Used at the TX-safety surface so an
-// operator-visible "what happened, when?" record survives a crash or
-// a session where the in-app log dock was never opened.  The "[hl2]"
-// tag is kept distinct from the existing "[hl2]" prefix on LNA logs
-// (those stay logLine-only — not TX-safety).
+// ── Log mirrors ─────────────────────────────────────────────────────
+// emit logLine() AND qInfo() / qCritical().
+//
+// IMPORTANT: the logLine signal currently has NO consumer anywhere in
+// the tree — nothing connects it, and LogBuffer captures the Qt
+// message handler (qInfo / qWarning / qCritical), not Qt signals.  So
+// a logLine-ONLY message reaches neither lyra-log.txt nor Help → View
+// Log: it is invisible to the operator.  Anything an operator is meant
+// to read at the bench MUST go through one of these mirrors.
+//
+// (This corrects a comment that used to describe logLine as feeding a
+// "UI log dock" and deliberately left the Auto-LNA messages on it.
+// That is why the auto-attenuator has always looked silent — its
+// back-off and enable/disable lines were being emitted into nothing.)
 void HL2Stream::safetyLog(const QString& msg) {
     emit logLine(msg);
     qInfo().noquote() << "[hl2-safety]" << msg;
+}
+
+void HL2Stream::lnaLog(const QString& msg) {
+    emit logLine(msg);
+    qInfo().noquote() << "[lna]" << msg;
 }
 
 void HL2Stream::fatalLog(const QString& msg) {

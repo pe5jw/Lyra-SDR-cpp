@@ -1579,6 +1579,7 @@ private:
     // unchanged — this only adds a second sink.
     void safetyLog(const QString& msg);
     void fatalLog(const QString& msg);
+    void lnaLog(const QString& msg);   // Auto-LNA / overload diagnostics
 
     // (§7) txWorkerLoop retired — EP2 writer is the verbatim
     // sendProtocol1Samples thread (prn->hWriteThreadMain).
