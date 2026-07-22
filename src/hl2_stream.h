@@ -1641,9 +1641,11 @@ private:
     void foldSwrProtect(double swr);   // Fold action — x0.5 drive step-down
     void foldWattsProtect(double fwdW, double capW);  // Stage 3b-2 reactive cap
     // #169 Phase 1b — apply a TX drive level to the wire WITHOUT
-    // persisting it (mirrors applyLnaGainNoPersist): used by Fold so its
-    // transient step-downs never overwrite the operator's stored drive
-    // set point; the operator's drive is restored on the next key-down.
+    // persisting it: used by Fold so its transient step-downs never
+    // overwrite the operator's stored drive set point; the operator's
+    // drive is restored on the next key-down.  (Deliberately unlike the
+    // Auto-LNA writer, which DOES persist — see applyLnaGainAuto.  Fold
+    // is a transient protection action; Auto-LNA owns the band's gain.)
     void applyDriveLevelNoPersist(int level);
     // #109 — push the EFFECTIVE PHROT run (operator intent AND not-digital)
     // to the WDSP TX channel.  Called from the operator toggle, every TX
@@ -1715,7 +1717,7 @@ private:
     // used by Auto-LNA so its transient adjustments never overwrite the
     // operator's manual set point in QSettings.  Emits lnaGainChanged
     // so the slider / dB readout / S-meter compensation all track.
-    void applyLnaGainNoPersist(int db);
+    void applyLnaGainAuto(int db);
 
     SocketHandle         socket_ = kInvalidSocket;
     // Step 14 Stage 1 — sockaddr_in storage for lyra::wire::metis_wire_bind().

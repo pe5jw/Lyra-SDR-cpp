@@ -671,7 +671,20 @@ void HL2Stream::setLnaGainDb(int db)
     emit logLine(QStringLiteral("[hl2] LNA gain %1 dB").arg(db));
 }
 
-void HL2Stream::applyLnaGainNoPersist(int db)
+// Auto-LNA's gain write.  Persists exactly as a manual set does.
+//
+// The reference has ONE setter — auto's `RX1AttenuatorData += 3` / `--`
+// go through the same property a manual change does, and its tail runs
+// `if (!_mox) setRX1stepAttenuatorForBand(rx1_band, _rx1_attenuator_data)`
+// (`console.cs:11112-11113`) on EVERY write, auto's steps included.  So
+// where auto leaves the gain becomes the band's stored value.
+//
+// That is the half that makes the rest coherent: auto owns the per-band
+// number, turning auto off leaves it alone (see setAutoLna), and a band
+// change restores whatever auto last settled on for that band.  We used
+// to bypass persistence here and restore a separate "manual" value on
+// disable — internally consistent, but a different radio.
+void HL2Stream::applyLnaGainAuto(int db)
 {
     db = std::clamp(db, kLnaMinDb, kLnaMaxDb);
     if (db == lnaGainDb_.load(std::memory_order_relaxed)) {
@@ -683,7 +696,9 @@ void HL2Stream::applyLnaGainNoPersist(int db)
     if (lyra::wire::prn != nullptr) {
         lyra::wire::set_rx_step_attn_db(db + 12, 0);
     }
+    QSettings().setValue(QStringLiteral("rx/lnaGainDb"), db);
     emit lnaGainChanged();   // slider / dB readout / S-meter comp all track
+    emit lnaSetByOperator(db);   // → BandMemory stores it for this band
 }
 
 void HL2Stream::setAutoLna(bool on)
@@ -698,13 +713,18 @@ void HL2Stream::setAutoLna(bool on)
         holdClock_.restart();
         emit logLine(QStringLiteral("[hl2] Auto-LNA on"));
     } else {
-        // Auto roamed the gain freely — hand the LNA back to the
-        // operator's stored manual set point.
-        const int manual = std::clamp(
-            QSettings().value(QStringLiteral("rx/lnaGainDb"), 31).toInt(),
-            kLnaMinDb, kLnaMaxDb);
-        applyLnaGainNoPersist(manual);
-        emit logLine(QStringLiteral("[hl2] Auto-LNA off, restored %1 dB").arg(manual));
+        // Leave the gain where auto left it.
+        //
+        // The reference's auto-disable path clears its history stack and
+        // does NOTHING to the attenuator (`console.cs:21643-21650`) — the
+        // value auto settled on IS the band's value from that point on,
+        // because every auto step persisted through the same setter a
+        // manual change uses (see applyLnaGainAuto).  Restoring a stored
+        // "manual" set point here was ours, not the reference's, and it
+        // fought the persistence model: it snapped the gain back to a
+        // number auto had already superseded.
+        emit logLine(QStringLiteral("[hl2] Auto-LNA off, holding %1 dB")
+                     .arg(lnaGainDb_.load(std::memory_order_relaxed)));
     }
     emit autoLnaChanged();
 }
@@ -847,7 +867,7 @@ void HL2Stream::onAutoLnaTick()
         // stops where the reference stops rather than running to the
         // slider's floor.
         if (g > kAutoLnaBackoffMinDb) {
-            applyLnaGainNoPersist(g - 3);
+            applyLnaGainAuto(g - 3);
             emit logLine(QStringLiteral("[hl2] Auto-LNA back-off → %1 dB")
                          .arg(g - 3));
         }
@@ -867,7 +887,7 @@ void HL2Stream::onAutoLnaTick()
         // it climbed back to maximum between bursts faster than
         // intermittent clipping could pull it down.
         if (g < kAutoLnaCreepMaxDb) {
-            applyLnaGainNoPersist(g + 1);
+            applyLnaGainAuto(g + 1);
         }
         holdClock_.restart();
     }
