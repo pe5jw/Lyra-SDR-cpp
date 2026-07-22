@@ -89,7 +89,11 @@ Rectangle {
             Label { text: qsTr("LNA"); color: root.cMuted }
             LyraSlider {
                 id: lnaSlider
-                Layout.preferredWidth: 120
+                // 120 -> 100: the A-ATT state cue is wider than the 10 px
+                // overload dot it replaces, which pushed the Out button off
+                // the right edge of row 1.  Trimmed here and on Vol rather
+                // than shrinking the readouts.
+                Layout.preferredWidth: 100
                 from: -12; to: 48; stepSize: 1; snapMode: Slider.SnapAlways
                 value: Stream.lnaGainDb
                 onMoved: Stream.setLnaGainDb(value)
@@ -133,14 +137,55 @@ Rectangle {
                     + "Auto roams freely; your manual setting is restored when you turn it off.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
-            // ADC-overload lamp — red when the HL2 front end is clipping.
-            Rectangle {
-                width: 10; height: 10; radius: 5
-                color: Stream.adcOverload ? "#ff4040" : "#26323c"
-                border.width: 1
-                border.color: Stream.adcOverload ? "#ff8080" : "#33424e"
-                ToolTip.text: qsTr("ADC overload — the HL2 front end is clipping. "
-                    + "Reduce LNA or enable Auto.")
+            // ADC-overload ladder, or the auto-attenuator state cue.
+            //
+            // Three rungs (silent / amber "seen recently" / red "confirmed
+            // and attenuating") come from Stream.adcOverloadTier.  When
+            // Auto is engaged the alarm is REPLACED by an A-ATT state cue
+            // rather than shown alongside it: the reference suppresses the
+            // overload warning entirely while the auto-attenuator owns the
+            // front end and repurposes the preamp label instead, on the
+            // reasoning that a red alarm for something actively being
+            // handled is noise.  What the operator wants there is "the
+            // automation is engaged", which is what A-ATT says.
+            Item {
+                implicitWidth: Stream.autoLna ? aattLabel.implicitWidth : 10
+                implicitHeight: 14
+                Layout.alignment: Qt.AlignVCenter
+
+                // Auto engaged — state cue, no alarm.
+                Label {
+                    id: aattLabel
+                    anchors.centerIn: parent
+                    visible: Stream.autoLna
+                    text: qsTr("A-ATT")
+                    color: root.cOn
+                    font.family: "Consolas"
+                    font.pixelSize: 12
+                }
+
+                // Auto off — the operator owns the gain, so show the ladder.
+                Rectangle {
+                    anchors.centerIn: parent
+                    visible: !Stream.autoLna
+                    width: 10; height: 10; radius: 5
+                    color: Stream.adcOverloadTier === 2 ? "#ff4040"
+                         : Stream.adcOverloadTier === 1 ? "#e0a828"
+                                                        : "#26323c"
+                    border.width: 1
+                    border.color: Stream.adcOverloadTier === 2 ? "#ff8080"
+                                : Stream.adcOverloadTier === 1 ? "#f5c860"
+                                                               : "#33424e"
+                }
+
+                ToolTip.text: Stream.autoLna
+                    ? qsTr("A-ATT — the auto-attenuator is managing the front "
+                        + "end. It backs the LNA off on confirmed overload and "
+                        + "creeps it back as the band clears, so the overload "
+                        + "alarm is not shown while it is engaged.")
+                    : qsTr("ADC overload — amber: the front end clipped "
+                        + "recently and is settling. Red: sustained clipping. "
+                        + "Reduce LNA or enable Auto.")
                 ToolTip.visible: (ovLampMa.containsMouse) && Prefs.tooltipsEnabled
                 MouseArea { id: ovLampMa; anchors.fill: parent; hoverEnabled: true }
             }
@@ -168,7 +213,8 @@ Rectangle {
             Label { text: qsTr("Vol"); color: root.cMuted }
             LyraSlider {
                 id: volSlider
-                Layout.preferredWidth: 150
+                // 150 -> 126, paired with the LNA trim above (see there).
+                Layout.preferredWidth: 126
                 from: 0.0; to: 1.0
                 value: WdspEngine.volume
                 onMoved: WdspEngine.setVolume(value)
