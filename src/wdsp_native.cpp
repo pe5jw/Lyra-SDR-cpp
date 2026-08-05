@@ -1,4 +1,4 @@
-﻿﻿// Lyra — WDSP DLL loader implementation (Step 3a).  See wdsp_native.h
+﻿// Lyra — WDSP DLL loader implementation (Step 3a).  See wdsp_native.h
 // for the locked architecture + scope.
 
 #include "wdsp_native.h"

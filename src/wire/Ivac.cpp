@@ -54,7 +54,7 @@ namespace lyra::wire {
 // Reference ivac.c:31 (verbatim — the central VAC bank, file-static
 // to this TU exactly as the reference keeps it private to ivac.c;
 // NOT in the header):
-__declspec (align (16))			IVAC pvac[MAX_EXT_VACS];
+__attribute__((aligned(16))) IVAC pvac[MAX_EXT_VACS];
 
 void create_resamps(IVAC a)
 {

@@ -206,7 +206,7 @@ void ob_main (void *pargs)
 
 #pragma warning(suppress: 4311)  // verbatim text wins: reference truncates the void* thread arg back to int
 #pragma warning(suppress: 4302)
-	int id = (int)pargs;
+	int id = (int)(intptr_t)pargs;
 	OBB a = obp.pdbuff[id];
 
 	while (_InterlockedAnd (&a->run, 1))

@@ -57,7 +57,7 @@ apt)
     sudo apt-get install -y \
         git cmake ninja-build pkg-config \
         build-essential g++ \
-        libfftw3-dev librnnoise-dev \
+        libfftw3-dev librnnoise0 \
         libasound2-dev libpulse-dev \
         libgl1-mesa-dev libvulkan-dev \
         libxcb-xinerama0 libxcb-icccm4 libxcb-image0 \

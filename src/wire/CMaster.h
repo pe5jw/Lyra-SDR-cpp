@@ -54,6 +54,9 @@
 // attribution.
 
 #pragma once
+#ifndef _WIN32
+#include "compat/win32_compat.h"
+#endif
 
 #include "wire/cmcomm.h"    // base surface + opaque ANB/NOB/EER/VOX/TXGAIN/ANALYZERS
 #include "wire/CmBuffs.h"   // reference cmaster.h:29 `#include "cmbuffs.h"` — CMB
