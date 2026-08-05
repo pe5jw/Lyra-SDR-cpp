@@ -1,4 +1,4 @@
-// Lyra — Hermes Lite 2 / 2+ SDR transceiver (C++23 / Qt 6 rebuild).
+﻿// Lyra — Hermes Lite 2 / 2+ SDR transceiver (C++23 / Qt 6 rebuild).
 //
 // Step 1 entry point.  Opens a Qt Quick window backed by RHI
 // (Vulkan/D3D12 on Windows; Metal on macOS; OpenGL fallback) and
@@ -124,10 +124,12 @@ std::atomic<bool> g_shutdown_complete{false};
 #include <string_view>
 
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <winsock2.h>
+#else
+#  include "compat/win32_compat.h"
 #endif
 
 int main(int argc, char *argv[])

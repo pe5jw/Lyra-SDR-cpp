@@ -1,15 +1,20 @@
-// Lyra — WDSP DLL loader implementation (Step 3a).  See wdsp_native.h
+﻿﻿// Lyra — WDSP DLL loader implementation (Step 3a).  See wdsp_native.h
 // for the locked architecture + scope.
 
 #include "wdsp_native.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
+// pe5jw linux-compat
+#ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#else
+#  include "compat/win32_compat.h"
 #endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 
 #include <atomic>
 #include <cstdio>
@@ -145,7 +150,11 @@ bool WdspNative::load() {
     const QString nativeDir = QDir::cleanPath(exeDir +
                               QStringLiteral("/_native"));
     const QString dllPath   = QDir::cleanPath(nativeDir +
+                              #ifdef _WIN32
                               QStringLiteral("/wdsp.dll"));
+#else
+                              QStringLiteral("/_native/libwdsp.so"));
+#endif
 
     if (!QFileInfo::exists(dllPath)) {
         loadError_ = QStringLiteral("wdsp.dll not found at %1")

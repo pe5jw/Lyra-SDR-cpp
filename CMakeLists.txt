@@ -1,4 +1,4 @@
-# Lyra — Hermes Lite 2 / 2+ SDR transceiver, native C++ rebuild.
+﻿# Lyra — Hermes Lite 2 / 2+ SDR transceiver, native C++ rebuild.
 #
 # Architecture (operator-locked 2026-05-20):
 #   * C++23 (no Python, no GIL, anywhere)
@@ -319,6 +319,14 @@ qt_add_executable(lyra
     src/dockdragcontroller.h
     src/dockdragcontroller.cpp
     src/panelrack.h
+    src/win_perf.h
+    src/win_perf.cpp
+    src/rig/RadioCapabilities.h
+    src/rig/RadioCapabilities.cpp
+    src/rig/RigRegistry.h
+    src/rig/RigRegistry.cpp
+    src/rig/RigScope.h
+    src/rig/RigScope.cpp
     src/panelrack.cpp
     src/dsp/ZeroBeat.h
     src/dsp/ZeroBeat.cpp
@@ -536,6 +544,26 @@ if(WIN32)
     #           so we can tell whether EP6 seq-error drops happen
     #           in the kernel UDP buffer or upstream (NIC ring).
     target_link_libraries(lyra PRIVATE ws2_32 winmm iphlpapi)
+endif()
+
+# pe5jw linux-compat
+if(NOT WIN32)
+    target_include_directories(lyra PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/compat")
+    find_package(Threads REQUIRED)
+    target_link_libraries(lyra PRIVATE Threads::Threads dl)
+    set_target_properties(lyra PROPERTIES
+        INSTALL_RPATH "$ORIGIN/_native"
+        BUILD_RPATH   "$ORIGIN/_native")
+endif()
+if(UNIX AND NOT APPLE)
+    set(_native_linux "${CMAKE_CURRENT_SOURCE_DIR}/_native_linux")
+    if(EXISTS "${_native_linux}")
+        add_custom_command(TARGET lyra POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_native_linux}" "$<TARGET_FILE_DIR:lyra>/_native"
+            COMMENT "Bundling Linux WDSP .so files" VERBATIM)
+    endif()
 endif()
 
 # Step 3a: bundle the WDSP DSP engine DLLs (`wdsp.dll` +
