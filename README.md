@@ -2,6 +2,20 @@
 
 **🌐 [Website & download →](https://n8sdr1.github.io/Lyra-SDR-cpp/)** · [Releases](https://github.com/N8SDR1/Lyra-SDR-cpp/releases) · [Discord](https://discord.gg/BwjsQvjcSc)
 
+---
+
+> ### pe5jw fork
+>
+> Fork van [N8SDR1/Lyra-SDR-cpp](https://github.com/N8SDR1/Lyra-SDR-cpp) met:
+> - **TCI mic-source auto-restore** na PTT release (Settings -> TX -> Audio + Gain)
+> - **Linux / macOS compatibility layer** (`compat/` shim headers)
+> - **Windows build scripts** (check prereqs, build, portable ZIP, GitHub release)
+> - **Portable release** — uitpakken en starten, geen installatie nodig
+>
+> Releases (inclusief portable ZIP): [pe5jw/Lyra-SDR-cpp/releases](https://github.com/pe5jw/Lyra-SDR-cpp/releases)
+
+---
+
 Native rebuild of [Lyra](../lyra) (the Python+Qt6 desktop SDR transceiver
 for the Hermes Lite 2 / 2+).  The Python tree is preserved in `../lyra/`
 as the protocol research + doc archive reference; this is a clean ground-
@@ -284,7 +298,136 @@ what hasn't been built yet (so you don't report a planned feature as a bug).
   * the in-app **diagnostic log** (in Lyra, open the diagnostic log viewer
     and copy the relevant lines — no console window needed).
 
-## Prerequisites (Windows)
+## Bouwen op Windows (pe5jw scripts)
+
+De eenvoudigste manier om Lyra te bouwen op Windows:
+
+### Stap 1 — Vereisten controleren en installeren
+
+```powershell
+powershell -ExecutionPolicy Bypass -File check_lyra_prereqs.ps1
+```
+
+Controleert en installeert automatisch: Git, Visual Studio 2022 + C++ workload,
+CMake, Ninja, en geeft instructies voor Qt 6.11.1 MSVC 2022 64-bit.
+
+### Stap 2 — Klonen en bouwen
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build_lyra.ps1
+```
+
+Kloont de fork, configureert met CMake en buildt `lyra.exe`.
+Optionele parameters:
+
+```powershell
+# Andere branch of Qt pad
+build_lyra.ps1 -Branch main -QtPath C:\Qt\6.11.1\msvc2022_64
+```
+
+### Stap 3 — Portable ZIP maken (optioneel)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File make_portable.ps1
+```
+
+Pakt `lyra.exe` + alle DLLs + data in een ZIP die je direct kunt uitpakken
+en starten op elke Windows 10/11 PC — geen installatie nodig.
+
+### Handmatig bouwen
+
+Vereisten:
+- **Visual Studio 2022/2026 Community** met "Desktop development with C++" workload
+  (MSVC v143 + Windows 11 SDK + CMake + Ninja inbegrepen)
+- **Qt 6.11.1 MSVC 2022 64-bit** via [Qt MaintenanceTool](https://www.qt.io/download-qt-installer)
+
+```bat
+git clone https://github.com/pe5jw/Lyra-SDR-cpp
+cd Lyra-SDR-cpp
+cmake -B build -G Ninja ^
+      -DCMAKE_BUILD_TYPE=Release ^
+      -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/msvc2022_64
+cmake --build build
+build\lyra.exe
+```
+
+Of via **Visual Studio 2026**: File -> Open -> CMake -> `CMakeLists.txt` -> F5.
+
+### Build scripts overzicht
+
+| Script | Functie |
+|---|---|
+| `check_lyra_prereqs.ps1` | Controleert en installeert alle vereisten |
+| `build_lyra.ps1` | Clone + CMake + build |
+| `make_portable.ps1` | Portable ZIP maken |
+| `sync_upstream.ps1` | Fork synchroniseren met N8SDR1 upstream |
+| `github_release.ps1` | GitHub release aanmaken via API |
+
+---
+
+## Bouwen op Linux (pe5jw compat layer)
+
+De pe5jw fork bevat een Win32->POSIX compatibility layer (`compat/`) zodat
+Lyra op Linux gebouwd kan worden. Windows builds zijn volledig ongewijzigd.
+
+### Automatisch (Ubuntu 24.04 / Fedora / Arch)
+
+```bash
+git clone https://github.com/pe5jw/Lyra-SDR-cpp
+cd Lyra-SDR-cpp
+bash build_lyra_linux.sh
+```
+
+Het script installeert automatisch:
+- Build tools (cmake, ninja, gcc/g++)
+- Qt6 via distro pakket of aqtinstall
+- FFTW3 en RNNoise via apt/dnf/pacman
+- Configureert CMake en buildt Lyra
+
+### WDSP voor Linux
+
+De WDSP DSP engine (`wdsp.dll` op Windows) moet voor Linux apart gebouwd worden:
+
+```bash
+# Dependencies
+sudo apt install libfftw3-dev
+
+# WDSP broncode klonen en bouwen
+git clone https://github.com/g0orx/wdsp
+cd wdsp
+cmake -B build -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+
+# Kopieer naar _native_linux/ in de Lyra repo
+mkdir -p /pad/naar/Lyra-SDR-cpp/_native_linux
+cp build/libwdsp.so /pad/naar/Lyra-SDR-cpp/_native_linux/
+```
+
+Daarna opnieuw builden:
+
+```bash
+cd /pad/naar/Lyra-SDR-cpp
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+### Linux compat bestanden
+
+| Bestand | Functie |
+|---|---|
+| `compat/win32_compat.h` | Master include |
+| `compat/win32_socket.h` | WinSock2 -> POSIX sockets |
+| `compat/win32_timer.h` | CreateWaitableTimerEx -> Linux timerfd |
+| `compat/win32_dynload.h` | LoadLibrary -> dlopen/dlsym |
+| `compat/win32_stubs.h` | Diverse stubs |
+
+**Status:** Audio via Qt Multimedia -> PipeWire/PulseAudio werkt automatisch.
+USB-BCD (FTDI band-data) is niet ondersteund op Linux.
+Raspberry Pi 5 is theoretisch mogelijk maar niet getest.
+
+---
+
+## Prerequisites (Windows) — origineel upstream
 
 * **Visual Studio 2022 or 2026 Community** with the "Desktop development
   with C++" workload + **MSVC v143** toolchain + Windows 11 SDK + CMake.
@@ -292,12 +435,13 @@ what hasn't been built yet (so you don't report a planned feature as a bug).
   binding (add via Qt's `MaintenanceTool.exe` if the curated installer
   only pulled MinGW).
 
-## Build (Windows command-line)
+## Build (Windows command-line) — origineel upstream
 
 From an **x64 Native Tools Command Prompt for VS 2026**:
 
 ```bat
-cd Y:\Claude local\SDRProject\lyra-cpp
+git clone https://github.com/N8SDR1/Lyra-SDR-cpp
+cd Lyra-SDR-cpp
 cmake -B build -G Ninja ^
       -DCMAKE_BUILD_TYPE=Release ^
       -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/msvc2022_64
