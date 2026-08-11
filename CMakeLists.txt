@@ -1,4 +1,4 @@
-﻿# Lyra — Hermes Lite 2 / 2+ SDR transceiver, native C++ rebuild.
+# Lyra — Hermes Lite 2 / 2+ SDR transceiver, native C++ rebuild.
 #
 # Architecture (operator-locked 2026-05-20):
 #   * C++23 (no Python, no GIL, anywhere)
@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.21.0
+    VERSION 0.21.1
 
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
