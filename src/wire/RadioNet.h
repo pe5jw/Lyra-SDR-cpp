@@ -38,6 +38,12 @@
 // Reference: ChannelMaster/network.h:33-291.
 
 #pragma once
+#ifndef _WIN32
+#include "compat/win32_compat.h"
+#endif
+#ifndef LPVOID
+using LPVOID = void*;
+#endif
 
 #include <atomic>
 #include <condition_variable>

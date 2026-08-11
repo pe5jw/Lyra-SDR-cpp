@@ -12,7 +12,11 @@
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "compat/win32_compat.h"
+#endif
 
 #include <QtGlobal>   // qWarning
 

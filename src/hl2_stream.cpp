@@ -26,6 +26,7 @@
 // WinSock2 MUST be included before windows.h to avoid winsock 1.x
 // being pulled in via windows.h transitively.  NOMINMAX keeps the
 // windows.h macros from clobbering std::min/std::max.
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -35,8 +36,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <iphlpapi.h>    // GetUdpStatisticsEx (Task #48 diagnostic)
-#include <process.h>     // _beginthreadex — EP2 writer thread (P4.b; reference StartAudioNative netInterface.c:66)
+#include <iphlpapi.h>
+#include <process.h>
+#else
+#include "compat/win32_compat.h"
+#endif
 
 #include <QByteArray>
 #include <QDebug>           // qInfo / qCritical for safety-event mirror
@@ -194,7 +198,7 @@ quint16 localPortOf(SocketHandle sh) {
     sockaddr_in local{};
     int len = sizeof(local);
     if (::getsockname(static_cast<SOCKET>(sh),
-                      reinterpret_cast<sockaddr*>(&local), &len) == 0) {
+                      reinterpret_cast<sockaddr*>(&local), reinterpret_cast<socklen_t*>(&len)) == 0) {
         return ntohs(local.sin_port);
     }
     return 0;
