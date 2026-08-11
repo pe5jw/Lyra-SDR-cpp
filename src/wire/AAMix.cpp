@@ -26,7 +26,7 @@
 namespace lyra::wire {
 
 #define MAX_EXT_AAMIX	(4)									// maximum number of AAMIXs called from outside wdsp
-__attribute__((aligned(16))) AAMIX paamix[MAX_EXT_AAMIX];		// array of pointers for AAMIXs used EXTERNAL to wdsp
+__declspec(align(16)) AAMIX paamix[MAX_EXT_AAMIX];		// array of pointers for AAMIXs used EXTERNAL to wdsp
 
 void mix_main (void *pargs)
 {
