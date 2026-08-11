@@ -1,0 +1,213 @@
+From: Patch — TCI mic-source auto-restore after PTT release
+Subject: [PATCH] Add "auto-restore mic source after TCI PTT" option
+
+Mixed voice + digital operation: when the operator has Mic source set to
+"PC Soundcard (VAC1)" and a TCI client (WSJT-X, MSHV, SDRLogger+) drives
+a digital transmission, Lyra auto-flips the picker to "TCI (digital modes)".
+After PTT drops the picker stays on TCI — the microphone is silent until
+the operator manually switches back.
+
+This patch adds a persistent boolean preference
+  tx/tci_restore_mic_source  (default false)
+and a checkbox in Settings → TX → Audio + Gain:
+  "Auto-restore mic source after TCI PTT release"
+
+When enabled, Lyra records the mic-source token that was active *before*
+the TCI keydown and restores it when:
+  (a) the TCI client sends trx:0,false  (normal keyup), or
+  (b) the txAudioOwner_ WebSocket disconnects while TX is active.
+
+When disabled (default), behaviour is unchanged — operators running a
+dedicated digital setup keep the current "stays on TCI" behaviour.
+
+Files changed:
+  src/prefs.h           — Q_PROPERTY, accessor, signal, private member
+  src/prefs.cpp         — kTciRestoreMicSource constant, load, setter
+  src/tci_server.h      — preMicSource_ member
+  src/tci_server.cpp    — save-before-flip, restore-on-keyup/disconnect
+  src/settingsdialog.cpp — checkbox widget wired to the new property
+
+---
+diff --git a/src/prefs.h b/src/prefs.h
+--- a/src/prefs.h
++++ b/src/prefs.h
+@@ ... @@ (after the micSource Q_PROPERTY block, around line 336)
++    // When enabled, TCI-driven keydowns save the previous mic-source
++    // token and restore it on PTT release.  Persisted: tx/tci_restore_mic_source.
++    // Default false — existing dedicated-digital setups are unaffected.
++    Q_PROPERTY(bool tciRestoreMicSource
++               READ  tciRestoreMicSource
++               WRITE setTciRestoreMicSource
++               NOTIFY tciRestoreMicSourceChanged)
+
+@@ ... @@ (public accessor section, after micSourceTooltip, around line 583)
++    bool tciRestoreMicSource() const { return tciRestoreMicSource_; }
++    void setTciRestoreMicSource(bool on);
+
+@@ ... @@ (signals section, after micSourceChanged, around line 604 area)
++    void tciRestoreMicSourceChanged();
+
+@@ ... @@ (private members section, after micSource_ declaration, around line 798)
++    bool    tciRestoreMicSource_ = false;  // tx/tci_restore_mic_source
+
+---
+diff --git a/src/prefs.cpp b/src/prefs.cpp
+--- a/src/prefs.cpp
++++ b/src/prefs.cpp
+@@ ... @@ (constexpr keys block, after kMicSource, around line 105)
++constexpr auto kTciRestoreMicSource = "tx/tci_restore_mic_source";
+
+@@ ... @@ (load() section, after the micSource load, around line 294)
++    tciRestoreMicSource_ =
++        s.value(kTciRestoreMicSource, false).toBool();
+
+@@ ... @@ (after setMicSource(), around line 1255 area — add new setter)
++void Prefs::setTciRestoreMicSource(bool on) {
++    if (on == tciRestoreMicSource_) return;
++    tciRestoreMicSource_ = on;
++    QSettings().setValue(kTciRestoreMicSource, on);
++    emit tciRestoreMicSourceChanged();
++}
+
+---
+diff --git a/src/tci_server.h b/src/tci_server.h
+--- a/src/tci_server.h
++++ b/src/tci_server.h
+@@ ... @@ (private members section, near txAudioOwner_)
++    // Token saved at TCI keydown when tciRestoreMicSource pref is on.
++    // Empty string = nothing to restore (pref was off, or source was
++    // already "tci" before keydown — no flip happened).
++    QString preMicSource_;
+
+---
+diff --git a/src/tci_server.cpp b/src/tci_server.cpp
+--- a/src/tci_server.cpp
++++ b/src/tci_server.cpp
+
+@@ HUNK 1 — save mic source before the TCI auto-flip on keydown @@
+ 
+ Context (around line 1696 — the useTciAudio block that calls setMicSource):
+ 
+-                if (useTciAudio && prefs_)
+-                    prefs_->setMicSource(QStringLiteral("tci"));
++                if (useTciAudio && prefs_) {
++                    // Save the pre-flip token so we can restore it on keyup,
++                    // but only when the auto-restore pref is on AND the source
++                    // is not already "tci" (nothing to restore in that case).
++                    if (prefs_->tciRestoreMicSource()
++                            && prefs_->micSource() != QLatin1String("tci")) {
++                        preMicSource_ = prefs_->micSource();
++                    } else {
++                        preMicSource_.clear();
++                    }
++                    prefs_->setMicSource(QStringLiteral("tci"));
++                }
+
+@@ HUNK 2 — restore on normal TCI keyup (trx:0,false path) @@
+
+ Context (around line 1759 — the "wantsTx == false" block):
+ 
+         if (txAudioOwner_ == ws) {
+             txAudioOwner_ = nullptr;
+             chronoOutstanding_ = 0;
+             chronoTimer_->stop();
+             emit statusMessage(
+                 QStringLiteral("TCI: TX-audio ownership RELEASED"));
+         }
+-        // TX-rip Phase 1 (Q2): R-H2 keyup-restore returns with the
+-        // new TX DSP worker per docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
++        // Auto-restore mic source on keyup when the pref is on and
++        // we saved a pre-flip token at keydown time.
++        if (prefs_ && !preMicSource_.isEmpty()) {
++            prefs_->setMicSource(preMicSource_);
++            preMicSource_.clear();
++            emit statusMessage(QStringLiteral(
++                "TCI: mic source restored to: ") + prefs_->micSource());
++        }
+         stream_->requestMoxFromTci(false);
+
+@@ HUNK 3 — restore on client disconnect while TX is active @@
+
+ Context (around line 560 — the txAudioOwner_ cleanup in onClientDisconnected):
+
+         if (ws == txAudioOwner_) {
+             txAudioOwner_ = nullptr;
+             chronoOutstanding_ = 0;
+             chronoTimer_->stop();
+             emit statusMessage(QStringLiteral(
+                 "TCI: TX-audio ownership released (client disconnected)"));
+             if (stream_) stream_->requestMoxFromTci(false);
+-            // TX-rip Phase 1 (Q2): R-H2 activeMicSource_ save/restore
+-            // returns with the new TX DSP worker per
+-            // docs/TX_ARCHITECTURAL_MAPPING.md §10.3.
++            // Restore mic source when owner disconnects mid-TX — same
++            // logic as the normal keyup path.
++            if (prefs_ && !preMicSource_.isEmpty()) {
++                prefs_->setMicSource(preMicSource_);
++                preMicSource_.clear();
++                emit statusMessage(QStringLiteral(
++                    "TCI: mic source restored (owner disconnect) to: ")
++                    + prefs_->micSource());
++            }
+         }
+
+@@ HUNK 4 — restore on wire MOX drop in onMoxActiveChanged @@
+
+ Context (around line 1110 — after the txAudioOwner_ cleanup for external MOX drop):
+
+     if (was && was->state() == QAbstractSocket::ConnectedState) {
+         sendTo(was, QStringLiteral("trx:0,false"));
+     }
++    // Restore mic source on external MOX drop (e.g. operator presses
++    // MOX button while a TCI session is active) — covers the edge case
++    // where the TCI client never sends trx:0,false itself.
++    if (prefs_ && !preMicSource_.isEmpty()) {
++        prefs_->setMicSource(preMicSource_);
++        preMicSource_.clear();
++        emit statusMessage(QStringLiteral(
++            "TCI: mic source restored (external MOX drop) to: ")
++            + prefs_->micSource());
++    }
+ }
+
+---
+diff --git a/src/settingsdialog.cpp b/src/settingsdialog.cpp
+--- a/src/settingsdialog.cpp
++++ b/src/settingsdialog.cpp
+
+@@ HUNK 5 — add checkbox after the mic-source combo (around line 5505) @@
+
+ Context (after `form->addRow(tr("Mic source:"), combo);`):
+
+         form->addRow(tr("Mic source:"), combo);
++
++        // ── Auto-restore mic source after TCI PTT release ─────────
++        // When the operator has Mic source set to VAC1 (or mic1) and a
++        // TCI client drives a digital TX, Lyra auto-flips the picker to
++        // "TCI".  With this option on, Lyra restores the previous source
++        // when PTT drops — so the mic works again for the next SSB QSO
++        // without a manual switch.  Leave off for dedicated digital
++        // setups where "stays on TCI" is the correct behaviour.
++        if (prefs_) {
++            auto *restoreBox = new QCheckBox(
++                tr("Auto-restore mic source after TCI PTT release"), grp);
++            restoreBox->setChecked(prefs_->tciRestoreMicSource());
++            restoreBox->setToolTip(tr(
++                "When enabled, Lyra remembers the mic source that was active "
++                "before a TCI digital transmission and switches back to it "
++                "automatically when the TCI client releases PTT.\n\n"
++                "Use this for mixed voice + digital operation (e.g. SSB with "
++                "occasional FT8).  Leave off for dedicated digital setups "
++                "where the mic source should stay on TCI between transmissions."));
++            connect(restoreBox, &QCheckBox::toggled,
++                    grp, [this](bool on) {
++                if (prefs_) prefs_->setTciRestoreMicSource(on);
++            });
++            connect(prefs_, &lyra::ui::Prefs::tciRestoreMicSourceChanged,
++                    restoreBox, [this, restoreBox]() {
++                if (!prefs_) return;
++                QSignalBlocker b(restoreBox);
++                restoreBox->setChecked(prefs_->tciRestoreMicSource());
++            });
++            form->addRow(QString(), restoreBox);
++        }
