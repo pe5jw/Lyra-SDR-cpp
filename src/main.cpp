@@ -170,7 +170,7 @@ int main(int argc, char *argv[])
     if (!lyra::ui::acquireSingleInstance(argc, argv,
                                          QStringLiteral("default"),
                                          &siServerName))
-        return 0;   // another Lyra is already running — it has been raised
+        return 0;   // live primary answered the raise pipe (user was told)
 
     // Qt RHI backend selection.  Lyra targets Vulkan as the
     // primary graphics path per FEATURES.md §0 (cross-vendor /
@@ -254,8 +254,21 @@ int main(int argc, char *argv[])
         // arm (new rig defaults PA-off = safer), mic boost.  Per-band drive
         // already lives in band_mem/.
         for (const auto *k : {"tx/maxOutputW", "tx/driveLevel",
-                              "tx/paEnabled", "tx/micBoost"})
+                              "tx/paEnabled", "tx/micBoost", "tx/mic_source"})
             lyra::rig::migrate::migrateKeyToActiveRig(QLatin1String(k));
+        // pa_gain/* (PA-gain-by-band + full-output + cap) and meter/pwrTrim/*
+        // (PWR-meter cal) are the HL2's TX power + meter calibration.  Relocate
+        // them to the active rig ONLY when that rig is the HL2 (their owner),
+        // so a P2 rig (Brick / G2) that is active first gets clean neutral
+        // defaults instead of inheriting HL2 numbers.  The global set waits
+        // until the HL2 is active, then migrates once (snapshot-gated).  An
+        // ungated migrateGroup here would wrongly dump HL2 cal onto whatever
+        // rig is active — e.g. a Brick.
+        if (lyra::rig::registry::rig(lyra::rig::registry::activeRigId()).family
+                == lyra::rig::RadioFamily::Hl2) {
+            lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("pa_gain/"));
+            lyra::rig::migrate::migrateGroupToActiveRig(QStringLiteral("meter/pwrTrim/"));
+        }
     }
 
     // Safe-boot hatch: `--safe` (or LYRA_SAFE=1 in the environment) forces the
@@ -285,6 +298,8 @@ int main(int argc, char *argv[])
     // the window is up.  gfxSafeBackend names the backend safe mode forced.
     bool    gfxCrashRecovered = false;
     bool    layoutResetThisLaunch = false;
+    bool    skipMsaa = safeBoot;   // 4x MSAA + software rasterizer hangs
+                                   // Intel UHD / crash-ladder recoveries
     QString gfxSafeBackend;
     {
         using RI = QSGRendererInterface;
@@ -305,11 +320,32 @@ int main(int argc, char *argv[])
         // an env var.  Sticky (persisted) until the operator picks a backend
         // in Settings -> Visuals, which clears it.  An explicit LYRA_GRAPHICS
         // override is always honoured and never overridden (debug hatch).
+        //
+        // Same for a backend the operator PINNED in Settings (Vulkan / D3D /
+        // OpenGL).  The ladder exists for Auto (Qt-picked D3D11) on weak
+        // iGPUs.  A dedicated GPU with an explicit pick must not be yanked
+        // to OpenGL/software because an installer-kill, a restart before the
+        // 2 s timer, or deferred QML dock load left the sentinel set — that
+        // is a false crash, not a 9070 XT that cannot run Vulkan.  --safe
+        // remains the hatch if the pinned backend really will not start.
         const bool crashed =
             s.value(QStringLiteral("ui/gfxStartupPending"), false).toBool();
         const bool envForced =
             !qEnvironmentVariable("LYRA_GRAPHICS").trimmed().isEmpty();
-        int safeDepth = s.value(QStringLiteral("ui/gfxSafeDepth"), 0).toInt();
+        const QString savedBackend = s.value(QStringLiteral("ui/graphicsBackend"),
+                                             QStringLiteral("auto"))
+                                         .toString().trimmed().toLower();
+        const bool backendPinned = (savedBackend == QLatin1String("vulkan")
+                                    || savedBackend == QLatin1String("d3d12")
+                                    || savedBackend == QLatin1String("d3d11")
+                                    || savedBackend == QLatin1String("opengl"));
+        if (backendPinned) {
+            s.remove(QStringLiteral("ui/gfxSafeMode"));
+            s.remove(QStringLiteral("ui/gfxSafeDepth"));
+        }
+        int safeDepth = backendPinned
+            ? 0
+            : s.value(QStringLiteral("ui/gfxSafeDepth"), 0).toInt();
         const int prevSafeDepth = safeDepth;   // depth the PREVIOUS launch ran at
         // Consecutive-incomplete-start counter — reset to 0 by the +2s success
         // timer once the window survives.  Drives the layout-reset rung on the
@@ -320,13 +356,17 @@ int main(int argc, char *argv[])
             crashCount = std::min(crashCount + 1, 99);
             s.setValue(QStringLiteral("ui/startupCrashCount"), crashCount);
             // Graphics step-down (auto/D3D11 -> OpenGL -> software), UNLESS the
-            // operator pinned a backend via LYRA_GRAPHICS — we never fight an
-            // explicit choice.
-            if (!envForced) {
+            // operator pinned a backend via LYRA_GRAPHICS or Settings — we
+            // never fight an explicit choice.
+            if (!envForced && !backendPinned) {
                 safeDepth = std::min(safeDepth + 1, 2);   // 1 = OpenGL, 2 = Software
                 s.setValue(QStringLiteral("ui/gfxSafeDepth"), safeDepth);
                 s.setValue(QStringLiteral("ui/gfxSafeMode"), true);
                 gfxCrashRecovered = true;
+            } else if (backendPinned) {
+                qWarning("[gfx] previous start incomplete — keeping pinned "
+                         "backend '%s' (crash ladder is for Auto)",
+                         qPrintable(savedBackend));
             }
             // Layout-reset rung — restoreLayout() consumes ui/uiSafeReset and
             // comes up factory, keeping every non-layout setting.  A bad
@@ -343,7 +383,8 @@ int main(int argc, char *argv[])
             // graphics gate so a pinned-backend tester is never locked out of
             // the layout rescue; the !envForced qualifier on (a) keeps a
             // sticky-high safeDepth from short-circuiting (b)'s two-crash gate.
-            if ((!envForced && prevSafeDepth >= 2) || (envForced && crashCount >= 2)) {
+            if ((!envForced && !backendPinned && prevSafeDepth >= 2)
+                    || (envForced && crashCount >= 2)) {
                 s.setValue(QStringLiteral("ui/uiSafeReset"), true);
                 layoutResetThisLaunch = true;
             }
@@ -353,10 +394,11 @@ int main(int argc, char *argv[])
 
         QString be = qEnvironmentVariable("LYRA_GRAPHICS").trimmed().toLower();
         if (be.isEmpty())
-            be = s.value(QStringLiteral("ui/graphicsBackend"),
-                         QStringLiteral("auto")).toString().toLower();
-        // Safe mode overrides the auto/saved choice (never an env override).
-        if (!envForced && s.value(QStringLiteral("ui/gfxSafeMode"), false).toBool()) {
+            be = savedBackend;
+        // Safe mode overrides Auto (never an env override, never a pinned
+        // Settings backend).  backendPinned already cleared leftover keys.
+        if (!envForced && !backendPinned
+                && s.value(QStringLiteral("ui/gfxSafeMode"), false).toBool()) {
             be = (safeDepth >= 2) ? QStringLiteral("software")
                                   : QStringLiteral("opengl");
             gfxSafeBackend = be;
@@ -369,6 +411,16 @@ int main(int argc, char *argv[])
         else if (be == "software")
             QQuickWindow::setSceneGraphBackend(QStringLiteral("software"));
         // "auto" (default) -> leave unpinned; Qt RHI auto-selects.
+        // Software scene-graph + 4x MSAA can hang forever while building
+        // QQuickWidget swapchains (Intel UHD 128 MB field report: log
+        // stops after USB-BCD open, never reaches "main window constructed").
+        // Graphics-safe-mode recoveries skip MSAA for the same reason.
+        // Do NOT skip MSAA / force the basic render loop merely because a
+        // leftover gfxSafeMode flag is set while the operator is on Vulkan.
+        if (be == QLatin1String("software")
+            || (!envForced && !backendPinned
+                && s.value(QStringLiteral("ui/gfxSafeMode"), false).toBool()))
+            skipMsaa = true;
         if (gfxCrashRecovered)
             qWarning("[gfx] previous startup did not complete — graphics "
                      "safe mode (depth %d -> %s)", safeDepth, qPrintable(be));
@@ -382,10 +434,24 @@ int main(int argc, char *argv[])
     // biggest perceived-quality win and applies to ALL geometry, not
     // just the panadapter.  Must be set on the default surface format
     // BEFORE QGuiApplication so the QML window's swapchain picks it up.
+    // Skip on software / crash-ladder recoveries — 4x samples there is
+    // not free and has hung startup on low-VRAM iGPUs.
     {
         QSurfaceFormat fmt = QSurfaceFormat::defaultFormat();
-        fmt.setSamples(4);
+        fmt.setSamples(skipMsaa ? 0 : 4);
         QSurfaceFormat::setDefaultFormat(fmt);
+        if (skipMsaa)
+            qWarning("[gfx] MSAA disabled (software renderer or graphics safe mode)");
+    }
+
+    // QQuickWidget + the software scene-graph requires the basic (single-
+    // thread) render loop.  The default Windows loop can wait forever for a
+    // swapchain that never appears while docks are built before the window
+    // is shown.  Must be set BEFORE QApplication.  Honour an explicit
+    // QSG_RENDER_LOOP if a tester already set one.
+    if (skipMsaa && qEnvironmentVariableIsEmpty("QSG_RENDER_LOOP")) {
+        qputenv("QSG_RENDER_LOOP", "basic");
+        qWarning("[gfx] QSG_RENDER_LOOP=basic (software / graphics safe mode)");
     }
 
     QApplication app(argc, argv);
@@ -450,8 +516,15 @@ int main(int argc, char *argv[])
     //   cmMAXInbound  = 256/stream (max samples per Inbound() call —
     //                     comfortably above the EP6 mic batch).
     //   cmMAXInRate   = 384000 (HL2 max IQ rate).
-    //   cmMAXAudioRate / cmMAXTxOutRate = 48000 (AK4951 codec rate /
-    //                     fixed HL2 TX out rate, CLAUDE.md §3.5).
+    //   cmMAXAudioRate = 48000 (AK4951 codec rate, CLAUDE.md §3.5).
+    //   cmMAXTxOutRate = 192000: the TX channel out[] buffers are
+    //                     pre-allocated at getbuffsize(cmMAXTxOutRate)
+    //                     so the shared TXA channel can be raised to the
+    //                     192 kHz P2 DUC rate at runtime (SetXmtrDucOutrate)
+    //                     without a realloc.  P1/HL2 still OPENS the channel
+    //                     at 48 kHz out (ch_outrate unchanged) — this only
+    //                     enlarges the allocation ceiling, so P1 behaviour
+    //                     is byte-identical.
     //   xcm_inrates   = 48000 per stream (TX mic-in rate; stream 0
     //                     unused by the pump), audio out 48000,
     //                     rcvr/xmtr ch_outrates 48000 -> every
@@ -460,7 +533,7 @@ int main(int argc, char *argv[])
         int cmSPC[cmMAXspc]   = {0, 0};
         int cmMAXInbound[2]   = {256, 256};
         lyra::wire::SetRadioStructure(2, 1, 1, 1, 0, cmSPC,
-                                      cmMAXInbound, 384000, 48000, 48000);
+                                      cmMAXInbound, 384000, 48000, 192000);
         int xcm_inrates[2]    = {48000, 48000};
         int rcvr_outrates[1]  = {48000};
         int xmtr_outrates[1]  = {48000};
@@ -557,6 +630,12 @@ int main(int argc, char *argv[])
         /*port=*/0, /*call_idx=*/0, /*ctrl_word=*/0,
         [wdspEngine](int n, const double* iq) {
             wdspEngine->feedIq(iq, n);
+        });
+    lyra::wire::register_sink(
+        lyra::wire::router_instance(0),
+        /*port=*/2, /*call_idx=*/0, /*ctrl_word=*/0,
+        [wdspEngine](int n, const double* iq) {
+            wdspEngine->feedIqRx2(iq, n);
         });
 
     // Step 5: RX audio → HL2 onboard-codec (AK4951) jack is handled
@@ -748,6 +827,10 @@ int main(int argc, char *argv[])
     // FSM QTimers in HL2Stream), slot also lives on the main thread.
     QObject::connect(stream, &lyra::ipc::HL2Stream::moxActiveChanged,
                      wdspEngine, &lyra::dsp::WdspEngine::setTxMuted);
+    QObject::connect(stream, &lyra::ipc::HL2Stream::subEnabledChanged,
+                     wdspEngine, [stream, wdspEngine]() {
+                         wdspEngine->setSubEnabled(stream->subEnabled());
+                     });
 
     // #158 DL-4 — mute RX out of the VAC mixer during TX (reference
     // SetIVACmox what-flag gating; RX→VAC silent on the air, the no-feedback
@@ -908,21 +991,31 @@ int main(int argc, char *argv[])
     // track operator changes.
     {
         // TX mic-source gate: exactly one of {codec mic, TCI, VAC1} drives TX.
-        //   "tci"   → use_tci_audio (TciTxBridge)
-        //   "micpc" → use_vac_audio (#158 Stage 4: VAC-in / PC mic / digital)
-        //   else    → HL2 codec EP6 mic (both overrides off)
-        // SetTX{TCI,Vac}Audio are interlocked; the VAC inbound cb is
-        // null-guarded so selecting VAC with VAC1 disabled is safe (falls
-        // back to the codec mic).
-        auto applyTxAudioSource = [prefs]() {
+        //   "tci"   → use_tci_audio (TciTxBridge).  NEVER stolen by VAC
+        //             auto-digital — TCI CAT + TCI TX audio (MSHV / JTDX /
+        //             WSJT-X TCI) must keep working if the operator picked
+        //             TCI, and a client `trx:0,true,tci` still flips here.
+        //   "micpc" → use_vac_audio (VAC-in / PC mic / Fldigi-over-cable)
+        //   auto-digital + DIGU/DIGL + a VAC Input device selected + not
+        //             TCI → also use_vac_audio without rewriting the picker
+        //             (YO8RFS: VAC RX worked, TX silent on the codec jack).
+        // If use_vac_audio is set but the VAC inbound cb is null, CMaster
+        // zeros the mic buffer — it does NOT fall back to codec.
+        auto applyTxAudioSource = [prefs, wdspEngine]() {
             const QString src = prefs->micSource();
             const bool tci = (src == QStringLiteral("tci"));
-            const bool vac = (src == QStringLiteral("micpc"));
+            const bool vac = wdspEngine->applyMicSourceToVacTx(src);
             lyra::wire::SetTXTCIAudio(0, tci ? 1 : 0);
             lyra::wire::SetTXVacAudio(0, vac ? 1 : 0);
             if (!tci) lyra::tci::TciTxBridge::instance().clear();
         };
         QObject::connect(prefs, &lyra::ui::Prefs::micSourceChanged,
+                         prefs, applyTxAudioSource);
+        QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::modeChanged,
+                         prefs, applyTxAudioSource);
+        QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::vac1Changed,
+                         prefs, applyTxAudioSource);
+        QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::vac2Changed,
                          prefs, applyTxAudioSource);
         applyTxAudioSource();   // seed initial state
     }
@@ -966,6 +1059,12 @@ int main(int argc, char *argv[])
         p.vac1TxGainDb    = wdspEngine->vac1TxGainDb();
         p.vac1LatencyMs   = wdspEngine->vac1LatencyMs();   // v5 #158
         p.vac1VacSize     = wdspEngine->vac1VacSize();      // v5 #158
+        p.vac2Enabled     = wdspEngine->vac2Enabled();      // v6 #103 V2-4
+        p.vac2AutoDigital = wdspEngine->vac2AutoDigital();
+        p.vac2RxGainDb    = wdspEngine->vac2RxGainDb();
+        p.vac2TxGainDb    = wdspEngine->vac2TxGainDb();
+        p.vac2LatencyMs   = wdspEngine->vac2LatencyMs();
+        p.vac2VacSize     = wdspEngine->vac2VacSize();
         p.agcMode         = wdspEngine->agcMode();
         p.autoMuteOnTx    = wdspEngine->autoMuteOnTx();
         // #160: ALC ceiling + Leveler trio — operator runs leveler ON for
@@ -1002,12 +1101,13 @@ int main(int argc, char *argv[])
         prefs->setTxBandwidth(p.txBandwidth);
         prefs->setBwLocked(p.bwLocked);
         prefs->setFilterLow(p.filterLow);
-        // VAC (#158) — apply VAC config BEFORE micSource so the VAC1 engine
-        // is live (callback registered) when setMicSource arms use_vac_audio;
-        // else a micpc profile would arm the source against a null inbound cb
-        // (silent TX) until the next rebuild.  Gains/autoDigital first, then
-        // enable (final rebuild sees everything), then the source.  Devices
-        // stay global (Settings → Audio) — not profile fields.
+        // VAC (#158 / #103) — apply VAC1+VAC2 config BEFORE micSource so
+        // the matching engine is live (callback registered) when setMicSource
+        // arms use_vac_audio; else a micpc / micpc2 profile would arm the
+        // source against a null inbound cb (silent TX) until the next rebuild.
+        // Gains/latency/autoDigital first, then enable (final rebuild sees
+        // everything), then the source.  Devices stay global (Settings →
+        // Audio) — not profile fields.
         wdspEngine->setVac1RxGainDb(p.vac1RxGainDb);
         wdspEngine->setVac1TxGainDb(p.vac1TxGainDb);
         // Latency posture (v5 #158) BEFORE enable: while VAC is off these just
@@ -1018,6 +1118,12 @@ int main(int argc, char *argv[])
         wdspEngine->setVac1VacSize(p.vac1VacSize);
         wdspEngine->setVac1AutoDigital(p.vac1AutoDigital);
         wdspEngine->setVac1Enabled(p.vac1Enabled);
+        wdspEngine->setVac2RxGainDb(p.vac2RxGainDb);
+        wdspEngine->setVac2TxGainDb(p.vac2TxGainDb);
+        wdspEngine->setVac2LatencyMs(p.vac2LatencyMs);
+        wdspEngine->setVac2VacSize(p.vac2VacSize);
+        wdspEngine->setVac2AutoDigital(p.vac2AutoDigital);
+        wdspEngine->setVac2Enabled(p.vac2Enabled);
         prefs->setMicSource(p.micSource);   // fires the applyTciTxSource gate above
         stream->setMicGainDb(p.micGainDb);
         stream->setMicBoost(p.micBoost);
@@ -1094,6 +1200,10 @@ int main(int argc, char *argv[])
     QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::agcModeChanged, profiles,
                      &lyra::profile::ProfileManager::refreshModified);
     QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::autoMuteOnTxChanged, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::vac1Changed, profiles,
+                     &lyra::profile::ProfileManager::refreshModified);
+    QObject::connect(wdspEngine, &lyra::dsp::WdspEngine::vac2Changed, profiles,
                      &lyra::profile::ProfileManager::refreshModified);
 
     // applyDefaultAtStartup() is deferred to AFTER MainWindow is built (see
@@ -1393,7 +1503,13 @@ int main(int argc, char *argv[])
             // only — no IQ flows through it yet (Step 3d wires the RX
             // worker -> fexchange0).  The engine's destructor closes
             // the channel at app exit.
+            // RX2 demod/filter must be primed before openRx2() (setSubEnabled
+            // → openRx2 uses the engine's current modeRx2 / bandwidthRx2).
+            wdspEngine->setModeRx2(prefs->modeRx2());
+            wdspEngine->setBandwidthRx2(prefs->rx2Bandwidth());
             wdspEngine->openRx1();
+            if (stream->subEnabled())
+                wdspEngine->setSubEnabled(true);
 
             // P0.d (2026-06-12) — create_xmtr(), the verbatim
             // reference body (cmaster.c:112-253).
@@ -1463,15 +1579,15 @@ int main(int argc, char *argv[])
             // #158 DL-1 — PortAudio process init, once per process,
             // adjacent to create_rnet (the reference brings PortAudio up
             // in netInterface alongside the radio).  The VAC device layer
-            // (StartAudioIVAC) is not wired to wdsp_engine until DL-2;
-            // this only spins up PortAudio so DL-2 has a live PA context.
+            // (StartAudioIVAC) is owned by WdspEngine::rebuildVac1; this
+            // spins up PortAudio so the configured VAC stream can open.
             // The matching Pa_Terminate is the aboutToQuit handler-PA
             // connected in main scope (after handler-4 / destroy_cmaster).
             {
                 int paErr = lyra::wire::ivacInitPortAudio();
                 if (paErr == 0)
                     qInfo("[wire] DL-1: PortAudio initialized — VAC host "
-                          "audio context ready (not yet wired to wdsp_engine)");
+                          "audio context ready");
                 else
                     qWarning("[wire] DL-1: Pa_Initialize failed (err=%d) — "
                              "VAC host audio unavailable", paErr);
@@ -1692,6 +1808,36 @@ int main(int argc, char *argv[])
                             qInfo("[tx] TUN postgen: run=0 (stopped)");
                         }
                     },
+                    .setTwoTone = [txch, txf](bool on) {
+                        if (on) {
+                            // The two-tone must follow the selected sideband
+                            // exactly as the TUN tone (line ~1700) and the
+                            // bandpass (per-mode switch ~1588) do: USB-side
+                            // modes (USB/CWU/DIGU) place both tones on the
+                            // positive (upper) baseband, LSB-side modes
+                            // (LSB/CWL/DIGL) on the negative (lower).  Without
+                            // this sign the postgen two-tone sat on the upper
+                            // side in EVERY mode and never flipped with USB/LSB
+                            // (operator bench 2026-09-06).
+                            double s = 1.0;
+                            switch (txf->mode) {
+                                case 0: case 3: case 9: s = -1.0; break; // LSB/CWL/DIGL
+                                default:                s =  1.0; break; // USB/CWU/DIGU
+                            }
+                            const double f1 = s * static_cast<double>(
+                                lyra::ipc::HL2Stream::kTwoToneFreq1Hz);
+                            const double f2 = s * static_cast<double>(
+                                lyra::ipc::HL2Stream::kTwoToneFreq2Hz);
+                            lyra::wire::SetTXAPostGenMode(txch, 1);
+                            lyra::wire::SetTXAPostGenTTFreq(txch, f1, f2);
+                            lyra::wire::SetTXAPostGenTTMag(txch, 0.49999, 0.49999);
+                            lyra::wire::SetTXAPostGenRun(txch, 1);
+                            qInfo("[tx] two-tone postgen: mode=%d f1=%.0f f2=%.0f "
+                                  "(USB-side +, LSB-side -)", txf->mode, f1, f2);
+                        } else {
+                            lyra::wire::SetTXAPostGenRun(txch, 0);
+                        }
+                    },
                     .setPhrotRun = [txch](bool on) {   // #109 phase rotator
                         if (lyra::wire::SetTXAPHROTRun)
                             lyra::wire::SetTXAPHROTRun(txch, on ? 1 : 0);
@@ -1779,6 +1925,26 @@ int main(int argc, char *argv[])
                     stream->setTxMode(wdspTxModeFor(m0));
                     lyra::wire::SetTxRackBypass(txModeBypassesRack(m0) ? 1 : 0);
                 }
+
+                // Hardening: Prefs.mode -> WdspEngine.mode is normally driven
+                // by the QML Binding on the (persistent) Tuning dock. This C++
+                // backup guarantees a mode change (incl. TCI / CAT / memory,
+                // which all write Prefs.mode) still reaches the demod + TX
+                // sideband even if that dock is ever made lazy-loaded/unloadable.
+                // setMode() no-ops on an unchanged value, so this never
+                // double-applies against the live QML binding.
+                QObject::connect(prefs, &lyra::ui::Prefs::modeChanged,
+                                 wdspEngine, [prefs, wdspEngine]() {
+                    wdspEngine->setMode(prefs->mode());
+                });
+                QObject::connect(prefs, &lyra::ui::Prefs::modeRx2Changed,
+                                 wdspEngine, [prefs, wdspEngine]() {
+                    wdspEngine->setModeRx2(prefs->modeRx2());
+                });
+                QObject::connect(prefs, &lyra::ui::Prefs::rx2BandwidthChanged,
+                                 wdspEngine, [prefs, wdspEngine]() {
+                    wdspEngine->setBandwidthRx2(prefs->rx2Bandwidth());
+                });
 
                 // Digital-mode TX-drive reduction — forward the operator
                 // Prefs (Settings → TX → Digital modes) to the wire layer,
@@ -1923,21 +2089,19 @@ int main(int argc, char *argv[])
         // Multi-rig: auto-connect to the ACTIVE rig's radio.  The rig's
         // lastIp is kept current by HL2Stream::open; fall back to the legacy
         // global radio/lastIp (fresh installs / the seeded HL2 rig).
+        // The ACTIVE rig's lastIp is the auto-connect target (a P2 rig's IP
+        // is kept current by P2RxBridge::open, a P1 rig's by HL2Stream::open);
+        // beginConnect routes it to the P2 bridge or the P1 stream by the
+        // active rig's protocol.  Fall back to the legacy global radio/lastIp
+        // (fresh installs / the seeded HL2 rig).
         QString lastIp =
             lyra::rig::registry::rig(lyra::rig::registry::activeRigId()).lastIp;
         if (lastIp.isEmpty())
             lastIp = QSettings().value(QStringLiteral("radio/lastIp")).toString();
-        // Layer-2 startup radio (P2): an explicit "Open at startup"
-        // choice (radio/startupMac) also arms the launch connect — its
-        // P2 branch is handled inside beginConnect.  A box that has
-        // only ever run a P2 radio has no rig/legacy lastIp, so lastIp
-        // alone would never fire.
-        const bool haveStartupRadio = !QSettings()
-            .value(QStringLiteral("radio/startupMac")).toString().isEmpty();
         // Auto-start-on-launch opt-out (Settings → Hardware).  Default ON
         // (historical behaviour).  When the operator unticks it Lyra loads
         // but waits for an explicit Start instead of opening the radio.
-        if ((!lastIp.isEmpty() || haveStartupRadio)
+        if (!lastIp.isEmpty()
             && prefs->autoStartOnLaunch()
             && !qEnvironmentVariableIsSet("LYRA_SAFE")) {
             // Resilient connect: probe the remembered IP and open it only

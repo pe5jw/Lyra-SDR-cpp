@@ -90,6 +90,17 @@ FSM → Morse lookup).  fldigi is GPL v3+.
   CW speed-tracking algorithm, which Lyra-cpp ports verbatim.
   http://www.w1hkj.com/ — https://sourceforge.net/projects/fldigi/
 
+### DeepFist — neural CW (Morse) decoder
+
+Lyra-cpp's optional neural CW decode engine embeds **DeepFist**,
+a clean-room, self-trained neural (spectrogram → CNN + CTC)
+Morse decoder that runs via **ONNX Runtime** (Microsoft, MIT).
+Both are MIT-licensed — see [NOTICE.md](NOTICE.md).
+
+- **Brent Crier (N9BC)** — author of DeepFist: the synthetic-data
+  generator, the CNN+CTC model, its training, and the ONNX
+  export the decoder embeds.
+
 ---
 
 ## Reference projects (cross-checked, not source-incorporated)
@@ -119,10 +130,24 @@ trail but **no code is incorporated from them**:
 
 ## Testers and field operators
 
-(Will be filled in as testers come on board for v0.2 TX
-bench testing.  Currently: N8SDR is the primary tester and
-bench operator.  Anyone who contributes field reports or
-bench data will be credited here with their consent.)
+- **Rick Langford (N8SDR)** — primary tester and bench operator.
+- **Brent Crier (N9BC)** — co-contributor and tester (Python
+  predecessor through the C++ rebuild).
+- **Timmy Davis (KC8TYK)** — tester (v0.1 tester flight).
+- **W5UDX** — DSP2024P Plate Reverb presets and verification.
+
+Anyone who contributes field reports or bench data will be
+credited here with their consent.
+
+---
+
+## Development assistance
+
+- **Cursor Grok 4.6** ([@cursoragent](https://github.com/cursoragent),
+  SpaceXAI / Cursor) — coding assistant used for implementation
+  and debug pairing on the native C++ rebuild.  Rick remains the
+  project author; this is pairing help, not a licensed-operator
+  co-author credit.
 
 ---
 

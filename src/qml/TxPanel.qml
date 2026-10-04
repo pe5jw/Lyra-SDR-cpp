@@ -95,6 +95,49 @@ Rectangle {
             font.pixelSize: 14
         }
 
+        Rectangle {
+            id: p2StateChip
+            visible: P2Bridge.running
+            Layout.preferredWidth: 92
+            Layout.preferredHeight: 26
+            radius: 4
+            color: P2Bridge.txFaultLatched ? root.cMox
+                 : P2Bridge.txTransmitting ? root.cMox
+                 : P2Bridge.txBenchArmed ? "#3a2a14"
+                 : "#12252e"
+            border.color: P2Bridge.txFaultLatched ? root.cMoxEdge
+                        : P2Bridge.txTransmitting ? root.cMoxEdge
+                        : P2Bridge.txBenchArmed ? root.cOn
+                        : root.cAccent
+            border.width: 2
+            Text {
+                anchors.fill: parent
+                anchors.margins: 3
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                clip: true
+                text: P2Bridge.txFaultLatched ? qsTr("P2 FAULT")
+                    : P2Bridge.txTransmitting ? qsTr("P2 TX")
+                    : !P2Bridge.txHardwareSupported ? qsTr("P2 RX ONLY")
+                    : P2Bridge.txBenchArmed ? qsTr("P2 ARMED")
+                    : P2Bridge.txTransportReady ? qsTr("P2 SAFE")
+                    : qsTr("P2 PRIME")
+                color: (P2Bridge.txFaultLatched || P2Bridge.txTransmitting)
+                    ? "#ffffff"
+                    : P2Bridge.txBenchArmed ? root.cOn : root.cAccent
+                font.bold: true
+                font.pixelSize: 11
+            }
+            HoverHandler { id: p2StateHover }
+            ToolTip.visible: p2StateHover.hovered && Prefs.tooltipsEnabled
+            ToolTip.delay: 600
+            ToolTip.text: P2Bridge.txStatus
+                + qsTr("\nDUC FIFO: %1 samples\nBench drive ceiling: %2%")
+                    .arg(P2Bridge.ducFifoSamples)
+                    .arg(P2Bridge.txDriveLimitPercent)
+        }
+
         // ── TX Drive % — operator tunes between QSOs ────────────────
         // Help lives on the LABEL, not the slider — a ToolTip popup is
         // window-clamped, so "above the slider" got shoved back onto the
@@ -330,29 +373,27 @@ Rectangle {
             ToolTip.visible: (hovered && !pressed) && Prefs.tooltipsEnabled
         }
 
-        // ── Amp-cap (Max Output) active indicator ───────────────────
-        // Sibling of the ATT/PROT lamps, but VISIBLE ONLY when the watts
-        // cap is actively holding TX power down on the current band — an
-        // invisible Layout item takes zero space, so the panel stays clean
-        // the rest of the time.  Amber "CAP ~30%" = the trap: cap on but
-        // this band isn't TUN-calibrated, so Lyra clamps to a safe ~30 %
-        // drive and power reads LOW (Pierre HS0ZRT's 6 W-cap-but-3 W-out).
-        // Cyan "CAP nW" = cap holding a calibrated band at the set watts
-        // (working as intended).  Purely informational (not a toggle) —
-        // the cap lives in Settings → PA Gain.
+        // ── Amp-cap (Max Output) indicator ──────────────────────────
+        // Visible whenever Max cap is armed — never hide it when Drive is
+        // low (that was the "lamp gone" bug). Amber "CAP learn" = this
+        // band hasn't finished TUN learning. Cyan "CAP nW" = locked for
+        // the set watts. Opacity stays full so the chip doesn't vanish
+        // on the dark TX panel when Drive is under the lock.
         Rectangle {
             id: capChip
-            visible: Stream.capStatus > 0
-            readonly property bool uncal: Stream.capStatus === 2
-            Layout.preferredWidth: 68    // sized to match the ATT/PROT lamps
+            visible: Stream.capArmed && Stream.capLimitW > 0
+            readonly property bool uncal: Stream.capStatus !== 1
+            readonly property bool limiting: Stream.capLimiting
+            Layout.preferredWidth: 76    // "CAP learn" / "CAP nW"
             Layout.preferredHeight: 26
             radius: 4
+            opacity: 1.0
             color: uncal ? "#3a2a10" : "#12252e"
             border.color: uncal ? "#ffb020" : root.cAccent
             border.width: 2
             Text {
                 anchors.centerIn: parent
-                text: capChip.uncal ? qsTr("CAP ~30%")
+                text: capChip.uncal ? qsTr("CAP learn")
                                     : qsTr("CAP %1W").arg(Math.round(Stream.capLimitW))
                 color: capChip.uncal ? "#ffcf6b" : root.cAccent
                 font.bold: true
@@ -361,14 +402,22 @@ Rectangle {
             HoverHandler { id: capHov }
             ToolTip.visible: capHov.hovered && Prefs.tooltipsEnabled
             ToolTip.delay: 800
-            ToolTip.text: capChip.uncal
-                ? qsTr("Max Output cap is ON but this band isn't calibrated, "
-                       + "so TX is limited to a safe ~30% drive — your power "
-                       + "reads LOW.  Fix: Settings → PA Gain → measure Full "
-                       + "Output + TUN each band, or turn the cap off there.")
-                : qsTr("Max Output cap is holding this band at your set limit "
-                       + "(%1 W).  Adjust or disable in Settings → PA Gain.")
-                      .arg(Math.round(Stream.capLimitW))
+            ToolTip.text: {
+                const armed = capChip.uncal
+                    ? qsTr("Max Output is armed but this band has not finished "
+                           + "TUN learning. Keep Tune keyed into a dummy load — "
+                           + "power should climb to the cap, then this chip "
+                           + "turns cyan. Or turn the cap off in Settings → PA Gain.")
+                    : qsTr("Max Output cap is locked for this band at your set "
+                           + "limit (%1 W). Raising Drive above that lock does "
+                           + "not raise RF. Adjust or disable in Settings → PA Gain.")
+                          .arg(Math.round(Stream.capLimitW))
+                return capChip.limiting
+                    ? armed
+                    : armed + "\n\n" + qsTr("Dim: Drive/Tune is under the locked "
+                                            + "ceiling — RF may drop, the cap "
+                                            + "value itself stays put.")
+            }
         }
 
         Item { Layout.fillWidth: true }   // right half of the gap → TUN + MOX stay right
@@ -507,6 +556,13 @@ Rectangle {
         // I/Q stream but the gateware DAC scales it to inaudible.
         Button {
             id: tunBtn
+            // Qt.NoFocus: a Button with keyboard focus activates on Space
+            // (emits clicked) — which would key TX via the spacebar even with
+            // "Space bar keys PTT" UNCHECKED (that feature lives wholly in
+            // MainWindow::eventFilter).  Keep this off so only the real gated
+            // feature can key from Space.  Mouse-click unaffected.  (Precedent:
+            // BandPanel.qml.)
+            focusPolicy: Qt.NoFocus
             // NOT checkable: `checked` stays a pure one-way reflection of
             // Stream.tuneEnabled (wire truth) so the auto-clear on MOX-drop
             // shows immediately.  Click = toggle command (arm / release).
@@ -517,6 +573,8 @@ Rectangle {
             font.bold: true
             font.pixelSize: 12
             checked: Stream.tuneEnabled
+            enabled: !P2Bridge.running
+                     || (P2Bridge.txBenchArmed && !P2Bridge.txFaultLatched)
             onClicked: {
                 if (!Stream.tuneEnabled) {
                     // Arming: set tone first so the very first EP2 frame
@@ -562,7 +620,47 @@ Rectangle {
         // settle), NOT the click checked-state, so the visual stays
         // honest through the ~65 ms keydown window.
         Button {
+            id: twoToneBtn
+            focusPolicy: Qt.NoFocus   // see tunBtn: stop Space-activation keying TX
+            checkable: false
+            implicitWidth: 72
+            implicitHeight: 26
+            text: qsTr('2-Tone')
+            font.bold: true
+            font.pixelSize: 12
+            checked: Stream.twoToneEnabled
+            enabled: (!P2Bridge.running
+                      || (P2Bridge.txBenchArmed && !P2Bridge.txFaultLatched))
+                     && (!Stream.tuneEnabled || Stream.twoToneEnabled)
+            onClicked: {
+                if (!Stream.twoToneEnabled) {
+                    Stream.setTwoToneEnabled(true)
+                    Stream.requestMox(true)
+                } else {
+                    Stream.requestMox(false)
+                    Stream.setTwoToneEnabled(false)
+                }
+            }
+            background: Rectangle {
+                radius: 4
+                color: Stream.twoToneEnabled ? '#302044' : '#1f2a35'
+                border.color: Stream.twoToneEnabled ? '#d68cff' : '#3a5060'
+                border.width: 2
+            }
+            contentItem: Text {
+                text: twoToneBtn.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: Stream.twoToneEnabled ? '#d68cff' : root.cText
+                font: twoToneBtn.font
+                elide: Text.ElideRight
+                clip: true
+            }
+        }
+
+        Button {
             id: moxBtn
+            focusPolicy: Qt.NoFocus   // see tunBtn: stop Space-activation keying TX
             // NOT checkable: `checked` stays a pure one-way reflection of
             // Stream.moxActive (wire truth); the lamp already reads moxActive
             // directly, so this just keeps the control from severing it.
@@ -573,6 +671,8 @@ Rectangle {
             font.bold: true
             font.pixelSize: 12
             checked: Stream.moxActive
+            enabled: !P2Bridge.running
+                     || (P2Bridge.txBenchArmed && !P2Bridge.txFaultLatched)
             onClicked: Stream.requestMox(!Stream.moxActive)
             background: Rectangle {
                 // Three-way state: moxActive (wire MOX live) → red;

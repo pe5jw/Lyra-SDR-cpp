@@ -140,10 +140,14 @@ void WaterfallIdController::enterFlat() {
 
 void WaterfallIdController::exitFlat() {
     // Put everything back from the operator's UNTOUCHED selections.
+    // Same TX-source rule as main.cpp applyTxAudioSource: TCI exclusive;
+    // VAC TX if micpc / micpc2 OR (auto-digital DIG + live VAC input).
     const QString src = prefs_->micSource();
-    lyra::wire::SetTXTCIAudio(0, src == QLatin1String("tci")   ? 1 : 0);
-    lyra::wire::SetTXVacAudio(0, src == QLatin1String("micpc") ? 1 : 0);
-    if (src != QLatin1String("tci"))
+    const bool tci = (src == QLatin1String("tci"));
+    const bool vac = engine_->applyMicSourceToVacTx(src);
+    lyra::wire::SetTXTCIAudio(0, tci ? 1 : 0);
+    lyra::wire::SetTXVacAudio(0, vac ? 1 : 0);
+    if (!tci)
         lyra::tci::TciTxBridge::instance().clear();
 
     const QString m = engine_->mode();

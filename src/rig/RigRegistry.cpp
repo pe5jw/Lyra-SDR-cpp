@@ -60,14 +60,20 @@ void setActiveRigId(const QString &rigId) {
 }
 
 RadioFamily familyForBoardName(const QString &boardName) {
-    // Only HL2/ANAN-P1 ship today; anything else (or empty) is treated as
-    // HL2 — the only hardware in the field — so the discovery→rig hook and
-    // the legacy seed can't misfile a real user's radio.
+    // Protocol 1 discovery. HL2 is HermesLite*; classic ANAN / HPSDR
+    // boards must not fall through to the HL2 TX path.
     if (boardName.startsWith(QStringLiteral("HermesLite")))
         return RadioFamily::Hl2;
-    if (boardName.startsWith(QStringLiteral("Orion")))
+    if (boardName.startsWith(QStringLiteral("Orion")) ||
+        boardName == QStringLiteral("Hermes") ||
+        boardName == QStringLiteral("HermesII") ||
+        boardName == QStringLiteral("Angelia") ||
+        boardName == QStringLiteral("Atlas") ||
+        boardName.startsWith(QStringLiteral("Saturn")))
         return RadioFamily::AnanP1;
-    return RadioFamily::Hl2;
+    if (boardName.isEmpty())
+        return RadioFamily::Hl2;
+    return RadioFamily::AnanP1;
 }
 
 RadioFamily familyForDiscovery(int protocol, const QString &boardName) {
@@ -88,6 +94,12 @@ RadioFamily familyForDiscovery(int protocol, const QString &boardName) {
         // than guessing — none of those has a P2-capable catalog entry.
         if (boardName.startsWith(QStringLiteral("Saturn")))
             return RadioFamily::AnanP2;
+        // Brick3 is Angelia-class (deskHPSDR hermes_mode Brick3 /
+        // ANAN-100D). Brick2 and generic P2 Hermes stay BrickP2.
+        if (boardName.startsWith(QStringLiteral("Brick3")))
+            return RadioFamily::AnanP2;
+        if (boardName.startsWith(QStringLiteral("Brick")))
+            return RadioFamily::BrickP2;
         if (boardName == QStringLiteral("HermesII")  ||
             boardName == QStringLiteral("Angelia")   ||
             boardName == QStringLiteral("Orion")     ||
@@ -133,6 +145,9 @@ RigProfile rig(const QString &rigId) {
         p.audioRoute = s.value(QStringLiteral("audioRoute")).toString();
         p.firstSeen  = s.value(QStringLiteral("firstSeen")).toString();
         p.lastSeen   = s.value(QStringLiteral("lastSeen")).toString();
+        p.codeVersion = s.value(QStringLiteral("codeVersion"), 0).toInt();
+        p.betaVersion = s.value(QStringLiteral("betaVersion"), 0).toInt();
+        p.numRxs      = s.value(QStringLiteral("numRxs"), 0).toInt();
     }
     s.endGroup();
     return p;
@@ -163,6 +178,9 @@ void upsertRig(const RigProfile &p) {
     s.setValue(QStringLiteral("audioRoute"), p.audioRoute);
     s.setValue(QStringLiteral("firstSeen"), p.firstSeen);
     s.setValue(QStringLiteral("lastSeen"),  p.lastSeen);
+    s.setValue(QStringLiteral("codeVersion"), p.codeVersion);
+    s.setValue(QStringLiteral("betaVersion"), p.betaVersion);
+    s.setValue(QStringLiteral("numRxs"),      p.numRxs);
     s.endGroup();
 }
 

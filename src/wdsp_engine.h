@@ -37,10 +37,16 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "dsp/MonitorRing.h"   // #90 — TX-monitor SPSC ring (value member)
 #include "dsp/CwDecoder.h"     // #173 CW-5a — RX CW decoder (value member)
+#include "dsp/deepfist/NeuralCwDecoder.h" // DeepFist neural CW decoder (2nd engine)
+#include "dsp/CwArbiter.h"          // Auto-engine ownership arbiter (Phase 1)
+#include "dsp/deepfist/ScpLocal.h"  // Phase 3: RBN-confirmed local call list
+#include "dsp/deepfist/CwCaptureHarvester.h"  // Phase 2: training harvest
+#include "dsp/deepfist/CwHarvestRing.h"
 #include "dsp/FreqCalMeasure.h" // freq calibration — carrier tone estimator
 #include "dsp/ZeroBeat.h"       // zero-beat carrier-offset tuning aid (value member)
 
@@ -104,6 +110,9 @@ class WdspEngine : public QObject {
     Q_PROPERTY(double volume      READ volume      NOTIFY volumeChanged)
     Q_PROPERTY(double volumeDb    READ volumeDb    NOTIFY volumeChanged)
     Q_PROPERTY(bool   muted       READ muted       NOTIFY mutedChanged)
+    Q_PROPERTY(double volumeRx2   READ volumeRx2   NOTIFY volumeRx2Changed)
+    Q_PROPERTY(double volumeDbRx2 READ volumeDbRx2 NOTIFY volumeRx2Changed)
+    Q_PROPERTY(bool   mutedRx2    READ mutedRx2    NOTIFY mutedRx2Changed)
     // Auto-mute-on-TX (task #26): when the wire MOX bit settles true,
     // RX1 audio is force-muted so the operator doesn't self-deafen
     // off their own TX coupling.  Separate from the operator's manual
@@ -154,6 +163,14 @@ class WdspEngine : public QObject {
     // pitch) by the same rules applyModeFilter pushes to WDSP.
     Q_PROPERTY(double passbandLowHz  READ passbandLowHz  NOTIFY passbandChanged)
     Q_PROPERTY(double passbandHighHz READ passbandHighHz NOTIFY passbandChanged)
+    Q_PROPERTY(QString modeRx2 READ modeRx2 WRITE setModeRx2 NOTIFY modeRx2Changed)
+    Q_PROPERTY(int bandwidthRx2 READ bandwidthRx2 WRITE setBandwidthRx2
+               NOTIFY bandwidthRx2Changed)
+    Q_PROPERTY(double passbandLowHzRx2  READ passbandLowHzRx2
+               NOTIFY passbandRx2Changed)
+    Q_PROPERTY(double passbandHighHzRx2 READ passbandHighHzRx2
+               NOTIFY passbandRx2Changed)
+    Q_PROPERTY(int markerOffsetHzRx2 READ markerOffsetHzRx2 NOTIFY modeRx2Changed)
     // CW tone pitch (Hz).  In CW the displayed VFO is the signal CARRIER;
     // the DDS is offset by ±pitch so the carrier lands in the pitch-
     // centred filter (standard HF SDR convention).
@@ -176,6 +193,25 @@ class WdspEngine : public QObject {
     // separate CW decoder panel (CW-5b).
     Q_PROPERTY(bool cwDecodeEnabled READ cwDecodeEnabled WRITE setCwDecodeEnabled
                NOTIFY cwDecodeEnabledChanged)
+    // DeepFist — which CW decode engine is active (0=Classic fldigi, 1=Neural)
+    // and whether the neural model actually loaded (drives the panel's toggle
+    // + "model not found" status).
+    Q_PROPERTY(int cwDecodeEngine READ cwDecodeEngine WRITE setCwDecodeEngine
+               NOTIFY cwDecodeEngineChanged)
+    Q_PROPERTY(bool cwNeuralAvailable READ cwNeuralAvailable
+               NOTIFY cwNeuralAvailableChanged)
+    // Learn / Harvest are no longer user-facing chips.  Learn (record RBN-
+    // confirmed calls into the local SCP list) is ON for everyone by default,
+    // disabled only with LYRA_CW_LEARN=0.  Harvest (write trust-tiered CW audio
+    // segments to disk for DeepFist training) is a developer tool, OFF unless
+    // LYRA_CW_HARVEST is set truthy.  Both are read once at construction, so the
+    // panel binds them as CONSTANT.
+    Q_PROPERTY(bool cwLearnEnabled READ cwLearnEnabled CONSTANT)
+    Q_PROPERTY(bool cwHarvestEnabled READ cwHarvestEnabled CONSTANT)
+    // DeepFist — live CTC blank-logit penalty (0..5).  Higher recovers dropped
+    // chars on weak audio, adds spurious chars on strong signals.
+    Q_PROPERTY(double cwBlankPenalty READ cwBlankPenalty WRITE setCwBlankPenalty
+               NOTIFY cwBlankPenaltyChanged)
     // ── RX DSP operator controls (ported from old Lyra's DSP+AUDIO
     // panel).  Noise reduction = WDSP EMNR.  nrMode 1..4 picks the
     // gain function (Wiener+SPP / Wiener / MMSE-LSA / trained); AEPF is
@@ -190,10 +226,24 @@ class WdspEngine : public QObject {
     // (Long / Auto / Custom land with the rest of the AGC surface.)
     Q_PROPERTY(QString agcMode READ agcMode NOTIFY agcModeChanged)
     // Live AGC gain action (WDSP RXA_AGC_GAIN), dB — re-read at the 5 Hz
-    // levels poll.  agcThreshDb is the (currently fixed) AGC threshold the
-    // readout shows alongside it, matching old Lyra's "thr / gain" cells.
+    // levels poll.  agcThreshDb is the operator-set AGC knee/threshold
+    // (WDSP-dBFS) the readout shows alongside it, matching old Lyra's
+    // "thr / gain" cells; adjustable via setAgcThreshDb.
     Q_PROPERTY(double agcGainDb   READ agcGainDb   NOTIFY levelsChanged)
-    Q_PROPERTY(double agcThreshDb READ agcThreshDb CONSTANT)
+    Q_PROPERTY(double agcThreshDb READ agcThreshDb NOTIFY agcThreshDbChanged)
+    // Auto AGC-T (latching).  When on, a re-track timer re-anchors the knee to
+    // the live measured noise floor at a fixed cadence (reference-faithful: the
+    // reference latches the mode and re-tracks on a fixed 500 ms timer; the
+    // interval is not operator-exposed there and isn't here either).  Any
+    // manual threshold touch turns it off.  The AGC cell lights when engaged.
+    Q_PROPERTY(bool autoAgcThresh READ autoAgcThresh NOTIFY autoAgcThreshChanged)
+    // Auto AGC-T offset (dB): the knee is anchored to floor + this margin
+    // (reference-faithful — mirrors the reference's per-RX auto-AGC offset).
+    // Positive raises the knee = lowers the resulting AGC max-gain.
+    Q_PROPERTY(double autoAgcMarginDb READ autoAgcMarginDb NOTIFY autoAgcMarginDbChanged)
+    // Resulting AGC max-gain ceiling (WDSP GetRXAAGCTop), dB — the number the
+    // reference shows on its AGC-T display.  Re-read at the levels poll.
+    Q_PROPERTY(double agcMaxGainDb READ agcMaxGainDb NOTIFY levelsChanged)
     // ANF — auto-notch (LMS predictor that nulls carriers/heterodynes).
     Q_PROPERTY(bool anfEnabled READ anfEnabled NOTIFY anfChanged)
     // LMS — line enhancer (ANR predictor that lifts CW/tones).  strength
@@ -290,6 +340,9 @@ public:
     // Returns -200 when the RX channel isn't running.  Safe to call
     // from the UI thread (just reads WDSP's latest stored meter value).
     double sMeterDbm() const;
+    // RX2 (WDSP channel 2) RXA_S_PK — same units as sMeterDbm().
+    // −200 when SUB/RX2 is not open.
+    double sMeterDbmRx2() const;
     // Live AGC gain action in dB (WDSP RXA_AGC_GAIN); 0 when not running.
     double agcGainDb() const;
     // #158 (post-DL) TX dynamics meters re-homed onto the wire-live TXA
@@ -304,6 +357,9 @@ public:
     double volume() const { return volume_.load(std::memory_order_relaxed); }
     double volumeDb() const;   // slider position -> dB (for UI readout)
     bool   muted()  const { return muted_.load(std::memory_order_relaxed); }
+    double volumeRx2() const { return volumeRx2_.load(std::memory_order_relaxed); }
+    double volumeDbRx2() const;
+    bool   mutedRx2() const { return mutedRx2_.load(std::memory_order_relaxed); }
     bool   txMuted() const { return txMuted_.load(std::memory_order_relaxed); }
     bool   autoMuteOnTx() const { return autoMuteOnTx_.load(std::memory_order_relaxed); }
     int    rxResumeDelayMs() const { return rxResumeDelayMs_.load(std::memory_order_relaxed); }
@@ -374,6 +430,12 @@ public:
     // internally, as standard SDR apps rely on).  Plain C++ (not Q_INVOKABLE):
     // the panadapter is a C++ QQuickPaintedItem, not QML JS.
     int  spectrumPixelCount() const;
+    void setRxDisplayCalibrationDb(double db) {
+        rxDisplayCalibrationDb_.store(db, std::memory_order_relaxed);
+    }
+    double rxDisplayCalibrationDb() const {
+        return rxDisplayCalibrationDb_.load(std::memory_order_relaxed);
+    }
     int  copySpectrum(float *dst, int maxN);
     // §15.29 C1 — waterfall-specific spectrum read.  During TX state,
     // the analyzer is configured with n_pixout=2 (configureAnalyzerForTx)
@@ -411,6 +473,8 @@ public:
     // setAudioOutputDevice: switch output device live (restarts sink).
     Q_INVOKABLE void setVolume(double v);
     Q_INVOKABLE void setMuted(bool m);
+    Q_INVOKABLE void setVolumeRx2(double v);
+    Q_INVOKABLE void setMutedRx2(bool m);
     // Auto-mute-on-TX driver: setTxMuted is wired to HL2Stream's
     // moxActiveChanged(bool) signal in main.cpp — fires true at the end
     // of the keydown TR-delay (wire MOX bit settled) and false at the
@@ -441,6 +505,41 @@ public:
     Q_INVOKABLE void setAepfEnabled(bool on);
     Q_INVOKABLE void setNpeMethod(int method);   // 0=OSMS 1=MCRA
     Q_INVOKABLE void setAgcMode(const QString &mode);  // off/fast/med/slow
+    // AGC knee/threshold in WDSP-dBFS (more negative = more weak-signal
+    // headroom).  Re-derives the AGC ceiling via SetRXAAGCThresh; clamped
+    // to a sane operator range.  Rig-independent (WDSP RXA, post-ADC).
+    Q_INVOKABLE void setAgcThreshDb(double db);
+    // One-shot Auto: set the knee from the measured passband noise floor
+    // (WDSP-dBFS raw, from MeterModel.noiseFloorWdspRawDbFs()) + marginDb.
+    // Subtracts the per-bin noise_offset (WDSP re-adds it internally), so
+    // the effective knee lands on the floor + margin.  marginDb 0 matches
+    // the reference's default (knee on the floor).
+    Q_INVOKABLE void applyAutoAgcThresh(double passbandFloorRawDbFs,
+                                        double marginDb);
+    // Latching Auto AGC-T.  autoAgcThresh() is the live on/off state.
+    // setAutoAgcThresh(true) engages the latch (immediate re-track + a fixed
+    // 500 ms re-track cadence while on); setAutoAgcThresh(false) releases it.
+    bool autoAgcThresh() const { return autoAgcThresh_; }
+    Q_INVOKABLE void setAutoAgcThresh(bool on);
+    double autoAgcMarginDb() const { return autoAgcMarginDb_; }
+    // Offset (dB) the latch anchors above the floor.  Persisted; re-tracks
+    // immediately when the latch is engaged.  +ve lowers the AGC max-gain.
+    Q_INVOKABLE void setAutoAgcMarginDb(double db);
+    // Resulting AGC max-gain (WDSP GetRXAAGCTop); NaN when not running.  The
+    // reference-comparable number to dial the offset against.
+    double agcMaxGainDb() const;
+    // Robust noise floor (20th-pct of the engine's own analyzer spectrum, raw
+    // WDSP-dBFS) — the deskHPSDR-reference source the P2 Auto-AGC floor uses so
+    // an in-passband carrier can't drag the knee (unlike the passband S-meter
+    // min).  NaN until a spectrum exists.  Main-thread (re-track timer) only.
+    double spectrumFloorRawDbFs();
+    // Inject the live noise-floor source the latch re-anchors to (WDSP-dBFS
+    // raw, e.g. MeterModel::noiseFloorWdspRawDbFs()).  Called once at wire-up
+    // (mainwindow.cpp) after the MeterModel exists.  Owner keeps the model
+    // alive for the engine's lifetime.
+    void setAgcFloorProvider(std::function<double()> f) {
+        agcFloorProvider_ = std::move(f);
+    }
     bool anfEnabled()    const { return anfEnabled_; }
     bool lmsEnabled()    const { return lmsEnabled_; }
     double lmsStrength() const { return lmsStrength_; }
@@ -575,6 +674,13 @@ public:
 
     int  bandwidth() const { return bw_; }
     Q_INVOKABLE void setBandwidth(int hz);
+    QString modeRx2() const { return modeRx2_; }
+    Q_INVOKABLE void setModeRx2(const QString &m);
+    int  bandwidthRx2() const { return bwRx2_; }
+    Q_INVOKABLE void setBandwidthRx2(int hz);
+    double passbandLowHzRx2()  const { return passbandLowHzRx2_; }
+    double passbandHighHzRx2() const { return passbandHighHzRx2_; }
+    int  markerOffsetHzRx2() const { return cwMarkerOffsetForMode(modeRx2_); }
     // IQ sample rate (Hz).  Switching reopens the WDSP channel +
     // analyzer at the new rate (panadapter span follows).  Safe to call
     // while running — serialised against feedIq via channelMtx_.
@@ -607,6 +713,45 @@ public:
     // Live squelch signal metric (SNR 0..100) for the panel bar; polled by QML.
     Q_INVOKABLE double cwDecodeMetric() const { return cwDecoder_.squelchMetric(); }
     int  cwRxWpm() const { return cwDecoder_.rxWpm(); }
+
+    // DeepFist neural CW decoder — second, selectable engine.  Both engines
+    // share the CW-mode-gated audio tap; only the selected one runs.  Unlike
+    // the classic engine (incremental cwDecodedChar), the neural engine emits
+    // the FULL decoded text of the current 6 s window via cwNeuralText.
+    int  cwDecodeEngine() const { return cwEngine_.load(std::memory_order_relaxed); }
+    Q_INVOKABLE void setCwDecodeEngine(int engine);
+    bool cwNeuralAvailable() const { return neuralCw_.ready(); }
+    bool cwLearnEnabled()   const { return cwLearnEnabled_; }
+    bool cwHarvestEnabled() const { return cwHarvestEnabled_; }
+
+    // CW panel — is this decoded token a KNOWN-REAL callsign?  Exact
+    // MASTER.SCP membership (loaded with the neural model), OR'd with the
+    // Phase-3 local list of RBN-confirmed calls heard at this station (live —
+    // a call noted this session ambers immediately; the rescorer picks it up
+    // at the next model load).
+    Q_INVOKABLE bool cwCallKnown(const QString& call) {
+        const std::string u = call.trimmed().toUpper().toStdString();
+        if (neuralCw_.scpKnows(u)) return true;
+        ensureCwScpLocal();
+        return cwScpLocal_.contains(u);
+    }
+
+    // CW panel — remember an RBN/cluster-confirmed call copied off the air
+    // (the cwLearnEnabled gate lives in QML; this always records).  GUI
+    // thread only.
+    Q_INVOKABLE void cwNoteConfirmedCall(const QString& call);
+
+    // Phase 2 harvest — opt-in capture of trust-tiered CW segments for
+    // DeepFist training (spec §6).  Enabling creates <Documents>/Lyra/
+    // cw_harvest, allocates the ring+harvester and starts a 1 Hz pump worker;
+    // disabling stops the worker.  GUI thread.
+    Q_INVOKABLE void setCwCaptureEnabled(bool on);
+    Q_INVOKABLE int  cwCaptureCount() const {
+        return cwHarvester_ ? cwHarvester_->segmentsWritten() : 0;
+    }
+
+    double cwBlankPenalty() const { return neuralCw_.blankPenalty(); }
+    Q_INVOKABLE void setCwBlankPenalty(double p);
     // Task #53 — shared RX+TX filter low edge.  Affects only the
     // ASYMMETRIC SSB / DIG modes (USB/LSB/DIGU/DIGL).  CW filter
     // is centred on the pitch (low edge isn't a meaningful axis);
@@ -630,6 +775,8 @@ public:
     // `edgeOffsetHz` (offset from the tuned centre) in the current mode.
     // The panadapter edge-drag calls this, then writes Prefs.rxBandwidth.
     Q_INVOKABLE int bandwidthForEdge(double edgeOffsetHz) const;
+    Q_INVOKABLE int bandwidthForModeEdge(const QString &mode,
+                                         double edgeOffsetHz) const;
     Q_INVOKABLE QStringList audioOutputDevices() const;
     Q_INVOKABLE void setAudioOutputDevice(int index);
 
@@ -659,13 +806,13 @@ public:
     // Persisted (QSettings vac1/*); applied live (rebuild on enable/device,
     // SetIVACrxscale on gain).  vac1OutputDevices() is the PC output list
     // for the picker (= IvacAudio::outputDevices()).
-    bool    vac1Enabled() const           { return vac1Enabled_; }
-    QString vac1OutputDeviceName() const  { return vac1OutName_; }
-    double  vac1RxGainDb() const          { return vac1RxGainDb_; }
+    bool    vac1Enabled() const           { return vac_[kVac1Id].enabled; }
+    QString vac1OutputDeviceName() const  { return vac_[kVac1Id].outName; }
+    double  vac1RxGainDb() const          { return vac_[kVac1Id].rxGainDb; }
     // Reference "Auto Enable for Digital modes": when on, VAC1 follows the
     // operating mode (live in DIGU/DIGL, off otherwise) and the manual
     // Enable is the moot baseline; when off, the manual Enable applies.
-    bool    vac1AutoDigital() const       { return vac1AutoDigital_; }
+    bool    vac1AutoDigital() const       { return vac_[kVac1Id].autoDigital; }
     Q_INVOKABLE QStringList vac1OutputDevices() const;
     // #158 DL-3 — Thetis-faithful "Driver" (host-API) + PortAudio device
     // pickers.  vac1HostApiNames() lists host APIs that have devices (parallel
@@ -676,17 +823,18 @@ public:
     QList<int>              vac1HostApiPaIndices() const;
     Q_INVOKABLE QStringList vac1OutputDevicesFor(int paHostApi) const;
     Q_INVOKABLE QStringList vac1InputDevicesFor(int paHostApi) const;
-    QString                 vac1HostApiName() const { return vac1HostApiName_; }
+    QString                 vac1HostApiName() const { return vac_[kVac1Id].hostApiName; }
     Q_INVOKABLE void        setVac1HostApi(const QString &name);
     Q_INVOKABLE void setVac1Enabled(bool on);
     Q_INVOKABLE void setVac1OutputDeviceName(const QString &name);
     Q_INVOKABLE void setVac1RxGainDb(double db);
     Q_INVOKABLE void setVac1AutoDigital(bool on);
     // VAC-in (PC → TX): input device + TX gain (reference "Gain TX (dB)" →
-    // vac_preamp).  The captured PC audio reaches TX only when the mic-source
-    // selector picks "PC Soundcard (VAC1)" (use_vac_audio).
-    QString vac1InputDeviceName() const   { return vac1InName_; }
-    double  vac1TxGainDb() const          { return vac1TxGainDb_; }
+    // vac_preamp).  TX also arms when Auto-enable for digital modes is on,
+    // mode is DIGU/DIGL, a VAC Input device is selected, AND Mic source is
+    // not TCI (TCI CAT + TCI audio is left alone).
+    QString vac1InputDeviceName() const   { return vac_[kVac1Id].inName; }
+    double  vac1TxGainDb() const          { return vac_[kVac1Id].txGainDb; }
     Q_INVOKABLE QStringList vac1InputDevices() const;
     Q_INVOKABLE void setVac1InputDeviceName(const QString &name);
     Q_INVOKABLE void setVac1TxGainDb(double db);
@@ -695,8 +843,8 @@ public:
     // ring depth (+ PA suggested latency); vac1VacSize = PortAudio block.  Both
     // are create-time / ring-rebuild params, so the setters reopen VAC when
     // live (like the device setters).  Carried per-profile (schema v5).
-    int     vac1LatencyMs() const         { return vac1LatencyMs_; }
-    int     vac1VacSize() const           { return vac1VacSize_; }
+    int     vac1LatencyMs() const         { return vac_[kVac1Id].latencyMs; }
+    int     vac1VacSize() const           { return vac_[kVac1Id].vacSize; }
     Q_INVOKABLE void setVac1LatencyMs(int ms);
     Q_INVOKABLE void setVac1VacSize(int frames);
     // Live rmatchV ring diagnostics for the Settings VAC tab (reference VAC1
@@ -707,17 +855,58 @@ public:
     // (cable→TX).  (The reference ivac.c comment reverses these; the code's
     // rmatchOUT/IN mapping is authoritative — Ivac.cpp:797-800.)
     Q_INVOKABLE QVariantMap vac1Diags();
-    bool    vac1CombineInput() const      { return vac1CombineInput_; }
+    bool    vac1CombineInput() const      { return vac_[kVac1Id].combineInput; }
     Q_INVOKABLE void setVac1CombineInput(bool on);
     // #161 — "Mute will mute VAC".  Reference MuteWillMuteVAC1: when set, the
     // operator mute also zeroes the RX→VAC feed (the monitor volume rides it
     // unconditionally — see dispatchAudioFrame).  Default ON.
-    bool    muteWillMuteVac() const       { return muteWillMuteVac_.load(std::memory_order_relaxed); }
+    bool    muteWillMuteVac() const       { return vac_[kVac1Id].muteWillMuteVac_.load(std::memory_order_relaxed); }
     Q_INVOKABLE void setMuteWillMuteVac(bool on);
     // #158 DL-4 — RX→VAC muted during TX (reference SetIVACmox what-flag
     // gating).  Driven off the HL2Stream MOX edge (connected in main.cpp);
     // no-op when VAC1 isn't live.
     void setVacMox(bool on);
+
+    // VAC2 (#103) — second full-duplex cable, RX2 audio. Independent
+    // devices/gains; TX uses this slot only when Mic source is VAC2
+    // (micpc2) or VAC2 auto-digital is the only live VAC TX path.
+    bool    vac2Enabled() const           { return vac_[kVac2Id].enabled; }
+    QString vac2OutputDeviceName() const  { return vac_[kVac2Id].outName; }
+    double  vac2RxGainDb() const          { return vac_[kVac2Id].rxGainDb; }
+    bool    vac2AutoDigital() const       { return vac_[kVac2Id].autoDigital; }
+    Q_INVOKABLE QStringList vac2OutputDevices() const;
+    Q_INVOKABLE QStringList vac2HostApiNames() const;
+    QList<int>              vac2HostApiPaIndices() const;
+    Q_INVOKABLE QStringList vac2OutputDevicesFor(int paHostApi) const;
+    Q_INVOKABLE QStringList vac2InputDevicesFor(int paHostApi) const;
+    QString                 vac2HostApiName() const { return vac_[kVac2Id].hostApiName; }
+    Q_INVOKABLE void        setVac2HostApi(const QString &name);
+    Q_INVOKABLE void setVac2Enabled(bool on);
+    Q_INVOKABLE void setVac2OutputDeviceName(const QString &name);
+    Q_INVOKABLE void setVac2RxGainDb(double db);
+    Q_INVOKABLE void setVac2AutoDigital(bool on);
+    QString vac2InputDeviceName() const   { return vac_[kVac2Id].inName; }
+    double  vac2TxGainDb() const          { return vac_[kVac2Id].txGainDb; }
+    Q_INVOKABLE QStringList vac2InputDevices() const;
+    Q_INVOKABLE void setVac2InputDeviceName(const QString &name);
+    Q_INVOKABLE void setVac2TxGainDb(double db);
+    int     vac2LatencyMs() const         { return vac_[kVac2Id].latencyMs; }
+    int     vac2VacSize() const           { return vac_[kVac2Id].vacSize; }
+    Q_INVOKABLE void setVac2LatencyMs(int ms);
+    Q_INVOKABLE void setVac2VacSize(int frames);
+    Q_INVOKABLE QVariantMap vac2Diags();
+    bool    vac2CombineInput() const      { return vac_[kVac2Id].combineInput; }
+    Q_INVOKABLE void setVac2CombineInput(bool on);
+    bool    vac2MuteWillMuteVac() const {
+        return vac_[kVac2Id].muteWillMuteVac_.load(std::memory_order_relaxed);
+    }
+    Q_INVOKABLE void setVac2MuteWillMuteVac(bool on);
+    int  txSourceVacId() const { return txSourceVacId_; }
+    void setTxSourceVacId(int id);
+    // TCI exclusive. Explicit micpc / micpc2 wins. Else auto-digital with
+    // a live Input device (VAC1 preferred if both). Sets txSourceVacId_.
+    // Returns true if the modulator should take VAC inbound (use_vac_audio).
+    bool applyMicSourceToVacTx(const QString &micSource);
 
     // #59 RX EQ — point the post-RXA audio at the RX EqModel's engine +
     // analyzer (nullptr to detach).  dispatchAudioFrame applies it (mono-dup,
@@ -761,11 +950,23 @@ public:
     // automatically on destruction.
     Q_INVOKABLE void closeRx1();
 
+    // Second RX (WDSP channel 2 = xrouter source 2 / DDC1). Opened only
+    // while SUB is on. Channel 1 is reserved (DDC2/3 PureSignal).
+    Q_INVOKABLE bool openRx2();
+    Q_INVOKABLE void closeRx2();
+    Q_INVOKABLE void setSubEnabled(bool on);
+    void feedIqRx2(const double *iq, int nframes);
+
 signals:
     void runningChanged();
     void levelsChanged();
     void volumeChanged();
     void mutedChanged();
+    void volumeRx2Changed();
+    void mutedRx2Changed();
+    void modeRx2Changed();
+    void bandwidthRx2Changed();
+    void passbandRx2Changed();
     void txMutedChanged();
     void autoMuteOnTxChanged();
     void rxResumeDelayMsChanged();
@@ -775,6 +976,7 @@ signals:
     void monVolumeChanged();
     void audioDeviceChanged();
     void vac1Changed();   // #158 — VAC1 enable / device / RX gain
+    void vac2Changed();   // #103 — VAC2 enable / device / RX gain
     void zoomChanged();
     void spanChanged();   // displayed span changed (rate OR zoom)
     void modeChanged();
@@ -788,10 +990,25 @@ signals:
     void cwDecodeEnabledChanged();
     void cwDecodedChar(QString ch, double confidence);  // decoded unit (conf always 1)
     void cwRxWpmChanged(int wpm);            // fldigi RX speed
+    // DeepFist — engine selection changed; neural model availability resolved;
+    // and the full current-window neural decode (replace-mode display).
+    void cwDecodeEngineChanged();
+    void cwNeuralAvailableChanged();
+    void cwBlankPenaltyChanged();
+    void cwNeuralText(QString windowText);
+    // Auto engine — unified arbiter output; fallback == true when the Classic
+    // safety net produced it (panel dims that run).
+    void cwAutoText(QString text, bool fallback);
+    // DeepFist CTC-lattice callsign verdict (confident only): best = the
+    // lattice-preferred call, orig = the greedy decode (== best when confirmed).
+    void cwNeuralCall(QString best, QString orig, double marginNats);
     // Freq calibration — one emit per analysis window while measuring.
     void freqCalUpdated(double measuredHz, double snrDb, int windows);
     void nrChanged();        // NR enable / mode / AEPF / NPE
     void agcModeChanged();
+    void agcThreshDbChanged();
+    void autoAgcThreshChanged();
+    void autoAgcMarginDbChanged();
     void anfChanged();
     void lmsChanged();       // LMS enable / strength
     void notchesChanged();   // NF run / list add / remove / edit
@@ -839,9 +1056,10 @@ private:
     static void aamixOutbound(int id, int nsamples, double *buff);
     // #158 (#161 UAF fix) — VAC-in → TX bridge.  Like aamixOutbound, a
     // static member so the wire's plain void(*)(int,double*) fn ptr can
-    // still reach the private vac1Active_/vacMtx_ via g_aamixOutboundSelf.
+    // still reach per-VAC active_/mtx_ via g_aamixOutboundSelf.
     // The cm_main TX pump calls it at the mic block rate when the mic
-    // source is VAC1; the vacMtx_+vac1Active_ gate (mirroring
+    // source is the selected VAC (VAC1 until V2-3); the per-id mutex+
+    // active_ gate (mirroring
     // dispatchAudioFrame) keeps xvacIN off a freed / mid-rebuilt rmatchIN
     // during a VAC device change or enable/disable.
     static void vacInboundCb(int nsamples, double *buff);
@@ -862,6 +1080,15 @@ private:
     void pushNrState();
     // Push the current AGC mode (SetRXAAGCMode).  No-op when closed.
     void pushAgcMode();
+    void pushAgcThresh();   // re-derive AGC ceiling from agcThreshDb_
+    // Auto AGC-T re-track: read the floor provider, derive+apply the knee WITHOUT
+    // persisting (the timer path — no QSettings write spam).  No-op unless the
+    // latch is on, the channel is open, and the floor reads valid.
+    void retrackAutoAgc();
+    // Clamp/store/push agcThreshDb_ + emit, WITHOUT persisting to QSettings.
+    // The no-persist core of setAgcThreshDb; the latch timer uses this.
+    void applyAgcThreshNoPersist(double db);
+    void ensureCwScpLocal();    // lazy load of scp_local.txt (GUI thread)
     // Push ANF (auto-notch) + LMS (line enhancer) run/vals.  No-op when
     // closed; channel-parameterized for RX2 reuse.
     void pushAnfState();
@@ -887,7 +1114,11 @@ private:
     void resetBinaural();
     // Passband edges (Hz offsets from centre) for mode_ + bw_ + pitch.
     void computePassband(double *lo, double *hi) const;
+    void computePassband(const QString &mode, int bw,
+                         double *lo, double *hi) const;
     void recomputePassband();   // store + emit passbandChanged
+    void applyModeFilterRx2();
+    void recomputePassbandRx2();
 
     // ── Task #44 Phase 2 — analyzer (re)config helpers ───────────────
     // Both factor the SetAnalyzer + detector/average mode setup that
@@ -899,12 +1130,21 @@ private:
     // max_w 13696.  Both helpers are pure WDSP reconfiguration — the
     // analyzer ID + lifecycle stay owned by openRx1/closeRx1.
     //
-    // PRECONDITION (both): channelMtx_ held by caller.  Matches the
-    // openRx1 caller-holds convention.  Both ALSO acquire
-    // analyzerMtx_ internally to serialize SetAnalyzer vs Spectrum0
-    // feeds (amendment A.5).  No-op if analyzerOpen_ is false.
+    // PRECONDITION (both public forms): channelMtx_ held by caller.
+    // Matches the openRx1 caller-holds convention.  The public forms
+    // acquire analyzerMtx_ internally to serialize the SetAnalyzer
+    // reconfigure vs Spectrum0 feeds AND vs the GetPixels readers
+    // (amendment A.5 + the analyzer-lifetime extension: analyzerMtx_
+    // is now taken by copySpectrum/copyWaterfallSpectrum too, so a
+    // rate-change reopen can't free the analyzer under a paint read).
+    // The _locked forms carry the body; PRECONDITION: caller ALSO
+    // holds analyzerMtx_ (openRx1 holds it across XCreateAnalyzer +
+    // configure so no reader sees a created-but-unconfigured analyzer).
+    // No-op if analyzerOpen_ is false.
     void configureAnalyzerForRx() noexcept;
     void configureAnalyzerForTx() noexcept;
+    void configureAnalyzerForRx_locked() noexcept;   // analyzerMtx_ held
+    void configureAnalyzerForTx_locked() noexcept;   // analyzerMtx_ held
 
     // P4.b TUN display-honesty crop helpers (shared by copySpectrum +
     // copyWaterfallSpectrum).  txAnalyzerOffBins() converts the live
@@ -923,7 +1163,19 @@ private:
     // on the RX worker thread — so a rate change can't tear the channel
     // down mid-process.
     std::mutex  channelMtx_;
+    std::mutex  rx2Mtx_;
     int         channel_ = 0;
+    int         rx2Channel_ = 2;
+    bool        rx2Opened_ = false;
+    bool        subWanted_ = false;
+    bool        nbCreatedRx2_ = false;
+    int         fexErrRx2_ = 0;
+    std::atomic<bool> subMixActive_{false};
+    std::atomic<bool> haveRx2_{false};
+    std::vector<double> rx2Accum_;
+    std::vector<double> rx2OutBuf_;
+    std::vector<double> rx2NbBuf_;
+    std::vector<double> rx2L_;
     int         outSize_ = 0;
     bool        opened_  = false;
     bool        running_ = false;
@@ -1009,6 +1261,8 @@ private:
     // restored from QSettings in the ctor (default UNMUTED).
     std::atomic<double> volume_{0.65};
     std::atomic<bool>   muted_{false};
+    std::atomic<double> volumeRx2_{0.65};
+    std::atomic<bool>   mutedRx2_{false};
     // Auto-mute-on-TX (task #26).  txMuted_ tracks the live wire MOX bit
     // (false at boot; toggled by HL2Stream::moxActiveChanged).  Not
     // persisted — pure transient.  autoMuteOnTx_ is the operator's
@@ -1053,6 +1307,10 @@ private:
     // (UI setters + openRx1).  Default USB 2.4 kHz; CW centres on pitch.
     QString mode_       = QStringLiteral("USB");
     int     bw_         = 2400;
+    QString modeRx2_    = QStringLiteral("USB");
+    int     bwRx2_      = 2400;
+    double  passbandLowHzRx2_  = 200.0;
+    double  passbandHighHzRx2_ = 2400.0;
     double  cwPitchHz_  = 600.0;
     // Task #53 — shared RX+TX filter low edge (operator-tunable).
     // Default 100 Hz; setFilterLowHz clamps to [0, 500].
@@ -1068,6 +1326,24 @@ private:
     bool    aepfEnabled_ = true;
     int     npeMethod_   = 0;            // 0=OSMS 1=MCRA
     QString agcMode_     = QStringLiteral("med");
+    double  agcThreshDb_ = -100.0;   // WDSP-dBFS AGC knee (persisted; see kAgcThreshDbFs)
+    // Latching Auto AGC-T state.  autoAgcThresh_ is persisted; the timer runs
+    // always (constructed in the ctor) and its tick early-returns unless the
+    // latch is engaged.  agcFloorProvider_ is injected at wire-up.  Margin 0
+    // matches the reference (knee on the measured floor).
+    bool    autoAgcThresh_    = false;
+    double  autoAgcMarginDb_  = 0.0;
+    QTimer  autoAgcTimer_;
+    std::function<double()> agcFloorProvider_;
+    // Auto AGC-T stabilization (2026-09-10, deskHPSDR-informed + 2 red-team):
+    // EMA-smoothed floor (self-reseeding on a large domain-shift jump) + a
+    // max-gain ceiling realised as a knee lower-bound in applyAutoAgcThresh.
+    // All runtime-only (never persisted).  Touched only from the timer slot /
+    // setAutoAgcThresh on the main thread.
+    double  autoAgcFloorEma_  = 0.0;     // EMA of the provider floor (dBFS)
+    bool    autoAgcEmaSeeded_ = false;   // false => next finite read seeds directly
+    bool    autoAgcPrevTx_    = false;   // TX-edge tracker (reseed EMA on TX->RX)
+    std::vector<float> specFloorScratch_;  // reusable buffer for spectrumFloorRawDbFs()
     bool    anfEnabled_  = false;
     bool    lmsEnabled_  = false;
     double  lmsStrength_ = 0.5;          // 0..1 (0.5 ≈ WDSP-class default)
@@ -1138,6 +1414,7 @@ private:
     // garbage feeding the zoom crop).  GUI-thread only (the QQuickWidget
     // panadapter + waterfall reads are serialised).
     std::vector<float> specCache_;
+    std::atomic<double> rxDisplayCalibrationDb_{0.0};
     // §15.29 C1 — pixout=1 waterfall cache, mirrors specCache_ but
     // populated by copyWaterfallSpectrum's GetPixels(pixout=1) during
     // TX state.  Separate cache because pixout=0 and pixout=1 have
@@ -1175,37 +1452,42 @@ private:
     // the verbatim wire/AAMix.h direct port.
     lyra::wire::AAMIX aaMix_ = nullptr;
 
-    // ── #158 Stage 3 — VAC1 VAC-out (radio RX audio → a PC output
-    // device, for WSJT-X / MSHV / etc.).  The IVAC engine instance
-    // (wire/Ivac, id kVac1Id) + its Qt device layer (IvacAudio).  RX
-    // audio is teed POST-RXA — the dispatchAudioFrame `audio` param,
-    // BEFORE the operator's monitor volume/mute/balance — so a digital
-    // app receives steady-level audio regardless of how the operator
-    // rides their speaker volume (matches the reference's separate
-    // VAC vs AF-gain paths).  Fed via xvacOUT(stream=1); IvacAudio
-    // drains rmatchOUT to the sink.  vac1Active_ gates the hot-path
-    // tee; vacMtx_ serialises the mix-thread xvacOUT against
-    // main-thread (re)build/teardown so destroy_ivac can never free a
-    // ring mid-xvacOUT.  Lifecycle hangs off openRx1/closeRx1, so a
-    // sample-rate reopen rebuilds at the new audio_size/audio_rate.
-    // Bench-enabled via LYRA_VAC1_OUT (Stage 6 adds the Settings UI);
-    // VAC-in (mic → TX) is Stage 4.
-    static constexpr int kVac1Id = 0;
-    void rebuildVac1();      // reconcile: teardown then (re)start iff should-be-on
-    void teardownVac1();     // StopAudioIVAC + destroy_ivac; idempotent
+    // ── VAC (wire/Ivac) — two slots (VAC1 id 0, VAC2 id 1).  Per-id
+    // mtx_ serialises mix-thread xvacOUT / TX-pump xvacIN against
+    // main-thread rebuild/teardown.  VAC2 tees RX2 (SUB); TX uses one
+    // slot via txSourceVacId_ (micpc / micpc2 / auto-digital).
+    static constexpr int kVacCount = 2;
+    static constexpr int kVac1Id   = 0;
+    static constexpr int kVac2Id   = 1;
+    struct VacState {
+        bool enabled      = false;
+        bool autoDigital  = false;
+        bool combineInput = true;
+        QString outName;
+        QString inName;
+        QString hostApiName;
+        double rxGainDb = 0.0;
+        double txGainDb = 3.0;
+        int    vacSize  = 2048;
+        int    latencyMs = 120;
+        std::atomic<bool> active_{false};
+        std::mutex        mtx_;
+        std::atomic<bool> muteWillMuteVac_{true};
+        std::vector<double> rxScaled_;
+    };
+    VacState vac_[kVacCount];
+    // Which VAC feeds the TX modulator (one modulator; picker or auto-digital).
+    int txSourceVacId_ = kVac1Id;
+
+    void rebuildVac(int id);   // teardown then (re)start iff should-be-on
+    void teardownVac(int id);  // StopAudioIVAC + destroy_ivac; idempotent
+    void rebuildVac1()  { rebuildVac(kVac1Id); }
+    void rebuildVac2()  { rebuildVac(kVac2Id); }
+    void teardownVac1() { teardownVac(kVac1Id); }
+    QVariantMap vacDiagsFor(int id);
     void applyVacEnvOnce();  // read LYRA_VAC1_OUT / _VAC_SIZE once (bench hook)
-    // Desired live state: auto-digital mode → on iff the current mode is
-    // DIGU/DIGL; otherwise the operator's manual Enable.
-    bool vac1ShouldBeOn() const;
-    // #158 DL-2 — the device layer is the reference's single full-duplex
-    // PortAudio stream owned by the wire/Ivac engine instance (StartAudioIVAC /
-    // StopAudioIVAC on kVac1Id), NOT a Qt IvacAudio member.  IvacAudio's static
-    // outputDevices()/inputDevices() still feed the Settings combos until DL-3.
-    std::atomic<bool>     vac1Active_{false};
-    std::mutex            vacMtx_;
-    // #161 — operator "Mute will mute VAC" (reference MuteWillMuteVAC1).
-    // Read on the audio thread in dispatchAudioFrame; default ON.
-    std::atomic<bool>     muteWillMuteVac_{true};
+    bool vacShouldBeOn(int id) const;
+    bool vac1ShouldBeOn() const { return vacShouldBeOn(kVac1Id); }
 
     // #59 RX EQ — engine + analyzer (RX EqModel-owned; atomic for the audio
     // thread), the digital-mode auto-bypass flag (set in setMode), and the
@@ -1221,6 +1503,27 @@ private:
     // cwModeActive_ (set in setMode) gates to CWU/CWL; cwDecodeOn_ is the
     // operator enable.  cwMonoBuf_ holds the de-interleaved mono block.
     lyra::dsp::CwDecoder                 cwDecoder_;
+
+    // DeepFist neural CW decoder — second engine sharing the same tap.
+    // cwEngine_: 0 = Classic (fldigi), 1 = Neural (DeepFist), 2 = Auto (arbiter).
+    lyra::dsp::NeuralCwDecoder           neuralCw_;
+    lyra::dsp::CwArbiter                 cwArbiter_;   // Auto: owns display handoff
+    std::atomic<int>                     cwEngine_{0};
+    lyra::dsp::ScpLocal                  cwScpLocal_;       // Phase 3 local calls
+    bool                                 cwScpLocalLoaded_ = false;
+
+    // Phase 2 harvest — allocated on first enable (opt-in, default off).
+    std::unique_ptr<lyra::dsp::CwHarvestRing>       cwHarvestRing_;
+    std::unique_ptr<lyra::dsp::DeepFistResampler>   cwHarvestDecim_;
+    std::unique_ptr<lyra::dsp::CwCaptureHarvester>  cwHarvester_;
+    std::vector<float>                              cwHarvestTmp_;
+    std::atomic<bool>                               cwCaptureOn_{false};
+    std::thread                                     cwHarvestWorker_;
+    std::atomic<bool>                               cwHarvestRun_{false};
+    // Env-gated at construction (no UI chips): Learn on unless LYRA_CW_LEARN=0;
+    // Harvest off unless LYRA_CW_HARVEST is set truthy (developer capture).
+    bool                                            cwLearnEnabled_{true};
+    bool                                            cwHarvestEnabled_{false};
 
     // Zero-beat tuning aid.  zeroBeat_ is touched ONLY on the RX worker
     // (feedIq); zbRunPrev_/zbRate_ are worker-only edge trackers.  The result
@@ -1244,31 +1547,11 @@ private:
     std::atomic<bool>                    cwDecodeOn_{false};
     std::atomic<bool>                    cwModeActive_{false};
     std::vector<float>                   cwMonoBuf_;
-    bool                  vac1Enabled_   = false;  // operator opt-in (Settings / env)
-    bool                  vac1AutoDigital_ = false; // auto-enable for DIGU/DIGL
-    QString               vac1OutName_;            // PC output device description ("" = none)
-    QString               vac1InName_;             // PC input device description ("" = none)
-    QString               vac1HostApiName_;        // #158 DL-3 chosen PA host API ("" = first WASAPI)
-    bool                  vacMox_ = false;         // #158 DL-4 last MOX state (re-applied on rebuild)
-    double                vac1TxGainDb_  = 3.0;    // VAC TX gain (reference default +3 dB) → vac_preamp
-    bool                  vac1CombineInput_ = true; // mono-combine VAC-in I=Q=(L+R) (reference vac_combine_input)
-    int                   vac1VacSize_   = 2048;   // VAC buffer (reference default 2048)
-    int                   vac1LatencyMs_ = 120;    // rmatchV ring depth (reference VAC default)
-    // VAC RX gain (reference "Gain RX (dB)" → vac_rx_scale → SetIVACrxscale
-    // → the mixer's input-0 gain).  Reference default 0 dB (unity).
-    // Operator-adjustable (env LYRA_VAC1_RX_GAIN_DB now; a dB spinner in
-    // Settings at Stage 6, mirroring the Thetis VAC dialog).  Stored as the
-    // linear scale SetIVACrxscale wants (0 dB = 1.0).  NOTE: the Stage-3 tap
-    // is post-RXA so it also tracks AF Gain — keep AF Gain nominal, then
-    // trim here, until a pre-AF tap lands.
-    double                vac1RxGainDb_  = 0.0;     // reference default 0 dB
+    bool                  vacMox_ = false;         // #158 DL-4 last MOX (re-applied on rebuild)
     bool                  vacEnvApplied_ = false;
-    // The IVAC mixer is a 2-input AAMix (RX audio + TX monitor) created
-    // active=3, so its mix_main WaitForMultipleObjects(…, TRUE) blocks
-    // until BOTH inputs signal Ready each block.  Stage 3 has no TX-monitor
-    // tap yet, so we feed input 1 (xvacOUT stream 2) a silence block every
-    // RX frame to keep the mixer synced — exactly as the reference feeds a
-    // silent TX monitor during RX.  Sized 2*outSize_ in rebuildVac1.
+    // Shared 2-input IVAC mixer silence for stream 2 (TX monitor) during
+    // RX.  Sized 2*outSize_ in rebuildVac(id).  Shared across VAC1/VAC2
+    // until V2-2 (same outSize_).
     std::vector<double>   vacMonSilence_;
     // #90 TX monitor — post-rack mic captured on the cm_main TX thread
     // (txMonitorTapCb), drained on the audio thread (dispatchAudioFrame,
@@ -1276,10 +1559,6 @@ private:
     lyra::dsp::MonitorRing monitorRing_;
     std::vector<double>    monScratch_;   // #90 audio-thread drain scratch (mono)
     std::vector<double>    vacMonStereo_; // #90 Route 2 — VAC stream-2 stereo feed
-    // #161 — RX audio scaled by the monitor volume(+mute) for the VAC tee
-    // (reference RXOutputGain is pre-tap).  Kept separate so the sink loop
-    // still receives the raw post-RXA `audio`.  Sized 2*outSize_ on first use.
-    std::vector<double>   vacRxScaled_;
 };
 
 } // namespace lyra::dsp

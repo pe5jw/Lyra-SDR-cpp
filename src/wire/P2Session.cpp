@@ -3,7 +3,16 @@
 
 #include "P2Session.h"
 
+#include "P2TxCmaster.h"   // setP2TxCmasterChannelRunning — run the TXA channel with the DUC transport
+
 #include <QtEndian>
+#include <QAbstractSocket>
+#include <QNetworkInterface>
+#include <QVariant>
+#include <QTimer>
+#include <algorithm>
+#include <array>
+#include <cmath>
 
 namespace lyra::wire {
 
@@ -31,6 +40,34 @@ inline quint32 phaseWord(quint32 hz) {
         hz * (4294967296.0 / kSaturnClockHz) + 0.5);
 }
 
+// deskHPSDR binds the P2 data socket to the discovery NIC's IPv4
+// (new_protocol.c: interface_address). Binding AnyIPv4 lets Windows
+// accept DDC0 (UDP 1035) and drop DDC1 (1036) as a separate Public-
+// profile flow. Match the radio onto a same-subnet local address.
+QHostAddress localIpv4OnSameSubnet(const QHostAddress &radio) {
+    if (radio.protocol() != QAbstractSocket::IPv4Protocol)
+        return {};
+    const quint32 r = radio.toIPv4Address();
+    const auto ifaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &iface : ifaces) {
+        const auto flags = iface.flags();
+        if (!(flags & QNetworkInterface::IsUp) ||
+            (flags & QNetworkInterface::IsLoopBack))
+            continue;
+        for (const QNetworkAddressEntry &e : iface.addressEntries()) {
+            if (e.ip().protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+            const quint32 ip = e.ip().toIPv4Address();
+            const quint32 mask = e.netmask().toIPv4Address();
+            if (mask == 0)
+                continue;
+            if ((ip & mask) == (r & mask))
+                return e.ip();
+        }
+    }
+    return {};
+}
+
 // ---- Saturn / ANAN G2 front-end words --------------------------------
 // Bit layout = Thetis network.h rbpfilter (the 32-bit Alex word whose
 // high half goes to HP bytes 1432-33 and low half to 1434-35).
@@ -43,14 +80,43 @@ inline quint32 phaseWord(quint32 hz) {
 //   (8/9/10 = XVTR/EXT1/EXT2 inputs, 11 = RX bypass out, 13/14 =
 //   Alex attens — all 0: RX comes from the TRX antenna via the TR
 //   relay, no ext routing.)
-quint16 saturnAlexRxWord(quint32 hz) {
-    if (hz <  1'500'000u) return 1u << 12;   // below BPF range → bypass
-    if (hz <  6'500'000u) return 1u << 6;
-    if (hz <  9'500'000u) return 1u << 5;
-    if (hz < 13'000'000u) return 1u << 4;
-    if (hz < 20'000'000u) return 1u << 1;
-    if (hz < 50'000'000u) return 1u << 2;
-    return 1u << 3;                          // 6 m BPF/preamp
+quint16 saturnAlexRxWord(quint32 hz, P2RxInput input, bool hpfBypass) {
+    quint16 w = 0;
+    switch (input) {
+        case P2RxInput::Bypass: w |= 1u << 10; break;
+        case P2RxInput::Ext1:   w |= 1u << 9;  break;
+        case P2RxInput::Xvtr:   w |= 1u << 8;  break;
+        case P2RxInput::Trx:                         break;
+    }
+    if (hpfBypass || hz < 1'500'000u) return w | (1u << 12);
+    if (hz <  2'100'000u) return w | (1u << 6); // 1.5 MHz HPF
+    if (hz <  5'500'000u) return w | (1u << 5); // 6.5 MHz HPF
+    if (hz < 11'000'000u) return w | (1u << 4); // 9.5 MHz HPF
+    if (hz < 22'000'000u) return w | (1u << 1); // 13 MHz HPF
+    if (hz < 35'000'000u) return w | (1u << 2); // 20 MHz HPF
+    if (hz <= 61'440'000u) return w | (1u << 3); // 6 m BPF/LNA
+    return w | (1u << 12); // outside Thetis's configured BPF1 table
+}
+
+// Classic Alex HPF (ANAN-10 / 10E / 100 / 100B / 100D / 200D). deskHPSDR
+// new_protocol.c default HPF path — same wire bits as Saturn BPF, older
+// band edges (1.8 / 6.5 / 9.5 / 13 / 20 / 50 MHz). Do not use on
+// OrionMkII / Saturn (those stay saturnAlexRxWord).
+quint16 classicAlexRxWord(quint32 hz, P2RxInput input, bool hpfBypass) {
+    quint16 w = 0;
+    switch (input) {
+        case P2RxInput::Bypass: w |= 1u << 10; break;
+        case P2RxInput::Ext1:   w |= 1u << 9;  break;
+        case P2RxInput::Xvtr:   w |= 1u << 8;  break;
+        case P2RxInput::Trx:                         break;
+    }
+    if (hpfBypass || hz < 1'800'000u) return w | (1u << 12);
+    if (hz <  6'500'000u) return w | (1u << 6); // 1.5 MHz HPF
+    if (hz <  9'500'000u) return w | (1u << 5); // 6.5 MHz HPF
+    if (hz < 13'000'000u) return w | (1u << 4); // 9.5 MHz HPF
+    if (hz < 20'000'000u) return w | (1u << 1); // 13 MHz HPF
+    if (hz < 50'000'000u) return w | (1u << 2); // 20 MHz HPF
+    return w | (1u << 3);                       // 6 m preamp
 }
 
 // TX halfword bits (32-bit word bits 16..31 → u16 0..15):
@@ -61,12 +127,12 @@ quint16 saturnAlexRxWord(quint32 hz) {
 // Thetis's Alex LPF defaults.
 quint16 saturnAlexTxWord(quint32 hz, int trxAnt) {
     quint16 w = 0;
-    if      (hz <  2'000'000u) w |= 1u << 7;    // 160 m LPF
-    else if (hz <  4'000'000u) w |= 1u << 6;    // 80 m
-    else if (hz <  7'300'000u) w |= 1u << 5;    // 60/40 m
-    else if (hz < 14'350'000u) w |= 1u << 4;    // 30/20 m
-    else if (hz < 21'450'000u) w |= 1u << 15;   // 17/15 m
-    else if (hz < 29'700'000u) w |= 1u << 14;   // 12/10 m
+    if      (hz <  2'500'001u) w |= 1u << 7;    // 160 m LPF
+    else if (hz <  5'000'001u) w |= 1u << 6;    // 80 m
+    else if (hz <  8'000'001u) w |= 1u << 5;    // 60/40 m
+    else if (hz < 16'500'001u) w |= 1u << 4;    // 30/20 m
+    else if (hz < 24'000'001u) w |= 1u << 15;   // 17/15 m
+    else if (hz < 35'600'001u) w |= 1u << 14;   // 12/10 m
     else                       w |= 1u << 13;   // 6 m
     switch (trxAnt) {
         default:
@@ -78,34 +144,71 @@ quint16 saturnAlexTxWord(quint32 hz, int trxAnt) {
 }
 
 const P2HardwareProfile kSaturnProfile = {
-    "Saturn (ANAN G2)", 10, 10, 2,
+    "ANAN-G2", "Saturn (ANAN G2)", 10, 10, 2,
     &saturnAlexRxWord, &saturnAlexTxWord,
+};
+
+// Classic-Alex ANAN on Protocol 2. TX is dummy-load / Arm-P2-TX only
+// (txOnAirValidated=false) until a tester benches RF on that box.
+const P2HardwareProfile kHermesAlexP2 = {
+    "ANAN-100", "Hermes-class ANAN (classic Alex)", 1, 10, 1,
+    &classicAlexRxWord, &saturnAlexTxWord,
+};
+const P2HardwareProfile kAngeliaOrionAlexP2 = {
+    "ANAN-100D", "Angelia/Orion ANAN (classic Alex)", 3, 10, 2,
+    &classicAlexRxWord, &saturnAlexTxWord,
+};
+
+// BrickSDR (Hermes-class P2) has NO Alex front end -- its onboard LPF
+// self-selects in gateware from the tuned frequency (catalog hasAlex=false).
+// So the Alex0 TX+RX halfwords ([1432..1435]) stay zero -- byte-for-byte
+// what the bench-confirmed Brick RX already sent while running with
+// profile_==nullptr.  This is the Saturn per-band-Alex ladder the Brick
+// deliberately avoids; do NOT point these at saturnAlex*Word.
+//
+// S-T0 = un-grey "Arm P2 TX" only (txHardwareSupported_ = profile!=nullptr).
+// It is RF-inert and RX-byte-identical: adcCount=1 matches the pkt[4]
+// nullptr-default, and both word functors return 0 like the skipped block.
+// S-T1 replaces brickAlexTxWord with the captured fixed TX front-end
+// constant (OC 0x04 / the 08 04 01 00 ... relay bytes) -- which only ever
+// reaches the wire during TX.
+quint16 brickAlexRxWord(quint32, P2RxInput, bool) { return 0; }
+quint16 brickAlexTxWord(quint32, int) { return 0; }  // S-T1: captured constant
+
+const P2HardwareProfile kBrickProfile = {
+    "BRICK-SDR", "BrickSDR",
+    1,   // boardId: bHermes (P2 discovery reply [11]); informational, unconsumed
+    1,   // ddcCount: informational, unconsumed (the RX loop uses kNumDdc)
+    1,   // adcCount: CONSUMED (pkt[4]) -- Hermes-class single ADC; == RX default
+    &brickAlexRxWord, &brickAlexTxWord,
+    true,  // fixedTxFrontEnd: assert the captured fixed TX/T-R constant on key
+    true,  // txOnAirValidated: BrickSDR2 SSB first contact on air (v0.22.0) —
+           // keys like HL2 (Enable PA + MOX + Drive), no transient arm.
 };
 } // namespace
 
-const P2HardwareProfile *p2ProfileForBoard(int boardId) {
-    // Saturn (board 10/11) is the only family bench-verified against
-    // real hardware.  It is ALSO the correct table for the rest of
-    // the classic-Alex-board family (Hermes/HermesII/Angelia/Orion/
-    // OrionMKII) — Thetis's own console.cs draws the Saturn/OrionMKII
-    // split only on WHICH UI Setup-form fields supply the band-edge
-    // thresholds (setBPF1ForOrionIISaturn vs setAlexHPF); the actual
-    // bits written (NetworkIO.SetAlexHPFBits/SetAlexLPFBits) are
-    // IDENTICAL either way.  So this covers every Alex-equipped P2
-    // board with the correct BIT ENCODING; only the hardcoded band-
-    // edge THRESHOLDS in saturnAlexRxWord/TxWord are Saturn-typical
-    // approximations on non-Saturn hardware, not independently
-    // bench-verified there.  Atlas (no Alex board) and anything
-    // unrecognized get nullptr rather than a silently-possibly-wrong
-    // guess; the caller (P2RxBridge::open) logs a warning when this
-    // happens instead of defaulting quietly.
-    switch (boardId) {
-        case 1: case 2: case 3: case 4: case 5:   // Hermes..OrionMKII
-        case 10: case 11:                          // Saturn, SaturnMKII
-            return &kSaturnProfile;
-        default:
-            return nullptr;
-    }
+const P2HardwareProfile *p2ProfileForModel(const QString &modelKey) {
+    if (modelKey.compare(QLatin1String("ANAN-G2"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("ANAN-G2-1K"), Qt::CaseInsensitive) == 0)
+        return &kSaturnProfile;
+    // BRICK-SDR2 = the pre-generalization key; the catalog resolves it to
+    // BRICK-SDR, but a saved profile may still carry it here.
+    if (modelKey.compare(QLatin1String("BRICK-SDR"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("BRICK-SDR2"), Qt::CaseInsensitive) == 0)
+        return &kBrickProfile;
+    // Hermes-class ANAN (1 ADC, classic HPF). Shipped as P1; P2 FPGA is
+    // the Lyra path. Discovery "Hermes" still defaults to BrickP2 — pick
+    // these keys in Settings.
+    if (modelKey.compare(QLatin1String("ANAN-10"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("ANAN-10E"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("ANAN-100"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("ANAN-100B"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("HERMES"), Qt::CaseInsensitive) == 0)
+        return &kHermesAlexP2;
+    if (modelKey.compare(QLatin1String("ANAN-100D"), Qt::CaseInsensitive) == 0 ||
+        modelKey.compare(QLatin1String("ANAN-200D"), Qt::CaseInsensitive) == 0)
+        return &kAngeliaOrionAlexP2;
+    return nullptr;
 }
 
 P2Session::P2Session(QObject *parent)
@@ -116,8 +219,8 @@ P2Session::P2Session(QObject *parent)
     // main-thread affinity while open()/onHpTick() ran on the session
     // thread — cross-thread QUdpSocket/QTimer use, which crashed the
     // app on the first P2 open (bench 2026-07-18, AV in lyra.exe).
-    : QObject(parent), sock_(this), hpTimer_(this) {
-    profile_ = p2ProfileForBoard(10);   // Saturn default
+    : QObject(parent), sock_(this), hpTimer_(this), txPrimeTimer_(this),
+      txWriter_(this), txPump_(this) {
     // Bench-sane default: every DDC parked on 20 m until told otherwise
     // (the radio requires a plausible frequency word even for DDCs that
     // will never be enabled — zeros are legal but this keeps DDC0 useful
@@ -126,7 +229,27 @@ P2Session::P2Session(QObject *parent)
 
     hpTimer_.setInterval(kHpPeriodMs);
     connect(&hpTimer_, &QTimer::timeout, this, &P2Session::onHpTick);
+    txPrimeTimer_.setInterval(kTxPrimePollMs);
+    txPrimeTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&txPrimeTimer_, &QTimer::timeout,
+            this, &P2Session::onTxPrimeTick);
     connect(&sock_, &QUdpSocket::readyRead, this, &P2Session::onReadyRead);
+    // The CMaster producer is routed into this process-lifetime FIFO by
+    // P2RxBridge while a P2 radio is open. The writer starts only after
+    // radio status and FIFO priming; RF fields remain independently gated.
+    txWriter_.setInputFifo(&p2TxInputFifo());
+    txWriter_.setPacketSink([this](const QByteArray &packet) {
+        if (open_)
+            sock_.writeDatagram(packet, radioAddr_, kPortDucIqToSdr);
+    });
+    txWriter_.setFaultSink([this]() {
+        onTxTransportCadenceFault(QStringLiteral(
+            "TX-IQ pacing deadline/FIFO fault"));
+    });
+    txPump_.setFaultSink([this]() {
+        onTxTransportCadenceFault(QStringLiteral(
+            "CMaster producer deadline/input fault"));
+    });
 }
 
 P2Session::~P2Session() {
@@ -136,6 +259,12 @@ P2Session::~P2Session() {
 void P2Session::setDdcFrequencyHz(int ddc, quint32 hz) {
     if (ddc < 0 || ddc >= static_cast<int>(ddcFreqHz_.size())) return;
     ddcFreqHz_[static_cast<std::size_t>(ddc)] = hz;
+    // DDC0 is already on the 100 ms HP cadence. SUB DDC phase words must
+    // land before we wait another tick — firmware that keys DDC1/2/3 off
+    // the HP word otherwise streams silence.
+    if (open_ && ddc >= 1)
+        sock_.writeDatagram(buildHighPriorityPacket(true), radioAddr_,
+                            kPortHpToSdr);
 }
 
 void P2Session::enableDdc(int ddc, quint16 rateKhz) {
@@ -144,35 +273,169 @@ void P2Session::enableDdc(int ddc, quint16 rateKhz) {
     ddcEnabled_[i]    = true;
     ddcRateKhz_[i]    = rateKhz;
     ddcSeqStarted_[i] = false;   // stream (re)starts — reseed seq tracking
+    if (ddc == 1) {
+        warnedNoDdc1Iq_ = false;
+        ddc1IqOkLogged_ = false;
+        ddc1IqLogLeft_  = 30;
+        unmatchedIqLogLeft_ = 12;
+    }
     // Push the new config now rather than waiting for the 5 s refresh.
-    if (open_)
-        sock_.writeDatagram(buildDdcSpecificPacket(), radioAddr_, kPortDdcConfig);
+    if (open_) {
+        sendDdcSpecificToRadio(true);
+        punchEnabledDdcIqFirewalls();
+        if (ddc == 1)
+            scheduleDdc1FirewallPunch();
+    }
 }
 
 void P2Session::disableDdc(int ddc) {
     if (ddc < 0 || ddc >= kNumDdc) return;
     ddcEnabled_[static_cast<std::size_t>(ddc)] = false;
+    if (ddc == 1) {
+        warnedNoDdc1Iq_ = false;
+        ddc1IqOkLogged_ = false;
+        ddc1IqLogLeft_  = 0;
+        unmatchedIqLogLeft_ = 0;
+    }
     if (open_)
-        sock_.writeDatagram(buildDdcSpecificPacket(), radioAddr_, kPortDdcConfig);
+        sendDdcSpecificToRadio(true);
+}
+
+void P2Session::armSubSecondaryDdcs(quint16 rateKhz, quint32 freqHz) {
+    const bool alreadyArmed =
+        ddcEnabled_[1] && ddcRateKhz_[1] == rateKhz;
+    ddcFreqHz_[1] = freqHz;
+    ddcEnabled_[1] = true;
+    ddcRateKhz_[1] = rateKhz;
+    ddcEnabled_[2] = false;
+    ddcEnabled_[3] = false;
+    if (alreadyArmed) {
+        // VFO B / SPLIT retune: phase word rides the HP packet. A full
+        // general + receive_specific blast on every 1 kHz step does not
+        // start DDC1 and floods :1024/:1025.
+        if (open_ && hpTimer_.isActive())
+            sock_.writeDatagram(buildHighPriorityPacket(true), radioAddr_,
+                                kPortHpToSdr);
+        return;
+    }
+    warnedNoDdc1Iq_ = false;
+    ddc1IqOkLogged_ = false;
+    ddc1IqLogLeft_ = 30;
+    unmatchedIqLogLeft_ = 12;
+    subIqLatchDdc_ = -1;
+    ddcSeqStarted_[1] = false;
+    if (!open_ || !hpTimer_.isActive())
+        return;  // handshake still pending; finishOpenHandshake programs mask
+    emit logLine(QStringLiteral(
+        "P2: SUB arm — receive_specific DDC0+DDC1 slots, mask bit1, "
+        "then 1-byte host punch to radio:1036 (Windows UDP return path)"));
+    sendDdcSpecificToRadio(true);
+    sock_.writeDatagram(buildHighPriorityPacket(true), radioAddr_,
+                        kPortHpToSdr);
+    punchEnabledDdcIqFirewalls();
+    scheduleDdc1FirewallPunch();
+}
+
+void P2Session::disarmSubSecondaryDdcs() {
+    subIqLatchDdc_ = -1;
+    warnedNoDdc1Iq_ = false;
+    ddc1IqOkLogged_ = false;
+    ddc1IqLogLeft_ = 0;
+    unmatchedIqLogLeft_ = 0;
+    for (int d = 1; d <= 3; ++d)
+        ddcEnabled_[static_cast<std::size_t>(d)] = false;
+    if (open_)
+        sendDdcSpecificToRadio(true);
+}
+
+bool P2Session::shouldFeedRx2(int ddc) {
+    if (!ddcEnabled_[1] || ddc != 1) return false;
+    if (subIqLatchDdc_ != 1) {
+        subIqLatchDdc_ = 1;
+        emit logLine(QStringLiteral(
+            "P2: SUB IQ from radio UDP %1 (DDC1) — feeding WDSP RX2")
+                         .arg(kPortDdcIq0 + 1));
+    }
+    return true;
+}
+
+void P2Session::punchDdcIqFirewall(int ddc) {
+    if (!open_ || ddc < 0 || ddc >= kNumDdc) return;
+    const char b = 0;
+    sock_.writeDatagram(&b, 1, radioAddr_,
+                        static_cast<quint16>(kPortDdcIq0 + ddc));
+}
+
+void P2Session::punchEnabledDdcIqFirewalls() {
+    punchDdcIqFirewall(0);
+    if (ddcEnabled_[1])
+        punchDdcIqFirewall(1);
+}
+
+void P2Session::scheduleDdc1FirewallPunch() {
+    if (!open_ || !ddcEnabled_[1])
+        return;
+    const quint32 epoch = openEpoch_;
+    QTimer::singleShot(80, this, [this, epoch]() {
+        if (!open_ || epoch != openEpoch_ || !ddcEnabled_[1])
+            return;
+        punchDdcIqFirewall(1);
+    });
+}
+
+void P2Session::ingestRadioDatagram(quint16 senderPort, const QByteArray &buf) {
+    // Protocol 2 IQ identity is the *radio source* port (1035+n). Never
+    // remap a 1035 packet because it landed on a well-known dest.
+    if (senderPort == kPortHpFromSdr && buf.size() == kStatusLen) {
+        parseStatus(buf);
+    } else if (senderPort >= kPortDdcIq0 &&
+               senderPort <  kPortDdcIq0 + kNumDdc &&
+               buf.size() == kIqFrameLen) {
+        parseIqFrame(senderPort - kPortDdcIq0, buf);
+    } else if (senderPort == kPortMicFromSdr &&
+               buf.size() == kMicPktLen) {
+        parseMic(buf);
+    } else if (unmatchedIqLogLeft_ > 0 &&
+               senderPort != kPortHpFromSdr) {
+        --unmatchedIqLogLeft_;
+        emit logLine(QStringLiteral(
+            "P2: unmatched UDP from radio src port %1 size %2 "
+            "(SUB IQ is 1444 bytes from src 1036)")
+                         .arg(senderPort).arg(buf.size()));
+    }
+}
+
+void P2Session::setDdcAdc(int ddc, int adc) {
+    if (ddc < 0 || ddc >= kNumDdc || adc < 0 || adc > 1) return;
+    ddcAdc_[static_cast<std::size_t>(ddc)] = static_cast<quint8>(adc);
+    if (open_)
+        sendDdcSpecificToRadio(true);
 }
 
 QByteArray P2Session::buildGeneralPacket() const {
     QByteArray pkt(kGeneralLen, char{0});
+    const auto tx = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
     // [0..3] sequence stays 0 (control packets never increment — see
-    // header).  [4] = 0x00 general command.  Stream port fields [5..22]
-    // stay 0 = "use HPSDR default ports" (1025/1026/1027/1028/1029/
-    // 1035+ — the radio's SetPort(0) fills them in).  Wideband [23..28]
-    // stays 0 = off.  [37] option flags: bit 0x08 = frequencies are DDS
-    // phase words — matches what the HP fields actually carry (see
-    // phaseWord(); the radio's HP handler hardcodes phase-word decode
-    // anyway, but declaring it keeps us honest).  No timestamps/VITA-49.
+    // header).  [4] = 0x00 general command.
+    //
+    // All port fields stay 0. This session uses one ephemeral socket, so
+    // filling PC-origin 1025–1029 would tell firmware to expect DDC/HP
+    // from sockets we never bind. Filling radio-origin 1025/1035/1026
+    // stalled DDC0 ~44 s on this Brick until status arrived; DDC1 still
+    // never emitted. Firmware defaults those source ports.
+    // Wideband [23..28] stays 0 = off.  [37] option flags: bit 0x08 =
+    // frequencies are DDS phase words — matches what the HP fields actually
+    // carry (see phaseWord(); the radio's HP handler hardcodes phase-word
+    // decode anyway, but declaring it keeps us honest).  No timestamps/VITA-49.
     pkt[37] = char{0x08};
     // [38] bit0 = hardware watchdog ENABLED: if this client dies, the
     // radio unkeys and idles ~1 s later instead of holding a dead
     // session — the RF-safe failure mode.
     pkt[38] = char{0x01};
-    // [58] radio options = 0: PA DISABLED (Phase B never transmits),
-    // no Apollo.  [59] Alex enable = 0.
+    // [58] bit0 is PA enable. The safety gate returns false unless every
+    // live prerequisite is healthy and the operator bench arm is set.
+    pkt[58] = tx.paEnabled ? char{0x01} : char{0x00};
+    // No Apollo. [59] Alex enable remains 0.
     return pkt;
 }
 
@@ -187,16 +450,31 @@ QByteArray P2Session::buildDdcSpecificPacket() const {
     // Interleave sync words [1363+2p] stay zero.  Disabled DDCs may
     // leave rate/size zero (unvalidated while off).
     QByteArray pkt(kDdcSpecificLen, char{0});
-    pkt[4] = char{0x02};
+    pkt[4] = static_cast<char>(profile_ ? profile_->adcCount : 1);
     quint16 mask = 0;
+    // deskHPSDR programs every receiver slot (RECEIVERS=2 on Hermes/Brick)
+    // even when RX2 is off. Only the enable bits gate the stream. Slot 1
+    // left at rate=0 while SUB is later armed is a firmware-miss we hit
+    // on this Brick (DDC1 never emitted). Always fill DDC0+DDC1.
+    const int fillSlots = 2;
     for (int i = 0; i < kNumDdc; ++i) {
         const auto n = static_cast<std::size_t>(i);
-        if (!ddcEnabled_[n]) continue;
-        mask |= static_cast<quint16>(1u << i);
+        if (ddcEnabled_[n])
+            mask |= static_cast<quint16>(1u << i);
+        if (i >= fillSlots && !ddcEnabled_[n])
+            continue;
         const int off = 17 + 6 * i;
-        pkt[off]     = char{0x00};                     // source: ADC1
-        pkt[off + 1] = static_cast<char>(ddcRateKhz_[n] >> 8);
-        pkt[off + 2] = static_cast<char>(ddcRateKhz_[n] & 0xFF);
+        // deskHPSDR: n_adc<=1 always assigns ADC 0. A persisted ADC1
+        // index on a 1-ADC Brick leaves DDC1 on a missing converter.
+        quint8 adc = ddcAdc_[n];
+        if (!profile_ || profile_->adcCount <= 1)
+            adc = 0;
+        quint16 rate = ddcRateKhz_[n];
+        if (rate == 0)
+            rate = ddcRateKhz_[0] ? ddcRateKhz_[0] : quint16{192};
+        pkt[off]     = static_cast<char>(adc);
+        pkt[off + 1] = static_cast<char>(rate >> 8);
+        pkt[off + 2] = static_cast<char>(rate & 0xFF);
         pkt[off + 5] = char{24};                       // 24-bit samples
     }
     pkt[7] = static_cast<char>(mask & 0xFF);           // LE enable mask
@@ -204,41 +482,297 @@ QByteArray P2Session::buildDdcSpecificPacket() const {
     return pkt;
 }
 
+void P2Session::sendDdcSpecificToRadio(bool logConfig) {
+    if (!open_) return;
+    QByteArray pkt = buildDdcSpecificPacket();
+    const quint32 seq = ddcSpecificSeq_++;
+    wrBeU32(pkt.data(), seq);
+    sock_.writeDatagram(pkt, radioAddr_, kPortDdcConfig);
+    if (!logConfig) return;
+    const quint16 mask =
+        static_cast<quint8>(pkt[7]) |
+        (static_cast<quint16>(static_cast<quint8>(pkt[8])) << 8);
+    const quint8 adc0 = static_cast<quint8>(pkt[17]);
+    const quint8 adc1 = static_cast<quint8>(pkt[23]);
+    const quint16 rate0 = (static_cast<quint8>(pkt[18]) << 8) |
+                          static_cast<quint8>(pkt[19]);
+    const quint16 rate1 = (static_cast<quint8>(pkt[24]) << 8) |
+                          static_cast<quint8>(pkt[25]);
+    const quint8 adc2 = static_cast<quint8>(pkt[29]);
+    const quint8 adc3 = static_cast<quint8>(pkt[35]);
+    const quint16 rate2 = (static_cast<quint8>(pkt[30]) << 8) |
+                          static_cast<quint8>(pkt[31]);
+    const quint16 rate3 = (static_cast<quint8>(pkt[36]) << 8) |
+                          static_cast<quint8>(pkt[37]);
+    emit logLine(
+        QStringLiteral(
+            "P2: DDC-specific seq=%1 mask=0x%2 adcCount=%3 "
+            "DDC0 adc=%4 %5 kHz DDC1 adc=%6 %7 kHz")
+            .arg(seq)
+            .arg(mask, 4, 16, QLatin1Char('0'))
+            .arg(profile_ ? profile_->adcCount : 0)
+            .arg(adc0)
+            .arg(rate0)
+            .arg(adc1)
+            .arg(rate1)
+        + QStringLiteral(" DDC2 adc=%1 %2 kHz DDC3 adc=%3 %4 kHz DDC1Hz=%5")
+              .arg(adc2)
+              .arg(rate2)
+              .arg(adc3)
+              .arg(rate3)
+              .arg(ddcFreqHz_[1]));
+}
+
 QByteArray P2Session::buildHighPriorityPacket(bool run) const {
     QByteArray pkt(kHpLen, char{0});
-    // [0..3] sequence 0 (control).  [4]: bit0 run; transmit bit1 and
-    // PureSignal bit7 stay 0 in Phase B — this session cannot key RF.
-    pkt[4] = run ? char{0x01} : char{0x00};
+    const auto tx = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
+    // [0..3] sequence 0 (control). [4]: bit0 run, bit1 gated transmit;
+    // PureSignal bit7 remains off until its separate validation phase.
+    const bool transmit = run && tx.transmit;
+    pkt[4] = static_cast<char>((run ? 0x01 : 0x00) |
+                               (transmit ? 0x02 : 0x00));
     // [5] CWX off; [6..8] must be zero (hardened p2app rejects the
     // packet otherwise — protocol2_command.c validation).
     for (std::size_t i = 0; i < ddcFreqHz_.size(); ++i)
         wrBeU32(pkt.data() + 9 + i * 4,
                 phaseWord(ddcFreqHz_[i]));      // DDC freq, phase word (BE)
     wrBeU32(pkt.data() + 329, phaseWord(ducFreqHz_));  // DUC (TX) phase word
-    // [345] drive level 0.  [1396..99] client control word + CAT port 0.
+    pkt[345] = static_cast<char>(analogDriveByte_(tx));
+    // [1396..99] client control word + CAT port 0.
     // [1400..03] xvtr/mute/OC/user outputs 0.
     // [1428..31] Alex1 words 0 (no second Alex; the fw>=12 TXANT
     // branch in p2app then applies Alex0 to both filter registers).
     // [1432..35] Alex0 TX + RX halfwords from the hardware profile —
     // the RF front end (BPF/LPF select + TRX antenna route).  Derived
-    // from DDC0's dial every build, so band changes re-filter at the
-    // 100 ms cadence.  All-zero here = disconnected front end.
+    // from the independent DUC/DDC carriers every build, so band changes
+    // re-filter at the 100 ms cadence. All-zero here = disconnected front
+    // end.
     if (profile_) {
-        const quint32 f = ddcFreqHz_[0];
-        const quint16 txw = profile_->alexTxWord(f, trxAntenna_);
-        const quint16 rxw = profile_->alexRxWord(f);
+        const quint16 txw =
+            profile_->alexTxWord(ducFreqHz_, trxAntenna_);
+        const quint16 rxw =
+            profile_->alexRxWord(ddcFreqHz_[0], rxInput_, hpfBypass_);
         pkt[1432] = static_cast<char>(txw >> 8);
         pkt[1433] = static_cast<char>(txw & 0xFF);
         pkt[1434] = static_cast<char>(rxw >> 8);
         pkt[1435] = static_cast<char>(rxw & 0xFF);
     }
-    // [1442..43] ADC2/ADC1 step attenuation 0 dB (max legal 31).
+    // S-T1 BrickSDR fixed TX front-end + T/R assertion.  Band-independent
+    // constant captured verbatim from a working reference->Brick P2 keydown
+    // (SDRProject/brick_p2_hp_diff.log, 2026-08-01): OC[1402]=0x04, Alex1
+    // [1428..1430]=08 04 01, Alex0 TX halfword [1432..1433]=08 04.  The
+    // Brick's onboard LPFs self-select in gateware from the DUC carrier;
+    // this is the T/R + enable the radio needs to actually key.  On the wire
+    // ONLY while transmitting (overrides the all-zero profile words above);
+    // every byte returns to zero on unkey, so RX stays byte-identical.
+    if (transmit && profile_ && profile_->fixedTxFrontEnd) {
+        pkt[1402] = char{0x04};
+        pkt[1428] = char{0x08};
+        pkt[1429] = char{0x04};
+        pkt[1430] = char{0x01};
+        pkt[1432] = char{0x08};
+        pkt[1433] = char{0x04};
+        // DDC0 frequency word tracks the DUC while keyed so a cross-band
+        // TX VFO still produces RF on radios whose TX path samples DDC0.
+        // DDC0 stays disabled; only the phase word is overlaid.
+        wrBeU32(pkt.data() + 9, phaseWord(ducFreqHz_));
+    }
+    const bool keyedWithPa = transmit && tx.paEnabled;
+    pkt[1442] = static_cast<char>(overlayAdcAttByte(1, keyedWithPa));
+    pkt[1443] = static_cast<char>(overlayAdcAttByte(0, keyedWithPa));
     return pkt;
 }
 
 void P2Session::setTrxAntenna(int ant) {
     if (ant < 1 || ant > 3) return;
     trxAntenna_ = ant;
+}
+
+void P2Session::setAdcAttenuation(int adc, int db) {
+    if (adc < 0 || adc >= static_cast<int>(adcAttenuation_.size())) return;
+    adcAttenuation_[static_cast<std::size_t>(adc)] =
+        static_cast<quint8>(std::clamp(db, 0, 31));
+    sendDucSpecificIfOpen();
+}
+
+void P2Session::setAttOnTx(bool enabled, int db) {
+    attOnTxEnabled_ = enabled;
+    attOnTxDb_ = std::clamp(db, 0, 31);
+    sendDucSpecificIfOpen();
+    if (!open_)
+        return;
+    if (P2TxSafetyGate::evaluate(txIntent_, txSafety_).transmit)
+        applyTxControlNow();
+}
+
+quint8 P2Session::overlayAdcAttByte(int adcIndex, bool keyedWithPa) const {
+    if (keyedWithPa && attOnTxEnabled_)
+        return static_cast<quint8>(std::clamp(attOnTxDb_, 0, 31));
+    if (adcIndex < 0 ||
+        adcIndex >= static_cast<int>(adcAttenuation_.size()))
+        return 0;
+    return adcAttenuation_[static_cast<std::size_t>(adcIndex)];
+}
+
+QByteArray P2Session::buildDucSpecificPacket() const {
+    P2DucConfig cfg = ducConfig_;
+    const auto tx = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
+    const bool keyedWithPa = tx.transmit && tx.paEnabled;
+    const quint8 a0 = overlayAdcAttByte(0, keyedWithPa);
+    const quint8 a1 = overlayAdcAttByte(1, keyedWithPa);
+    cfg.txAttenuationDb[0] = a0;
+    cfg.txAttenuationDb[1] = a1;
+    cfg.txAttenuationDb[2] = a0;
+    return P2TxPackets::encodeDucSpecific(cfg);
+}
+
+void P2Session::sendDucSpecificIfOpen() {
+    if (!open_)
+        return;
+    sock_.writeDatagram(buildDucSpecificPacket(), radioAddr_, kPortDucConfig);
+}
+
+void P2Session::diagnosticArmHealthyTx(bool transmit, bool pa, int drive) {
+    txSafety_.operatorArmed = true;
+    txSafety_.sessionRunning = true;
+    txSafety_.iqPrimed = true;
+    txSafety_.transportRunning = true;
+    txSafety_.telemetryHealthy = true;
+    txSafety_.watchdogEnabled = true;
+    txSafety_.faultLatched = false;
+    if (transmit) {
+        txIntent_.transmitRequested = true;
+        txIntent_.paRequested = pa;
+        txIntent_.drive = std::clamp(drive, 0, 255);
+    } else {
+        txIntent_ = {};
+    }
+}
+
+void P2Session::setTxOperatorArmed(bool armed) {
+    if (!armed)
+        txIntent_ = {};
+    txSafety_.operatorArmed = armed;
+    if (open_)
+        applyTxControlNow();
+    emitTxState(armed
+        ? QStringLiteral("Bench interlock armed")
+        : QStringLiteral("Bench interlock disarmed"));
+    emit logLine(armed
+        ? QStringLiteral(
+              "P2 TX: bench interlock ARMED; PA enable + MOX/PTT + "
+              "non-zero limited drive can now request RF")
+        : QStringLiteral(
+              "P2 TX: bench interlock disarmed; transmit/PA/drive forced off"));
+}
+
+int P2Session::analogDriveByte_(const P2TxEffectiveState &tx) const {
+    if (!tx.transmit || !tx.paEnabled)
+        return 0;
+    int drive = static_cast<int>(tx.drive);
+    if (wireDriveProvider_) {
+        const int emitted = std::clamp(wireDriveProvider_(), 0, 255);
+        drive = std::min(emitted, static_cast<int>(txSafety_.driveCeiling));
+    }
+    return drive;
+}
+
+void P2Session::setWireDriveProvider(std::function<int()> provider) {
+    wireDriveProvider_ = std::move(provider);
+}
+
+void P2Session::setTxDriveCeiling(int ceilingByte) {
+    txSafety_.driveCeiling =
+        static_cast<std::uint8_t>(std::clamp(ceilingByte, 0, 255));
+    if (open_)
+        applyTxControlNow();
+}
+
+void P2Session::setTransmitIntent(bool on, bool paRequested, int drive) {
+    // RX status is only ~5 Hz and can pause during harmless Windows/Qt
+    // scheduling stalls. Do not strand the receive-only transport for
+    // that. A *new* key request requires fresh telemetry; a drive/PA
+    // refresh while already keyed must not latch (Settings paint + cap
+    // fold used to re-enter here and lock Tune until Lyra restarted).
+    const bool alreadyKeyed = txIntent_.transmitRequested;
+    if (on && !alreadyKeyed
+        && (!statusAge_.isValid() || statusAge_.elapsed() > 1000)) {
+        txSafety_.telemetryHealthy = false;
+        latchTxFault(QStringLiteral(
+            "MOX/PTT rejected because status telemetry is stale"));
+        return;
+    }
+    if (on) {
+        txIntent_.transmitRequested = true;
+        txIntent_.paRequested = paRequested;
+        txIntent_.drive = std::clamp(drive, 0, 255);
+    } else {
+        txIntent_ = {};
+        if (txSafety_.faultLatched) {
+            // Host unkey (including a watts-cap cut) — re-prime so Tune
+            // works without restarting the app. Fail-closed while keyed.
+            QTimer::singleShot(0, this, [this]() {
+                restartTxTransportRxState();
+            });
+        }
+    }
+
+    txSafety_.transportRunning = txWriter_.isRunning();
+    const auto effective = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
+    if (open_)
+        applyTxControlNow();
+    if (on && !effective.transmit) {
+        emit logLine(QStringLiteral(
+            "P2 TX: MOX/PTT blocked by safety gate "
+            "(arm=%1 session=%2 IQ=%3 telemetry=%4 watchdog=%5 fault=%6)")
+            .arg(txSafety_.operatorArmed)
+            .arg(txSafety_.sessionRunning)
+            .arg(txSafety_.iqPrimed)
+            .arg(txSafety_.telemetryHealthy)
+            .arg(txSafety_.watchdogEnabled)
+            .arg(txSafety_.faultLatched));
+    }
+    emitTxState(on && !effective.transmit
+                    ? QStringLiteral("MOX/PTT blocked by safety gate")
+                    : (on ? QStringLiteral("Transmit active")
+                          : QStringLiteral("Receive")));
+}
+
+void P2Session::applyTxControlNow() {
+    if (!open_)
+        return;
+    // Authorise the wire transmit/PA/drive bytes against the LIVE transport
+    // state, never a stale prime latch. buildGeneral/HighPriority below also
+    // re-evaluate the gate, so refreshing here covers them too.
+    txSafety_.transportRunning = txWriter_.isRunning();
+    const bool transmitting =
+        P2TxSafetyGate::evaluate(txIntent_, txSafety_).transmit;
+
+    // Keydown: authorize the PA in General before raising HP transmit.
+    // Keyup/fault: clear HP transmit first, then remove PA authorization.
+    // The 100 ms HP cadence reinforces the resulting state afterward.
+    if (transmitting) {
+        sock_.writeDatagram(buildGeneralPacket(), radioAddr_, kPortCommand);
+        sock_.writeDatagram(buildHighPriorityPacket(true),
+                            radioAddr_, kPortHpToSdr);
+    } else {
+        sock_.writeDatagram(buildHighPriorityPacket(true),
+                            radioAddr_, kPortHpToSdr);
+        sock_.writeDatagram(buildGeneralPacket(), radioAddr_, kPortCommand);
+    }
+    sock_.writeDatagram(buildDucSpecificPacket(), radioAddr_, kPortDucConfig);
+}
+
+void P2Session::emitTxState(const QString &detail) {
+    if (!detail.isEmpty())
+        txStateDetail_ = detail;
+    txSafety_.transportRunning = txWriter_.isRunning();
+    const auto effective = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
+    emit txStateChanged(
+        txWriter_.isRunning() && txSafety_.iqPrimed &&
+            !txSafety_.faultLatched,
+        txSafety_.operatorArmed, effective.transmit, effective.paEnabled,
+        analogDriveByte_(effective), txSafety_.faultLatched, txStateDetail_);
 }
 
 void P2Session::sendSpeakerAudio(const qint16 *lr, int nframes) {
@@ -274,15 +808,30 @@ void P2Session::open(const QString &ip) {
         return;
     }
 
-    // ONE socket for the whole session (see header wire model).  Bind
-    // an ephemeral port on AnyIPv4 — the radio replies to whatever
-    // source address:port the general packet came from, and the OS
-    // routes out the right interface.
-    if (!sock_.bind(QHostAddress(QHostAddress::AnyIPv4), 0)) {
-        emit logLine(QStringLiteral("P2: bind failed: %1")
-                     .arg(sock_.errorString()));
-        return;
+    // ONE socket for the whole session (see header wire model). Bind
+    // an ephemeral port on the radio's NIC IPv4 so DDC0 (1035) and
+    // DDC1 (1036) land on the same socket. Fall back to AnyIPv4 if
+    // no same-subnet address exists (manual IP on another LAN).
+    const QHostAddress nicIp = localIpv4OnSameSubnet(target);
+    const QHostAddress bindAddr =
+        nicIp.isNull() ? QHostAddress(QHostAddress::AnyIPv4) : nicIp;
+    const auto bindFlags =
+        QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint;
+    if (!sock_.bind(bindAddr, 0, bindFlags)) {
+        sock_.abort();
+        if (!nicIp.isNull() &&
+            sock_.bind(QHostAddress(QHostAddress::AnyIPv4), 0, bindFlags)) {
+            emit logLine(QStringLiteral(
+                "P2: NIC bind %1 failed (%2) — falling back to AnyIPv4")
+                             .arg(nicIp.toString(), sock_.errorString()));
+        } else {
+            emit logLine(QStringLiteral("P2: bind failed: %1")
+                             .arg(sock_.errorString()));
+            return;
+        }
     }
+    sock_.setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption,
+                          QVariant(0x80000));
 
     radioAddr_     = target;
     radioIp_       = ip;
@@ -292,41 +841,112 @@ void P2Session::open(const QString &ip) {
     statusCount_   = 0;
     iqFrameCount_  = 0;
     iqSeqErrors_   = 0;
+    warnedNoIq_    = false;
+    warnedNoDdc1Iq_ = false;
+    ddc1IqOkLogged_ = false;
+    // If SUB was armed before bind, keep logging DDC1 until packets arrive.
+    const bool subArmed = ddcEnabled_[1];
+    ddc1IqLogLeft_  = subArmed ? 30 : 0;
+    unmatchedIqLogLeft_ = subArmed ? 12 : 0;
+    ddcSpecificSeq_ = 0;
+    if (!subArmed)
+        subIqLatchDdc_ = -1;
+    ddcIqCount_.fill(0);
     ddcSeqStarted_.fill(false);
     spkrSeq_       = 0;
     spkrStage_.clear();
+    // Mic FIFO + sequence trackers: a reconnect (2nd+ open in one process)
+    // must not carry a prior session's fill level, primed cushion, or stale
+    // samples -- otherwise the first pump tick could drain leftover mic audio
+    // onto the air. Zeroing head/count and clearing primed makes the ring
+    // re-prime from fresh packets; the seq trackers reset so the first mic
+    // packet doesn't log a spurious seqErr.
+    micFifoHead_   = 0;
+    micFifoCount_  = 0;
+    micPrimed_     = false;
+    micSeqStarted_ = false;
+    micSeqNext_    = 0;
+    micSeqErrors_  = 0;
+    micPktCount_   = 0;
+    micPeak_       = 0.0;
+    micRateTimer_.invalidate();
+    lastMicPkt_.invalidate();
+    warnedNoMic_   = false;
+    stopTxTransport();
+    txIntent_ = {};
+    txSafety_ = {};
+    txStateDetail_ = QStringLiteral("Waiting for radio status");
+    statusAge_.invalidate();
+    emitTxState();
 
-    // Handshake per p2app: general packet (claims the controller lease
-    // for our source IP + registers the reply address), DDC-specific
-    // config (all-disabled for Phase B — also opens the firewall UDP
-    // flow toward radio:1025, see kDdcRefreshTicks), then the HP
-    // run=1 cadence (StartBitReceived) → radio goes active and its
-    // status stream starts.  First HP goes immediately; the timer
-    // refreshes it every 100 ms which doubles as the keepalive.
+    // Handshake: general (controller lease + reply address), then HP
+    // run=0 to halt a stale stream. Receive/TX-specific and HP run=1
+    // wait 100 ms so firmware can digest the lease before DDC config.
     sock_.writeDatagram(buildGeneralPacket(), radioAddr_, kPortCommand);
-    sock_.writeDatagram(buildDdcSpecificPacket(), radioAddr_, kPortDdcConfig);
+    sock_.writeDatagram(buildHighPriorityPacket(false), radioAddr_,
+                        kPortHpToSdr);
+    const quint32 epoch = ++openEpoch_;
+    QTimer::singleShot(100, this, [this, epoch]() {
+        if (!open_ || epoch != openEpoch_) return;
+        finishOpenHandshake();
+    });
+    emit logLine(QStringLiteral(
+        "P2: session opening to %1 (general -> :%2, HP run=1 in 100 ms -> :%3, "
+        "bound %4:%5)")
+        .arg(ip)
+        .arg(kPortCommand)
+        .arg(kPortHpToSdr)
+        .arg(sock_.localAddress().toString())
+        .arg(sock_.localPort()));
+}
+
+double P2Session::iqSampleScale() const {
+    if (ddcRateKhz_[0] != 48)
+        return 1.0;
+    if (profile_ && profile_->adcCount > 1)
+        return 1.0;
+    return 0.035481338923357552;
+}
+
+void P2Session::finishOpenHandshake() {
+    sock_.writeDatagram(buildDucSpecificPacket(), radioAddr_, kPortDucConfig);
+    sendDdcSpecificToRadio(true);
+    punchEnabledDdcIqFirewalls();
+    scheduleDdc1FirewallPunch();
     sock_.writeDatagram(buildHighPriorityPacket(true), radioAddr_, kPortHpToSdr);
     hpTickCount_ = 0;
     hpTimer_.start();
-    emit logLine(QStringLiteral(
-        "P2: session opening to %1 (general -> :%2, HP run=1 -> :%3, "
-        "local port %4)")
-        .arg(ip).arg(kPortCommand).arg(kPortHpToSdr)
-        .arg(sock_.localPort()));
 }
 
 void P2Session::close() {
     if (!open_) return;
+    ++openEpoch_;
+    wireDriveProvider_ = {};
     hpTimer_.stop();
+    stopTxTransport();
+    txIntent_ = {};
+    txSafety_ = {};
+    txStateDetail_ = QStringLiteral("Disconnected");
+    emitTxState();
     // run=0 unkeys, releases the controller lease, and stops the
     // radio's outgoing streams.  Sent three times — it's UDP and this
     // is the packet we most want to arrive.
     const QByteArray stop = buildHighPriorityPacket(false);
     for (int i = 0; i < 3; ++i)
         sock_.writeDatagram(stop, radioAddr_, kPortHpToSdr);
+    // PA authorization lives in the General packet, not in HP Run. Send
+    // an explicit safe General after HP Run=0 so a close cannot leave the
+    // radio's PA-enable bit latched from the previous keyed state. This is
+    // authoritative even when P2RxBridge closes before HL2Stream's delayed
+    // MOX-release signal reaches the session thread.
+    const QByteArray safeGeneral = buildGeneralPacket();
+    for (int i = 0; i < 3; ++i)
+        sock_.writeDatagram(safeGeneral, radioAddr_, kPortCommand);
     sock_.close();
     open_    = false;
     running_ = false;
+    ddcSpecificSeq_ = 0;
+    subIqLatchDdc_ = -1;
     emit logLine(QStringLiteral(
         "P2: session closed (%1 status packets received)").arg(statusCount_));
     emit stopped();
@@ -334,12 +954,294 @@ void P2Session::close() {
 
 void P2Session::onHpTick() {
     if (!open_) return;
+    // Once keying is requested the radio reports status at ~1 kHz, and
+    // losing it is a real TX safety failure. In RX, status is ~5 Hz and
+    // an event-loop/firewall pause must not permanently fault an otherwise
+    // healthy continuous port-1029 transport.
+    if (txIntent_.transmitRequested && statusAge_.isValid() &&
+        statusAge_.elapsed() > 1000 && !txSafety_.faultLatched) {
+        txSafety_.telemetryHealthy = false;
+        latchTxFault(QStringLiteral("status telemetry timeout"));
+    }
+    // The periodic HP packet re-derives transmit/PA/drive from the gate; keep
+    // the live transport-running input fresh so a stopped writer can't be
+    // reinforced into an authorised-but-dead keyed state.
+    txSafety_.transportRunning = txWriter_.isRunning();
     sock_.writeDatagram(buildHighPriorityPacket(true),
                         radioAddr_, kPortHpToSdr);
-    // Periodic DDC-specific refresh (see kDdcRefreshTicks rationale).
-    if (++hpTickCount_ % kDdcRefreshTicks == 0)
-        sock_.writeDatagram(buildDdcSpecificPacket(),
-                            radioAddr_, kPortDdcConfig);
+    const bool transmitting =
+        P2TxSafetyGate::evaluate(txIntent_, txSafety_).transmit;
+    if (transmitting)
+        sock_.writeDatagram(buildDucSpecificPacket(), radioAddr_,
+                            kPortDucConfig);
+    ++hpTickCount_;
+    if (hpTickCount_ % kDdcRefreshTicks == 0) {
+        sendDdcSpecificToRadio(false);
+        punchEnabledDdcIqFirewalls();
+        if (!transmitting)
+            sock_.writeDatagram(buildDucSpecificPacket(), radioAddr_,
+                                kPortDucConfig);
+    }
+    if (hpTickCount_ % kGeneralRefreshTicks == 0)
+        sock_.writeDatagram(buildGeneralPacket(), radioAddr_, kPortCommand);
+
+    // Low-power-bench diagnostic (~1/s while keyed): the actual wire drive
+    // byte (pkt[345], 0-255) + the live DUC-IQ peak (~1.0 = full-scale).
+    // Both maxed but low RF ⇒ the shortfall is radio-side, not Lyra's
+    // drive/amplitude.  Also mirrored on the "P2 TX:" status line.
+    if (txIntent_.transmitRequested && (hpTickCount_ % 10 == 0)) {
+        const auto eff = P2TxSafetyGate::evaluate(txIntent_, txSafety_);
+        qInfo("[p2tx] keyed: drive byte=%d/255 (HP pkt[345])  DUC-IQ peak=%.3f "
+              "(~1.0=full-scale)  pa=%d",
+              static_cast<int>(eff.drive),
+              lyra::wire::p2TxCmasterLastPeak(),
+              eff.paEnabled ? 1 : 0);
+    }
+
+    // Firewall-blocked-RX self-diagnosis (resolved 2026-08-26).  If the
+    // control link is healthy (status flowing) but a DDC is enabled and
+    // NOT ONE IQ frame has arrived, the cause is almost always Windows
+    // Firewall dropping the radio's unsolicited RX-IQ (source port 1035+,
+    // a port the host never sends to, so no stateful return opens for it).
+    // Small status(1025)/mic(1026) get through because the host DOES send
+    // to those ports.  Fires once so a "dead" panadapter says WHY.
+    if (!warnedNoIq_ && running_ && iqFrameCount_ == 0 &&
+        statusCount_ >= 25) {
+        bool anyDdc = false;
+        for (bool en : ddcEnabled_) if (en) { anyDdc = true; break; }
+        if (anyDdc) {
+            warnedNoIq_ = true;
+            emit logLine(QStringLiteral(
+                "P2: control link healthy but ZERO RX-IQ after %1 status "
+                "packets — this is almost always WINDOWS FIREWALL blocking "
+                "inbound UDP for this Lyra build. The radio's IQ arrives on "
+                "an unsolicited port (1035+). Fix (admin PowerShell): "
+                "New-NetFirewallRule -DisplayName 'Lyra SDR (UDP In)' "
+                "-Direction Inbound -Program '<this lyra.exe>' -Protocol UDP "
+                "-Action Allow -Profile Any").arg(statusCount_));
+        }
+    }
+
+    // Per-DDC IQ rates (~1 Hz). Hermes SUB is DDC1 / UDP 1036.
+    if (hpTickCount_ % 10 == 0) {
+        const bool subArmed = ddcEnabled_[1];
+        if (subArmed) {
+            if (unmatchedIqLogLeft_ < 4)
+                unmatchedIqLogLeft_ = 4;
+        }
+        const quint32 d0 = ddcIqCount_[0];
+        const quint32 d1 = ddcIqCount_[1];
+        const quint32 d2 = ddcIqCount_[2];
+        const quint32 d3 = ddcIqCount_[3];
+        ddcIqCount_.fill(0);
+        if (subArmed && d1 > 0 && !ddc1IqOkLogged_) {
+            ddc1IqOkLogged_ = true;
+            ddc1IqLogLeft_ = 0;
+            emit logLine(QStringLiteral(
+                "P2 IQ: SUB flowing DDC1=%1 pkt/s (DDC0=%2; DDC2=%3 DDC3=%4 "
+                "count-only, not RX2)")
+                .arg(d1).arg(d0).arg(d2).arg(d3));
+        } else if (subArmed && ddc1IqLogLeft_ > 0) {
+            --ddc1IqLogLeft_;
+            emit logLine(QStringLiteral(
+                "P2 IQ: DDC0=%1 DDC1=%2 DDC2=%3 DDC3=%4 pkt/s "
+                "(UDP 1035/1036/1037/1038) DDC1Hz=%5")
+                .arg(d0).arg(d1).arg(d2).arg(d3).arg(ddcFreqHz_[1]));
+        }
+        if (!warnedNoDdc1Iq_ && running_ && subArmed
+            && d1 == 0 && d2 == 0 && d3 == 0 && d0 > 0
+            && statusCount_ >= 25) {
+            warnedNoDdc1Iq_ = true;
+            emit logLine(QStringLiteral(
+                "P2: SUB armed but DDC1 = 0 pkt/s (radio src 1036) while "
+                "DDC0 is flowing. DDC1Hz=%1. Firmware is not emitting a "
+                "second IQ stream on src 1036 (or Windows is dropping it).")
+                .arg(ddcFreqHz_[1]));
+        } else if (!warnedNoDdc1Iq_ && running_ && subArmed
+                   && d1 == 0 && (d2 > 0 || d3 > 0)) {
+            warnedNoDdc1Iq_ = true;
+            emit logLine(QStringLiteral(
+                "P2: DDC1 silent (src 1036) but DDC2=%1 DDC3=%2 pkt/s — "
+                "not feeding those into RX2 on this Hermes/Brick2 map")
+                .arg(d2).arg(d3));
+        }
+    }
+
+    // Jack-less-rig hint (fires once).  Keyed, but no mic packet has arrived
+    // from the radio recently — a rig with a working mic jack streams mic
+    // continuously while transmitting, so this means there is no usable mic
+    // jack (or its mic path is dead) and "Mic In" is sending silence.  Gated
+    // on transmitRequested + a stale/absent last-packet, so a jack-equipped
+    // rig (mic present during TX) never trips it.  Worded for voice — a CW /
+    // TUN / digital-via-VAC/TCI op can ignore the one line.
+    if (!warnedNoMic_ && running_ && txIntent_.transmitRequested &&
+        (!lastMicPkt_.isValid() || lastMicPkt_.elapsed() > 1500)) {
+        warnedNoMic_ = true;
+        emit logLine(QStringLiteral(
+            "P2 TX: no mic audio is arriving from the radio. For a VOICE mode "
+            "on a rig without a usable mic jack, set Settings → TX → "
+            "Mic source to PC Soundcard (VAC1) or TCI (digital modes)."));
+    }
+}
+
+void P2Session::startTxTransportRxState() {
+    if (!open_ || !running_ || txSafety_.faultLatched ||
+        txPump_.isRunning() || txWriter_.isRunning())
+        return;
+    if (!txPump_.hasInputSink()) {
+        emit logLine(QStringLiteral(
+            "P2 TX: no CMaster producer attached; port 1029 remains stopped "
+            "and RF controls remain safe"));
+        // Surface on-screen (the file log is dead): the producer seam never
+        // attached, so nothing can ever prime.
+        emitTxState(QStringLiteral("no producer seam — port 1029 stopped"));
+        return;
+    }
+
+    auto &fifo = p2TxInputFifo();
+    fifo.reset();
+    txSafety_.iqPrimed = false;
+    emitTxState(QStringLiteral("TX transport stopped"));
+    // Arm the shared WDSP TXA channel BEFORE the pump feeds its first
+    // block.  P2TxPump::start() SYNCHRONOUSLY seeds block 0 (its input
+    // sink calls Inbound(inid(1,0),…), which releases stream 1's
+    // Sem_BuffReady and wakes the high-priority cm_main(1) pump →
+    // xcmaster(1) → fexchange0(chid(1,0),…)).  create_xmtr opens that
+    // channel OPEN-but-NOT-STARTED (state=0) with block=1 ("block until
+    // output available").  If the channel is still state=0 when that
+    // first fexchange0 fires, the block-until-output wait on a stopped
+    // channel never completes → the cm pump thread stalls → the producer
+    // FIFO never fills → priming below never completes → port 1029 never
+    // streams (the "DUC FIFO 0 samples" symptom, with no fault latched
+    // because the pump's single seed returned true).  Arm first so the
+    // channel's DSP worker is running before the seed lands.  RF stays
+    // gated by the wire MOX bit (buildHighPriorityPacket), so arming in
+    // RX state only streams zero-valued IQ — no on-air output.
+    setP2TxCmasterChannelRunning(true);
+    txPump_.start();
+    if (!txPump_.isRunning()) {
+        setP2TxCmasterChannelRunning(false);   // undo the arm on a failed start
+        latchTxFault(QStringLiteral("CMaster producer failed to start"));
+        return;
+    }
+    txPrimeTimer_.start();
+    onTxPrimeTick();
+    emit logLine(QStringLiteral(
+        "P2 TX: priming port 1029 in RX state (transmit=0, PA=off, "
+        "drive=0)"));
+    qInfo("[p2tx] transport start: TXA channel chid(1,0) ARMED before the "
+          "pump seed; priming producer FIFO toward the prime target");
+}
+
+void P2Session::stopTxTransport() {
+    txPrimeTimer_.stop();
+    // Stop the pump (no more input) BEFORE stopping the TXA channel, so the
+    // non-blocking channel stop can't race the pump feeding a stopped chain.
+    txPump_.stop();
+    setP2TxCmasterChannelRunning(false);
+    txWriter_.stop();
+    txSafety_.iqPrimed = false;
+}
+
+void P2Session::restartTxTransportRxState() {
+    // Re-prime only while no transmit intent exists (RX rate rebuild, or
+    // host unkey after a latched fault). Never clear a fault while keyed.
+    if (!open_ || !running_ || txIntent_.transmitRequested)
+        return;
+    stopTxTransport();
+    txSafety_.faultLatched = false;
+    txStateDetail_ = QStringLiteral("Re-priming TX transport");
+    startTxTransportRxState();
+    emitTxState();
+}
+
+void P2Session::latchTxFault(const QString &reason) {
+    stopTxTransport();
+    txIntent_ = {};
+    txSafety_.faultLatched = true;
+    txStateDetail_ = reason;
+    // Push an immediate fail-closed HP command when a live session faults;
+    // the periodic HP timer continues to reinforce the same safe state.
+    if (open_)
+        applyTxControlNow();
+    emitTxState();
+    emit logLine(QStringLiteral(
+        "P2 TX: %1; transport stopped and RF controls forced safe")
+        .arg(reason));
+}
+
+void P2Session::onTxTransportCadenceFault(const QString &reason) {
+    // Keyed: a cadence/FIFO miss can produce a stuck or garbage carrier, so
+    // this is a hard safety event — stop, force RF safe, latch, unkey.
+    if (txIntent_.transmitRequested) {
+        latchTxFault(reason);
+        return;
+    }
+    // RX-idle: the P2 TX stream is RF-inert (transmit=0, PA=off, drive=0).
+    // A transient host stall here must recover in place, never latch and
+    // lock out the next key-up. The faulting writer/pump has already stopped
+    // itself; re-prime once this call stack unwinds (deferred so we don't
+    // restart timers from inside the faulting timer callback).
+    if (!open_ || !running_)
+        return;
+    // Tear the transport down NOW (clears iqPrimed) so the safety gate refuses
+    // any key-up that lands before the deferred re-prime runs; the re-prime is
+    // deferred only to avoid restarting timers from inside the faulting timer
+    // callback. Mirrors latchTxFault's synchronous stopTxTransport in the
+    // keyed branch (same fault-sink context, proven safe).
+    stopTxTransport();
+    emit logLine(QStringLiteral(
+        "P2 TX: %1 while RX-idle (RF-inert); re-priming transport")
+        .arg(reason));
+    QTimer::singleShot(0, this, [this]() { restartTxTransportRxState(); });
+}
+
+void P2Session::onTxPrimeTick() {
+    if (!open_ || !running_ || txSafety_.faultLatched) {
+        txPrimeTimer_.stop();
+        return;
+    }
+
+    auto &fifo = p2TxInputFifo();
+    if (fifo.overflowed()) {
+        latchTxFault(QStringLiteral("producer FIFO overflow during priming"));
+        return;
+    }
+    if (fifo.size() < kTxPrimeSamples) {
+        // Producer-side priming progress, surfaced ON-SCREEN (the file log
+        // is dead — see reference_lyra_cpp_dead_logfile).  This is the real
+        // Stage-1a signal: the "DUC FIFO N samples" number in the same line
+        // is a downstream RADIO-reported field, but this "prod FIFO x/y"
+        // is Lyra's own producer ring off fexchange0.  If it stays pinned
+        // at 0, the cm pump / fexchange0 is not producing (arm-before-feed
+        // did not take, or a deeper stall); if it climbs, the producer path
+        // works and any remaining "DUC 0" is the radio not buffering TX-IQ
+        // in RX state.  Throttled so the poll cadence doesn't spam signals.
+        static int primeEmitThrottle = 0;
+        if ((primeEmitThrottle++ % 8) == 0)
+            emitTxState(QStringLiteral("priming (prod FIFO %1/%2)")
+                            .arg(static_cast<qulonglong>(fifo.size()))
+                            .arg(static_cast<qulonglong>(kTxPrimeSamples)));
+        return;
+    }
+
+    txPrimeTimer_.stop();
+    txWriter_.startFromInput();
+    if (!txWriter_.isRunning()) {
+        latchTxFault(QStringLiteral("TX-IQ writer failed to start"));
+        return;
+    }
+    txSafety_.iqPrimed = true;
+    // On-screen (file log is dead): producer primed + writer streaming to
+    // 1029.  If the operator now sees this but "DUC FIFO" stays 0, the
+    // break is the radio not buffering TX-IQ in RX state — not the producer.
+    emitTxState(QStringLiteral("streaming 1029 (prod FIFO %1, RF disarmed)")
+                    .arg(static_cast<qulonglong>(p2TxInputFifo().size())));
+    emit logLine(QStringLiteral(
+        "P2 TX: port 1029 streaming in RX state (seq=%1, FIFO=%2 "
+        "samples; transmit=0, PA=off, drive=0)")
+        .arg(txWriter_.nextSequence())
+        .arg(p2TxInputFifo().size()));
 }
 
 void P2Session::onReadyRead() {
@@ -357,16 +1259,88 @@ void P2Session::onReadyRead() {
         // ours, but stray LAN packets can still land on the port).
         if (sender.toIPv4Address() != radioAddr_.toIPv4Address()) continue;
 
-        // Demux by the radio's SOURCE port (the Thetis model).
-        if (senderPort == kPortHpFromSdr && buf.size() == kStatusLen) {
-            parseStatus(buf);
-        } else if (senderPort >= kPortDdcIq0 &&
-                   senderPort <  kPortDdcIq0 + kNumDdc &&
-                   buf.size() == kIqFrameLen) {
-            parseIqFrame(senderPort - kPortDdcIq0, buf);
-        }
-        // Phase D adds: 1026 mic, wideband.
+        ingestRadioDatagram(senderPort, buf);
     }
+}
+
+void P2Session::parseMic(const QByteArray &d) {
+    const char *p = d.constData();
+    const quint32 seq = rdBeU32(p);
+    // 64 big-endian signed 16-bit mono samples follow the 4-byte sequence.
+    const auto *s = reinterpret_cast<const std::uint8_t *>(p + 4);
+    // Push this datagram's 64 samples onto the tail of the elastic FIFO.
+    // Overrun (a burst outran the pump) drops the oldest block so latency
+    // stays bounded; the pump drains from the head on its own cadence.
+    const int tail = (micFifoHead_ + micFifoCount_) % kMicFifoCap;
+    auto &block = micFifo_[static_cast<std::size_t>(tail)];
+    double peak = 0.0;
+    for (int i = 0; i < kMicFrames; ++i) {
+        const auto raw = static_cast<qint16>(
+            (static_cast<quint16>(s[2 * i]) << 8) | s[2 * i + 1]);
+        const double v = raw * (1.0 / 32768.0);
+        peak = std::max(peak, std::abs(v));
+        // {I = mic, Q = 0} — the modulator's real-input convention.
+        block[static_cast<std::size_t>(2 * i)]     = v;
+        block[static_cast<std::size_t>(2 * i + 1)] = 0.0;
+    }
+    if (micFifoCount_ < kMicFifoCap) {
+        ++micFifoCount_;
+    } else {
+        // Full: the block we just wrote overwrote the oldest slot, so step
+        // the head past it too (drop-oldest, keeping the freshest audio).
+        micFifoHead_ = (micFifoHead_ + 1) % kMicFifoCap;
+    }
+
+    if (micSeqStarted_ && seq != micSeqNext_)
+        ++micSeqErrors_;
+    micSeqStarted_ = true;
+    micSeqNext_    = seq + 1;
+
+    ++micPktCount_;
+    micPeak_ = std::max(micPeak_, peak);
+    lastMicPkt_.restart();  // for the jack-less "no mic input" hint in onHpTick
+
+    if (!micRateTimer_.isValid())
+        micRateTimer_.start();
+    if (micRateTimer_.elapsed() >= 1000) {
+        emit logLine(QStringLiteral(
+            "P2 mic: %1 pkt/s  peak=%2  seqErr=%3")
+            .arg(micPktCount_)
+            .arg(micPeak_, 0, 'f', 3)
+            .arg(micSeqErrors_));
+        micPktCount_ = 0;
+        micPeak_     = 0.0;
+        micRateTimer_.restart();
+    }
+}
+
+bool P2Session::feedTxProducer(const double *pumpZeros, int n) {
+    static_assert(2 * kMicFrames == 128,
+                  "micFifo_ block literal size (2*64) must equal 2*kMicFrames");
+    if (!txProducerTerminal_)
+        return false;
+    // Live radio mic drives the modulator when a fresh block is available;
+    // otherwise the pump's zero block keeps the 48 kHz cadence (initial
+    // prime before the mic stream starts, and gap-fill if it slips). RF stays
+    // MOX-gated regardless — feeding mic in RX only shapes inert DUC-IQ.
+    //
+    // Prime once the cushion fills, then drain a block per tick. Underrun
+    // (the pump briefly outran the mic) feeds zeros and re-arms priming so
+    // the next drain waits for the cushion to rebuild rather than chattering
+    // one block ahead of the producer. Steady state sits near the cushion
+    // depth with only the small ppm drift between the two 48 kHz clocks.
+    if (!micPrimed_ && micFifoCount_ >= kMicPrimeBlocks) {
+        micPrimed_ = true;
+    }
+    if (micPrimed_ && micFifoCount_ > 0) {
+        const double *block = micFifo_[static_cast<std::size_t>(micFifoHead_)].data();
+        micFifoHead_ = (micFifoHead_ + 1) % kMicFifoCap;
+        --micFifoCount_;
+        return txProducerTerminal_(block, kMicFrames);
+    }
+    // Underrun (or not yet primed): keep the 48 kHz cadence with zeros.
+    micPrimed_ = false;
+    return txProducerTerminal_(pumpZeros, n);
 }
 
 void P2Session::parseIqFrame(int ddc, const QByteArray &d) {
@@ -374,13 +1348,37 @@ void P2Session::parseIqFrame(int ddc, const QByteArray &d) {
     const quint32 seq  = rdBeU32(p);
     const quint16 bits = rdBeU16(p + 12);
     const quint16 spp  = rdBeU16(p + 14);
+    const auto n = static_cast<std::size_t>(ddc);
     if (bits != 24 || spp != kIqSamplesPerFrame) {
         // Unexpected framing — count it as a stream error and drop.
         ++iqSeqErrors_;
+        if (n < ddcIqCount_.size())
+            ++ddcIqCount_[n];
+        static std::array<bool, 10> s_hdrRejectLogged{};
+        if (ddc >= 0 && ddc < 10 && !s_hdrRejectLogged[n]) {
+            s_hdrRejectLogged[n] = true;
+            emit logLine(QStringLiteral(
+                "P2: DDC%1 IQ header reject bits=%2 spp=%3 (want 24 / %4)")
+                             .arg(ddc).arg(bits).arg(spp).arg(kIqSamplesPerFrame));
+        }
         return;
     }
 
-    const auto n = static_cast<std::size_t>(ddc);
+    // Drop IQ that arrives BEFORE this session's status handshake completes
+    // (running_ is set by parseStatus on the radio's first status packet for
+    // THIS session, and cleared in open()).  A prior unclean exit (force-kill)
+    // leaves the radio still streaming stale frames to the dead session; if
+    // those are fed into a not-yet-confirmed RX pipeline they overrun WDSP's
+    // buffers — the "arm-before-feed" heap corruption seen on a restart after
+    // a kill.  Once the new session is confirmed active we accept IQ normally.
+    // On a clean start the radio sends status before IQ, so this drops nothing.
+    if (!running_) {
+        // Count handshake-only IQ so SUB DDC1/2/3 show in the 1 Hz line.
+        if (n < ddcIqCount_.size())
+            ++ddcIqCount_[n];
+        return;
+    }
+
     if (ddcSeqStarted_[n] && seq != ddcSeqNext_[n]) {
         ++iqSeqErrors_;
         emit logLine(QStringLiteral(
@@ -390,6 +1388,8 @@ void P2Session::parseIqFrame(int ddc, const QByteArray &d) {
     ddcSeqStarted_[n] = true;
     ddcSeqNext_[n]    = seq + 1;
     ++iqFrameCount_;
+    if (n < ddcIqCount_.size())
+        ++ddcIqCount_[n];
 
     emit iqFrameReceived(ddc, seq,
                          d.mid(kIqHeaderLen, kIqSamplesPerFrame * 6));
@@ -402,15 +1402,34 @@ void P2Session::parseStatus(const QByteArray &d) {
 
     ++statusCount_;
     lastStatusSeq_ = seq;
+    statusAge_.restart();
+    txSafety_.telemetryHealthy = true;
 
     if (!running_) {
         // First status packet = handshake complete, radio active.
         running_ = true;
+        txSafety_.sessionRunning = true;
         emit logLine(QStringLiteral(
             "P2: radio ACTIVE — status stream up from %1:%2")
             .arg(radioIp_).arg(kPortHpFromSdr));
         emit started(radioIp_);
+        startTxTransportRxState();
+        // Some firmware ignores receive_specific until run=1/status is
+        // live. Re-send with a new sequence (deskHPSDR increments this
+        // counter; general/HP stay seq 0).
+        sendDdcSpecificToRadio(true);
+        sock_.writeDatagram(buildGeneralPacket(), radioAddr_, kPortCommand);
+        punchEnabledDdcIqFirewalls();
+        scheduleDdc1FirewallPunch();
+        sock_.writeDatagram(buildHighPriorityPacket(true), radioAddr_,
+                            kPortHpToSdr);
     }
+
+    // Saturn status bit 2 reports the TX DUC FIFO underflow. Once the
+    // writer is primed/running this is hardware confirmation that our
+    // stream failed to maintain cadence, so fail closed immediately.
+    if (txWriter_.isRunning() && (u[30] & 0x04u) != 0)
+        latchTxFault(QStringLiteral("radio reported DUC FIFO underflow"));
 
     emit statusReceived(seq,
                         u[4],                 // PTT / key bits
@@ -423,7 +1442,9 @@ void P2Session::parseStatus(const QByteArray &d) {
                         rdBeU16(p + 41),      // ADC2 peak
                         rdBeU16(p + 57),      // AIN3 — PA volts sense
                         rdBeU16(p + 55),      // AIN4 — PA current sense
-                        rdBeU16(p + 37));     // speaker FIFO depth
+                        rdBeU16(p + 37),      // speaker FIFO depth
+                        u[30],                // FIFO status flags
+                        rdBeU16(p + 35));     // TX DUC FIFO depth
 }
 
 } // namespace lyra::wire

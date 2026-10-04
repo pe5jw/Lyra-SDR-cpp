@@ -1,5 +1,11 @@
 # Lyra-cpp — Pending Tasks
 
+> **Historical snapshot, frozen 2026-06-03.** Do not treat the checklists
+> below as current — CW, VOX, the voice keyer, TX profiles, and Brick P2
+> have all moved on. Live status: [Feature Status](wiki/Feature-Status.md),
+> [Roadmap](wiki/Roadmap.md), [REMAINING_WORK.md](REMAINING_WORK.md)
+> (also frozen; see its banner). Tree version is **v0.24.5**.
+
 **Snapshot:** 2026-06-03 EOD
 **Status:** 28 pending · 0 in-progress · 71 completed (since project start)
 **Author:** Rick Langford (N8SDR)
@@ -44,8 +50,8 @@ So you know what the pending list is filling in *around*:
 |---|---|
 | HL2/HL2+ codec mic (`Hl2Ep6MicSource`) | ✅ Live |
 | TCI inbound (`TciMicSource`) | ✅ Live |
-| **VAC1** (PC audio in) | ❌ Not built |
-| **VAC2** (second PC audio in) | ❌ Not built |
+| **VAC1** (PC audio in) | ✅ Live |
+| **VAC2** (second PC audio in, RX2) | ✅ Live (tester bench; not in profiles yet) |
 | **HL2 codec Line In** (analog) | ❌ Not built |
 
 ### RX

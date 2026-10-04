@@ -3,9 +3,9 @@
 This page gets you from a downloaded installer to hearing your first
 signal. For the full reference, see the **[User Guide](User-Guide)**.
 
-> **You need:** a Hermes Lite 2 or 2+ on your network, a Windows 10 (1809+)
-> or 11 PC (64‑bit, a GPU with OpenGL 3.3+), and the two connected to the
-> same LAN (a direct NIC‑to‑radio cable works great).
+> **You need:** a Hermes Lite 2 / 2+ **or a BrickSDR2** on your network, a
+> Windows 10 (1809+) or 11 PC (64‑bit, a GPU with OpenGL 3.3+), and the two
+> connected to the same LAN (a dedicated NIC‑to‑radio cable works great).
 
 ---
 
@@ -33,15 +33,30 @@ to rebuild it, **Settings → Radio → FFT optimization → Clear &amp; rebuild
 ## 3. Find and open your radio
 
 1. Press **▶ Start** in the header.
-2. Open **Settings → Hardware → Radio**. Lyra **discovers** HL2s on your
-   network and lists them (board / gateware / RX count).
+2. Open **Settings → Hardware → Radio**. Lyra **discovers** radios on your
+   network and lists them (board / firmware / DDC count). A Brick that still
+   reports as Hermes stays labelled Brick; firmware is **v10.6**-style, not
+   “fw v0”.
 3. **Double‑click a radio** (or select it and click **Open**). The connected
    radio shows **green and bold**.
 4. **Close** the current radio before opening a different one.
 
+> **No "Any Subnet" checkbox needed.** Lyra's discovery is always maximal:
+> every scan probes on **all** network adapters — including direct‑connect
+> link‑local addresses (`169.254.x.x`, the address Windows self‑assigns with
+> no router/DHCP) — and sends **both** a limited broadcast (`255.255.255.255`,
+> i.e. "any subnet") **and** a subnet‑directed broadcast, for **both** the P1
+> (HL2) and P2 (Brick/ANAN) protocols. So there's nothing to turn on — the
+> scan other apps gate behind "Any Subnet" / "Via all NICs" checkboxes is
+> simply how Lyra always scans.
+
 ### Radio not showing up?
-Use **Add by IP** — type the radio's address and Lyra sends a **directed
-unicast probe** straight to it. This is the answer for:
+Since the scan above is already maximal, a radio that still doesn't appear is
+almost never a missing broadcast mode — the probe reached it; the reply
+couldn't get back (different subnets so the answer can't route home, no IP
+assigned yet, or a firewall). The fix is to make the reply routable. Use
+**Add by IP** — type the radio's address and Lyra sends a **directed unicast
+probe** straight to it. This is the answer for:
 
 - a **fixed‑IP** HL2,
 - a radio on a **different subnet**,

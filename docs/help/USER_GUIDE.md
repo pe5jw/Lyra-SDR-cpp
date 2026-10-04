@@ -26,11 +26,15 @@ not programmers — if you can click a menu, you can use this.
 - [Why "Lyra"?](#why-lyra)
 - [System requirements](#system-requirements)
 - [Getting started](#getting-started)
+- [Multiple radios & switching rigs](#multiple-radios--switching-rigs)
 - [The header (top toolbar)](#the-header-top-toolbar)
 - [The status bar (bottom — HL2 telemetry)](#the-status-bar-bottom--hl2-telemetry)
 - [Getting around the window](#getting-around-the-window)
 - [The panadapter (spectrum display)](#the-panadapter-spectrum-display)
 - [Tuning panel](#tuning-panel)
+  - [SUB — second receiver (HL2 and BrickSDR2)](#sub--second-receiver-hl2-and-bricksdr2)
+  - [SPLIT — receive A, transmit B](#split--receive-a-transmit-b)
+- [Second receiver (SUB / RX2) — how it works](#second-receiver-sub--rx2--how-it-works)
 - [Filters panel](#filters-panel)
 - [Band panel](#band-panel)
 - [Audio panel](#audio-panel)
@@ -71,6 +75,7 @@ not programmers — if you can click a menu, you can use this.
   - [USB-BCD (linear-amp band switching)](#usb-bcd-linear-amp-band-switching)
 - [Settings → Audio](#settings--audio)
   - [Virtual Audio Cable (VAC1)](#virtual-audio-cable-vac1)
+  - [Virtual Audio Cable (VAC2)](#virtual-audio-cable-vac2)
 - [Settings → DSP (filter type)](#settings--dsp-filter-type)
 - [Settings → TX (Mic + ALC + Leveler + TR sequencing + cos² fade)](#settings--tx-mic--alc--leveler-tr-sequencing--cos-fade)
 - [Settings → VOX (voice-operated transmit)](#settings--vox-voice-operated-transmit)
@@ -197,7 +202,7 @@ of them fully reachable:
 | Panel | What it's for |
 |---|---|
 | **Panadapter + waterfall** | See the band, click to tune |
-| **Tuning** | The VFO, step, mode, RIT / XIT, split |
+| **Tuning** | The VFO, step, mode, SUB / SPLIT, RIT / XIT |
 | **Band** | Band switching |
 | **Filters** | Sample rate, RX and TX bandwidth |
 | **Audio** | LNA, volume, AF gain, mute, and the RX DSP row (NB / NR / ANF / LMS / SQ …) |
@@ -316,6 +321,58 @@ optimization on next start"**, e.g. after a CPU change.)
 The version is shown in the **title bar** and under **Help → About
 Lyra…**. Include it when reporting a problem so it can be matched to the
 exact build.
+
+---
+
+## Multiple radios & switching rigs
+
+Lyra can manage more than one radio — a Hermes Lite 2 / 2+ on **Protocol 1**
+and a **Protocol-2** radio such as a **BrickSDR2**, **ANAN G2**, or classic
+**ANAN-10 / 100 / 200** series (use the P2 FPGA if the box has one; pick
+the marketed model) — and keep
+**separate settings for each**. Every saved radio is a **"rig,"** and each
+rig remembers its own:
+
+- radio model, filter board, and antenna choice;
+- **audio output path and device** — e.g. Hermes out its own headphone jack,
+  the Brick out your PC soundcard — set once per rig and remembered (see
+  *Setting up audio output*);
+- band / frequency / mode memory, frequency calibration, meter and DSP
+  settings, and profile bindings.
+
+You still connect to **one radio at a time**; "rigs" are about keeping each
+radio's configuration in its own drawer so nothing bleeds between them.
+
+### The Rig menu
+
+The **Rig** menu (in the menu bar at the top of the window) lists your rigs
+with the active one checked, plus:
+
+- **Add rig…** — create a rig by name; the MAC address is optional, so you
+  can pre-stage a rig before its hardware is on the bench.
+- **Rename active rig…**
+- **Manage rigs (Settings → Hardware)…** — opens the radio list.
+
+A rig is also created **automatically** the first time you connect to a new
+radio.
+
+### Switching rigs
+
+Pick a rig from the **Rig** menu. Because Lyra loads a rig's settings at
+**startup**, switching restarts the app so the new rig comes up cleanly:
+
+- **Restart now** — Lyra relaunches on the chosen rig and (if *Auto-start
+  radio on launch* is on) connects to it.
+- **Later** — the switch takes effect on your next launch.
+- **Cancel** — stay on the current rig.
+
+Lyra **won't switch while you're transmitting** — unkey first. Opening a
+radio in **Settings → Hardware → Radio** that belongs to a different rig
+offers to switch to that rig for you.
+
+> Because each rig keeps its own audio path, you set **Hermes → the radio
+> jack** and the **Brick → PC audio** just once each, and Lyra selects the
+> right one automatically every time you switch — no re-choosing the output.
 
 ---
 
@@ -487,19 +544,51 @@ glowing look that takes advantage of your graphics card.
 
 **Tuning on the panadapter:**
 
-- **Click** anywhere to tune RX1 there. Where it lands depends on the
-  **Exact / 100 Hz** setting and the **Panafall step** on the
-  [Display panel](#display-panel): in **Exact** the click snaps to the
-  Panafall-step grid (1 Hz = truly exact), in **100 Hz** it rounds to the
-  nearest 100 Hz.
+A **TUNE A** / **TUNE B** tag follows the cursor so you always know which
+VFO a click or wheel step will move. **TUNE A** is orange and means
+RX1 / VFO A. **TUNE B** is lime-green and means VFO B (SPLIT) or the
+second receiver while **SUB** is on and that VFO is focused.
+
+- **Click** anywhere to tune the **focused** VFO there (RX1 unless
+  **TUNE B** is showing). Where it lands depends on the **Exact / 100 Hz**
+  setting and the **Panafall step** on the [Display panel](#display-panel):
+  in **Exact** the click snaps to the Panafall-step grid (1 Hz = truly
+  exact), in **100 Hz** it rounds to the nearest 100 Hz.
 - **Click + drag** left/right to pan across the band.
 - **Mouse wheel** steps the frequency by the **Panafall step** (set on the
   Display panel). **Ctrl + wheel** zooms instead.
+- **Middle-click** — while SPLIT or SUB is on: from **TUNE A**, parks VFO B
+  (or SUB) on the click and focuses it (**TUNE B**); from **TUNE B**,
+  returns focus to VFO A. Left/right/wheel stay for tuning, notches, and
+  zoom.
 - A small **frequency readout** follows your cursor (toggle in
   Settings → Visuals).
 - These gestures work on the **waterfall** below, too — **click** it to tune,
   **wheel** to step, **Ctrl + wheel** to zoom. It shares the spectrum's
   frequencies, so a click lands at the same spot either way.
+
+**Second receiver on the same pane (HL2 / BrickSDR2, SUB on).** The live
+spectrum trace is always **RX1's** IQ. RX2 is drawn on top of that
+picture:
+
+- **Green passband box** and **green carrier line** — where RX2 is
+  listening (same idea as RX1's cyan box / orange carrier). Drag a green
+  edge to change **RX2 BW**.
+- If that green box sits **inside** the current span, you see both
+  receivers at once (same-band dual watch).
+- If RX2 is **off this span** (another band, or far up/down the same
+  band), a chip appears mid-height at the edge it would be toward:
+  **◀ RX2** on the left, or **RX2 ▶** on the right. Green border, green
+  label. **Click it** to swap VFOs so the panadapter (RX1) lands on that
+  parked frequency; the second receiver keeps the band you just left.
+  Click again (or hop bands) to go back. Tooltip shows the parked MHz.
+
+Full colour map and a worked example: [Second receiver (SUB / RX2)](#second-receiver-sub--rx2--how-it-works).
+
+**SPLIT TX marker.** With SPLIT on, the **TX (VFO B)** frequency is a solid
+**lime** line — **red while transmitting**. If VFO B is off-span, **◀ TX** /
+**TX ▶** appear the same way (lime idle, red keyed) so you still see the
+pile-up offset. Those TX chips are **not** the RX2 chips.
 
 **The RX filter passband** is shown as a translucent box over the tuned
 signal. **Drag either edge** of the box to widen or narrow the receive
@@ -547,7 +636,15 @@ The frequency, **Step**, and **Mode** form one bordered **VFO cluster**.
 The border is **green while receiving** and turns **red on transmit**
 (MOX/TUN); an amber **RX/TX tag** in the top-left corner marks the role
 (it flips RX→TX on key). The Lyra logo sits centred to its right, with
-**VFO B** to the right of that (it appears when SPLIT is on).
+**VFO B** to the right of that (it appears when **SPLIT** or **SUB** is
+on). Each VFO has a small **TX pip**: **gray** = this VFO would not
+transmit if you keyed now; **click the gray pip** to assign transmit to
+that VFO (enters or leaves SPLIT). The pip on the TX VFO turns **red**
+while you are on the air.
+
+**SUB and SPLIT are independent** — both can be on, one, or neither. They
+are not a three-way cycle. FM **RPT** still replaces the SPLIT button in
+FM (repeaters); leave RPT alone if you are not on FM.
 
 - **Step** — under the VFO, the wheel tune step: **1 Hz / 10 Hz / 100 Hz
   / 1 kHz / 5 kHz / 10 kHz** (default **1 kHz**).
@@ -559,14 +656,40 @@ The border is **green while receiving** and turns **red on transmit**
   The receive filter centers on this pitch and the tuned-carrier marker
   offsets to match, so a signal you zero-beat lands at your chosen tone.
 
-**SPLIT — receive on VFO A, transmit on VFO B** (same band). The action
-row beneath the VFOs has:
+### SUB — second receiver (HL2 and BrickSDR2)
 
-- **SPLIT** — toggles split on/off. When on, **VFO B** appears (the TX
-  VFO — tune it like VFO A) and transmit moves to it; VFO A keeps
-  receiving. On key, VFO B's border + tag go **red** while VFO A stays
-  **green**. VFO B transmits in the **same mode** as VFO A.
-- **1→2 / 2→1 / ⇄** — copy VFO A → B, copy B → A, or swap them.
+**SUB** is a **second receiver** on DDC1 — same operator path on Hermes
+Lite 2 / 2+ (Protocol 1) and BrickSDR2 (Protocol 2). Both radios have
+**one ADC** and one analog front end. How the colours, **◀ RX2** /
+**RX2 ▶**, audio, and band chips fit together is in
+[Second receiver (SUB / RX2)](#second-receiver-sub--rx2--how-it-works).
+
+- **SUB** (button **green** when on) — turns RX2 on. Off keeps DDC1
+  mirroring RX1. On: RX2 has its own frequency, mode, and last-band
+  memory. Stereo: **RX1 left, RX2 right** (Audio **Bal**). **Vol2** /
+  **MUTE2** ride RX2 without changing RX1 **Vol** / **MUTE**.
+- **Click the VFO B cluster** (or **Ctrl+2**) to focus RX2 — the
+  panadapter tag reads lime **TUNE B**. **Ctrl+1** or click VFO A
+  returns orange **TUNE A**. Band-chip **click** stays VFO A unless
+  **TUNE B** is already focused — use **Shift+click** / **right-click**
+  to hop SUB without stealing focus.
+- SUB can run **with or without** SPLIT. With both on: two receivers,
+  transmit still on VFO B.
+
+### SPLIT — receive A, transmit B
+
+**SPLIT** — receive on **VFO A**, transmit on **VFO B** (typically the same
+band, a pile-up offset). The action row beneath the VFOs has:
+
+- **SPLIT** — toggles split on/off. Transmit moves to **VFO B**; VFO A
+  keeps receiving. On key, VFO B's border + tag go **red** while VFO A
+  stays **green**. VFO B transmits in the **same mode** as VFO A.
+- **Right-click SPLIT** — per-mode pile-up **shift**: up/down **1 / 5 /
+  10 kHz**, plus **Last used** for that mode. Sets VFO B relative to VFO A
+  and remembers the offset per mode.
+- **1→2 / 2→1 / ⇄** — copy VFO A → B, copy B → A, or swap them. With SUB
+  on this copies full RX2 state; with SUB off it is frequency (VFO B
+  shadow).
 
 **In FM**, the raw SPLIT button is replaced by a friendlier repeater
 front-end (FM repeaters are the common split case):
@@ -654,6 +777,89 @@ tuned — not the frozen display centre.
 
 ---
 
+## Second receiver (SUB / RX2) — how it works
+
+**Hermes Lite 2 / 2+** (Protocol 1) and **BrickSDR2** (Protocol 2).
+**SUB** opens the second DDC (DDC1). There is still **one ADC** and
+**one analog filter**. Same-band SUB (both VFOs on 40 m, for example)
+is full strength. **Cross-band SUB** (RX1 on 40 m, RX2 on 20 m) is
+allowed on the wire, but with an N2ADR / filter board enabled the
+relays follow **RX1** — RX2 on the other ham band will be **much
+weaker**. The status log notes that once when the two amateur bands
+differ. BrickSDR2 is the same single-ADC story (no second analog
+front end).
+
+Lyra has **one panadapter** and **two receivers**. RX1 always owns the
+live spectrum IQ. **SUB** turns on RX2 (the radio's second DDC): its own
+frequency, mode, last-band memory, passband, and audio ear. **SPLIT** is
+separate — that only moves **transmit** to VFO B. You can run SUB, SPLIT,
+both, or neither.
+
+### What you see (colour coding)
+
+Use this map on the air. **Green = second receiver.** Lime on the
+spectrum is **SPLIT TX**, not RX2.
+
+| Colour | Where | Meaning |
+|---|---|---|
+| **Orange** | Carrier line, **TUNE A** tag | RX1 / VFO A — click and wheel tune this |
+| **Cyan / blue** | Translucent passband box | RX1 filter (drag edges = RX BW) |
+| **Green** (button, passband box, carrier line) | **SUB**, RX2 overlay | Second receiver is on and listening here |
+| **Lime TUNE B** | Panadapter cursor tag | Focus is on VFO B / RX2 — a click moves **that** VFO |
+| **Red glow** | Ham / BC / 11m **band chip** | RX1 is on that band |
+| **Green glow** | Band chip (with SUB on) | RX2 is parked on that band (can be the same chip as red if both VFOs share a band) |
+| **Green VFO border** | Tuning cluster | That VFO is receiving |
+| **Red VFO border / TX pip** | Tuning cluster | On the air (transmit VFO) |
+| **Gray TX pip** | Next to a VFO | This VFO would **not** transmit if you keyed; click it to assign TX (SPLIT) |
+| **Lime TX line** | Spectrum | SPLIT VFO B (idle). Turns **red** while keyed |
+| **◀ TX** / **TX ▶** | Spectrum edge | SPLIT TX is off this span (lime / red). Not the RX2 chips |
+
+RX1 and RX2 on the **same** span: cyan box + green box together. Different
+bands: only RX1's slice is the waterfall; RX2 is the green overlay if it
+fits, otherwise the edge chips below.
+
+### ◀ RX2 and RX2 ▶
+
+When **SUB** is on and RX2's passband is **not** in the current span, a
+chip sits halfway up the **left** or **right** edge:
+
+- **◀ RX2** — RX2 is lower in frequency than this picture (left of the
+  span).
+- **RX2 ▶** — RX2 is higher (right of the span), including "on another
+  ham band."
+
+Green border, light-green label. Hover shows the parked frequency in MHz.
+
+**Click the chip** to **swap** so the panadapter (RX1) shows that parked
+spot. RX2 keeps the frequency you just left. Mode and RX bandwidth swap
+with the VFOs. Focus returns to **TUNE A**. Click the matching chip again
+(now pointing at the other band) to swap back. This is the same swap as
+**⇄** on the Tuning row, aimed at "show me the other receiver on this
+pane."
+
+The waterfall does **not** magically display two bands at once — one IQ
+slice at a time. The chips exist so you never lose the second VFO when it
+walks off the picture.
+
+### Typical operating
+
+1. Light **SUB** (green). Hear RX1 in the **left** ear / left of **Bal**,
+   RX2 in the **right**. Ride **Vol2** / **MUTE2** if one side is loud.
+2. **Shift+click** or **right-click** a band chip to park SUB there
+   without moving VFO A (chip goes **green**; RX1's chip stays **red**).
+3. Watch **TUNE A** (orange) vs **TUNE B** (lime) before you click the
+   panadapter. **Middle-click** from TUNE A parks SUB on the click and
+   focuses B; middle-click from TUNE B returns focus to A.
+4. Filters **RX BW** becomes **RX2 BW** while TUNE B / SUB is focused;
+   drag the **green** passband edges the same way as the cyan box.
+5. Filters, NR, and the main S-meter stay the **focused** receiver's
+   story unless a control is labelled Vol2 / MUTE2 / RX2.
+
+DSP+Audio **NR / AGC / notches** follow the **focused** RX (the one
+**TUNE A / TUNE B** names). GEN / TIME / Mem do not hop SUB.
+
+---
+
 ## Filters panel
 
 Sets the sample rate and how wide the RX/TX filters are. (The **mode**
@@ -669,6 +875,8 @@ picker moved to the Tuning panel, under the VFO.)
   passband edge** on the panadapter to a width that isn't a preset, the
   combo shows it as **"(custom)"** at the top of the list so the readout
   always matches what you're actually hearing; pick a preset to snap back.
+  With **SUB** focused (**TUNE B**), this control reads **RX2 BW** and
+  drives the **green** passband; RX1's width stays on the cyan box.
 - **🔗 (Lock)** — links RX and TX bandwidths so changes to either side
   mirror the other for the current mode. Click to toggle. Toggling it
   ON pulls the RX bandwidth into TX. With the lock OFF, RX and TX BW
@@ -703,9 +911,13 @@ carrier (the Filter Low edge doesn't apply to those modes).
 Quick band switching, in three rows:
 
 - **Ham** — the HF/6m amateur bands (**160m … 6m**). Click one and Lyra
-  returns RX1 to **the last frequency you were on in that band** (the
-  band's default the first time). The button for the band you're on lights
-  up (red-glow), following the frequency however you tune.
+  returns the **focused** receiver to **the last frequency you were on in
+  that band** (the band's default the first time). That is **VFO A /
+  RX1** unless the panadapter already shows **TUNE B** (SPLIT VFO B, or
+  SUB focused). **Colour:** RX1's band chip has a **red** glow; SUB's
+  band (when SUB is on) has a **green** glow. Same band on both VFOs →
+  one chip can carry both stories (red + green treatment). Full map:
+  [Second receiver](#second-receiver-sub--rx2--how-it-works).
   An optional **11m** button (the **Citizens Band**, 26.965–27.405 MHz AM)
   appears at the end of this row, right after 6m, when you enable it in
   **Settings → Hardware → Band panel**. When you're tuned on it, the
@@ -716,6 +928,13 @@ Quick band switching, in three rows:
   frequency and mode** and return to it when you click them (band default
   the first time). The active band lights the same way.
 - **Gen** — the GEN1/2/3 general-coverage slots (below).
+
+**SUB hops (HL2 / BrickSDR2).** **Shift+click** or **right-click** a Ham / BC /
+11m chip to park **SUB** on that band (turns SUB on if it was off, keeps
+VFO A focused). SUB remembers **its own last frequency and mode** per
+band — independent of RX1. A SUB hop does **not** apply RX1's band
+memory (LNA, TX drive, panadapter range). **GEN / TIME / Mem** stay
+RX1-only (not SUB hops).
 
 **GEN1 / GEN2 / GEN3** (to the right of the band buttons) are
 **general-coverage slots** for listening outside the ham bands —
@@ -780,11 +999,12 @@ The **DSP + AUDIO** panel — what you hear and how it's cleaned up. It's
 laid out in old Lyra's three-row arrangement:
 
 **Row 1 — Levels**
-- **Vol** — output volume, shown in dB beside the slider (−∞ when fully
-  down). The mouse wheel nudges it in fine steps.
-- **MUTE** — silences or restores the audio without disturbing the Vol
-  slider; the button reads **MUTED** while engaged. (Lyra starts
-  **unmuted**.)
+- **Vol** — RX1 output volume, shown in dB beside the slider (−∞ when
+  fully down). The mouse wheel nudges it in fine steps.
+- **MUTE** — silences or restores RX1 without disturbing the Vol slider;
+  the button reads **MUTED** while engaged. (Lyra starts **unmuted**.)
+- **Vol2 / MUTE2** — same pair for **RX2** when SUB is on (HL2 / BrickSDR2).
+  MUTE2 does not change Vol2.
 - **LNA** — RF input gain on the HL2's AD9866 PGA (−12…+31 dB; slider or
   mouse-wheel). Higher = more sensitivity; back off on strong bands to
   avoid ADC overload. The S-meter compensates for it automatically, so
@@ -793,9 +1013,9 @@ laid out in old Lyra's three-row arrangement:
   set a comfortable working level for your headphones/speakers once, then
   ride **Vol** on top of it for moment-to-moment changes. The value shows
   in dB beside the slider.
-- **Bal** — stereo balance: pans the audio left/right. Centre = both
-  channels equal; the slider snaps to dead-centre near the middle so it's
-  easy to recentre.
+- **Bal** — stereo balance. With SUB off, pans RX1 left/right. With SUB
+  on, it pans **RX1 vs RX2** (left vs right); centre = both equal and
+  snaps to dead-centre so it's easy to recentre.
 - **MON TX · Monitor** — *hear yourself transmit.* With **MON TX** on, while
   you're keyed up Lyra plays your own **post-rack** TX audio (Speech → EQ →
   Combinator → Plating) in place of the auto-muted receiver. The **Monitor**
@@ -963,7 +1183,10 @@ your station is wired:
 - **PC sound device** — your computer's speakers, headset, or USB audio
   interface (or a virtual cable to another program).
 
-You can switch any time; Lyra remembers your choice.
+You can switch any time; Lyra remembers your choice **per rig** — each
+radio keeps its own output path and device, so a Hermes set to its jack and
+a Brick set to your PC soundcard each come back correctly when you switch
+between them (see *Multiple radios & switching rigs*).
 
 **Which one:**
 
@@ -1045,6 +1268,15 @@ VB-CABLE) — it appears as both a playback and a recording device.
 There's an option to auto-enable VAC1 when you switch to a digital mode.
 VAC1 also carries **PC → TX** (covered in *Setting up your mic input*).
 
+> **Both ends, or neither.** VAC1 is one two-way stream carrying *both*
+> RX→PC and PC→TX. It opens both directions together, so if the **Input
+> device** (PC→TX side) is missing or held by another app, the whole cable
+> fails to open — you lose RX→PC audio *too*, not just transmit. If digital
+> RX suddenly goes silent, check that **both** the VAC Input and Output
+> devices in Settings → Audio are set to real, free devices (Lyra logs
+> "VAC off this session" when the open fails). Close any app holding the
+> cable and re-enable VAC1.
+
 **Latency (for fast ARQ modes like VarAC).** Two controls tune how much
 buffering the cable carries:
 
@@ -1098,11 +1330,22 @@ Mic source**:
   onboard codec, AK4951 on HL2+). *The default for voice.*
 - **PC Soundcard (VAC1)** — audio from your **PC** (a USB/headset mic, or a
   program) via a virtual audio cable.
+- **PC Soundcard (VAC2)** — the second cable (RX2 audio; enable **SUB**).
 - **TCI (digital modes)** — audio streamed from a digital-mode program
   (MSHV, JTDX, WSJT-X, FLDigi…) over Lyra's TCI link; the mic is bypassed.
 
-*(VAC2 appears greyed out — planned for a later version.)* Only
-one source is live at a time — whatever's selected goes on the air.
+Only one source is live at a time — whatever's selected goes on the air.
+
+**Remembered per radio.** The mic source is saved **per rig**, so a
+Hermes Lite on its codec mic and a Brick on a PC mic each keep their own
+setting when you switch rigs — set it once per radio.
+
+**No usable mic jack? (some Brick / ANAN setups)** Not every rig has a mic
+jack you can use — for example a Brick whose RX audio already runs over the
+network to your PC. For those, transmit with a **PC Soundcard (VAC1)** mic
+for voice, or **TCI (digital modes)** for FT8/etc. — both work on any rig,
+including the Brick. The "Mic In" default only applies to a radio with an
+onboard codec mic (e.g. the Hermes Lite 2's jack).
 
 **Which one:**
 
@@ -2199,9 +2442,9 @@ VAC/digital setup as a unit — see
   their settings are **not yet swept into profiles** — that field lands
   with a future profile update, and older saved profiles migrate forward
   automatically. A separate monitor output remains **reserved** for the
-  same reason. (VAC is no longer reserved — it's stored as of v0.2.4. Audio
-  *device* names stay global station setup, not per-profile, since they're
-  machine-specific.)
+  same reason. (VAC1 and VAC2 enable, auto-digital, gains, and latency
+  are stored in the profile. Audio *device* names stay global station
+  setup, not per-profile, since they're machine-specific.)
 
 ### The Profiles dock (front panel — quick recall)
 
@@ -2671,7 +2914,8 @@ Turn it on in **Settings → Bands → SW Database**:
 
 ### Radio
 
-Find and connect to your HL2 / HL2+. **Discover** scans the LAN, **Open**
+Find and connect to your radio — an HL2 / HL2+ (Protocol 1) or a Protocol-2
+radio (BrickSDR2 / ANAN G2 / ANAN-10–200D P2). **Discover** scans the LAN, **Open**
 connects to the selected radio (or just **double-click** it), **Close**
 disconnects, and the status line shows what you're connected to. The
 **connected radio is shown green and bold** in the list, so with several
@@ -2682,7 +2926,9 @@ thing.)
 **Multiple radios.** Keep as many radios in the list as you like and switch
 between them: select one (or double-click) → **Open**; to change radios,
 **Close** the current one first, then Open another. Lyra connects to one
-radio at a time.
+radio at a time. To keep **separate settings per radio** (model, filter,
+audio path, band memory, calibration…) use the **Rig** menu — see
+[Multiple radios & switching rigs](#multiple-radios--switching-rigs).
 
 - **Add by IP** — type a radio's address (e.g. `192.168.1.50`) and click
   **Add** for a radio **Discover** can't reach: a fixed-IP HL2, one on a
@@ -2860,21 +3106,29 @@ To make a report actionable, please include:
 ## Settings → Filters / BCD
 
 Everything that makes an **external band-following accessory follow your
-tuning** lives here: an external band-pass **filter board** on the HL2's
-open-collector (OC) outputs, and a **USB-BCD** band code for a linear
-amp. Leave the whole tab alone if you don't have either — nothing here
-does anything until you enable it.
+tuning** lives here. There are **two analog-voltage paths** on an HL2
+with an N2ADR / IO board — they are not the same pin:
+
+| Path | Pin | How Lyra turns it on | Same as |
+|------|-----|----------------------|---------|
+| Gateware Band Volts | **J3** (fan PWM / GPIO04_Fan) | **HL2 Band Volts on J3** checkbox | DeskHPSDR RX → *HL2 Band Volts / Dither Bit*; MI0BOT Thetis *HL2 Band Volts* |
+| OC → I2C → Pico PWM | stock firmware **J4 pin 8** | **Enable N2ADR / IO board** (default on) | DeskHPSDR `filter_board = N2ADR`; Thetis/Quisk OC with no extra box |
+
+USB-BCD stays off until you pick a cable. Turn N2ADR off if you have no board.
 
 ### Filter board — OC Control (J16 pins)
 
-The HL2's **J16 open-collector (OC) pins** can drive an external
-band-pass filter board (N2ADR or compatible) so its filters follow the
-band you're on — front-end protection against strong out-of-band
-signals (a nearby AM broadcaster, say).
+The HL2's **J16 open-collector (OC) pins** drive an external band-pass
+filter board (N2ADR or compatible) so its filters follow the band
+you're on — front-end protection against strong out-of-band signals (a
+nearby AM broadcaster, say). Gateware relays those bits over I2C
+(addr 0x20). Pico firmware can PWM analog from the same bits; **stock
+N2ADR analog is J4 pin 8**, not J3.
 
-- **Enable external filter board (N2ADR / compatible)** — turns the OC
-  band-switching on. Off = the OC pins drive nothing (harmless with no
-  board).
+- **Enable N2ADR / IO board (filters + Pico analog, not J3)** —
+  turns OC band-switching on (default, matching DeskHPSDR). Off = the
+  OC pins drive nothing (harmless with no board). Analog on **J3** is
+  the Band Volts checkbox further down.
 - **Live pins** (top-right) — the seven cells light to show which J16
   pins are being driven **right now**, on the wire. They follow the band
   as you tune and flip to the transmit pattern while you're keyed.
@@ -2932,24 +3186,24 @@ option to borrow the adjacent band's filter:
 (If the FTDI driver, `ftd2xx.dll`, isn't installed, this section says so
 instead — install the FTDI D2XX driver to use USB-BCD.)
 
-### Band-voltage output (fan-PWM pin)
+### Band Volts on J3 (fan PWM)
 
-Some amps, tuners, and antenna switches band-follow off a single **analog
-band voltage** rather than serial CAT or logic pins. The HL2 gateware can
-emit that voltage on its **fan-PWM pin** (the "band volts" feature in the
-MI0BOT / Ramdor gateware builds), and Lyra can turn it on:
+If your amp or tuner (Xiegu GP100, HardRock-50 in analog-voltage mode,
+etc.) is jumpered to **IO-board J3**, that header is the fan PWM, not
+the Pico analog output. Tick **HL2 Band Volts on J3 / fan-PWM pin
+(dither bit)**. That is Protocol-1 C0=0x00 C3 bit 3 — the same bit
+DeskHPSDR and MI0BOT Thetis use. Off (default) leaves J3 as a cooling
+fan.
 
-- **Output per-band analog voltage on the fan-PWM pin** — enables it. Off
-  (default) leaves the pin as normal fan control.
+> ⚠ **Trade-off:** while this is on, J3 outputs band voltage **instead
+> of** fan-speed control. Gateware must include the fan/band-volts
+> block (HL2 wiki Band-Volts, typically ≥72p5). Stock ak4951 builds
+> without that block hold the pin low, so the checkbox does nothing.
 
-> ⚠ **Trade-off:** while this is on, that pin outputs band voltage
-> **instead of** fan-speed control. Only enable it if your wiring actually
-> uses the band voltage. It also needs a gateware build that includes the
-> band-volts feature.
-
-This is independent of the OC/J16 pins above and the serial band-follow
-used by an HL2+ AK4951 companion board (which drives a HardRock-50 / AH-4
-automatically from the gateware — no setting needed here).
+Stop and Start the radio after you enable it so the dither bit is
+seeded on the first C&C frame. This is independent of N2ADR OC/LPFs
+and of HL2+ AK4951 serial band-follow (HardRock-50 / AH-4 — no setting
+needed here).
 
 ## Settings → Audio
 
@@ -2963,7 +3217,9 @@ Where Lyra sends received audio:
   headphones, a virtual audio cable to WSJT-X / FLDigi, etc.).
 
 Pick your output device here; everyday **Mute** and **Vol** stay on the
-[Audio panel](#audio-panel).
+[Audio panel](#audio-panel). This choice is saved **per rig** — each radio
+remembers its own output path and device across rig switches (see
+[Multiple radios & switching rigs](#multiple-radios--switching-rigs)).
 
 **Filter Low edge (RX + TX)** — single shared low cutoff for the
 SSB / DIG audio bandpass on both receive and transmit. Range
@@ -3006,12 +3262,16 @@ end-to-end digital-mode wiring see
 [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable); the
 controls here are:
 
-- **Enable VAC1 (RX→PC and PC→TX)** — master switch; powers both
-  directions at once.
+- **Enable VAC1 (RX→PC and PC→TX)** — master switch; powers the VAC
+  engine (receive into the cable, and the input path if you also arm it
+  as the mic). **Enable is not the same as “TX from VAC.”**
+- **Use VAC1 as TX source** — same as **Settings → TX → Mic source =
+  PC Soundcard (VAC1)**. Greyed out when Mic source is **TCI** so a
+  logger/digital app using TCI audio is not stolen.
 - **Auto-enable for digital modes (disable for others)** — when ticked,
-  VAC1 turns on automatically when you switch to a digital mode
-  (DIGU / DIGL) and off for every other mode, so moving into a digital
-  setup opens the cable for you.
+  VAC1 turns on automatically **only** for DIGU / DIGL and **off** for
+  every other mode (including USB). USB with this ticked will **stop**
+  VAC even if Enable looks on.
 - **Driver** — the audio backend (PortAudio host API: **WASAPI**,
   DirectSound, MME, or WDM-KS) the VAC devices live under. **WASAPI is the
   right choice for virtual cables.** Changing the driver repopulates the
@@ -3038,6 +3298,27 @@ controls here are:
 > a VAC transmit produces **no power**. The
 > [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)
 > section walks the whole setup, including the no-power fix.
+
+### Virtual Audio Cable (VAC2)
+
+VAC2 is a **second** full-duplex cable, independent of VAC1, and carries
+**RX2** audio. Typical use: digital app on VAC1 (RX1) and a logger or
+second decoder on VAC2 (RX2). Enable **SUB** so VAC2 has RX2; with SUB
+off the cable stays open but **silent**.
+
+- **Enable VAC2** — starts the second PortAudio stream (`vac2/*` keys).
+- **Use VAC2 as TX source** — same as **Mic source = PC Soundcard (VAC2)**.
+  Mutually exclusive with VAC1 TX and with **TCI** audio (TCI always wins).
+- Device / gain / buffer / latency / Combine / Mute-will-mute — same
+  meanings as VAC1, on a separate device pair (e.g. CABLE-C / CABLE-D).
+
+If both VAC1 and VAC2 have **Auto-enable for digital** on, TX prefers
+**VAC1**. VAC2 TX is used when you pick **PC Soundcard (VAC2)** or when
+only VAC2 auto-digital is live.
+
+VAC2 **enable / auto-digital / gains / latency / buffer size** save with
+the active TX/RX profile (same as VAC1). Device names stay in Settings →
+Audio. Recalling a pre-VAC2 profile leaves VAC2 off.
 
 ---
 
@@ -3114,7 +3395,7 @@ Mic source → Mic Boost (+20 dB HW) → Mic Gain (SW) → Leveler (optional) �
 
 | Knob | Default | What it controls |
 |---|---|---|
-| **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **PC Soundcard (VAC1)** routes TX audio captured from a PC audio cable (a Virtual Audio Cable) into the TX chain — pick this to transmit digital modes whose audio comes over a soundcard/VAC instead of TCI (see [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)); it needs VAC1 enabled with an input device on Settings → Audio. **Line In / VAC2** anchor entries are visible for layout but reserved for a later release. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
+| **Mic source** | Mic In (codec) | Picks the audio source driving the TX chain. **Mic In** = the HL2 / HL2+ codec mic input (the v0.2.x default; this is the hand-mic / headset-mic / desk-mic path). **TCI** = inbound TX_AUDIO_STREAM from a digital-modes TCI client (MSHV / JTDX / FlDigi); pick this for digital-mode operation so the client's modulator audio replaces the hand-mic. **PC Soundcard (VAC1)** / **(VAC2)** route TX audio from Settings → Audio VAC1 or VAC2 (see [Digital modes over VAC](#digital-modes-over-vac-virtual-audio-cable)). VAC2 needs **SUB** for RX2 audio into the cable. TCI audio and VAC TX are exclusive — TCI always wins. A TCI client that sends `TRX:0,true,tci` auto-selects TCI — the picker tracks it. |
 | **Mic Boost** | OFF | HL2 hardware +20 dB analog mic preamp (codec PGA, single bit on the wire — C0 0x12 C2 bit 0). Pure hardware boost ahead of the digital chain. Enable when your hand mic / headset mic is genuinely too quiet to hit the modulator at a reasonable level even with the Mic Gain slider near max. Hardware is 2-state (off / +20 dB); intermediate trim comes from Mic Gain stacked on top. **Only affects the codec mic input** — PC mic / TCI sources bypass the codec PGA entirely, so this checkbox has no effect on those routes. Persisted across launches. |
 | **Mic Gain** | 0 dB | The mic-into-modulator gain (WDSP TXA PanelGain1 — TXA chain stage #3, before phrot / EQ / leveler / CFCOMP / bandpass / compressor / OSCtrl / ALC). **Bidirectionally bound with the TxPanel front-UI slider** — slider for quick QSO-time adjustments, spin-box here for typed precision. 0 dB = WDSP unity; +10 to +20 dB typical SSB; +25 to +35 dB ESSB with headroom. Range −90 dB to +40 dB matches the reference's Default TX profile. **Stacks on top of Mic Boost** — if Mic Boost is ON, the modulator sees Mic Boost +20 dB + Mic Gain combined. |
 | **ALC Max Gain** ⚠ | 3 (LINEAR) | The ALC (Automatic Level Control) max-gain ceiling — the always-on output limiter that catches peaks the leveler and compressor didn't bound, **before** the I/Q reaches the wire. **LINEAR amplitude factor (NOT dB) — units corrected in §15.27**: 1 = unity (limiter cannot amplify, only attenuate); 3 = the verified reference's default = 3× amplitude headroom = +9.54 dB of allowed amplification before the ALC pulls down. Earlier Lyra builds shipped this property as dB and called `dbToLin(3.0) = 1.413` — capping the ceiling at 47% of the reference's value and producing a ~6 dB power deficit on continuous mic-input tones (the §15.27 / #79 root cause; fixed 2026-06-03). Range 0..120 LINEAR matches the reference spinner exactly. Operator tuning: lower (1–2) for tighter splatter protection at the cost of headroom; higher (5–20) for ESSB-style program-level headroom. |
@@ -3630,12 +3911,16 @@ future refinement, not something worth rushing into the safety path.
 > band. This is deliberate: a cap can never *silently* mis-limit your power.
 > If you arm before a band has a **Full Output** reference, that band runs a
 > safe conservative **~30 % drive** fallback (power reads LOW) until you
-> calibrate it. When the cap is actively holding power down a **CAP** chip
-> shows on the TX panel: amber **CAP ~30%** = uncalibrated fallback (low),
-> cyan **CAP nW** = holding a calibrated band at your set watts. If you don't
-> run an amplifier, just leave the cap unticked and Lyra transmits at full
-> drive. *(Upgrading from an older version keeps an existing cap armed, so
-> you never lose amp protection on update.)*
+> calibrate it. While Max cap is armed, a **CAP** chip stays on the TX panel
+> on every band (including at low Drive): amber **CAP learn** = not yet
+> TUN-locked, cyan **CAP nW** = locked at your set watts. The chip stays
+> fully visible when Drive is under the lock — RF may drop, but the learned
+> ceiling does **not** follow Drive back up. Raising the slider past the
+> lock while keyed must not flash full output; RF stays at the capped watts.
+> If you
+> don't run an amplifier, just leave the cap unticked and Lyra transmits at
+> full drive. *(Upgrading from an older version keeps an existing cap armed,
+> so you never lose amp protection on update.)*
 
 ---
 
@@ -3674,15 +3959,28 @@ binary frames — no extra toggle needed. Lyra advertises the audio format
 at connect so the client decoder configures itself correctly the moment
 it attaches.
 
-**Signal-strength readings** ride the same link, too. Lyra continuously
-sends its receiver's meter reading over TCI as a *calibrated dBm* value —
-the same number your S-meter shows — so a connected logger's own signal
-meter mirrors Lyra's rather than guessing from raw audio level. (This is
-sent to every TCI client; it's what the Combo auto-RST feature below builds
-on.)
+**Two TCI channels** (HL2 / BrickSDR2 SUB). Lyra advertises **`channel_count:2`**.
+There is **no extra Settings → Network toggle** for RX2 — SUB is the
+Tuning **SUB** button (or TCI `rx_enable:1`). Mapping matches deskHPSDR /
+Thetis, not “channel 1 = always RX2”:
 
-> RX2 over TCI is deferred until Lyra has a second receiver. Today the
-> server advertises a single channel.
+| Client command | What Lyra does |
+|---|---|
+| `vfo:0,0` / `dds:0` | RX1 / VFO A |
+| `vfo:0,1` | **SPLIT VFO B** (TX offset) — does **not** turn SUB on |
+| `vfo:1,0` / `dds:1` | **RX2 / SUB** frequency |
+| `rx_enable:1` | Enable / disable SUB |
+| `modulation` / `if` on channel 1 | RX2 mode / IF |
+
+Setting an RX2 frequency does **not** auto-enable SUB. Drive SUB with
+`rx_enable` or the panel button.
+
+**Signal-strength readings.** Lyra broadcasts calibrated dBm as
+`rx_channel_sensors:RX,SUB,<dbm>` — RX1 is **`0,0`**, RX2 is **`1,0`**.
+The RX2 sensor is sent whenever a client is connected; with SUB **off**
+the reading is a quiet floor (about −140 dBm), not a live second
+receiver. Combo auto-RST (below) still uses the **RX1** S-meter (and
+Combo SNR is RX1-only).
 
 ### SDRLogger+ Combo link
 
@@ -3715,13 +4013,14 @@ With Combo on, four things happen automatically as you work a station:
   **`{NAME}`** token in the CW Console. A reply macro like
   `{CALL} DE {MYCALL} GE {NAME}` now greets them by name with no typing.
 - **Received signal → RST.** SDRLogger+ can auto-fill the **S** digit of
-  **RST-Received** from the same shared, *calibrated* S-meter reading
-  described above — so the number it logs is exactly what your meter shows,
-  not a guess. Lyra also sends a small signal-to-noise figure alongside it
-  (Combo only) so the logger peak-holds and fills the S **only on a real
-  signal**, not on the band noise. Turn on the **S-auto** control next to
-  the RST-Rcvd field in SDRLogger+; typing a value latches it to manual,
-  and working a new call re-arms it. Works on SSB / CW / digital (not SAT).
+  **RST-Received** from the **RX1** calibrated S-meter (TCI channel 0) —
+  so the number it logs is exactly what your main meter shows, not a
+  guess. Lyra also sends a small signal-to-noise figure alongside it
+  (Combo only, **RX1**) so the logger peak-holds and fills the S **only
+  on a real signal**, not on the band noise. Turn on the **S-auto**
+  control next to the RST-Rcvd field in SDRLogger+; typing a value
+  latches it to manual, and working a new call re-arms it. Works on
+  SSB / CW / digital (not SAT). SUB / RX2 is **not** used for Combo RST.
 - **One-click log with `{LOG}`.** Add the **`{LOG}`** action token to a CW
   macro — e.g. `TU 73 {MYCALL} ee {LOG}` — and sending that macro sends
   the sign-off *and* logs the QSO in SDRLogger+ (call, RST, mode and
@@ -3863,12 +4162,17 @@ clients you prefer to run by soundcard, or any setup where TCI handles
 That's the recommended split for MSHV: let TCI key the radio and follow
 the band, and route the audio over VAC.
 
+Operators who prefer TCI for **both** audio and rig control can skip VAC
+entirely. VAC is for apps that only speak soundcard (or a second decoder
+on RX2 via **VAC2**).
+
 > **VAC carries audio only — it does not key the radio.** Keying still
 > comes from TCI (or CAT). TCI *control* and TCI *audio* are independent;
 > using TCI to PTT does **not** mean you're using TCI audio.
 
-**You need two cables** (e.g. VB-Audio "CABLE" + "CABLE-B", or VAC's
-"Line 1" + "Line 2") — one for each direction:
+**You need two cables per VAC** (e.g. VB-Audio "CABLE" + "CABLE-B") — one
+for each direction. VAC2 uses a **second pair** (CABLE-C / CABLE-D) and
+needs **SUB** so RX2 is on the cable:
 
 | Direction | Lyra side (Settings → Audio → VAC1) | Client side |
 |---|---|---|
@@ -3887,7 +4191,10 @@ the band, and route the audio over VAC.
 2. **Settings → TX → Mic + ALC → Mic source = "PC Soundcard (VAC1)".**
    **This is the step that catches people.** Without it the TX chain reads
    a different source (the codec mic, or TCI) and you get **no power out**
-   even though everything else looks right.
+   even though RX on the cable works. You can also tick **Use VAC1 as TX
+   source** on the Audio tab (it is disabled when Mic source is TCI).
+   Stay on **DIGU / DIGL** if Auto-enable for digital is on — USB turns
+   VAC off.
 3. **TCI for control:** keep your TCI client connected for PTT/frequency
    (Settings → Network). In MSHV's audio panel, point **Output** at the TX
    cable and **Input** at the RX cable (the reverse of Lyra), and pick the
@@ -4383,12 +4690,15 @@ the GPL-licensed components it depends on:
 - **Timmy Davis (KC8TYK)** — tester (v0.1 tester flight).
 - **W5UDX** — DSP2024P Plate Reverb presets and verification (lands
   with the Plate Reverb in v0.2.1).
+- **Cursor Grok 4.6** (SpaceXAI / Cursor) — coding assistant for
+  implementation and debug pairing on the native C++ rebuild.
 
 ### License
 
 **GPL v3 or later.** Source repository:
 [github.com/N8SDR1/Lyra-SDR-cpp](https://github.com/N8SDR1/Lyra-SDR-cpp).
-Full license text: `LICENSE` / `NOTICE.md` in the source tree. See
+Full license text: `LICENSE` / `NOTICE.md` in the install folder
+(and the source tree). See
 the **About Lyra** dialog (**Help → About Lyra…**) for the version
 + build date of the running binary.
 
@@ -4440,8 +4750,10 @@ band. When in doubt, run less power.
 
 Lyra is **free**, **open-source** (GPL v3 or later — see the License), and
 primarily built by **Rick Langford (N8SDR)** in his spare time, with
-**Brent Crier (N9BC)** joining as co-contributor during early testing and
-**Timmy Davis (KC8TYK)** joining for the v0.1 tester flight. There are no
+**Brent Crier (N9BC)** joining as co-contributor during early testing,
+**Timmy Davis (KC8TYK)** joining for the v0.1 tester flight, and
+**Cursor Grok 4.6** (SpaceXAI / Cursor) as coding assistant on the
+native C++ rebuild. There are no
 ads, no telemetry, no subscription tier, no "pro" upsells.
 
 If Lyra has saved you from a clunky SDR workflow, helped you work a new

@@ -152,6 +152,14 @@ private:
     // The normalized position of the S9 boundary — renderers paint the
     // over-S9 region red.  Tracks the HF/VHF scale (S9 shifts at 30 MHz).
     Q_PROPERTY(double normAtS9 READ normAtS9 NOTIFY updated)
+    // Live antenna SWR for panels outside the meter (e.g. the Tuner panel),
+    // source-selected the SAME way the SWR meter is: P2 bridge fwd/rev when a
+    // Protocol-2 rig is running, HL2Stream fwd/rev otherwise.  Returns −1 when
+    // there is no usable reading (below the fwd-power guard / NaN), else the
+    // raw SWR ratio (capped at 99.9).  The Tuner panel binds this instead of
+    // Stream.fwdPowerW/revPowerW directly, which are HL2-only and read zero
+    // on a P2 rig.  Refreshes on the meter tick (NOTIFY updated).
+    Q_PROPERTY(double liveSwr READ liveSwr NOTIFY updated)
     // Operator-selectable visual style: 0 = Horizon Arc (default),
     // 1 = Plasma Bar, 2 = Vertical Ladder.  `style` is the RX (default)
     // style; `txStyle` is used on TX when `separateStyle` is on.  The
@@ -266,7 +274,9 @@ public:
     // running, PA volts/current read from it (converted with the
     // radio's hardware-profile constants) instead of the idle
     // HL2Stream's NaN.  Same meters, either wire path.
-    void setP2Bridge(lyra::wire::P2RxBridge *b) { p2_ = b; }
+    // Binds the P2 telemetry source and starts tracking its run state so the
+    // per-rig RX S-meter trim (calDb) reloads for whichever rig is live.
+    void setP2Bridge(lyra::wire::P2RxBridge *b);
 
     // TX-rip Phase 1 (Q2): setTxDspWorker removed — TX DSP worker is
     // being rebuilt from empty files per the signed Phase 0 mapping
@@ -287,6 +297,7 @@ public:
     QString dbmText()  const { return dbmText_; }
     QVariantList history() const { return history_; }
     double  normAtS9() const;
+    double  liveSwr()  const;
     // Calibrated instantaneous RX S-meter dBm — the SAME calibration the
     // on-screen meter is built from (WDSP RXA_S_PK + operator calDb trim −
     // current LNA gain).  Exposed so the TCI server broadcasts a real,
@@ -297,6 +308,10 @@ public:
     // strength).  Sentinel-safe: returns an S0-region floor when the stream
     // is not running (RXA_S_PK ≈ −200).
     double  rxSMeterDbm() const;
+    // Calibrated RX2 S-meter dBm — same formula as rxSMeterDbm() on
+    // WDSP RX2 RXA_S_PK.  TCI rx_channel_sensors:1,0.  S0-floor when
+    // SUB is off / RX2 DSP not running.
+    double  rxSMeterDbmRx2() const;
 
     // Numeric in-passband SNR (dB) — the SAME value the on-screen SNR readout
     // shows (dispDbm_ − noiseFloorDbm_, floored at 0). Shared over TCI as
@@ -345,6 +360,14 @@ public:
 
     // Tick marks for the scale: list of { pos: 0..1, label: "9"/"+20", major: bool }.
     Q_INVOKABLE QVariantList tickMarks() const;
+
+    // The rolling-minimum RX noise floor converted from calibrated dBm back
+    // into the WDSP-dBFS *raw* domain (the exact inverse of
+    // calibratedSMeterDbm: raw = dispDbm - calDb + lna).  Passband power,
+    // matching RXA_S_PK.  Consumed by WdspEngine::applyAutoAgcThresh for the
+    // one-shot Auto AGC-threshold.  Keep paired with calibratedSMeterDbm so
+    // the two never drift.
+    Q_INVOKABLE double noiseFloorWdspRawDbFs() const;
 
 signals:
     void updated();
@@ -453,8 +476,8 @@ private:
     double normForDbm(double dbm) const;
     // SINGLE source of truth for the RX S-meter calibration:
     // raw RXA_S_PK dBm + operator calDb trim − current LNA gain.  Called by
-    // BOTH computeSMeter() (the on-screen meter) and rxSMeterDbm() (the TCI
-    // export) so the face and the wire can never disagree.
+    // BOTH computeSMeter() (the on-screen meter) and rxSMeterDbm() /
+    // rxSMeterDbmRx2() (TCI export) so the face and the wire can never disagree.
     double calibratedSMeterDbm(double raw) const;
     void   updateScale();              // pick HF/VHF endpoints from the VFO freq
     QString sLabel(double dbm) const;  // standard HF dBm→S-unit table
@@ -481,6 +504,13 @@ private:
     lyra::ipc::HL2Stream   *stream_   = nullptr;
     lyra::dsp::WdspEngine  *wdsp_     = nullptr;
     lyra::wire::P2RxBridge *p2_       = nullptr;   // P2 telemetry source
+
+    // QSettings key for the RX S-meter trim (meter/calDb), scoped to the rig
+    // that is CURRENTLY the RX source: the running P2 rig's own id, else the
+    // global active rig.  reloadRxCal() re-reads it when the P2 session's run
+    // state flips so switching rigs never applies another rig's trim.
+    QString rxCalKey() const;
+    void    reloadRxCal();
     // TX-rip Phase 1 (Q2): txWorker_ removed; field returns with the
     // new TX DSP worker (docs/TX_ARCHITECTURAL_MAPPING.md §10.3).
     QTimer timer_;
@@ -554,6 +584,15 @@ private:
     double noiseFloorDbm_ = -140.0;  // rolling-minimum noise floor (dBm)
     double noiseLevel_ = 0.0;  // floor position on the scale (0..1)
     QString snrText_ = QStringLiteral("—");
+
+    // Mask the P2 step-attenuator change transient.  Moving the S-ATT
+    // adds/removes the host-side +ATT S-meter comp instantly, but the raw
+    // RXA_S_PK reading only catches up over a wire round-trip (~1 s), so
+    // raw + comp briefly disagree and the reading swings then resettles.
+    // Hold the displayed reading across that settle.  P2-only; HL2 untouched.
+    static constexpr int kFrontEndSettleTicks = 24;  // ~1.2 s @ 50 ms/tick
+    int    frontEndHoldTicks_ = 0;
+    double lastFrontEndDb_    = -1e9;   // sentinel: no P2 attenuation seen yet
 
     double  calDb_ = 0.0;
     int     peakHoldMs_    = 800;   // dwell before decay (operator-tunable)

@@ -43,6 +43,10 @@ Rectangle {
     readonly property color cMuted:  "#8a9aac"
     readonly property color cDim:    "#5a7080"
     readonly property color cOn:     "#ff9a3c"   // "engaged" orange (old-Lyra dsp_btn)
+    // QQuickWidget: a direct Stream.subEnabled binding can stay stale after
+    // the SUB click (same lesson as PanadapterPanel). Vol2/MUTE2 must track
+    // the signal so RX2 gain is reachable when SUB is on.
+    property bool subOn: false
 
     // Small toggle button matching old Lyra's dsp_btn (orange when on).
     component DspToggle: Button {
@@ -75,6 +79,12 @@ Rectangle {
         }
     }
 
+    Component.onCompleted: subOn = Stream.subEnabled
+    Connections {
+        target: Stream
+        function onSubEnabledChanged() { root.subOn = Stream.subEnabled }
+    }
+
     ColumnLayout {
         id: body
         anchors.fill: parent
@@ -86,7 +96,7 @@ Rectangle {
             spacing: 8
             Layout.fillWidth: true
 
-            Label { text: qsTr("LNA"); color: root.cMuted }
+            Label { text: FrontEnd.label; color: root.cMuted }
             LyraSlider {
                 id: lnaSlider
                 // 120 -> 100: the A-ATT state cue is wider than the 10 px
@@ -94,28 +104,35 @@ Rectangle {
                 // the right edge of row 1.  Trimmed here and on Vol rather
                 // than shrinking the readouts.
                 Layout.preferredWidth: 100
-                from: -12; to: 48; stepSize: 1; snapMode: Slider.SnapAlways
-                value: Stream.lnaGainDb
-                onMoved: Stream.setLnaGainDb(value)
-                ToolTip.text: qsTr("LNA — RF input gain on the HL2's AD9866 PGA, −12…+48 dB.\n"
-                    + "Higher = more sensitivity; back off on strong bands to avoid ADC overload.\n"
-                    + "The S-meter compensates automatically, so changing LNA won't shift the reading.")
+                from: FrontEnd.minimum; to: FrontEnd.maximum
+                stepSize: 1; snapMode: Slider.SnapAlways
+                value: FrontEnd.value
+                onMoved: FrontEnd.setValue(value)
+                ToolTip.text: FrontEnd.p2Active
+                    ? qsTr("ATT — G2 ADC step attenuation, 0…31 dB, remembered per band.\n"
+                        + "Increase attenuation when the ADC overload indicator lights.")
+                    : qsTr("LNA — RF input gain on the HL2's AD9866 PGA, −12…+48 dB.\n"
+                        + "Higher = more sensitivity; back off on strong bands to avoid ADC overload.\n"
+                        + "The S-meter compensates automatically, so changing LNA won't shift the reading.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
                 WheelHandler {
-                    onWheel: (ev) => Stream.setLnaGainDb(
-                        Stream.lnaGainDb + (ev.angleDelta.y > 0 ? 1 : -1))
+                    onWheel: (ev) => FrontEnd.setValue(
+                        FrontEnd.value + (ev.angleDelta.y > 0 ? 1 : -1))
                 }
             }
             Label {
-                text: (Stream.lnaGainDb > 0 ? "+" : "") + Stream.lnaGainDb + qsTr(" dB")
+                text: (!FrontEnd.p2Active && FrontEnd.value > 0 ? "+" : "")
+                      + FrontEnd.value + qsTr(" dB")
                 color: root.cText; font.family: "Consolas"; Layout.preferredWidth: 48
             }
             Button {
                 id: autoBtn
                 text: qsTr("Auto")
                 checkable: true
-                checked: Stream.autoLna
-                onToggled: Stream.setAutoLna(checked)
+                checked: FrontEnd.autoEnabled
+                enabled: FrontEnd.autoAvailable
+                visible: !FrontEnd.p2Active
+                onToggled: FrontEnd.setAutoEnabled(checked)
                 implicitWidth: 46; implicitHeight: 24
                 background: Rectangle {
                     radius: 3
@@ -137,6 +154,17 @@ Rectangle {
                     + "Auto roams freely; your manual setting is restored when you turn it off.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
+            LyraComboBox {
+                id: adcCombo
+                visible: FrontEnd.p2Active
+                Layout.preferredWidth: 58
+                model: [qsTr("ADC1"), qsTr("ADC2")]
+                currentIndex: FrontEnd.adcIndex
+                onActivated: FrontEnd.setAdcIndex(currentIndex)
+                ToolTip.text: qsTr("ADC feeding DDC0. The attenuation and overload "
+                    + "indicator follow the selected ADC.")
+                ToolTip.visible: hovered && Prefs.tooltipsEnabled
+            }
             // ADC-overload ladder, or the auto-attenuator state cue.
             //
             // Three rungs (silent / amber "seen recently" / red "confirmed
@@ -149,7 +177,7 @@ Rectangle {
             // handled is noise.  What the operator wants there is "the
             // automation is engaged", which is what A-ATT says.
             Item {
-                implicitWidth: Stream.autoLna ? aattLabel.implicitWidth : 10
+                implicitWidth: FrontEnd.autoEnabled ? aattLabel.implicitWidth : 10
                 implicitHeight: 14
                 Layout.alignment: Qt.AlignVCenter
 
@@ -157,7 +185,7 @@ Rectangle {
                 Label {
                     id: aattLabel
                     anchors.centerIn: parent
-                    visible: Stream.autoLna
+                    visible: FrontEnd.autoEnabled
                     text: qsTr("A-ATT")
                     color: root.cOn
                     font.family: "Consolas"
@@ -167,25 +195,29 @@ Rectangle {
                 // Auto off — the operator owns the gain, so show the ladder.
                 Rectangle {
                     anchors.centerIn: parent
-                    visible: !Stream.autoLna
+                    visible: !FrontEnd.autoEnabled
                     width: 10; height: 10; radius: 5
-                    color: Stream.adcOverloadTier === 2 ? "#ff4040"
-                         : Stream.adcOverloadTier === 1 ? "#e0a828"
+                    color: FrontEnd.overloadTier === 2 ? "#ff4040"
+                         : FrontEnd.overloadTier === 1 ? "#e0a828"
                                                         : "#26323c"
                     border.width: 1
-                    border.color: Stream.adcOverloadTier === 2 ? "#ff8080"
-                                : Stream.adcOverloadTier === 1 ? "#f5c860"
+                    border.color: FrontEnd.overloadTier === 2 ? "#ff8080"
+                                : FrontEnd.overloadTier === 1 ? "#f5c860"
                                                                : "#33424e"
                 }
 
-                ToolTip.text: Stream.autoLna
+                ToolTip.text: FrontEnd.autoEnabled
                     ? qsTr("A-ATT — the auto-attenuator is managing the front "
                         + "end. It backs the LNA off on confirmed overload and "
                         + "creeps it back as the band clears, so the overload "
                         + "alarm is not shown while it is engaged.")
-                    : qsTr("ADC overload — amber: the front end clipped "
+                    : (FrontEnd.p2Active
+                       ? qsTr("G2 ADC overload — amber: clipped recently; red: "
+                           + "sustained clipping. Selected ADC peak: %1 / 32768.")
+                           .arg(FrontEnd.adcPeak)
+                       : qsTr("ADC overload — amber: the front end clipped "
                         + "recently and is settling. Red: sustained clipping. "
-                        + "Reduce LNA or enable Auto.")
+                        + "Reduce LNA or enable Auto."))
                 ToolTip.visible: (ovLampMa.containsMouse) && Prefs.tooltipsEnabled
                 MouseArea { id: ovLampMa; anchors.fill: parent; hoverEnabled: true }
             }
@@ -213,8 +245,8 @@ Rectangle {
             Label { text: qsTr("Vol"); color: root.cMuted }
             LyraSlider {
                 id: volSlider
-                // 150 -> 126, paired with the LNA trim above (see there).
-                Layout.preferredWidth: 126
+                // Shorten when Vol2 is on the row so MUTE/Bal still fit.
+                Layout.preferredWidth: 78
                 from: 0.0; to: 1.0
                 value: WdspEngine.volume
                 onMoved: WdspEngine.setVolume(value)
@@ -231,7 +263,7 @@ Rectangle {
                       ? qsTr("-∞ dB")
                       : Math.round(WdspEngine.volumeDb) + qsTr(" dB")
                 color: root.cText; font.family: "Consolas"
-                Layout.preferredWidth: 52
+                Layout.preferredWidth: 44
             }
             Button {
                 text: WdspEngine.muted ? qsTr("MUTED") : qsTr("MUTE")
@@ -240,6 +272,39 @@ Rectangle {
                 onToggled: WdspEngine.setMuted(checked)
                 implicitWidth: 66; implicitHeight: 24
                 ToolTip.text: qsTr("Silence output without changing the Volume slider.")
+                ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
+            }
+
+            Label {
+                text: qsTr("Vol2"); color: root.cMuted
+            }
+            LyraSlider {
+                Layout.preferredWidth: 78
+                from: 0.0; to: 1.0
+                value: WdspEngine.volumeRx2
+                onMoved: WdspEngine.setVolumeRx2(value)
+                WheelHandler {
+                    onWheel: (ev) => {
+                        var nv = WdspEngine.volumeRx2
+                                 + (ev.angleDelta.y > 0 ? 0.02 : -0.02)
+                        WdspEngine.setVolumeRx2(Math.max(0.0, Math.min(1.0, nv)))
+                    }
+                }
+            }
+            Label {
+                text: WdspEngine.volumeRx2 <= 0.0
+                      ? qsTr("-∞ dB")
+                      : Math.round(WdspEngine.volumeDbRx2) + qsTr(" dB")
+                color: root.cText; font.family: "Consolas"
+                Layout.preferredWidth: 44
+            }
+            Button {
+                text: WdspEngine.mutedRx2 ? qsTr("MUTED") : qsTr("MUTE2")
+                checkable: true
+                checked: WdspEngine.mutedRx2
+                onToggled: WdspEngine.setMutedRx2(checked)
+                implicitWidth: 66; implicitHeight: 24
+                ToolTip.text: qsTr("Silence RX2 without changing Vol2.")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
 
@@ -253,8 +318,10 @@ Rectangle {
                 value: WdspEngine.balance
                 // Snap to dead-centre near 0 so it's easy to recentre.
                 onMoved: WdspEngine.setBalance(Math.abs(value) < 0.06 ? 0.0 : value)
-                ToolTip.text: qsTr("Stereo balance — pan the audio left/right "
-                    + "(centre = both channels equal; snaps to centre near the middle).")
+                ToolTip.text: root.subOn
+                    ? qsTr("Pan RX1 (left) vs RX2 (right). Centre = both equal; snaps to centre.")
+                    : qsTr("Stereo balance — pan the audio left/right "
+                        + "(centre = both channels equal; snaps to centre near the middle).")
                 ToolTip.visible: (hovered) && Prefs.tooltipsEnabled
             }
 
@@ -493,7 +560,12 @@ Rectangle {
                 radius: 4
                 color: agcMa.containsMouse ? "#16242e" : "transparent"
                 border.width: 1
-                border.color: agcMa.containsMouse ? "#2a4a5a" : "transparent"
+                // Latched Auto AGC-T lights the cell border orange (engaged
+                // state cue, same "engaged orange" as Auto-LNA / MON).  Hover
+                // blue when not latched; otherwise no border.
+                border.color: WdspEngine.autoAgcThresh ? root.cOn
+                            : agcMa.containsMouse       ? "#2a4a5a"
+                            :                             "transparent"
                 Row {
                     id: agcRow
                     anchors.centerIn: parent
@@ -521,15 +593,96 @@ Rectangle {
                     id: agcMa
                     anchors.fill: parent
                     hoverEnabled: true
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
+                    onClicked: (m) => {
+                        if (m.button === Qt.RightButton) { agcThrPopup.open(); return }
                         var order = ["off", "fast", "med", "slow"]
                         var i = order.indexOf(WdspEngine.agcMode)
                         WdspEngine.setAgcMode(order[(i + 1) % order.length])
                     }
-                    ToolTip.text: qsTr("Click to cycle AGC: Off → Fast → Med → Slow.")
+                    ToolTip.text: qsTr("Left-click: cycle AGC (Off → Fast → Med → Slow).\n"
+                        + "Wheel: nudge the AGC threshold ±1 dBFS.\n"
+                        + "Right-click: type an exact threshold.\n"
+                        + "Lower (more negative) = more weak-signal gain; higher = less.")
                     ToolTip.visible: (containsMouse) && Prefs.tooltipsEnabled
                     ToolTip.delay: 500
+                }
+                // Wheel over the whole cell nudges the AGC knee (same idiom as
+                // the LNA slider's wheel).  Left-click still cycles mode.
+                WheelHandler {
+                    onWheel: (ev) => WdspEngine.setAgcThreshDb(
+                        WdspEngine.agcThreshDb + (ev.angleDelta.y > 0 ? 1 : -1))
+                }
+                Popup {
+                    id: agcThrPopup
+                    popupType: Popup.Window
+                    x: 0; y: parent.height + 2
+                    padding: 8
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    Row {
+                        spacing: 8
+                        Label { text: qsTr("AGC thr"); color: root.cMuted
+                                anchors.verticalCenter: parent.verticalCenter }
+                        LyraSpinBox {
+                            from: -160; to: 2; stepSize: 1
+                            value: Math.round(WdspEngine.agcThreshDb)
+                            onValueModified: WdspEngine.setAgcThreshDb(value)
+                        }
+                        Label { text: qsTr("dBFS"); color: root.cMuted
+                                anchors.verticalCenter: parent.verticalCenter }
+                        Button {
+                            id: autoAgcBtn
+                            text: qsTr("Auto")
+                            checkable: true
+                            checked: WdspEngine.autoAgcThresh
+                            onToggled: WdspEngine.setAutoAgcThresh(checked)
+                            implicitHeight: 24; implicitWidth: 48
+                            anchors.verticalCenter: parent.verticalCenter
+                            background: Rectangle {
+                                radius: 3
+                                color: autoAgcBtn.checked ? "#3a2a14" : "#161e28"
+                                border.color: autoAgcBtn.checked ? root.cOn : "#2a3a4a"
+                                border.width: 1
+                            }
+                            contentItem: Text {
+                                text: autoAgcBtn.text
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                color: autoAgcBtn.checked ? root.cOn : root.cText
+                                font.pixelSize: 12
+                            }
+                            ToolTip.text: qsTr("Auto AGC-T (latching) — keeps the AGC "
+                                + "knee anchored to the live noise floor and re-tracks "
+                                + "as the band changes.\nAny manual threshold change turns "
+                                + "it off; the AGC cell glows orange while engaged.")
+                            ToolTip.visible: hovered && Prefs.tooltipsEnabled
+                            ToolTip.delay: 400
+                        }
+                        // Auto offset (dB): raises the knee above the floor.
+                        // The reference lands its auto max-gain ~55-57; nudge
+                        // this until the "max" readout matches (higher offset
+                        // = lower max-gain).  Persists.
+                        Label { text: qsTr("off"); color: root.cMuted
+                                visible: WdspEngine.autoAgcThresh
+                                anchors.verticalCenter: parent.verticalCenter }
+                        LyraSpinBox {
+                            visible: WdspEngine.autoAgcThresh
+                            from: -30; to: 30; stepSize: 1
+                            value: Math.round(WdspEngine.autoAgcMarginDb)
+                            onValueModified: WdspEngine.setAutoAgcMarginDb(value)
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        // Resulting AGC max-gain — the reference-comparable
+                        // number (their auto lands ~55-57).
+                        Label {
+                            visible: WdspEngine.autoAgcThresh
+                            text: qsTr("max ") + (isNaN(WdspEngine.agcMaxGainDb)
+                                    ? "—" : Math.round(WdspEngine.agcMaxGainDb) + qsTr(" dB"))
+                            color: root.cText; font.family: "Consolas"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
                 }
             }
 
@@ -618,10 +771,24 @@ Rectangle {
 
             Item { width: 8 }
             CheckBox {
+                id: aepfCheck
                 text: qsTr("AEPF")
                 checked: WdspEngine.aepfEnabled
                 onToggled: WdspEngine.setAepfEnabled(checked)
                 font.pixelSize: 11
+                // Explicit label: the default CheckBox contentItem's text
+                // colour went invisible on the dark panel after a controls-
+                // style change, so the "AEPF" name vanished (the indicator
+                // tick still drew).  Render it in the panel text colour, offset
+                // past the tick, so the label is back.
+                contentItem: Text {
+                    text: aepfCheck.text
+                    color: root.cText
+                    font: aepfCheck.font
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: aepfCheck.indicator
+                                 ? aepfCheck.indicator.width + 4 : 0
+                }
                 ToolTip.text: qsTr("Anti-musical-noise smoother — engages BOTH WDSP "
                     + "stages (artifact elimination + post-filter). On = "
                     + "noticeably less musical 'twinkle' with the voice kept "

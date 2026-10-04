@@ -1,11 +1,12 @@
 # Lyra — Known issues & what's not built yet
 
 Lyra is in **active development**. It's a capable daily-driver transceiver
-for the Hermes Lite 2 / 2+ — full receive *and* transmit — but it isn't
-finished. This page sets expectations so you know what's a real bug versus
-a feature that simply hasn't landed yet. (Pin or link this in Discord.)
+for the Hermes Lite 2 / 2+ (Protocol 1) and the **BrickSDR2** (Protocol 2)
+— full receive *and* transmit — but it isn't finished. This page sets
+expectations so you know what's a real bug versus a feature that simply
+hasn't landed yet. (Pin or link this in Discord.)
 
-Current release: **v0.21.1**. Always grab the latest from the
+Current tree: **v0.24.5**. Always grab the latest from the
 [Releases page](https://github.com/N8SDR1/Lyra-SDR-cpp/releases).
 
 > **What already works** (so you don't wonder): full RX DSP, and **transmit
@@ -27,19 +28,19 @@ Current release: **v0.21.1**. Always grab the latest from the
 
 These are on the roadmap, not broken:
 
-* **Dual receiver (RX2)** — single receiver today; a second receiver with
-  stereo-split audio and SPLIT pile-up operation is planned.
 * **PureSignal** — adaptive pre-distortion (linearizer) is on the roadmap,
   not present yet.
-* **Second virtual audio cable (VAC2)** — Lyra bridges one virtual audio
-  cable today; an independent second cable (e.g. a logger separate from your
-  digital-mode app) is designed but waits on RX2.
 * **macOS / Linux** — **Windows only.** The DSP engine and wire layer are
   Windows binaries today; Linux/macOS are planned but **not yet buildable**.
   The native Windows installer is the only supported way to run Lyra.
 
 ## Expected behavior (not bugs)
 
+* **Cross-band SUB is much weaker** (HL2 and BrickSDR2). One ADC and
+  one analog filter. With an N2ADR / filter board on, OC follows
+  **RX1** — RX2 on another amateur band sits behind that LPF/BPF.
+  Same-band dual watch is full strength. The status log notes the
+  drop once when the two ham bands differ.
 * **First launch is slow / unresponsive for a minute.** Lyra does a one-time
   FFT optimization tuned to your CPU and caches it; later launches are fast.
   (If you change processors, **Settings → Backup & Restore → Rebuild FFT

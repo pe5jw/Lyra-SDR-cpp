@@ -5,6 +5,8 @@
 
 #include "hardware/HardwareCatalog.h"
 
+#include <QtGlobal>
+
 namespace lyra::hardware {
 
 namespace {
@@ -35,6 +37,8 @@ enum { bAtlas = 0, bHermes, bHermesII, bAngelia, bOrion, bOrionMKII,
 const HardwareModelDescriptor kCatalog[] = {
     {"HPSDR",        "HPSDR (Atlas)",   mHPSDR,       bAtlas,     WireSupport::P1Only, 1, false, 33, true,
      false, false, 360.f, 120.f, 0.2899, 0.98f,      -2.1f,    false, true,  PA_CLASSIC, 56.2f},
+    // Classic ANAN / Hermes: shipped as P1, most capable boxes run P2
+    // FPGA now. Lyra's TX path for these is Protocol 2 (classic Alex).
     {"HERMES",       "Hermes",          mHERMES,      bHermes,    WireSupport::Both,   1, false, 33, true,
      false, false, 360.f, 120.f, 0.2899, 0.98f,      -2.1f,    false, false, PA_CLASSIC, 56.2f},
     {"ANAN-10",      "ANAN-10",         mANAN10,      bHermes,    WireSupport::Both,   1, false, 33, true,
@@ -65,6 +69,25 @@ const HardwareModelDescriptor kCatalog[] = {
      false, false, 360.f, 120.f, 0.2899, 0.98f,      -2.1f,    false, false, PA_NONE,    100.f},
     {"RED-PITAYA",   "Red Pitaya",      mREDPITAYA,   bOrionMKII, WireSupport::Both,   2, false, 50, false,
      true,  true,  340.f, 88.f,  0.2899, 4.841644f,  5.259f,   true,  true,  PA_7000_G2, 63.1f},
+    // BrickSDR — Hermes-class Protocol-2 transceiver (discovers as board
+    // "Hermes"; run as model HERMES in Thetis).  First-class Lyra key
+    // instead of the pretend-it's-a-Hermes workaround.  Wire behaviour is
+    // Hermes-class; filtering is the ONBOARD Apollo filter, so it emits
+    // NO per-band Alex/OC words (bench-confirmed 2026-08-01: RX all-zero
+    // across every band, TX a fixed band-independent assertion) — on this
+    // (Jerry) tree because Brick's P2 profile uses zero Alex words (not
+    // the classic ANAN HPF ladder). Telemetry/PA constants are Hermes-class
+    // placeholders pending Brick bench calibration.  Generic name: this ONE
+    // row covers the P2 Hermes-class Brick line (Brick2 bench-validated).
+    // Brick3 is Angelia/ANAN-100D-class (deskHPSDR ties it to ANAN-100D) --
+    // a Brick3 uses the ANAN-100D model, NOT this Hermes-class row.
+    {"BRICK-SDR",    "BrickSDR",        mHERMES,      bHermes,    WireSupport::P2Only, 1, false, 33, true,
+     // rxMeterOffset 1.98: the Hermes-class 0.98 default + a WWV-derived
+     // +1 dB (N8SDR BrickSDR2 S-meter calibrated on 10 MHz WWV against a
+     // known-good reference receiver, 2026-09-08; held across step-att
+     // changes). A fresh Brick now starts here -- the per-rig meter/calDb
+     // trim is only a residual.
+     false, false, 360.f, 120.f, 0.2899, 1.98f,      -2.1f,    false, false, PA_CLASSIC, 56.2f},
 };
 
 #undef PA_CLASSIC
@@ -87,6 +110,11 @@ const HardwareModelDescriptor *modelByKey(const QString &key) {
     for (const auto &m : kCatalog)
         if (key.compare(QLatin1String(m.key), Qt::CaseInsensitive) == 0)
             return &m;
+    // Back-compat: the P2 Brick model was briefly "BRICK-SDR2" before it
+    // was generalized to "BRICK-SDR" (Brick2 = one variant of the
+    // Hermes-class P2 Brick line).  Resolve saved profiles on the old key.
+    if (key.compare(QLatin1String("BRICK-SDR2"), Qt::CaseInsensitive) == 0)
+        return modelByKey(QStringLiteral("BRICK-SDR"));
     return nullptr;
 }
 
@@ -108,6 +136,30 @@ const HardwareModelDescriptor *defaultModelForBoard(int hpsdrHw,
         default:          key = protocol2 ? "ANAN-G2" : "HERMES-LITE"; break;
     }
     return modelByKey(QLatin1String(key));
+}
+
+const HardwareModelDescriptor *defaultModelForBoardName(
+    const QString &boardName, bool protocol2) {
+    Q_UNUSED(protocol2);
+    if (boardName.isEmpty()) return nullptr;
+    if (boardName.startsWith(QLatin1String("HermesLite")))
+        return modelByKey(QStringLiteral("HERMES-LITE"));
+    if (boardName.startsWith(QLatin1String("Saturn")))
+        return modelByKey(QStringLiteral("ANAN-G2"));
+    if (boardName == QLatin1String("HermesII"))
+        return modelByKey(QStringLiteral("ANAN-100B"));
+    if (boardName == QLatin1String("Hermes"))
+        return modelByKey(QStringLiteral("ANAN-100"));
+    if (boardName == QLatin1String("Angelia") ||
+        boardName.startsWith(QLatin1String("Brick3")))
+        return modelByKey(QStringLiteral("ANAN-100D"));
+    if (boardName == QLatin1String("OrionMKII"))
+        return modelByKey(QStringLiteral("ANAN-7000DLE"));
+    if (boardName == QLatin1String("Orion"))
+        return modelByKey(QStringLiteral("ANAN-200D"));
+    if (boardName == QLatin1String("Atlas"))
+        return modelByKey(QStringLiteral("HPSDR"));
+    return nullptr;
 }
 
 QStringList p2ModelKeys() {

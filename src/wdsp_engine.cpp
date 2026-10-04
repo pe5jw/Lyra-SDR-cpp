@@ -17,6 +17,7 @@
 #include "dsp/ParamEq.h"     // #59 — RX EQ engine (processMonoDup / bypassed)
 #include "dsp/EqAnalyzer.h"  // #59 — RX EQ analyzer feed (pre/post)
 #include "wire/CMaster.h" // #158 Stage 4 — SendpInboundVacTxAudio (VAC-in seam)
+#include "rig/RigScope.h" // #2 — per-rig audio-route scoping (scope::rigKey / migrate)
 #include <QDataStream>
 #include <QDateTime>
 #include <QDebug>
@@ -24,6 +25,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStandardPaths>
@@ -32,16 +36,32 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 #if defined(_WIN32)
 #  include <excpt.h>   // __try / __except SEH filter constants
 #endif
 
 namespace {
+
+// #2 — per-rig audio-route setting keys.  The output PATH (radio jack vs
+// PC soundcard) and the chosen PC device are per-RADIO, not global: the
+// operator runs one rig on its onboard jack (Hermes AK4951 -> line-in
+// cable) and another over PC audio (Brick, single line-in already taken).
+// Scoping to the active rig lets each remember its own path; a rig switch
+// restarts the app (mainwindow switchRig), so the WdspEngine ctor below
+// reloads under the new rig's scope automatically — no live re-apply.
+QString audioOutputKey() {
+    return lyra::rig::scope::rigKey(QStringLiteral("audio/output"));
+}
+QString audioDeviceKey() {
+    return lyra::rig::scope::rigKey(QStringLiteral("audio/deviceName"));
+}
 
 // C++ half of the guarded enumeration — kept OUT of the __try function below
 // because it allocates QList / QAudioDevice temporaries, and an SEH frame that
@@ -94,7 +114,7 @@ lyra::dsp::WdspEngine* g_aamixOutboundSelf = nullptr;
 
 // #158 (#161 UAF fix) — vacInboundCb (the VAC-in → TX bridge registered via
 // SendpInboundVacTxAudio) is now a WdspEngine static member, defined beside
-// aamixOutbound below so it can gate xvacIN under vacMtx_ + vac1Active_ (the
+// aamixOutbound below so it can gate xvacIN under vac_[0].mtx_ + vac_[0].active_ (the
 // VAC device-change / enable-disable use-after-free fix).  A free function
 // here couldn't reach those private members, and a member can't be defined
 // inside this anonymous namespace.
@@ -121,8 +141,33 @@ constexpr double kUsbHighHz  = 3000.0;
 // args.  Do NOT also call SetRXAAGCTop — it writes the same max_gain
 // field SetRXAAGCThresh computes and would clobber it.
 constexpr int    kAgcSlope         = 35;
-constexpr double kAgcThreshDbFs    = -100.0;
+constexpr double kAgcThreshDbFs    = -100.0;   // default knee (persisted override)
 constexpr double kAgcThreshFftSize = 4096.0;
+// Operator AGC-knee clamp (WDSP-dBFS).  More negative = more weak-signal
+// headroom; toward 0 = higher knee / less boost.  -100 default sits
+// mid-range.  Range matches the reference's setAGCThresholdPoint clamp
+// [-160 .. +2] so Auto (knee on the measured noise floor) is never clipped.
+constexpr double kAgcThreshMinDbFs = -160.0;
+constexpr double kAgcThreshMaxDbFs =    2.0;
+// Auto AGC-T stabilization (2026-09-10, deskHPSDR-informed + 2 red-team).
+// SetRXAAGCThresh's transfer is affine, slope -1:
+//     max_gain_dB = K - (thresh + noise_offset),  K = 20*log10(out_target/var_gain)
+// With WDSP's create-time AGC constants (out_targ=1.0, n_tau=4 =>
+// out_target=(1-e^-4)*0.9999=0.9816) and our kAgcSlope=35 (var_gain=
+// 10^(35/200)=1.496):  K = -3.7 dB.  So capping max_gain at a ceiling C is a
+// knee LOWER-BOUND:  thresh >= K - C - noise_offset.  This is the load-bearing
+// fix for the old "auto max-gain ~158 dB" bug AND pins the knee when the floor
+// ratchets toward -inf on a quiet band (bounding the "walk-away" audio death).
+// We never call SetRXAAGCTop — SetRXAAGCThresh derives max_gain (see pushAgcThresh).
+constexpr double kAutoAgcThreshTransferK = -3.7;   // dB; WDSP create-const derived (bench-tunable)
+constexpr double kAutoAgcMaxGainCeilDb   = 120.0;  // dB; deskHPSDR's natural clamp.
+// (Was 57 "per Thetis" — that PINNED the knee at ~-61 and starved gain; N8SDR
+// runs knee ~-115 / ~111 dB on the Brick with no audio death, so the ceiling
+// is a runaway SAFETY bound, not the operating point.  120 matches deskHPSDR
+// SetRXAAGCTop clamp [-20,120]; the robust spectrum floor lands the knee.)
+constexpr double kAutoAgcFloorEmaAlpha   = 0.10;   // ~5 s TC at the 500 ms tick (deskHPSDR parity)
+constexpr double kAutoAgcFloorJumpDb     = 8.0;    // |floor-ema|>this => reseed (self-heal domain shift)
+constexpr double kAutoAgcKneeDeadbandDb  = 0.5;    // skip re-push if knee moves < this (anti-chatter)
 // AGC fixed-gain (dB) for mode 0 / FIXD ("AGC OFF").  WDSP's
 // create-time default is 1000.0 linear = +60 dB (RXA.c:366) which
 // makes AGC OFF audibly LOUDER than FAST/MED/SLOW that actively
@@ -331,6 +376,13 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     // store (Task #44 v2.2 amendment A.6).
     inRateAtomic_.store(cfg_.inRate, std::memory_order_relaxed);
 
+    // Learn/Harvest have no UI chips.  Learn (RBN-confirmed calls -> local SCP)
+    // is on for everyone by default; set LYRA_CW_LEARN=0 to opt out.  Harvest
+    // (trust-tiered CW audio capture for DeepFist training) is a developer tool,
+    // off unless LYRA_CW_HARVEST is set to a non-zero value.  Read once here.
+    cwLearnEnabled_   = qEnvironmentVariable("LYRA_CW_LEARN",   "1") != QLatin1String("0");
+    cwHarvestEnabled_ = qEnvironmentVariable("LYRA_CW_HARVEST", "0") != QLatin1String("0");
+
     loadDspFilterTypes();   // #159 — per-family filter-type prefs (default Linear)
 
     // fexchange0 output buffer: 2 * outSize_ doubles (interleaved L/R).
@@ -352,10 +404,73 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     cwDecoder_.setSampleRate(cfg_.outRate);
     cwDecoder_.setToneHz(cwPitchHz_);
     cwDecoder_.onText = [this](const std::string& s) {
+        if (cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->feedText(/*fromClassic=*/true, s);
+        if (cwEngine_.load(std::memory_order_relaxed) == 2) {
+            cwArbiter_.pushClassic(s);
+            return;
+        }
         emit cwDecodedChar(QString::fromUtf8(s.c_str(),
                                              static_cast<int>(s.size())), 1.0);
     };
-    cwDecoder_.onWpm = [this](int w) { emit cwRxWpmChanged(w); };
+    cwDecoder_.onWpm = [this](int w) {
+        if (cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->feedWpm(w);
+        // Auto: only the engine that owns the display drives the WPM readout.
+        if (cwEngine_.load(std::memory_order_relaxed) == 2 &&
+            cwArbiter_.owner() != lyra::dsp::CwArbiter::Source::Classic) return;
+        emit cwRxWpmChanged(w);
+    };
+
+    // DeepFist neural CW decoder (second engine).  Same 48 kHz input rate; the
+    // model is loaded lazily on first switch to Neural (setCwDecodeEngine).  Its
+    // callback delivers newly-committed characters (frame-timed streaming) to
+    // append to the transcript.  Fires on the decoder's worker thread; the
+    // queued signal marshals it to the GUI.
+    neuralCw_.setSampleRate(cfg_.outRate);
+    neuralCw_.onText = [this](const std::string& s) {
+        if (cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->feedText(/*fromClassic=*/false, s);
+        if (cwEngine_.load(std::memory_order_relaxed) == 2) {
+            cwArbiter_.pushDeepFist(s);
+            return;
+        }
+        emit cwNeuralText(QString::fromUtf8(s.c_str(),
+                                            static_cast<int>(s.size())));
+    };
+    // DeepFist CTC-lattice callsign rescorer is available but not wired to a UI
+    // (the per-window "Calls" chips were removed) — leaving onCalls null skips
+    // the rescore work entirely.  Re-wire here if a callsign UI returns.
+    // Estimated RX WPM → the same cwRxWpmChanged surface the classic decoder uses.
+    neuralCw_.onWpm = [this](int wpm) {
+        if (cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->feedWpm(wpm);
+        // Auto: only the engine that owns the display drives the WPM readout.
+        if (cwEngine_.load(std::memory_order_relaxed) == 2 &&
+            cwArbiter_.owner() != lyra::dsp::CwArbiter::Source::DeepFist) return;
+        emit cwRxWpmChanged(wpm);
+    };
+    // Auto engine: DeepFist's keying ratio drives the arbiter's fade detector,
+    // and the arbiter's unified output becomes the Auto transcript (queued to
+    // the GUI thread; fallback flag dims Classic-during-fade runs in the panel).
+    neuralCw_.onKeying = [this](float r) {
+        if (cwEngine_.load(std::memory_order_relaxed) == 2)
+            cwArbiter_.updateKeying(r);
+        if (cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->feedKeying(r, QDateTime::currentSecsSinceEpoch());
+    };
+    cwArbiter_.onOutput = [this](const std::string& s, bool fallback) {
+        emit cwAutoText(QString::fromUtf8(s.c_str(),
+                                          static_cast<int>(s.size())), fallback);
+    };
+    // Phase 2 harvest: a DeepFist->Classic ownership switch IS the fade event.
+    cwArbiter_.onOwnerChange = [this](lyra::dsp::CwArbiter::Source from,
+                                      lyra::dsp::CwArbiter::Source to) {
+        if (from == lyra::dsp::CwArbiter::Source::DeepFist &&
+            to   == lyra::dsp::CwArbiter::Source::Classic  &&
+            cwCaptureOn_.load(std::memory_order_relaxed))
+            cwHarvester_->triggerFade(QDateTime::currentSecsSinceEpoch());
+    };
 
     // 5 Hz UI poll: emit levelsChanged so the QML audioDbFs binding
     // re-reads the atomic (mirrors HL2Stream's statsTimer cadence).
@@ -375,6 +490,17 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
             emit noiseCaptureChanged();
         }
     });
+
+    // Auto AGC-T re-track (latching).  Fixed 500 ms cadence, reference-faithful
+    // (the reference latches the mode and re-tracks on a hardwired 500 ms timer;
+    // the interval is not operator-exposed).  Always running; retrackAutoAgc()
+    // early-returns unless the latch is engaged + the channel is open + the
+    // floor reads valid — so it costs a bool test per tick when idle.
+    autoAgcTimer_.setInterval(500);
+    connect(&autoAgcTimer_, &QTimer::timeout, this, [this]() {
+        retrackAutoAgc();
+    });
+    autoAgcTimer_.start();
 
     // Step 3e: enumerate the operator's PC output devices + default.  Guarded,
     // and skippable via LYRA_SAFE (safe-boot): a wedged virtual audio device is
@@ -432,6 +558,11 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     volume_.store(std::clamp(
         s.value(QStringLiteral("audio/volume"), 0.65).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
+    volumeRx2_.store(std::clamp(
+        s.value(QStringLiteral("audio/volumeRx2"), 0.65).toDouble(), 0.0, 1.0),
+        std::memory_order_relaxed);
+    mutedRx2_.store(s.value(QStringLiteral("audio/mutedRx2"), false).toBool(),
+                    std::memory_order_relaxed);
     afGainDb_ = std::clamp(
         s.value(QStringLiteral("audio/afGainDb"), 0.0).toDouble(), 0.0, 40.0);
     balance_.store(std::clamp(
@@ -443,8 +574,12 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     monVolume_.store(std::clamp(
         s.value(QStringLiteral("audio/monVolume"), 0.5).toDouble(), 0.0, 1.0),
         std::memory_order_relaxed);
+    // #2 — one-time relocate the legacy flat audio-route keys onto the
+    // active rig, then read them per-rig (audioOutputKey/audioDeviceKey).
+    lyra::rig::migrate::migrateKeyToActiveRig(QStringLiteral("audio/deviceName"));
+    lyra::rig::migrate::migrateKeyToActiveRig(QStringLiteral("audio/output"));
     const QString savedDev =
-        s.value(QStringLiteral("audio/deviceName")).toString();
+        s.value(audioDeviceKey()).toString();
     if (!savedDev.isEmpty()) {
         for (int i = 0; i < devices_.size(); ++i) {
             if (devices_[i].description() == savedDev) {
@@ -455,39 +590,31 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
     }
     // Output routing: HL2 onboard codec (default — old Lyra's HL2 path)
     // unless the operator previously chose a PC device.
-    hl2Out_ = s.value(QStringLiteral("audio/output"),
+    hl2Out_ = s.value(audioOutputKey(),
                       QStringLiteral("hl2")).toString() != QLatin1String("pc");
-    // #158 — VAC1 persisted state (Settings → Audio).  Applied at stream
-    // open (rebuildVac1 in openRx1) + live via the setters below.
-    vac1Enabled_  = s.value(QStringLiteral("vac1/enabled"), false).toBool();
-    vac1AutoDigital_ = s.value(QStringLiteral("vac1/autoDigital"), false).toBool();
-    vac1OutName_  = s.value(QStringLiteral("vac1/outputDevice")).toString();
-    vac1InName_   = s.value(QStringLiteral("vac1/inputDevice")).toString();
-    // #158 DL-3 — chosen PortAudio host API ("Driver"); empty → first WASAPI.
-    vac1HostApiName_ = s.value(QStringLiteral("vac1/hostApi")).toString();
-    vac1RxGainDb_ = std::clamp(
-        s.value(QStringLiteral("vac1/rxGainDb"), 0.0).toDouble(), -60.0, 20.0);
-    vac1TxGainDb_ = std::clamp(
-        s.value(QStringLiteral("vac1/txGainDb"), 3.0).toDouble(), -60.0, 20.0);
-    // VAC latency posture (#158 follow-up) — rmatchV ring depth (ms) + PA block
-    // size (frames).  Operator-tunable to squeeze ARQ turnaround (VarAC); also
-    // carried per-profile (schema v5).  Defaults = reference (120 ms / 2048).
-    vac1LatencyMs_ = std::clamp(
-        s.value(QStringLiteral("vac1/latencyMs"), 120).toInt(), 5, 500);
-    vac1VacSize_ = std::clamp(
-        s.value(QStringLiteral("vac1/vacSize"), 2048).toInt(), 64, 8192);
-    // Mono-combine the captured VAC input (I=Q=L+R) before the TX modulator,
-    // matching the reference VAC "combine input" + the TCI mic convention
-    // (#67).  Default ON so a mic routed to either VAC channel reaches the
-    // SSB modulator; OFF feeds raw stereo L->I / R->Q.
-    vac1CombineInput_ = s.value(QStringLiteral("vac1/combineInput"), true).toBool();
-    // #161 — mute also silences the VAC RX feed (reference MuteWillMuteVAC1).
-    // Default ON so the operator mute behaves like the reference out of the box
-    // (digital ops who want the cable to keep flowing while muting the room
-    // turn it OFF in Settings → Audio).
-    muteWillMuteVac_.store(
-        s.value(QStringLiteral("vac1/muteWillMuteVac"), true).toBool(),
-        std::memory_order_relaxed);
+    // VAC1 / VAC2 persisted state (Settings → Audio).  Applied at stream
+    // open (rebuildVac in openRx1) + live via the setters.
+    for (int id = 0; id < kVacCount; ++id) {
+        const QString p = QStringLiteral("vac%1/").arg(id + 1);
+        VacState &v = vac_[id];
+        v.enabled  = s.value(p + QStringLiteral("enabled"), false).toBool();
+        v.autoDigital = s.value(p + QStringLiteral("autoDigital"), false).toBool();
+        v.outName  = s.value(p + QStringLiteral("outputDevice")).toString();
+        v.inName   = s.value(p + QStringLiteral("inputDevice")).toString();
+        v.hostApiName = s.value(p + QStringLiteral("hostApi")).toString();
+        v.rxGainDb = std::clamp(
+            s.value(p + QStringLiteral("rxGainDb"), 0.0).toDouble(), -60.0, 20.0);
+        v.txGainDb = std::clamp(
+            s.value(p + QStringLiteral("txGainDb"), 3.0).toDouble(), -60.0, 20.0);
+        v.latencyMs = std::clamp(
+            s.value(p + QStringLiteral("latencyMs"), 120).toInt(), 5, 500);
+        v.vacSize = std::clamp(
+            s.value(p + QStringLiteral("vacSize"), 2048).toInt(), 64, 8192);
+        v.combineInput = s.value(p + QStringLiteral("combineInput"), true).toBool();
+        v.muteWillMuteVac_.store(
+            s.value(p + QStringLiteral("muteWillMuteVac"), true).toBool(),
+            std::memory_order_relaxed);
+    }
     cwPitchHz_ = std::clamp(
         s.value(QStringLiteral("dsp/cwPitchHz"), 600).toInt(), 200, 1500);
     // RX DSP operator state (NR + AGC mode).  Defaults match old Lyra's
@@ -500,6 +627,12 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
         s.value(QStringLiteral("dsp/npeMethod"), 0).toInt(), 0, 1);
     agcMode_     = s.value(QStringLiteral("dsp/agcMode"),
                            QStringLiteral("med")).toString();
+    agcThreshDb_ = std::clamp(
+        s.value(QStringLiteral("dsp/agcThreshDb"), kAgcThreshDbFs).toDouble(),
+        kAgcThreshMinDbFs, kAgcThreshMaxDbFs);
+    autoAgcThresh_ = s.value(QStringLiteral("dsp/autoAgcThresh"), false).toBool();
+    autoAgcMarginDb_ = std::clamp(
+        s.value(QStringLiteral("dsp/autoAgcMargin"), 0.0).toDouble(), -30.0, 30.0);
     anfEnabled_  = s.value(QStringLiteral("dsp/anfEnabled"), false).toBool();
     lmsEnabled_  = s.value(QStringLiteral("dsp/lmsEnabled"), false).toBool();
     lmsStrength_ = std::clamp(
@@ -544,6 +677,30 @@ WdspEngine::WdspEngine(WdspNative *wdsp, QObject *parent)
 
 WdspEngine::~WdspEngine()
 {
+    // Reverse-destruction-order hazard: neuralCw_ is declared (wdsp_engine.h)
+    // BEFORE cwArbiter_ and the cwHarvest*/cwHarvester_ members, so members
+    // destruct in the OPPOSITE order — cwHarvester_, cwHarvestDecim_,
+    // cwHarvestRing_ and cwArbiter_ would all tear down BEFORE neuralCw_'s own
+    // destructor (which stops its worker thread) ever runs. neuralCw_'s
+    // worker fires onText/onWpm/onKeying synchronously off ITS OWN thread
+    // (wired in setCwDecodeEngine above), and those lambdas dereference
+    // cwHarvester_ (when cwCaptureOn_ is true) and unconditionally call
+    // cwArbiter_.updateKeying — so without stopping that worker first, a
+    // decode callback can land on an already-(or mid-)destroyed
+    // harvester/arbiter. Explicitly stopping+joining it HERE, before any
+    // harvest/arbiter member is touched, guarantees no callback is left in
+    // flight; it covers cwArbiter_ "for free" since the worker thread is the
+    // only caller of updateKeying(). neuralCw_'s own destructor calls
+    // stopWorker() again once neuralCw_ itself destructs further down — that
+    // second call is a safe no-op (stop() -> stopWorker() is idempotent via
+    // running_.exchange(false)).
+    cwCaptureOn_.store(false, std::memory_order_relaxed);  // no new harvester work
+    neuralCw_.stop();                                      // join: no callback in flight after this
+
+    // Phase 2 harvest — stop the pump worker before the rest of teardown so
+    // it can't touch a half-torn-down engine.
+    cwHarvestRun_.store(false);
+    if (cwHarvestWorker_.joinable()) cwHarvestWorker_.join();
     closeRx1();
 }
 
@@ -570,14 +727,22 @@ void WdspEngine::emitLog(const QString &line)
 
 void WdspEngine::configureAnalyzerForRx() noexcept
 {
+    // Public form: acquire analyzerMtx_ then run the body.  Callers hold
+    // channelMtx_; order stays channelMtx_ -> analyzerMtx_.
+    std::lock_guard<std::mutex> lk(analyzerMtx_);
+    configureAnalyzerForRx_locked();
+}
+
+void WdspEngine::configureAnalyzerForRx_locked() noexcept
+{
+    // PRECONDITION: analyzerMtx_ held by caller.  Split from the public
+    // form so openRx1 can hold analyzerMtx_ across XCreateAnalyzer +
+    // this configure as one critical section (no reader observes a
+    // created-but-unconfigured analyzer), without re-taking the
+    // non-recursive analyzerMtx_.
     if (!analyzerOpen_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetAnalyzer) return;
-
-    // Take analyzerMtx_ so feedTxSpectrumFromSip1() can't slip a
-    // Spectrum0 between this SetAnalyzer reconfigure and the
-    // txAnalyzerBfSize_ atomic store below (amendment A.5).
-    std::lock_guard<std::mutex> lk(analyzerMtx_);
 
     // overlap + max_w per the frame-rate formula.  max_w sizes an
     // internal display-history buffer — passing 0 makes WDSP crash on
@@ -641,12 +806,17 @@ void WdspEngine::configureAnalyzerForRx() noexcept
 
 void WdspEngine::configureAnalyzerForTx() noexcept
 {
+    // Public form — symmetric with configureAnalyzerForRx().
+    std::lock_guard<std::mutex> lk(analyzerMtx_);
+    configureAnalyzerForTx_locked();
+}
+
+void WdspEngine::configureAnalyzerForTx_locked() noexcept
+{
+    // PRECONDITION: analyzerMtx_ held by caller.
     if (!analyzerOpen_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetAnalyzer) return;
-
-    // analyzerMtx_ — symmetric with configureAnalyzerForRx().
-    std::lock_guard<std::mutex> lk(analyzerMtx_);
 
     // TX-state sizing — REFERENCE MECHANISM (v2.3): the WDSP sip1
     // siphon auto-feeds Spectrum0 via TXASetSipMode(1)+TXASetSipDisplay
@@ -879,16 +1049,10 @@ bool WdspEngine::openRx1()
 
     // Level calibration: replace WDSP's hot create-time AGC default
     // (max_gain = 10000 / 80 dB, which overshoots 0 dBFS) with a
-    // threshold-computed ceiling.  SetRXAAGCThresh derives max_gain
-    // from (thresh, size, rate) + the slope-derived var_gain; we must
-    // NOT also call SetRXAAGCTop (same field, would clobber).
-    if (api.SetRXAAGCSlope) {
-        api.SetRXAAGCSlope(channel_, kAgcSlope);
-    }
-    if (api.SetRXAAGCThresh) {
-        api.SetRXAAGCThresh(channel_, kAgcThreshDbFs, kAgcThreshFftSize,
-                            static_cast<double>(cfg_.inRate));
-    }
+    // threshold-computed ceiling.  See pushAgcThresh() for the slope+thresh
+    // pair (kept together — SetRXAAGCThresh derives max_gain, must NOT be
+    // clobbered by a separate SetRXAAGCTop).
+    pushAgcThresh();
     // Panel (post-DSP makeup) gain = the operator's AF gain (dB → linear;
     // 0 dB = unity = WDSP create_panel default).
     if (api.SetRXAPanelGain1) {
@@ -926,10 +1090,17 @@ bool WdspEngine::openRx1()
     if (api.XCreateAnalyzer && api.SetAnalyzer) {
         int success = 0;
         char appDataPath[] = "";   // empty app-data path (no temp files)
+        // Hold analyzerMtx_ across create + configure + flag as one
+        // critical section: a GetPixels reader (copySpectrum/
+        // copyWaterfallSpectrum) can never observe the analyzer between
+        // XCreateAnalyzer and its configure, nor a closeRx1 Destroy
+        // mid-read.  Caller holds channelMtx_ -> order channelMtx_ ->
+        // analyzerMtx_.
+        std::lock_guard<std::mutex> lk(analyzerMtx_);
         api.XCreateAnalyzer(kAnDisp, &success, kAnMaxFft, 1, 1, appDataPath);
         if (success == 0) {
             analyzerOpen_ = true;
-            configureAnalyzerForRx();
+            configureAnalyzerForRx_locked();
             emitLog(QStringLiteral(
                 "[wdsp] analyzer: %1 pixels, fft %2, window %3 "
                 "(panadapter source)")
@@ -1061,6 +1232,9 @@ bool WdspEngine::openRx1()
     // so a sample-rate reopen rebuilds at the new audio_size/audio_rate.
     applyVacEnvOnce();
     rebuildVac1();
+    rebuildVac2();
+    if (subWanted_)
+        openRx2();
     return true;
 }
 
@@ -1069,11 +1243,14 @@ void WdspEngine::closeRx1()
     if (!opened_) {
         return;  // idempotent
     }
-    // #158 Stage 3 — tear down VAC1 FIRST: clears vac1Active_ under
-    // vacMtx_ (so the mix thread stops feeding xvacOUT), stops IvacAudio
-    // (joins the sink → no more rmatchOUT drains), then destroy_ivac
-    // frees the rings — all before the channel/AAMix teardown below.
-    teardownVac1();
+    closeRx2();
+    // Tear down every VAC slot FIRST: clears active_ under that slot's
+    // mtx_ (so the mix thread stops feeding xvacOUT), StopAudioIVAC,
+    // then destroy_ivac — all before the channel/AAMix teardown below.
+    // teardownVac is idempotent if that slot never started.
+    for (int id = 0; id < kVacCount; ++id) {
+        teardownVac(id);
+    }
 
     const WdspApi &api = wdsp_->api();
     // Stop with dmode=1 (blocking flush) so in-flight buffers drain
@@ -1108,8 +1285,18 @@ void WdspEngine::closeRx1()
     }
     levelsTimer_.stop();
     stopAudio();
-    if (analyzerOpen_ && api.DestroyAnalyzer) {
-        api.DestroyAnalyzer(kAnDisp);
+    {
+        // Guard Destroy + flag under analyzerMtx_ so a GUI-thread
+        // GetPixels reader can't be mid-read when the analyzer is freed
+        // (the confirmed rate-change UAF: setSampleRate on the P2
+        // session thread -> closeRx1 -> DestroyAnalyzer).  Caller holds
+        // channelMtx_ -> order channelMtx_ -> analyzerMtx_.  The lock
+        // wraps only the Destroy call (microseconds); the blocking
+        // SetChannelState flush above is outside it.
+        std::lock_guard<std::mutex> lk(analyzerMtx_);
+        if (analyzerOpen_ && api.DestroyAnalyzer) {
+            api.DestroyAnalyzer(kAnDisp);
+        }
         analyzerOpen_ = false;
     }
     audioDbFs_.store(-200.0, std::memory_order_relaxed);
@@ -1134,17 +1321,17 @@ void WdspEngine::applyVacEnvOnce()
 
     const QByteArray sel = qgetenv("LYRA_VAC1_OUT");
     if (!sel.isEmpty()) {
-        vac1Enabled_ = true;
-        vac1OutName_ = QString::fromLocal8Bit(sel).trimmed();
+        vac_[0].enabled = true;
+        vac_[0].outName = QString::fromLocal8Bit(sel).trimmed();
         emitLog(QStringLiteral("[vac1] env override LYRA_VAC1_OUT='%1'")
-                    .arg(vac1OutName_));
+                    .arg(vac_[0].outName));
     }
     const QByteArray vs = qgetenv("LYRA_VAC1_VAC_SIZE");
     if (!vs.isEmpty()) {
         bool ok = false;
         const int n = vs.toInt(&ok);
         if (ok) {
-            vac1VacSize_ = std::clamp(n, 64, 8192);
+            vac_[0].vacSize = std::clamp(n, 64, 8192);
         }
     }
     const QByteArray rg = qgetenv("LYRA_VAC1_RX_GAIN_DB");
@@ -1152,7 +1339,7 @@ void WdspEngine::applyVacEnvOnce()
         bool ok = false;
         const double db = rg.toDouble(&ok);
         if (ok) {
-            vac1RxGainDb_ = std::clamp(db, -60.0, 20.0);
+            vac_[0].rxGainDb = std::clamp(db, -60.0, 20.0);
         }
     }
 }
@@ -1303,13 +1490,18 @@ static bool resolveVacPaSel(const QString &hostApiName, const QString &outName,
 // called on every openRx1 (incl. a sample-rate reopen, which changes
 // outSize_/outRate).  Main thread only.  No-op unless VAC1 is enabled
 // and the channel is up (outSize_ final).
-void WdspEngine::rebuildVac1()
+void WdspEngine::rebuildVac(int id)
 {
-    teardownVac1();   // idempotent
-
-    if (!vac1ShouldBeOn() || outSize_ <= 0) {
+    if (id < 0 || id >= kVacCount) {
         return;
     }
+    VacState &v = vac_[id];
+    teardownVac(id);   // idempotent
+
+    if (!vacShouldBeOn(id) || outSize_ <= 0) {
+        return;
+    }
+    const QString tag = QStringLiteral("[vac%1]").arg(id + 1);
     // #158 DL-2 — resolve the chosen VAC devices to PortAudio indices.  The
     // reference VAC is ONE full-duplex stream, so BOTH an input AND an output
     // device are required, under one WASAPI host API.  The shipped
@@ -1317,12 +1509,13 @@ void WdspEngine::rebuildVac1()
     // is restored properly at DL-4 (MOX/MON gating mutes RX→VAC during TX),
     // not by half-opening the stream.
     VacPaSel sel;
-    if (!resolveVacPaSel(vac1HostApiName_, vac1OutName_, vac1InName_, sel)) {
-        emitLog(QStringLiteral("[vac1] not started — need a WASAPI-resolvable "
-                               "input AND output device (out='%1' in='%2'); "
+    if (!resolveVacPaSel(v.hostApiName, v.outName, v.inName, sel)) {
+        emitLog(QStringLiteral("%1 not started — need a WASAPI-resolvable "
+                               "input AND output device (out='%2' in='%3'); "
                                "DL-2 is full-duplex (both required)")
-                    .arg(vac1OutName_.isEmpty() ? QStringLiteral("(unset)") : vac1OutName_,
-                         vac1InName_.isEmpty()  ? QStringLiteral("(unset)") : vac1InName_));
+                    .arg(tag,
+                         v.outName.isEmpty() ? QStringLiteral("(unset)") : v.outName,
+                         v.inName.isEmpty()  ? QStringLiteral("(unset)") : v.inName));
         return;
     }
 
@@ -1339,7 +1532,7 @@ void WdspEngine::rebuildVac1()
     // PC side: vac_rate = same nominal 48 kHz (the rmatchV rings still
     // drift-correct the two independent crystals), vac_size = the PC-side
     // block.  iq_type=0 (audio, not raw IQ); stereo=1.
-    create_ivac(kVac1Id, /*run*/1, /*iq_type*/0, /*stereo*/1,
+    create_ivac(id, /*run*/1, /*iq_type*/0, /*stereo*/1,
                 /*iq_rate*/   cfg_.inRate,
                 /*mic_rate*/  kTxInRate,
                 /*audio_rate*/cfg_.outRate,
@@ -1349,7 +1542,7 @@ void WdspEngine::rebuildVac1()
                 /*iq_size*/   outSize_,
                 /*audio_size*/outSize_,
                 /*txmon_size*/outSize_,
-                /*vac_size*/  vac1VacSize_);
+                /*vac_size*/  v.vacSize);
 
     // CRITICAL: create_ivac builds the rmatchV rings from a->in_latency /
     // a->out_latency, which the reference's C# layer sets (via the VAC-setup
@@ -1360,22 +1553,22 @@ void WdspEngine::rebuildVac1()
     // (OUTringsize = 2 * vac_rate * out_latency).  Matches the reference's
     // operator-configurable VAC latency (default ~120 ms).
     {
-        const double latSec = vac1LatencyMs_ / 1000.0;
-        SetIVACOutLatency(kVac1Id, latSec, /*reset*/1);   // RX audio -> VAC (Stage 3)
-        SetIVACInLatency(kVac1Id,  latSec, /*reset*/1);   // VAC -> TX mic (Stage 4)
+        const double latSec = v.latencyMs / 1000.0;
+        SetIVACOutLatency(id, latSec, /*reset*/1);   // RX audio -> VAC
+        SetIVACInLatency(id,  latSec, /*reset*/1);   // VAC -> TX mic
     }
 
     // VAC RX gain (reference "Gain RX (dB)" → vac_rx_scale → mixer input-0
     // gain).  dB → linear; 0 dB = unity (the reference default).
-    SetIVACrxscale(kVac1Id, std::pow(10.0, vac1RxGainDb_ / 20.0));
+    SetIVACrxscale(id, std::pow(10.0, v.rxGainDb / 20.0));
     // VAC TX gain (reference "Gain TX (dB)" → vac_preamp, applied by xvacIN
     // on the captured mic before the TX seam).  Default +3 dB.
-    SetIVACpreamp(kVac1Id, std::pow(10.0, vac1TxGainDb_ / 20.0));
+    SetIVACpreamp(id, std::pow(10.0, v.txGainDb / 20.0));
     // VAC mono-combine (reference vac_combine_input).  ON sums the captured
     // L+R into I=Q=(L+R) before the TX modulator — the I=Q=mono mic form the
     // SSB chain wants (same convention as the TCI mic path, #67), robust to
     // which channel a routed mic lands on.  OFF feeds raw stereo L->I/R->Q.
-    SetIVACcombine(kVac1Id, vac1CombineInput_ ? 1 : 0);
+    SetIVACcombine(id, v.combineInput ? 1 : 0);
     // Register the VAC-in → TX bridge so the cm_main TX pump can pull mic
     // audio from rmatchIN when the mic source is "PC Soundcard (VAC1)"
     // (use_vac_audio).  Idempotent (just stores the fn ptr).
@@ -1384,7 +1577,7 @@ void WdspEngine::rebuildVac1()
 
     // Silence block for the mixer's TX-monitor input (stream 2) — sized to
     // the same audio block the RX tee feeds (2*outSize_ doubles).  Assigned
-    // BEFORE vac1Active_ goes true, so the mix-thread read is always valid.
+    // BEFORE v.active_ goes true, so the mix-thread read is always valid.
     vacMonSilence_.assign(static_cast<size_t>(2 * outSize_), 0.0);
 
     // #158 DL-2 — device layer = the reference's ONE full-duplex PortAudio
@@ -1394,67 +1587,83 @@ void WdspEngine::rebuildVac1()
     // duplex stream.  pa_*_latency = the PA suggestedLatency hint (separate
     // from the rmatchV ring depth set above); exclusive off (VAC cables run
     // shared-mode).
-    SetIVAChostAPIindex(kVac1Id, sel.hostApi);
-    SetIVACoutputDEVindex(kVac1Id, sel.outDev);
-    SetIVACinputDEVindex(kVac1Id, sel.inDev);
+    SetIVAChostAPIindex(id, sel.hostApi);
+    SetIVACoutputDEVindex(id, sel.outDev);
+    SetIVACinputDEVindex(id, sel.inDev);
     {
-        const double paLatSec = vac1LatencyMs_ / 1000.0;
-        SetIVACPAOutLatency(kVac1Id, paLatSec, /*reset*/1);
-        SetIVACPAInLatency(kVac1Id,  paLatSec, /*reset*/1);
+        const double paLatSec = v.latencyMs / 1000.0;
+        SetIVACPAOutLatency(id, paLatSec, /*reset*/1);
+        SetIVACPAInLatency(id,  paLatSec, /*reset*/1);
     }
-    SetIVACExclusiveOut(kVac1Id, 0);
-    SetIVACExclusiveIn(kVac1Id, 0);
+    SetIVACExclusiveOut(id, 0);
+    SetIVACExclusiveIn(id, 0);
 
-    const int rc = StartAudioIVAC(kVac1Id);   // 1 = open + start OK
+    const int rc = StartAudioIVAC(id);   // 1 = open + start OK
     if (rc != 1) {
-        emitLog(QStringLiteral("[vac1] PortAudio open FAILED (rc=%1; out='%2' "
-                               "in='%3' hostApi=%4 out#%5 in#%6); VAC off this "
-                               "session").arg(rc).arg(vac1OutName_, vac1InName_)
+        emitLog(QStringLiteral("%1 PortAudio open FAILED (rc=%2; out='%3' "
+                               "in='%4' hostApi=%5 out#%6 in#%7); VAC off this "
+                               "session").arg(tag).arg(rc).arg(v.outName, v.inName)
                     .arg(sel.hostApi).arg(sel.outDev).arg(sel.inDev));
-        StopAudioIVAC(kVac1Id);   // null-safe close if OpenStream succeeded then StartStream failed
-        destroy_ivac(kVac1Id);
+        StopAudioIVAC(id);   // null-safe close if OpenStream succeeded then StartStream failed
+        destroy_ivac(id);
         return;
     }
     {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        vac1Active_.store(true, std::memory_order_release);
+        std::lock_guard<std::mutex> lk(v.mtx_);
+        v.active_.store(true, std::memory_order_release);
     }
     // #158 DL-4 — re-apply the current MOX state (a fresh ivac starts mox=0);
     // keeps RX muted out of VAC if we rebuilt mid-TX.
     if (vacMox_) {
-        SetIVACmox(kVac1Id, 1);
+        SetIVACmox(id, 1);
     }
     // #90 Route 2 — a fresh ivac starts mon=0 / unity mon-vol; re-apply the
     // operator's MON state + Monitor level so the VAC monitor survives a
     // (re)build (e.g. a sample-rate reopen mid-session).
-    SetIVACmon(kVac1Id, monEnabled_.load(std::memory_order_relaxed) ? 1 : 0);
-    SetIVACmonVol(kVac1Id, monVolume_.load(std::memory_order_relaxed));
-    emitLog(QStringLiteral("[vac1] LIVE (PortAudio duplex): out='%1' (RX gain "
-                           "%2 dB) | in='%3' (TX gain %4 dB) | %5 Hz, vac %6")
-                .arg(vac1OutName_).arg(vac1RxGainDb_)
-                .arg(vac1InName_).arg(vac1TxGainDb_)
-                .arg(cfg_.outRate).arg(vac1VacSize_));
+    SetIVACmon(id, monEnabled_.load(std::memory_order_relaxed) ? 1 : 0);
+    SetIVACmonVol(id, monVolume_.load(std::memory_order_relaxed));
+    emitLog(QStringLiteral("%1 LIVE (PortAudio duplex): out='%2' (RX gain "
+                           "%3 dB) | in='%4' (TX gain %5 dB) | %6 Hz, vac %7")
+                .arg(tag).arg(v.outName).arg(v.rxGainDb)
+                .arg(v.inName).arg(v.txGainDb)
+                .arg(cfg_.outRate).arg(v.vacSize));
 }
 
 // Stop the VAC-out tee + device + engine instance.  Idempotent.  Main
-// thread only.  Order is the load-bearing part: clear vac1Active_ under
-// vacMtx_ FIRST (so the mix thread's dispatchAudioFrame stops calling
+// thread only.  Order is the load-bearing part: clear active_ under mtx_
+// FIRST (so the mix thread's dispatchAudioFrame stops calling
 // xvacOUT), THEN StopAudioIVAC (Pa_CloseStream joins the duplex callback so
 // it stops draining rmatchOUT / filling rmatchIN), THEN destroy_ivac frees
 // the rings.
-void WdspEngine::teardownVac1()
+void WdspEngine::teardownVac(int id)
 {
+    if (id < 0 || id >= kVacCount) {
+        return;
+    }
+    VacState &v = vac_[id];
     {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        vac1Active_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lk(v.mtx_);
+        v.active_.store(false, std::memory_order_release);
     }
     // #158 DL-2 — close the PortAudio duplex stream before freeing the rings.
     // StopAudioIVAC is null-safe if the stream was never opened (calloc-zeroed
     // Stream + PA's pointer validation).
-    if (lyra::wire::ivacGet(kVac1Id)) {
-        lyra::wire::StopAudioIVAC(kVac1Id);
-        lyra::wire::destroy_ivac(kVac1Id);
+    if (lyra::wire::ivacGet(id)) {
+        lyra::wire::StopAudioIVAC(id);
+        lyra::wire::destroy_ivac(id);
     }
+}
+
+bool WdspEngine::vacShouldBeOn(int id) const
+{
+    if (id < 0 || id >= kVacCount) {
+        return false;
+    }
+    const VacState &v = vac_[id];
+    if (v.autoDigital) {
+        return mode_.startsWith(QLatin1String("DIG"), Qt::CaseInsensitive);
+    }
+    return v.enabled;
 }
 
 // ── #158 — VAC1 operator controls (Settings → Audio) ─────────────────
@@ -1465,7 +1674,7 @@ void WdspEngine::teardownVac1()
 // the *For(hostApi) forms drive the Settings "Driver"→device repopulation.
 QStringList WdspEngine::vac1OutputDevices() const
 {
-    return paDevicesForHostApi(paHostApiIndexForName(vac1HostApiName_),
+    return paDevicesForHostApi(paHostApiIndexForName(vac_[0].hostApiName),
                                /*wantOutput*/ true);
 }
 
@@ -1497,10 +1706,10 @@ QStringList WdspEngine::vac1InputDevicesFor(int paHostApi) const
 
 void WdspEngine::setVac1HostApi(const QString &name)
 {
-    if (vac1HostApiName_ == name) {
+    if (vac_[0].hostApiName == name) {
         return;
     }
-    vac1HostApiName_ = name;
+    vac_[0].hostApiName = name;
     QSettings().setValue(QStringLiteral("vac1/hostApi"), name);
     // Device names are resolved under this host API at rebuild; reopen if the
     // VAC should currently be running.
@@ -1510,15 +1719,6 @@ void WdspEngine::setVac1HostApi(const QString &name)
     emit vac1Changed();
 }
 
-// Desired live state: in auto-digital mode VAC1 follows the operating mode
-// (on for DIGU/DIGL); otherwise the operator's manual Enable.
-bool WdspEngine::vac1ShouldBeOn() const
-{
-    if (vac1AutoDigital_) {
-        return mode_.startsWith(QLatin1String("DIG"), Qt::CaseInsensitive);
-    }
-    return vac1Enabled_;
-}
 
 void WdspEngine::setVacMox(bool on)
 {
@@ -1529,17 +1729,19 @@ void WdspEngine::setVacMox(bool on)
     // No-op when VAC1 isn't live.  Runs on the Qt main thread (MOX edge), so
     // it's serialized with rebuild/teardown by the event loop; the mix thread
     // reads the what-mask atomically.
-    if (lyra::wire::ivacGet(kVac1Id)) {
-        lyra::wire::SetIVACmox(kVac1Id, on ? 1 : 0);
+    for (int id = 0; id < kVacCount; ++id) {
+        if (lyra::wire::ivacGet(id)) {
+            lyra::wire::SetIVACmox(id, on ? 1 : 0);
+        }
     }
 }
 
 void WdspEngine::setVac1Enabled(bool on)
 {
-    if (vac1Enabled_ == on) {
+    if (vac_[0].enabled == on) {
         return;
     }
-    vac1Enabled_ = on;
+    vac_[0].enabled = on;
     QSettings().setValue(QStringLiteral("vac1/enabled"), on);
     rebuildVac1();   // reconcile (respects vac1ShouldBeOn / channel state)
     emit vac1Changed();
@@ -1547,10 +1749,10 @@ void WdspEngine::setVac1Enabled(bool on)
 
 void WdspEngine::setVac1AutoDigital(bool on)
 {
-    if (vac1AutoDigital_ == on) {
+    if (vac_[0].autoDigital == on) {
         return;
     }
-    vac1AutoDigital_ = on;
+    vac_[0].autoDigital = on;
     QSettings().setValue(QStringLiteral("vac1/autoDigital"), on);
     rebuildVac1();   // reconcile to the new desired state for the current mode
     emit vac1Changed();
@@ -1558,16 +1760,16 @@ void WdspEngine::setVac1AutoDigital(bool on)
 
 QStringList WdspEngine::vac1InputDevices() const
 {
-    return paDevicesForHostApi(paHostApiIndexForName(vac1HostApiName_),
+    return paDevicesForHostApi(paHostApiIndexForName(vac_[0].hostApiName),
                                /*wantOutput*/ false);
 }
 
 void WdspEngine::setVac1InputDeviceName(const QString &name)
 {
-    if (vac1InName_ == name) {
+    if (vac_[0].inName == name) {
         return;
     }
-    vac1InName_ = name;
+    vac_[0].inName = name;
     QSettings().setValue(QStringLiteral("vac1/inputDevice"), name);
     if (vac1ShouldBeOn()) {   // DL-3 (CODEX-P2): also reopen in auto-digital mode
         rebuildVac1();   // reopen capture on the new device
@@ -1578,16 +1780,16 @@ void WdspEngine::setVac1InputDeviceName(const QString &name)
 void WdspEngine::setVac1TxGainDb(double db)
 {
     db = std::clamp(db, -60.0, 20.0);
-    if (std::abs(db - vac1TxGainDb_) < 1e-9) {
+    if (std::abs(db - vac_[0].txGainDb) < 1e-9) {
         return;
     }
-    vac1TxGainDb_ = db;
+    vac_[0].txGainDb = db;
     QSettings().setValue(QStringLiteral("vac1/txGainDb"), db);
     // LIVE — push the new VAC TX preamp straight to the running engine
     // (reference vac_preamp), guarded against a concurrent teardown.
     {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        if (vac1Active_.load(std::memory_order_relaxed) &&
+        std::lock_guard<std::mutex> lk(vac_[0].mtx_);
+        if (vac_[0].active_.load(std::memory_order_relaxed) &&
             lyra::wire::ivacGet(kVac1Id)) {
             lyra::wire::SetIVACpreamp(kVac1Id, std::pow(10.0, db / 20.0));
         }
@@ -1597,10 +1799,10 @@ void WdspEngine::setVac1TxGainDb(double db)
 
 void WdspEngine::setVac1OutputDeviceName(const QString &name)
 {
-    if (vac1OutName_ == name) {
+    if (vac_[0].outName == name) {
         return;
     }
-    vac1OutName_ = name;
+    vac_[0].outName = name;
     QSettings().setValue(QStringLiteral("vac1/outputDevice"), name);
     // Device change = reopen on the new device (if VAC should be live).
     if (vac1ShouldBeOn()) {   // DL-3 (CODEX-P2): also reopen in auto-digital mode
@@ -1612,17 +1814,17 @@ void WdspEngine::setVac1OutputDeviceName(const QString &name)
 void WdspEngine::setVac1RxGainDb(double db)
 {
     db = std::clamp(db, -60.0, 20.0);
-    if (std::abs(db - vac1RxGainDb_) < 1e-9) {
+    if (std::abs(db - vac_[0].rxGainDb) < 1e-9) {
         return;
     }
-    vac1RxGainDb_ = db;
+    vac_[0].rxGainDb = db;
     QSettings().setValue(QStringLiteral("vac1/rxGainDb"), db);
     // LIVE — no rebuild: push the new scale straight to the running mixer
     // input-0 gain (reference vac_rx_scale).  Guarded against a concurrent
     // teardown so destroy_ivac can't free the instance mid-call.
     {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        if (vac1Active_.load(std::memory_order_relaxed) &&
+        std::lock_guard<std::mutex> lk(vac_[0].mtx_);
+        if (vac_[0].active_.load(std::memory_order_relaxed) &&
             lyra::wire::ivacGet(kVac1Id)) {
             lyra::wire::SetIVACrxscale(kVac1Id, std::pow(10.0, db / 20.0));
         }
@@ -1633,10 +1835,10 @@ void WdspEngine::setVac1RxGainDb(double db)
 void WdspEngine::setVac1LatencyMs(int ms)
 {
     ms = std::clamp(ms, 5, 500);
-    if (ms == vac1LatencyMs_) {
+    if (ms == vac_[0].latencyMs) {
         return;
     }
-    vac1LatencyMs_ = ms;
+    vac_[0].latencyMs = ms;
     QSettings().setValue(QStringLiteral("vac1/latencyMs"), ms);
     // The rmatchV ring depth + PA suggested latency are set at create_ivac /
     // SetIVAC*Latency time, so a change only takes effect on a VAC rebuild.
@@ -1652,10 +1854,10 @@ void WdspEngine::setVac1VacSize(int frames)
     // Reference VAC buffer choices are powers of two; the UI offers those.
     // Clamp to the engine's create_ivac range; non-pow2 still works.
     frames = std::clamp(frames, 64, 8192);
-    if (frames == vac1VacSize_) {
+    if (frames == vac_[0].vacSize) {
         return;
     }
-    vac1VacSize_ = frames;
+    vac_[0].vacSize = frames;
     QSettings().setValue(QStringLiteral("vac1/vacSize"), frames);
     if (vac1ShouldBeOn()) {
         rebuildVac1();   // vac_size feeds create_ivac → reopen to apply
@@ -1663,12 +1865,16 @@ void WdspEngine::setVac1VacSize(int frames)
     emit vac1Changed();
 }
 
-QVariantMap WdspEngine::vac1Diags()
+QVariantMap WdspEngine::vacDiagsFor(int id)
 {
     QVariantMap m;
-    std::lock_guard<std::mutex> lk(vacMtx_);
-    const bool active = vac1Active_.load(std::memory_order_relaxed) &&
-                        lyra::wire::ivacGet(kVac1Id) != nullptr;
+    if (id < 0 || id >= kVacCount) {
+        m.insert(QStringLiteral("active"), false);
+        return m;
+    }
+    std::lock_guard<std::mutex> lk(vac_[id].mtx_);
+    const bool active = vac_[id].active_.load(std::memory_order_relaxed) &&
+                        lyra::wire::ivacGet(id) != nullptr;
     m.insert(QStringLiteral("active"), active);
     if (!active) {
         return m;
@@ -1677,30 +1883,40 @@ QVariantMap WdspEngine::vac1Diags()
                     const char *pctKey) {
         int under = 0, over = 0, ringsize = 0, nring = 0;
         double var = 1.0;
-        lyra::wire::getIVACdiags(kVac1Id, type, &under, &over, &var,
+        lyra::wire::getIVACdiags(id, type, &under, &over, &var,
                                  &ringsize, &nring);
         m.insert(QString::fromLatin1(uKey), under);
         m.insert(QString::fromLatin1(oKey), over);
         m.insert(QString::fromLatin1(pctKey),
                  ringsize > 0 ? (nring * 100 / ringsize) : 0);
     };
-    read(0, "outUnder", "outOver", "outPct");   // rmatchOUT = TO VAC (RX→cable)
-    read(1, "inUnder",  "inOver",  "inPct");    // rmatchIN  = FROM VAC (cable→TX)
+    read(0, "outUnder", "outOver", "outPct");
+    read(1, "inUnder",  "inOver",  "inPct");
     return m;
+}
+
+QVariantMap WdspEngine::vac1Diags()
+{
+    return vacDiagsFor(kVac1Id);
+}
+
+QVariantMap WdspEngine::vac2Diags()
+{
+    return vacDiagsFor(kVac2Id);
 }
 
 void WdspEngine::setVac1CombineInput(bool on)
 {
-    if (vac1CombineInput_ == on) {
+    if (vac_[0].combineInput == on) {
         return;
     }
-    vac1CombineInput_ = on;
+    vac_[0].combineInput = on;
     QSettings().setValue(QStringLiteral("vac1/combineInput"), on);
     // LIVE — no rebuild: push straight to the running engine (xvacIN reads
     // vac_combine_input each block).  Guarded against a concurrent teardown.
     {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        if (vac1Active_.load(std::memory_order_relaxed) &&
+        std::lock_guard<std::mutex> lk(vac_[0].mtx_);
+        if (vac_[0].active_.load(std::memory_order_relaxed) &&
             lyra::wire::ivacGet(kVac1Id)) {
             lyra::wire::SetIVACcombine(kVac1Id, on ? 1 : 0);
         }
@@ -1710,14 +1926,237 @@ void WdspEngine::setVac1CombineInput(bool on)
 
 void WdspEngine::setMuteWillMuteVac(bool on)
 {
-    if (muteWillMuteVac_.load(std::memory_order_relaxed) == on) {
+    if (vac_[0].muteWillMuteVac_.load(std::memory_order_relaxed) == on) {
         return;
     }
-    muteWillMuteVac_.store(on, std::memory_order_relaxed);
+    vac_[0].muteWillMuteVac_.store(on, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("vac1/muteWillMuteVac"), on);
-    // LIVE — dispatchAudioFrame reads muteWillMuteVac_ every block; nothing to
+    // LIVE — dispatchAudioFrame reads vac_[0].muteWillMuteVac_ every block; nothing to
     // push to the engine.  Refresh the Settings mirror.
     emit vac1Changed();
+}
+
+void WdspEngine::setTxSourceVacId(int id)
+{
+    if (id != kVac1Id && id != kVac2Id) {
+        id = kVac1Id;
+    }
+    txSourceVacId_ = id;
+}
+
+bool WdspEngine::applyMicSourceToVacTx(const QString &src)
+{
+    const bool tci = (src == QLatin1String("tci"));
+    auto live = [](const QString &name) {
+        return !name.isEmpty() && name != QLatin1String("(none)");
+    };
+    const bool dig = mode().startsWith(QLatin1String("DIG"),
+                                       Qt::CaseInsensitive);
+    const bool auto1 = !tci && live(vac1InputDeviceName())
+        && vac1AutoDigital() && dig;
+    const bool auto2 = !tci && live(vac2InputDeviceName())
+        && vac2AutoDigital() && dig;
+    int vacId = kVac1Id;
+    bool vac = false;
+    if (!tci && src == QLatin1String("micpc")) {
+        vac = true;
+        vacId = kVac1Id;
+    } else if (!tci && src == QLatin1String("micpc2")) {
+        vac = true;
+        vacId = kVac2Id;
+    } else if (auto1) {
+        vac = true;
+        vacId = kVac1Id;
+    } else if (auto2) {
+        vac = true;
+        vacId = kVac2Id;
+    }
+    setTxSourceVacId(vacId);
+    return vac;
+}
+
+QStringList WdspEngine::vac2OutputDevices() const
+{
+    return paDevicesForHostApi(paHostApiIndexForName(vac_[1].hostApiName),
+                               /*wantOutput*/ true);
+}
+
+QStringList WdspEngine::vac2HostApiNames() const
+{
+    return vac1HostApiNames();
+}
+
+QList<int> WdspEngine::vac2HostApiPaIndices() const
+{
+    return vac1HostApiPaIndices();
+}
+
+QStringList WdspEngine::vac2OutputDevicesFor(int paHostApi) const
+{
+    return paDevicesForHostApi(paHostApi, /*wantOutput*/ true);
+}
+
+QStringList WdspEngine::vac2InputDevicesFor(int paHostApi) const
+{
+    return paDevicesForHostApi(paHostApi, /*wantOutput*/ false);
+}
+
+void WdspEngine::setVac2HostApi(const QString &name)
+{
+    if (vac_[1].hostApiName == name) {
+        return;
+    }
+    vac_[1].hostApiName = name;
+    QSettings().setValue(QStringLiteral("vac2/hostApi"), name);
+    if (vacShouldBeOn(kVac2Id)) {
+        rebuildVac2();
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2Enabled(bool on)
+{
+    if (vac_[1].enabled == on) {
+        return;
+    }
+    vac_[1].enabled = on;
+    QSettings().setValue(QStringLiteral("vac2/enabled"), on);
+    rebuildVac2();
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2AutoDigital(bool on)
+{
+    if (vac_[1].autoDigital == on) {
+        return;
+    }
+    vac_[1].autoDigital = on;
+    QSettings().setValue(QStringLiteral("vac2/autoDigital"), on);
+    rebuildVac2();
+    emit vac2Changed();
+}
+
+QStringList WdspEngine::vac2InputDevices() const
+{
+    return paDevicesForHostApi(paHostApiIndexForName(vac_[1].hostApiName),
+                               /*wantOutput*/ false);
+}
+
+void WdspEngine::setVac2InputDeviceName(const QString &name)
+{
+    if (vac_[1].inName == name) {
+        return;
+    }
+    vac_[1].inName = name;
+    QSettings().setValue(QStringLiteral("vac2/inputDevice"), name);
+    if (vacShouldBeOn(kVac2Id)) {
+        rebuildVac2();
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2TxGainDb(double db)
+{
+    db = std::clamp(db, -60.0, 20.0);
+    if (std::abs(db - vac_[1].txGainDb) < 1e-9) {
+        return;
+    }
+    vac_[1].txGainDb = db;
+    QSettings().setValue(QStringLiteral("vac2/txGainDb"), db);
+    {
+        std::lock_guard<std::mutex> lk(vac_[1].mtx_);
+        if (vac_[1].active_.load(std::memory_order_relaxed) &&
+            lyra::wire::ivacGet(kVac2Id)) {
+            lyra::wire::SetIVACpreamp(kVac2Id, std::pow(10.0, db / 20.0));
+        }
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2OutputDeviceName(const QString &name)
+{
+    if (vac_[1].outName == name) {
+        return;
+    }
+    vac_[1].outName = name;
+    QSettings().setValue(QStringLiteral("vac2/outputDevice"), name);
+    if (vacShouldBeOn(kVac2Id)) {
+        rebuildVac2();
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2RxGainDb(double db)
+{
+    db = std::clamp(db, -60.0, 20.0);
+    if (std::abs(db - vac_[1].rxGainDb) < 1e-9) {
+        return;
+    }
+    vac_[1].rxGainDb = db;
+    QSettings().setValue(QStringLiteral("vac2/rxGainDb"), db);
+    {
+        std::lock_guard<std::mutex> lk(vac_[1].mtx_);
+        if (vac_[1].active_.load(std::memory_order_relaxed) &&
+            lyra::wire::ivacGet(kVac2Id)) {
+            lyra::wire::SetIVACrxscale(kVac2Id, std::pow(10.0, db / 20.0));
+        }
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2LatencyMs(int ms)
+{
+    ms = std::clamp(ms, 5, 500);
+    if (ms == vac_[1].latencyMs) {
+        return;
+    }
+    vac_[1].latencyMs = ms;
+    QSettings().setValue(QStringLiteral("vac2/latencyMs"), ms);
+    if (vacShouldBeOn(kVac2Id)) {
+        rebuildVac2();
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2VacSize(int frames)
+{
+    frames = std::clamp(frames, 64, 8192);
+    if (frames == vac_[1].vacSize) {
+        return;
+    }
+    vac_[1].vacSize = frames;
+    QSettings().setValue(QStringLiteral("vac2/vacSize"), frames);
+    if (vacShouldBeOn(kVac2Id)) {
+        rebuildVac2();
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2CombineInput(bool on)
+{
+    if (vac_[1].combineInput == on) {
+        return;
+    }
+    vac_[1].combineInput = on;
+    QSettings().setValue(QStringLiteral("vac2/combineInput"), on);
+    {
+        std::lock_guard<std::mutex> lk(vac_[1].mtx_);
+        if (vac_[1].active_.load(std::memory_order_relaxed) &&
+            lyra::wire::ivacGet(kVac2Id)) {
+            lyra::wire::SetIVACcombine(kVac2Id, on ? 1 : 0);
+        }
+    }
+    emit vac2Changed();
+}
+
+void WdspEngine::setVac2MuteWillMuteVac(bool on)
+{
+    if (vac_[1].muteWillMuteVac_.load(std::memory_order_relaxed) == on) {
+        return;
+    }
+    vac_[1].muteWillMuteVac_.store(on, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("vac2/muteWillMuteVac"), on);
+    emit vac2Changed();
 }
 
 void WdspEngine::setZoom(double z)
@@ -1735,28 +2174,25 @@ void WdspEngine::setZoom(double z)
 
 void WdspEngine::computePassband(double *lo, double *hi) const
 {
+    computePassband(mode_, bw_, lo, hi);
+}
+
+void WdspEngine::computePassband(const QString &mode, int bwHz,
+                                 double *lo, double *hi) const
+{
     // Per-mode passband edges (offsets from the tuned centre), matching
     // old Lyra's _wdsp_filter_for.  These map onto the HL2 mirrored
     // baseband so the sideband comes out correct (§14.2).
-    //
-    // Task #53 — the asymmetric SSB/DIG low edge is now operator-
-    // tunable via filterLow_ (was hardcoded 0).  USB/DIGU get the
-    // low cut at +filterLow_ (positive baseband side); LSB/DIGL
-    // mirror to -filterLow_.  filterLow_=0 reproduces the
-    // pre-Task-#53 behaviour exactly (low cut at the carrier
-    // centre).  CW filters are pitch-centred, low edge doesn't
-    // apply meaningfully — left unchanged.  AM/DSB/FM are
-    // symmetric around DC — also left unchanged.
-    const double bw   = static_cast<double>(bw_);
+    const double bw   = static_cast<double>(bwHz);
     const double half = bw / 2.0;
     const double flo  = filterLow_;   // 0..500 Hz operator-tunable
-    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU")) {
+    if (mode == QLatin1String("USB") || mode == QLatin1String("DIGU")) {
         *lo = flo;                *hi = bw;
-    } else if (mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
+    } else if (mode == QLatin1String("LSB") || mode == QLatin1String("DIGL")) {
         *lo = -bw;                *hi = -flo;
-    } else if (mode_ == QLatin1String("CWU")) {
+    } else if (mode == QLatin1String("CWU")) {
         *lo = cwPitchHz_ - half;  *hi = cwPitchHz_ + half;
-    } else if (mode_ == QLatin1String("CWL")) {
+    } else if (mode == QLatin1String("CWL")) {
         *lo = -cwPitchHz_ - half; *hi = -cwPitchHz_ + half;
     } else {                       // AM / DSB / FM (symmetric around DC)
         *lo = -half;              *hi = half;
@@ -1876,8 +2312,14 @@ void WdspEngine::applyDspFilterTypes()
     const WdspApi &api = wdsp_->api();
     const DspFamily fam = dspFamilyForMode(mode_);
     const int fi = static_cast<int>(fam);
-    if (api.RXASetMP)
+    if (api.RXASetMP) {
         api.RXASetMP(channel_, dspFiltMp_[fi][0] ? 1 : 0);
+        if (rx2Opened_) {
+            const DspFamily fam2 = dspFamilyForMode(modeRx2_);
+            const int fi2 = static_cast<int>(fam2);
+            api.RXASetMP(rx2Channel_, dspFiltMp_[fi2][0] ? 1 : 0);
+        }
+    }
     // CW TX is keyer/firmware — no TXA filter to set (reference parity).
     // The TXA channel (chid 1) is created lazily by create_xmtr() at
     // stream-connect; calling TXASetMP before that = AV on a null txa[1].
@@ -1893,20 +2335,24 @@ void WdspEngine::setTxaChannelOpen(bool open)
 
 int WdspEngine::bandwidthForEdge(double edgeOffsetHz) const
 {
+    return bandwidthForModeEdge(mode_, edgeOffsetHz);
+}
+
+int WdspEngine::bandwidthForModeEdge(const QString &mode,
+                                     double edgeOffsetHz) const
+{
     const double a = std::abs(edgeOffsetHz);
     double bw;
-    if (mode_ == QLatin1String("USB") || mode_ == QLatin1String("DIGU") ||
-        mode_ == QLatin1String("LSB") || mode_ == QLatin1String("DIGL")) {
+    if (mode == QLatin1String("USB") || mode == QLatin1String("DIGU") ||
+        mode == QLatin1String("LSB") || mode == QLatin1String("DIGL")) {
         bw = a;                                   // asymmetric: edge = cutoff
-    } else if (mode_ == QLatin1String("CWU")) {
+    } else if (mode == QLatin1String("CWU")) {
         bw = 2.0 * std::abs(edgeOffsetHz - cwPitchHz_);
-    } else if (mode_ == QLatin1String("CWL")) {
+    } else if (mode == QLatin1String("CWL")) {
         bw = 2.0 * std::abs(edgeOffsetHz + cwPitchHz_);
     } else {                                       // symmetric around DC
         bw = 2.0 * a;
     }
-    // Upper cap matches setBandwidth()'s 20 kHz ceiling so a dragged AM/DSB
-    // passband edge can reach the wide (16/20 k) AM presets, not stop at 12 k.
     return std::clamp(static_cast<int>(bw + 0.5), 50, 20000);
 }
 
@@ -1966,6 +2412,8 @@ void WdspEngine::setCwPitchHz(int hz)
     QSettings().setValue(QStringLiteral("dsp/cwPitchHz"), hz);
     recomputePassband();   // CW filter recentres on the new pitch
     applyModeFilter();
+    recomputePassbandRx2();
+    applyModeFilterRx2();
     pushApfState();        // APF peak tracks the CW pitch
     emit cwPitchChanged();
     emit markerOffsetChanged();   // VFO↔DDS offset changed (CW modes)
@@ -1987,6 +2435,125 @@ void WdspEngine::setCwDecodeEnabled(bool on)
     emit cwDecodeEnabledChanged();
 }
 
+// Phase 3 — lazy-load the local RBN-confirmed call list from AppData (created
+// on first note).  GUI thread only; cheap after the first call.  Runs (and
+// mkpaths the app dir) regardless of the Learn gate, but load() never
+// creates the file and note() is QML-gated by WdspEngine.cwLearnEnabled — the
+// FILE, not the directory, is the §6.6 privacy boundary.
+void WdspEngine::ensureCwScpLocal()
+{
+    if (cwScpLocalLoaded_) return;
+    cwScpLocalLoaded_ = true;
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dir);
+    cwScpLocal_.load((dir + QStringLiteral("/scp_local.txt")).toStdString());
+}
+
+void WdspEngine::cwNoteConfirmedCall(const QString& call)
+{
+    ensureCwScpLocal();
+    cwScpLocal_.note(call.trimmed().toUpper().toStdString(),
+                     QDateTime::currentSecsSinceEpoch());
+    if (cwCaptureOn_.load(std::memory_order_relaxed))
+        cwHarvester_->triggerGoldRbn(call.trimmed().toUpper().toStdString(),
+                                     QDateTime::currentSecsSinceEpoch());
+}
+
+// Phase 2 — opt-in harvest lifecycle.  First enable allocates the 60 s ring,
+// its own 48k->3200 decimator (parallel to the neural engine's, so capture
+// works in EVERY engine mode), and the harvester; a 1 Hz worker pumps
+// post-rolls + retention.  Disable stops the worker; objects stay for cheap
+// re-enable.  GUI thread only.
+void WdspEngine::setCwCaptureEnabled(bool on)
+{
+    if (on == cwCaptureOn_.load(std::memory_order_relaxed)) return;
+    if (on) {
+        if (!cwHarvester_) {
+            const QString dir =
+                QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                + QStringLiteral("/Lyra/cw_harvest");
+            QDir().mkpath(dir);
+            cwHarvestRing_  = std::make_unique<lyra::dsp::CwHarvestRing>(3200 * 60);
+            cwHarvestDecim_ =
+                std::make_unique<lyra::dsp::DeepFistResampler>(cfg_.outRate, 3200.0);
+            cwHarvester_    = std::make_unique<lyra::dsp::CwCaptureHarvester>(
+                *cwHarvestRing_, dir.toStdString());
+        }
+        cwHarvestRun_.store(true);
+        cwHarvestWorker_ = std::thread([this] {
+            while (cwHarvestRun_.load()) {
+                cwHarvester_->pump(QDateTime::currentSecsSinceEpoch());
+                for (int i = 0; i < 10 && cwHarvestRun_.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+        cwCaptureOn_.store(true, std::memory_order_relaxed);   // tap feeds from here
+    } else {
+        cwCaptureOn_.store(false, std::memory_order_relaxed);  // tap stops first
+        cwHarvestRun_.store(false);
+        if (cwHarvestWorker_.joinable()) cwHarvestWorker_.join();
+    }
+}
+
+// DeepFist — select the active CW decode engine (0=Classic fldigi, 1=Neural,
+// 2=Auto).  The neural model is loaded lazily on the first switch to Neural OR
+// Auto (both need it).  Ordering is deliberate for audio-thread safety: we
+// finish loading + reset every consumer of the new engine BEFORE storing
+// cwEngine_ (the audio tap only feeds them once cwEngine_ flips), so it never
+// touches a half-constructed ONNX session or stale decoder/arbiter state —
+// Auto additionally resets cwDecoder_ and cwArbiter_ since it runs both
+// engines.  If the model can't load we stay on the current engine.
+void WdspEngine::setCwDecodeEngine(int engine)
+{
+    const int cur = cwEngine_.load(std::memory_order_relaxed);
+    if (engine == cur) return;
+
+    if (engine == 1 || engine == 2) {           // both need the neural model
+        if (!neuralCw_.ready()) {
+            // Resolve the model dir: env override, then <exeDir>/models.
+            QString dir = qEnvironmentVariable("DEEPFIST_MODEL_DIR");
+            if (dir.isEmpty() ||
+                !QFileInfo::exists(dir + "/deepfist.onnx")) {
+                dir = QCoreApplication::applicationDirPath() + "/models";
+            }
+            ensureCwScpLocal();
+            const bool ok = neuralCw_.loadModel(dir.toStdString(),
+                                                cwScpLocal_.calls());
+            emit cwNeuralAvailableChanged();
+            if (!ok) {
+                qWarning("DeepFist: neural CW model not loaded (%s) — staying on "
+                         "the classic decoder.  %s",
+                         qUtf8Printable(dir), neuralCw_.lastError().c_str());
+                return;   // keep current engine
+            }
+            qInfo("DeepFist: neural CW model loaded from %s (SCP rescorer: %d calls, "
+                  "blank_pen %.1f)",
+                  qUtf8Printable(dir), neuralCw_.scpCount(), neuralCw_.blankPenalty());
+        }
+        // Reset every consumer BEFORE storing the new engine, so the audio tap
+        // (which only feeds them once cwEngine_ flips) never sees stale state.
+        neuralCw_.reset();
+        if (engine == 2) {
+            cwDecoder_.reset();
+            cwArbiter_.reset();
+        }
+        cwEngine_.store(engine, std::memory_order_relaxed);
+    } else {
+        cwEngine_.store(0, std::memory_order_relaxed);
+        cwDecoder_.reset();
+    }
+    emit cwDecodeEngineChanged();
+}
+
+void WdspEngine::setCwBlankPenalty(double p)
+{
+    p = std::clamp(p, -1.0, 1.0);
+    if (std::abs(p - neuralCw_.blankPenalty()) < 1e-6) return;
+    neuralCw_.setBlankPenalty(static_cast<float>(p));   // live, audio-thread-safe
+    emit cwBlankPenaltyChanged();
+}
+
 // Task #53 — shared RX+TX filter low edge.  RX-side application:
 // triggers recomputePassband() + applyModeFilter() so the WDSP
 // RXASetPassband picks up the new low edge live.  TX-side is
@@ -2002,6 +2569,8 @@ void WdspEngine::setFilterLowHz(int hz)
     filterLow_ = static_cast<double>(hz);
     recomputePassband();   // SSB/DIG passband shifts; CW/AM/DSB/FM unaffected
     applyModeFilter();
+    recomputePassbandRx2();
+    applyModeFilterRx2();
 }
 
 void WdspEngine::setMode(const QString &m)
@@ -2039,8 +2608,11 @@ void WdspEngine::setMode(const QString &m)
     pushApfState();        // APF engages only in CW — re-gate on mode change
     // VAC1 auto-enable: follow the new mode (live in DIGU/DIGL, off else).
     // rebuildVac1 reconciles against vac1ShouldBeOn(); no-op if auto is off.
-    if (vac1AutoDigital_) {
+    if (vac_[0].autoDigital) {
         rebuildVac1();
+    }
+    if (vac_[1].autoDigital) {
+        rebuildVac2();
     }
     emit modeChanged();
     emit markerOffsetChanged();   // CW carrier offset flips with mode
@@ -2140,7 +2712,7 @@ void WdspEngine::cropSpectrum(const float *full, float *dst, int n,
 
 int WdspEngine::copySpectrum(float *dst, int maxN)
 {
-    if (!analyzerOpen_ || dst == nullptr) {
+    if (dst == nullptr) {
         return 0;
     }
     const WdspApi &api = wdsp_->api();
@@ -2160,15 +2732,33 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
     if (static_cast<int>(specCache_.size()) != kAnPixels) {
         specCache_.assign(kAnPixels, -200.0f);
     }
-    int flag = 0; double ref = 0.0;
-    api.GetPixels(kAnDisp, 0, specCache_.data(), &flag, &ref);
+    // Guard the analyzerOpen_ check + GetPixels under analyzerMtx_ so a
+    // rate-change reopen (setSampleRate -> closeRx1/openRx1 on the P2
+    // session thread) can't Destroy the analyzer mid-read.  try_lock: this
+    // GUI-thread reader must NEVER block on the reopen (XCreateAnalyzer can
+    // take a few ms) — a contended tick skips the refresh and serves the
+    // retained last-good specCache_ (a 1-2 frame frozen trace, never a
+    // stall or a UAF).
+    {
+        std::unique_lock<std::mutex> lk(analyzerMtx_, std::try_to_lock);
+        if (lk.owns_lock()) {
+            if (!analyzerOpen_) return 0;   // mid-reopen gap -> bail clean
+            int flag = 0; double ref = 0.0;
+            api.GetPixels(kAnDisp, 0, specCache_.data(), &flag, &ref);
+        }
+        // try_lock failed -> skip refresh, fall through, serve specCache_.
+    }
     const float *full = specCache_.data();
 
     const double z = zoom_.load(std::memory_order_relaxed);
     const double offBins = txAnalyzerOffBins();   // 0 unless TUN active
+    const float cal =
+        static_cast<float>(rxDisplayCalibrationDb_.load(std::memory_order_relaxed));
     if (z <= 1.0 && offBins == 0.0) {
         // Full span, no TUN shift — hand the cached spectrum straight back.
         std::memcpy(dst, full, static_cast<size_t>(n) * sizeof(float));
+        if (cal != 0.0f)
+            for (int i = 0; i < n; ++i) dst[i] += cal;
         return n;
     }
 
@@ -2178,6 +2768,8 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
     // the analyzer is never reconfigured, so the trace can't be corrupted
     // by a live re-setup.
     cropSpectrum(full, dst, n, offBins);
+    if (cal != 0.0f)
+        for (int i = 0; i < n; ++i) dst[i] += cal;
     return n;
 }
 
@@ -2193,7 +2785,7 @@ int WdspEngine::copySpectrum(float *dst, int maxN)
 // per phased scope choice) adds pixout=1 RX averaging.
 int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
 {
-    if (!analyzerOpen_ || dst == nullptr) {
+    if (dst == nullptr) {
         return 0;
     }
     const WdspApi &api = wdsp_->api();
@@ -2203,7 +2795,8 @@ int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
 
     // RX state — fall through to copySpectrum (which reads pixout=0).
     // The waterfall and panadapter share that buffer in RX, matching
-    // pre-§15.29 behaviour.
+    // pre-§15.29 behaviour.  Delegate BEFORE taking analyzerMtx_:
+    // copySpectrum locks it itself, and analyzerMtx_ is non-recursive.
     if (!txOwnsAnalyzer_.load(std::memory_order_acquire)) {
         return copySpectrum(dst, maxN);
     }
@@ -2216,8 +2809,16 @@ int WdspEngine::copyWaterfallSpectrum(float *dst, int maxN)
     if (static_cast<int>(wfCache_.size()) != kAnPixels) {
         wfCache_.assign(kAnPixels, -200.0f);
     }
-    int flag = 0; double ref = 0.0;
-    api.GetPixels(kAnDisp, 1, wfCache_.data(), &flag, &ref);
+    // Same analyzer-lifetime guard as copySpectrum: try_lock, and on a
+    // failed lock (or the mid-reopen gap) serve the retained wfCache_.
+    {
+        std::unique_lock<std::mutex> lk(analyzerMtx_, std::try_to_lock);
+        if (lk.owns_lock()) {
+            if (!analyzerOpen_) return 0;
+            int flag = 0; double ref = 0.0;
+            api.GetPixels(kAnDisp, 1, wfCache_.data(), &flag, &ref);
+        }
+    }
     const float *full = wfCache_.data();
 
     const double z = zoom_.load(std::memory_order_relaxed);
@@ -2327,6 +2928,14 @@ double WdspEngine::sMeterDbm() const
     return api.GetRXAMeter(channel_, 0);
 }
 
+double WdspEngine::sMeterDbmRx2() const
+{
+    if (!running_ || !wdsp_ || !rx2Opened_) return -200.0;
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetRXAMeter) return -200.0;
+    return api.GetRXAMeter(rx2Channel_, 0);
+}
+
 double WdspEngine::agcGainDb() const
 {
     if (!running_ || !wdsp_) return 0.0;
@@ -2354,7 +2963,17 @@ double WdspEngine::txMeterRaw(int txaMeterType) const
 
 double WdspEngine::agcThreshDb() const
 {
-    return kAgcThreshDbFs;                 // fixed first-light threshold
+    return agcThreshDb_;                   // operator-set AGC knee (WDSP-dBFS)
+}
+
+double WdspEngine::agcMaxGainDb() const
+{
+    if (!running_ || !wdsp_) return std::numeric_limits<double>::quiet_NaN();
+    const WdspApi &api = wdsp_->api();
+    if (!api.GetRXAAGCTop) return std::numeric_limits<double>::quiet_NaN();
+    double top = 0.0;
+    api.GetRXAAGCTop(channel_, &top);      // resulting AGC ceiling, dB
+    return top;
 }
 
 void WdspEngine::setVolume(double v)
@@ -2363,6 +2982,26 @@ void WdspEngine::setVolume(double v)
     volume_.store(v, std::memory_order_relaxed);
     QSettings().setValue(QStringLiteral("audio/volume"), v);
     emit volumeChanged();
+}
+
+double WdspEngine::volumeDbRx2() const
+{
+    return posToDb(volumeRx2_.load(std::memory_order_relaxed));
+}
+
+void WdspEngine::setVolumeRx2(double v)
+{
+    v = std::clamp(v, 0.0, 1.0);
+    volumeRx2_.store(v, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("audio/volumeRx2"), v);
+    emit volumeRx2Changed();
+}
+
+void WdspEngine::setMutedRx2(bool m)
+{
+    mutedRx2_.store(m, std::memory_order_relaxed);
+    QSettings().setValue(QStringLiteral("audio/mutedRx2"), m);
+    emit mutedRx2Changed();
 }
 
 // #90 TX monitor — operator MON toggle + level.  Stage 1 stores + persists;
@@ -2425,6 +3064,32 @@ void WdspEngine::setTxMuted(bool m)
 
 void WdspEngine::applyTxMuted_(bool m)
 {
+    // Unkey-thump root fix (reference pattern: Thetis stops the RX DSP across
+    // TX so its pipeline holds nothing).  The RX RXA chain keeps running
+    // through TX (feedIq is not MOX-gated) while the front end is deaf
+    // (ATT-on-TX), so the WDSP AGC var_gain PUMPS toward max during the keyed
+    // window; the old hard un-mute then revealed that pumped gain as a
+    // swelling thump — and a LONGER resume delay only gave it more time to
+    // pump (why the delay knob never fixed it).  Freeze the AGC to OFF/fixed
+    // on keydown so var_gain can't pump; restore the operator's mode on
+    // un-mute, which reinits WDSP's AGC from baseline (not the pumped max) so
+    // the resumed RX converges up cleanly instead of thumping down.  Output is
+    // zero-gain while muted, so the OFF fixed-gain value is inaudible during TX.
+    // Called on the main thread (moxActiveChanged / rxResumeTimer_); SetRXAAGCMode
+    // is already called main-thread during live RX (pushAgcMode), so safe.
+    if (opened_ && wdsp_ && wdsp_->api().SetRXAAGCMode) {
+        if (m) {
+            wdsp_->api().SetRXAAGCMode(channel_, kAgcModeOff);
+            if (rx2Opened_)
+                wdsp_->api().SetRXAAGCMode(rx2Channel_, kAgcModeOff);
+        } else {
+            pushAgcMode();   // restore operator AGC mode + fresh var_gain
+        }
+    }
+    if (rx2Opened_ && wdsp_ && wdsp_->api().SetChannelState) {
+        // Stop RX2 with RX1 on keydown (PS mixer garbage on DDC1 while keyed).
+        wdsp_->api().SetChannelState(rx2Channel_, m ? 0 : 1, 0);
+    }
     const bool prev = txMuted_.exchange(m, std::memory_order_relaxed);
     if (prev != m) emit txMutedChanged();
 }
@@ -2468,8 +3133,12 @@ void WdspEngine::setAfGainDb(double db)
     QSettings().setValue(QStringLiteral("audio/afGainDb"), db);
     {   // push to WDSP live (serialise against feedIq's fexchange0)
         std::lock_guard<std::mutex> lk(channelMtx_);
-        if (opened_ && wdsp_ && wdsp_->api().SetRXAPanelGain1)
-            wdsp_->api().SetRXAPanelGain1(channel_, std::pow(10.0, db / 20.0));
+        if (opened_ && wdsp_ && wdsp_->api().SetRXAPanelGain1) {
+            const double g = std::pow(10.0, db / 20.0);
+            wdsp_->api().SetRXAPanelGain1(channel_, g);
+            if (rx2Opened_)
+                wdsp_->api().SetRXAPanelGain1(rx2Channel_, g);
+        }
     }
     emit afGainChanged();
 }
@@ -2492,23 +3161,21 @@ void WdspEngine::pushNrState()
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetRXAEMNRRun) return;   // EMNR not resolved -> nothing to push
-    // Mode 1..4 (UI) -> WDSP gain_method 0..3.
-    if (api.SetRXAEMNRgainMethod)
-        api.SetRXAEMNRgainMethod(channel_, std::clamp(nrMode_, 1, 4) - 1);
-    if (api.SetRXAEMNRnpeMethod)
-        api.SetRXAEMNRnpeMethod(channel_, std::clamp(npeMethod_, 0, 1));
-    if (api.SetRXAEMNRaeRun)
-        api.SetRXAEMNRaeRun(channel_, aepfEnabled_ ? 1 : 0);
-    // AEPF also engages WDSP's post-filter ("post2") — the dedicated
-    // anti-musical-noise stage that stock WDSP leaves off.  Params stay
-    // at WDSP's gentle create defaults (0.15/0.15/5.0/0.12); MMSE-LSA
-    // upstream keeps the voice natural, so the extra stage removes
-    // musical artifacts without a robotic character.
-    if (api.SetRXAEMNRpost2Run)
-        api.SetRXAEMNRpost2Run(channel_, aepfEnabled_ ? 1 : 0);
-    if (api.SetRXAEMNRPosition)
-        api.SetRXAEMNRPosition(channel_, 1);   // after AGC (standard position)
-    api.SetRXAEMNRRun(channel_, nrEnabled_ ? 1 : 0);
+    auto apply = [&](int ch) {
+        if (api.SetRXAEMNRgainMethod)
+            api.SetRXAEMNRgainMethod(ch, std::clamp(nrMode_, 1, 4) - 1);
+        if (api.SetRXAEMNRnpeMethod)
+            api.SetRXAEMNRnpeMethod(ch, std::clamp(npeMethod_, 0, 1));
+        if (api.SetRXAEMNRaeRun)
+            api.SetRXAEMNRaeRun(ch, aepfEnabled_ ? 1 : 0);
+        if (api.SetRXAEMNRpost2Run)
+            api.SetRXAEMNRpost2Run(ch, aepfEnabled_ ? 1 : 0);
+        if (api.SetRXAEMNRPosition)
+            api.SetRXAEMNRPosition(ch, 1);
+        api.SetRXAEMNRRun(ch, nrEnabled_ ? 1 : 0);
+    };
+    apply(channel_);
+    if (rx2Opened_) apply(rx2Channel_);
 }
 
 void WdspEngine::pushAgcMode()
@@ -2521,33 +3188,21 @@ void WdspEngine::pushAgcMode()
     else if (agcMode_ == QLatin1String("fast")) mode = kAgcModeFast;
     else if (agcMode_ == QLatin1String("slow")) mode = kAgcModeSlow;
     else                                        mode = kAgcModeMed;
-    api.SetRXAAGCMode(channel_, mode);
-    // Set the time constants EXPLICITLY per mode (the standard per-mode
-    // values) so Fast/Med/Slow are unmistakably distinct — the audible
-    // difference is mostly the HANG (Fast/Med = none, Slow = 1 s hold)
-    // plus the decay rate.  SetRXAAGCMode sets WDSP internal defaults
-    // too, but pushing them ourselves removes any doubt about the values.
-    // (Off = FIXD/fixed gain — decay/hang are irrelevant, left alone.)
-    //
-    // Operator-reported "AGC OFF louder than FAST/MED/SLOW" (#76A):
-    // mode 0 / FIXD applies fixed_gain as a static multiplier instead
-    // of envelope-tracked gain.  WDSP create-time default is 1000.0
-    // linear (+60 dB) which produces the backwards-loudness.  Push
-    // kAgcFixedGainDb on EVERY mode change regardless of current mode
-    // so a subsequent flip to OFF inherits the +20 dB reference-match
-    // value instead of WDSP's hot default.  Inert when mode != FIXD;
-    // a no-op when SetRXAAGCFixed didn't resolve (null guard).
-    if (api.SetRXAAGCFixed) {
-        api.SetRXAAGCFixed(channel_, kAgcFixedGainDb);
-    }
-    if (mode != kAgcModeOff) {
-        int decayMs = 250, hangMs = 0, hangThr = 100;   // med
-        if (mode == kAgcModeFast)      { decayMs =  50; hangMs =    0; hangThr = 100; }
-        else if (mode == kAgcModeSlow) { decayMs = 500; hangMs = 1000; hangThr =   0; }
-        if (api.SetRXAAGCDecay)         api.SetRXAAGCDecay(channel_, decayMs);
-        if (api.SetRXAAGCHang)          api.SetRXAAGCHang(channel_, hangMs);
-        if (api.SetRXAAGCHangThreshold) api.SetRXAAGCHangThreshold(channel_, hangThr);
-    }
+    auto apply = [&](int ch) {
+        api.SetRXAAGCMode(ch, mode);
+        if (api.SetRXAAGCFixed)
+            api.SetRXAAGCFixed(ch, kAgcFixedGainDb);
+        if (mode != kAgcModeOff) {
+            int decayMs = 250, hangMs = 0, hangThr = 100;
+            if (mode == kAgcModeFast)      { decayMs =  50; hangMs =    0; hangThr = 100; }
+            else if (mode == kAgcModeSlow) { decayMs = 500; hangMs = 1000; hangThr =   0; }
+            if (api.SetRXAAGCDecay)         api.SetRXAAGCDecay(ch, decayMs);
+            if (api.SetRXAAGCHang)          api.SetRXAAGCHang(ch, hangMs);
+            if (api.SetRXAAGCHangThreshold) api.SetRXAAGCHangThreshold(ch, hangThr);
+        }
+    };
+    apply(channel_);
+    if (rx2Opened_) apply(rx2Channel_);
 }
 
 void WdspEngine::setNrEnabled(bool on)
@@ -2591,6 +3246,173 @@ void WdspEngine::setNpeMethod(int method)
     emit nrChanged();
 }
 
+// Re-derive the AGC ceiling from agcThreshDb_.  The slope + thresh calls
+// are kept together: SetRXAAGCThresh computes max_gain from
+// (thresh, size, rate) + the slope-derived var_gain, and we must never
+// also call SetRXAAGCTop (same field, would clobber).  Used at channel
+// open and on every operator threshold change.
+void WdspEngine::pushAgcThresh()
+{
+    if (!opened_ || !wdsp_) return;
+    const WdspApi &api = wdsp_->api();
+    auto apply = [&](int ch) {
+        if (api.SetRXAAGCSlope)
+            api.SetRXAAGCSlope(ch, kAgcSlope);
+        if (api.SetRXAAGCThresh)
+            api.SetRXAAGCThresh(ch, agcThreshDb_, kAgcThreshFftSize,
+                                static_cast<double>(cfg_.inRate));
+    };
+    apply(channel_);
+    if (rx2Opened_) apply(rx2Channel_);
+}
+
+// No-persist core: clamp/store/push + emit, no QSettings write.  The latch
+// re-track timer uses this so a drifting floor doesn't spam QSettings.
+void WdspEngine::applyAgcThreshNoPersist(double db)
+{
+    db = std::clamp(db, kAgcThreshMinDbFs, kAgcThreshMaxDbFs);
+    if (agcThreshDb_ == db) return;
+    agcThreshDb_ = db;
+    pushAgcThresh();
+    emit agcThreshDbChanged();
+}
+
+void WdspEngine::setAgcThreshDb(double db)
+{
+    // A manual threshold touch releases the latch (reference-faithful: any
+    // manual AGC-T adjustment turns Auto off).
+    if (autoAgcThresh_) setAutoAgcThresh(false);
+    db = std::clamp(db, kAgcThreshMinDbFs, kAgcThreshMaxDbFs);
+    const bool changed = (agcThreshDb_ != db);
+    applyAgcThreshNoPersist(db);
+    QSettings().setValue(QStringLiteral("dsp/agcThreshDb"), db);
+    if (changed)
+        emitLog(QStringLiteral("[wdsp] AGC threshold %1 dBFS").arg(db, 0, 'f', 0));
+}
+
+void WdspEngine::applyAutoAgcThresh(double passbandFloorRawDbFs, double marginDb)
+{
+    // The WDSP `thresh` arg is PER-FFT-BIN; SetRXAAGCThresh adds its own
+    // noise_offset = 10*log10(bw*size/rate) internally to compare against
+    // passband power.  Our floor comes in as passband-power (RXA_S_PK
+    // domain), so subtract that same noise_offset here — WDSP re-adds it,
+    // and the effective knee lands exactly on the measured floor + margin.
+    // (Reference parity: Thetis anchors to the per-bin panadapter floor and
+    // lets WDSP add noise_offset; we anchor to the passband S-meter floor
+    // and pre-subtract it — same effective knee.)
+    //
+    // No-persist: the auto-tracked knee is transient (only the operator's
+    // manual value + the latch on/off flag persist).  Gated on an actual
+    // change so a stable band doesn't re-log every re-track tick.
+    const double bwHz = std::max(1.0,
+        std::abs(passbandHighHz_ - passbandLowHz_));
+    const double rate = std::max(1.0, static_cast<double>(cfg_.inRate));
+    const double noiseOffset =
+        10.0 * std::log10(bwHz * kAgcThreshFftSize / rate);
+    // Max-gain ceiling as a knee LOWER-BOUND (red-team: the load-bearing fix).
+    // max_gain = K - (thresh + noiseOffset) is affine slope -1, so
+    // max_gain <= ceiling  <=>  thresh >= K - ceiling - noiseOffset.  Folding it
+    // into the clamp here (rather than a post-push correction) keeps the target
+    // knee and the applied knee identical, so the dead-band below never chatters.
+    const double kneeLowerBound = kAutoAgcThreshTransferK
+                                  - kAutoAgcMaxGainCeilDb - noiseOffset;
+    const double lo = std::max(kAgcThreshMinDbFs, kneeLowerBound);
+    const double knee = std::clamp(passbandFloorRawDbFs + marginDb - noiseOffset,
+                                   lo, kAgcThreshMaxDbFs);
+    // Dead-band: the EMA floor drifts sub-dB every 500 ms tick; only re-push when
+    // the knee actually moves, else SetRXAAGCThresh + the log + agcThreshDbChanged
+    // would chatter at the tick rate (the == short-circuit below rarely fires
+    // with a continuously-moving EMA).
+    if (std::abs(knee - agcThreshDb_) < kAutoAgcKneeDeadbandDb) return;
+    applyAgcThreshNoPersist(knee);
+    emitLog(QStringLiteral(
+        "[wdsp] Auto AGC-T: floor %1 dBFS(raw) margin %2 - noiseOffset %3 "
+        "-> thr %4 dBFS -> max-gain %5 dB")
+            .arg(passbandFloorRawDbFs, 0, 'f', 1).arg(marginDb, 0, 'f', 1)
+            .arg(noiseOffset, 0, 'f', 1).arg(agcThreshDb_, 0, 'f', 1)
+            .arg(agcMaxGainDb(), 0, 'f', 0));
+}
+
+void WdspEngine::setAutoAgcThresh(bool on)
+{
+    if (autoAgcThresh_ == on) return;
+    autoAgcThresh_ = on;
+    QSettings().setValue(QStringLiteral("dsp/autoAgcThresh"), on);
+    emit autoAgcThreshChanged();
+    emitLog(QStringLiteral("[wdsp] Auto AGC-T %1")
+                .arg(on ? QStringLiteral("engaged (latched)")
+                        : QStringLiteral("released")));
+    // Engage: seed the EMA fresh then track immediately rather than waiting up
+    // to 500 ms for the timer.
+    if (on) { autoAgcEmaSeeded_ = false; retrackAutoAgc(); }
+}
+
+void WdspEngine::setAutoAgcMarginDb(double db)
+{
+    db = std::clamp(db, -30.0, 30.0);
+    if (autoAgcMarginDb_ == db) return;
+    autoAgcMarginDb_ = db;
+    QSettings().setValue(QStringLiteral("dsp/autoAgcMargin"), db);
+    emit autoAgcMarginDbChanged();
+    // Re-anchor now if the latch is live so the operator sees the new landing
+    // point immediately (used to dial the resulting max-gain to the reference).
+    if (autoAgcThresh_) retrackAutoAgc();
+}
+
+// Latch re-track: pull the live floor and re-anchor the knee.  Costs a bool
+// test per tick when idle; only acts while engaged, the channel is open, a
+// floor provider is wired, and the floor reads a finite value.
+// Robust noise-floor estimate from the engine's OWN analyzer spectrum
+// (raw WDSP dBFS — the same domain SetRXAAGCThresh works in, NOT the
+// calibrated S-meter domain, so this does not touch the S-meter).  20th
+// percentile of the displayed span, so a signal sitting in the passband
+// cannot drag it up the way the passband S-meter rolling-min does — this
+// is the deskHPSDR-reference source (a spectrum percentile) that makes
+// Auto AGC-T work on a signal-present band.  Runs on the analyzer buffer
+// which is live regardless of panadapter widget visibility.  NaN when no
+// spectrum is available yet.  Used for the P2 Auto-AGC floor; the HL2 path
+// keeps its meter-floor provider untouched.
+double WdspEngine::spectrumFloorRawDbFs()
+{
+    const int n = spectrumPixelCount();
+    if (n < 4) return std::numeric_limits<double>::quiet_NaN();
+    specFloorScratch_.resize(static_cast<size_t>(n));
+    const int got = copySpectrum(specFloorScratch_.data(), n);
+    if (got < 4) return std::numeric_limits<double>::quiet_NaN();
+    const int k = std::clamp(static_cast<int>(got * 0.20), 1, got - 1);
+    std::nth_element(specFloorScratch_.begin(), specFloorScratch_.begin() + k,
+                     specFloorScratch_.begin() + got);
+    return static_cast<double>(specFloorScratch_[static_cast<size_t>(k)]);
+}
+
+void WdspEngine::retrackAutoAgc()
+{
+    if (!autoAgcThresh_ || !opened_ || !agcFloorProvider_) return;
+    // Freeze while transmitting: during MOX the passband floor is poisoned by
+    // TX-coupled energy (mirrors the Auto-LNA MOX freeze).  txOwnsAnalyzer_ is
+    // set true on the keydown MOX edge / false on keyup.  Reseed the EMA on the
+    // TX->RX edge so a TX-poisoned value can't survive the first post-keyup tick.
+    const bool tx = txOwnsAnalyzer_.load(std::memory_order_acquire);
+    if (tx) { autoAgcPrevTx_ = true; return; }
+    if (autoAgcPrevTx_) { autoAgcPrevTx_ = false; autoAgcEmaSeeded_ = false; }
+
+    const double floor = agcFloorProvider_();
+    if (!std::isfinite(floor)) return;
+
+    // EMA-smooth the floor (jitter only — the ceiling in applyAutoAgcThresh is
+    // the real bug fix).  Self-heal domain shifts (rate / mode / passband /
+    // P1<->P2 / band all move the floor's value or meaning) by reseeding on a
+    // large jump, so no external reset hooks are needed.
+    if (!autoAgcEmaSeeded_
+        || std::abs(floor - autoAgcFloorEma_) > kAutoAgcFloorJumpDb) {
+        autoAgcFloorEma_  = floor;
+        autoAgcEmaSeeded_ = true;
+    } else {
+        autoAgcFloorEma_ += kAutoAgcFloorEmaAlpha * (floor - autoAgcFloorEma_);
+    }
+    applyAutoAgcThresh(autoAgcFloorEma_, autoAgcMarginDb_);
+}
+
 void WdspEngine::setAgcMode(const QString &mode)
 {
     const QString m = mode.toLower();
@@ -2610,9 +3432,13 @@ void WdspEngine::pushAnfState()
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetRXAANFRun) return;
-    if (api.SetRXAANFVals)            // carrier-null defaults (taps/delay/gain/leak)
-        api.SetRXAANFVals(channel_, 64, 16, 1.0e-3, 1.0e-7);
-    api.SetRXAANFRun(channel_, anfEnabled_ ? 1 : 0);
+    auto apply = [&](int ch) {
+        if (api.SetRXAANFVals)
+            api.SetRXAANFVals(ch, 64, 16, 1.0e-3, 1.0e-7);
+        api.SetRXAANFRun(ch, anfEnabled_ ? 1 : 0);
+    };
+    apply(channel_);
+    if (rx2Opened_) apply(rx2Channel_);
 }
 
 void WdspEngine::pushLmsState()
@@ -2620,14 +3446,17 @@ void WdspEngine::pushLmsState()
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetRXAANRRun) return;
-    if (api.SetRXAANRVals) {
-        // strength 0..1 -> taps 32..128 + adapt rate (gain) 8e-5..16e-4.
-        const double s    = std::clamp(lmsStrength_, 0.0, 1.0);
-        const int    taps = 32 + static_cast<int>(std::lround(96.0 * s));
-        const double gain = 8.0e-5 + (16.0e-4 - 8.0e-5) * s;
-        api.SetRXAANRVals(channel_, taps, 16, gain, 1.0e-7);
-    }
-    api.SetRXAANRRun(channel_, lmsEnabled_ ? 1 : 0);
+    auto apply = [&](int ch) {
+        if (api.SetRXAANRVals) {
+            const double s    = std::clamp(lmsStrength_, 0.0, 1.0);
+            const int    taps = 32 + static_cast<int>(std::lround(96.0 * s));
+            const double gain = 8.0e-5 + (16.0e-4 - 8.0e-5) * s;
+            api.SetRXAANRVals(ch, taps, 16, gain, 1.0e-7);
+        }
+        api.SetRXAANRRun(ch, lmsEnabled_ ? 1 : 0);
+    };
+    apply(channel_);
+    if (rx2Opened_) apply(rx2Channel_);
 }
 
 void WdspEngine::setAnfEnabled(bool on)
@@ -2794,37 +3623,36 @@ void WdspEngine::pushSquelchState()
 {
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
-    const bool fm  = (mode_ == QLatin1String("FM"));
-    const bool am  = (mode_ == QLatin1String("AM") ||
-                      mode_ == QLatin1String("SAM") ||
-                      mode_ == QLatin1String("DSB"));
-    const bool ssb = !fm && !am;   // USB/LSB/CWU/CWL/DIGU/DIGL/SPEC
     const bool on  = squelchEnabled_;
     const double t = std::clamp(squelchThreshold_, 0.0, 1.0);
 
-    // SSQL — SSB/CW/DIG voice-presence squelch.  *0.65 scale puts the
-    // WU2O-tested-good default (~0.16) at a comfortable slider zone; the
-    // tau pair gives a snappy unmute + a hang that doesn't clamp between
-    // syllables (bench-tunable).
-    if (api.SetRXASSQLRun) {
-        if (api.SetRXASSQLTauMute)   api.SetRXASSQLTauMute(channel_, 0.7);
-        if (api.SetRXASSQLTauUnMute) api.SetRXASSQLTauUnMute(channel_, 0.1);
-        if (api.SetRXASSQLThreshold) api.SetRXASSQLThreshold(channel_, t * 0.65);
-        api.SetRXASSQLRun(channel_, (on && ssb) ? 1 : 0);
-    }
-    // FM squelch (noise-level threshold; log map so the slider feels even).
-    if (api.SetRXAFMSQRun) {
-        if (api.SetRXAFMSQThreshold)
-            api.SetRXAFMSQThreshold(channel_, std::pow(10.0, -2.0 * t));
-        api.SetRXAFMSQRun(channel_, (on && fm) ? 1 : 0);
-    }
-    // AM squelch (carrier-level threshold, ~-160..-30 dB; short tail).
-    if (api.SetRXAAMSQRun) {
-        if (api.SetRXAAMSQMaxTail)   api.SetRXAAMSQMaxTail(channel_, 0.5);
-        if (api.SetRXAAMSQThreshold)
-            api.SetRXAAMSQThreshold(channel_, -160.0 + t * 130.0);
-        api.SetRXAAMSQRun(channel_, (on && am) ? 1 : 0);
-    }
+    auto apply = [&](int ch, const QString &mode) {
+        const bool fm  = (mode == QLatin1String("FM"));
+        const bool am  = (mode == QLatin1String("AM") ||
+                          mode == QLatin1String("SAM") ||
+                          mode == QLatin1String("DSB"));
+        const bool ssb = !fm && !am;
+        if (api.SetRXASSQLRun) {
+            if (api.SetRXASSQLTauMute)   api.SetRXASSQLTauMute(ch, 0.7);
+            if (api.SetRXASSQLTauUnMute) api.SetRXASSQLTauUnMute(ch, 0.1);
+            if (api.SetRXASSQLThreshold) api.SetRXASSQLThreshold(ch, t * 0.65);
+            api.SetRXASSQLRun(ch, (on && ssb) ? 1 : 0);
+        }
+        if (api.SetRXAFMSQRun) {
+            if (api.SetRXAFMSQThreshold)
+                api.SetRXAFMSQThreshold(ch, std::pow(10.0, -2.0 * t));
+            api.SetRXAFMSQRun(ch, (on && fm) ? 1 : 0);
+        }
+        if (api.SetRXAAMSQRun) {
+            if (api.SetRXAAMSQMaxTail)   api.SetRXAAMSQMaxTail(ch, 0.5);
+            if (api.SetRXAAMSQThreshold)
+                api.SetRXAAMSQThreshold(ch, -160.0 + t * 130.0);
+            api.SetRXAAMSQRun(ch, (on && am) ? 1 : 0);
+        }
+    };
+    apply(channel_, mode_);
+    if (haveRx2_.load(std::memory_order_relaxed))
+        apply(rx2Channel_, modeRx2_);
 }
 
 void WdspEngine::setSquelchEnabled(bool on)
@@ -2852,18 +3680,19 @@ void WdspEngine::setSquelchThreshold(double t)
 
 void WdspEngine::pushNbState()
 {
-    if (!opened_ || !nbCreated_ || !wdsp_) return;
+    if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
-    if (api.SetEXTNOBThreshold) {
-        // strength 0..1 -> threshold 12..2.5 (light..heavy).  LOWER
-        // threshold = more aggressive blanking; clamp to the working
-        // 1.5..50 range (light≈10, heavy≈3 ported from the Python tree).
-        double th = 12.0 - 9.5 * std::clamp(nbStrength_, 0.0, 1.0);
-        th = std::clamp(th, 1.5, 50.0);
-        api.SetEXTNOBThreshold(channel_, th);
-    }
-    if (api.SetEXTNOBRun)
-        api.SetEXTNOBRun(channel_, nbEnabled_ ? 1 : 0);
+    double th = 12.0 - 9.5 * std::clamp(nbStrength_, 0.0, 1.0);
+    th = std::clamp(th, 1.5, 50.0);
+    auto apply = [&](int ch, bool created) {
+        if (!created) return;
+        if (api.SetEXTNOBThreshold)
+            api.SetEXTNOBThreshold(ch, th);
+        if (api.SetEXTNOBRun)
+            api.SetEXTNOBRun(ch, nbEnabled_ ? 1 : 0);
+    };
+    apply(channel_, nbCreated_);
+    apply(rx2Channel_, nbCreatedRx2_);
 }
 
 void WdspEngine::setNbEnabled(bool on)
@@ -2895,14 +3724,18 @@ void WdspEngine::pushApfState()
     if (!opened_ || !wdsp_) return;
     const WdspApi &api = wdsp_->api();
     if (!api.SetRXABiQuadRun) return;
-    const bool cw = (mode_ == QLatin1String("CWU") ||
-                     mode_ == QLatin1String("CWL"));
-    // Peak centred on the CW pitch, ~75 Hz wide, operator-set gain (dB→linear).
-    if (api.SetRXABiQuadFreq)      api.SetRXABiQuadFreq(channel_, cwPitchHz_);
-    if (api.SetRXABiQuadBandwidth) api.SetRXABiQuadBandwidth(channel_, 75.0);
-    if (api.SetRXABiQuadGain)
-        api.SetRXABiQuadGain(channel_, std::pow(10.0, apfGainDb_ / 20.0));
-    api.SetRXABiQuadRun(channel_, (apfEnabled_ && cw) ? 1 : 0);
+    auto apply = [&](int ch, const QString &mode) {
+        const bool cw = (mode == QLatin1String("CWU") ||
+                         mode == QLatin1String("CWL"));
+        if (api.SetRXABiQuadFreq)      api.SetRXABiQuadFreq(ch, cwPitchHz_);
+        if (api.SetRXABiQuadBandwidth) api.SetRXABiQuadBandwidth(ch, 75.0);
+        if (api.SetRXABiQuadGain)
+            api.SetRXABiQuadGain(ch, std::pow(10.0, apfGainDb_ / 20.0));
+        api.SetRXABiQuadRun(ch, (apfEnabled_ && cw) ? 1 : 0);
+    };
+    apply(channel_, mode_);
+    if (haveRx2_.load(std::memory_order_relaxed))
+        apply(rx2Channel_, modeRx2_);
 }
 
 void WdspEngine::setApfEnabled(bool on)
@@ -3382,7 +4215,7 @@ void WdspEngine::setAudioOutputDevice(int index)
         // HL2 onboard codec: stop the PC sink, route audio to EP2.
         if (!hl2Out_) {
             hl2Out_ = true;
-            QSettings().setValue(QStringLiteral("audio/output"),
+            QSettings().setValue(audioOutputKey(),
                                  QStringLiteral("hl2"));
             if (running_) stopAudio();          // drop the QAudioSink
             emit audioDeviceChanged();
@@ -3401,9 +4234,9 @@ void WdspEngine::setAudioOutputDevice(int index)
     }
     hl2Out_      = false;
     deviceIndex_ = devIdx;
-    QSettings().setValue(QStringLiteral("audio/output"),
+    QSettings().setValue(audioOutputKey(),
                          QStringLiteral("pc"));
-    QSettings().setValue(QStringLiteral("audio/deviceName"),
+    QSettings().setValue(audioDeviceKey(),
                          devices_[devIdx].description());
     emit audioDeviceChanged();
     emitLog(QStringLiteral("[wdsp] audio: output device -> %1")
@@ -3445,7 +4278,7 @@ void WdspEngine::applyAudioRouteTransient(bool hl2,
     if (devIdx < 0) {
         // Fall back to the operator's persisted PC device choice.
         const QString saved =
-            QSettings().value(QStringLiteral("audio/deviceName")).toString();
+            QSettings().value(audioDeviceKey()).toString();
         for (int i = 0; i < devices_.size(); ++i)
             if (devices_[i].description() == saved) { devIdx = i; break; }
     }
@@ -3468,10 +4301,10 @@ void WdspEngine::restoreAudioRouteFromSettings()
 {
     QSettings s;
     const bool hl2 =
-        s.value(QStringLiteral("audio/output"), QStringLiteral("hl2"))
+        s.value(audioOutputKey(), QStringLiteral("hl2"))
             .toString() != QLatin1String("pc");
     applyAudioRouteTransient(
-        hl2, s.value(QStringLiteral("audio/deviceName")).toString());
+        hl2, s.value(audioDeviceKey()).toString());
 }
 
 // Stage B.6.a (2026-06-08) -- pure extraction from feedIq's inline
@@ -3545,33 +4378,33 @@ void WdspEngine::txMonitorTapCb(int nsamples, double *buff)
 // #158 (#161 UAF fix) — VAC-in → TX bridge, registered via
 // SendpInboundVacTxAudio.  Runs on the cm_main TX pump thread (xcmaster
 // case 1) at the mic block rate when the xmtr's use_vac_audio is set.
-// Gate EXACTLY like the mix-side tee (dispatchAudioFrame): hold vacMtx_
-// and re-check vac1Active_ before xvacIN.  teardownVac1/rebuildVac1 flip
-// vac1Active_ under vacMtx_ around the create/resize/destroy of the single
-// full-duplex ivac + its rmatchIN ring, so this can never xvacIN a freed
-// or mid-rebuilt ring — the VAC device-change / enable-disable heap fault.
-// (The old free-function form guarded only on a racy ivacGet()!=null
-// check, which the device-change teardown+recreate TOCTOU'd straight
-// through: pvac[id] was nulled before the free, but nothing ordered the
-// pump's check-then-xvacIN against destroy_ivac's null-then-free.)
+// Gate EXACTLY like the mix-side tee (dispatchAudioFrame): hold that
+// slot's mtx_ and re-check active_ before xvacIN.  rebuildVac/teardownVac
+// flip active_ under mtx_ around create/resize/destroy of that id's
+// full-duplex ivac + rmatchIN ring, so this can never xvacIN a freed
+// or mid-rebuilt ring.  Which slot feeds TX is txSourceVacId_.
 void WdspEngine::vacInboundCb(int nsamples, double *buff)
 {
     WdspEngine *self = g_aamixOutboundSelf;
     if (self == nullptr) {
         return;  // engine closed (self cleared after destroy_aamix in closeRx1)
     }
+    const int id = self->txSourceVacId_;
+    if (id < 0 || id >= kVacCount) {
+        return;
+    }
     {
-        std::lock_guard<std::mutex> lk(self->vacMtx_);
-        // vac1Active_ is true ONLY between rebuildVac1's StartAudioIVAC and
-        // teardownVac1's clear — i.e. exactly when the rmatchIN ring is fully
+        std::lock_guard<std::mutex> lk(self->vac_[id].mtx_);
+        // active_ is true ONLY between rebuildVac's StartAudioIVAC and
+        // teardownVac's clear — i.e. exactly when the rmatchIN ring is fully
         // built and valid.  ivacGet is belt-and-suspenders.  When off, leave
         // buff untouched: the cm_main pump's pcm->in already holds the codec
         // mic (SAFETY — never deref a null/half-built ivac).
-        if (!self->vac1Active_.load(std::memory_order_relaxed) ||
-            lyra::wire::ivacGet(kVac1Id) == nullptr) {
+        if (!self->vac_[id].active_.load(std::memory_order_relaxed) ||
+            lyra::wire::ivacGet(id) == nullptr) {
             return;
         }
-        lyra::wire::xvacIN(kVac1Id, buff, /*bypass*/0);
+        lyra::wire::xvacIN(id, buff, /*bypass*/0);
     }
     // #158 diag — fires only when VAC1 is the live TX source; the peak
     // proves real audio arrived.  buff is the caller's TX-mic block, safe to
@@ -3588,8 +4421,8 @@ void WdspEngine::vacInboundCb(int nsamples, double *buff)
     ++drnCalls;
     drnSamps += nsamples;
     if (drnSamps >= 48000) {
-        qInfo("[vac1] xvacIN drain (TX mic): %lld calls/s, peak %.4f",
-              drnCalls, drnPeak);
+        qInfo("[vac%d] xvacIN drain (TX mic): %lld calls/s, peak %.4f",
+              self->txSourceVacId_ + 1, drnCalls, drnPeak);
         drnCalls = 0; drnSamps = 0; drnPeak = 0.0;
     }
 }
@@ -3613,8 +4446,10 @@ void WdspEngine::setRxRecordTap(std::function<void(const double *, int)> tap)
 namespace {
 // #187 — passive WAV capture of the EXACT mono audio fed to the CW decoder, for
 // offline filter tuning against a real off-air signal.  Armed only when the env
-// var LYRA_CW_WAV=<path> is set; writes 48 kHz mono 16-bit PCM.  Audio-thread
-// only (single producer); the header is patched on destruction at app exit.
+// var LYRA_CW_WAV=<path> is set; writes 48 kHz mono 32-bit IEEE-float (unclamped).
+// Audio-thread only (single producer); the size fields are re-patched on every
+// write so the file stays a valid WAV even if the process is killed before the
+// destructor runs (static-local dtors aren't guaranteed on a Qt app close).
 // Zero cost when the env var is unset (the static QByteArray is empty).
 class CwWavCapture {
 public:
@@ -3626,23 +4461,33 @@ public:
     }
     ~CwWavCapture() {
         if (!ok_) return;
-        file_.seek(4);  writeU32(36 + dataBytes_);   // RIFF chunk size
-        file_.seek(40); writeU32(dataBytes_);         // data sub-chunk size
+        patchSizes();
         file_.close();
     }
     void write(const float *s, int n) {
         if (!ok_) return;
-        for (int i = 0; i < n; ++i) {
-            float v = s[i];
-            v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
-            const qint16 iv = static_cast<qint16>(qRound(v * 32767.0f));
-            const char b[2] = { static_cast<char>(iv & 0xFF),
-                                static_cast<char>((iv >> 8) & 0xFF) };
-            file_.write(b, 2);
-            dataBytes_ += 2;
+        // Raw 32-bit float, UNCLAMPED — so the true decoder-input level +
+        // envelope are visible (a clamped 16-bit capture hides over-drive).
+        file_.write(reinterpret_cast<const char *>(s),
+                    static_cast<qint64>(n) * 4);
+        dataBytes_ += static_cast<quint32>(n) * 4;
+        // Keep the RIFF/data size fields current so a hard-closed capture is
+        // still a valid, playable WAV.  Throttled to ~1 s of audio so this adds
+        // a couple of tiny seeks/writes per second, not per block.
+        if (dataBytes_ - lastPatched_ >= 192000) {   // 1 s mono @48k × 4 bytes
+            patchSizes();
+            lastPatched_ = dataBytes_;
         }
     }
 private:
+    // Patch the RIFF + data size fields, then return to the append position so
+    // writing continues seamlessly.
+    void patchSizes() {
+        const qint64 end = 44 + static_cast<qint64>(dataBytes_);
+        file_.seek(4);  writeU32(36 + dataBytes_);   // RIFF chunk size
+        file_.seek(40); writeU32(dataBytes_);         // data sub-chunk size
+        file_.seek(end);
+    }
     void writeU32(quint32 v) {
         const char b[4] = { char(v & 0xFF), char((v >> 8) & 0xFF),
                             char((v >> 16) & 0xFF), char((v >> 24) & 0xFF) };
@@ -3656,16 +4501,17 @@ private:
         file_.write("RIFF", 4); writeU32(0);   // patched on close
         file_.write("WAVE", 4);
         file_.write("fmt ", 4); writeU32(16);
-        writeU16(1);            // PCM
+        writeU16(3);            // IEEE float
         writeU16(1);            // mono
         writeU32(sr);
-        writeU32(sr * 2);       // byte rate (mono × 2 bytes)
-        writeU16(2);            // block align
-        writeU16(16);           // bits/sample
+        writeU32(sr * 4);       // byte rate (mono × 4 bytes)
+        writeU16(4);            // block align
+        writeU16(32);           // bits/sample
         file_.write("data", 4); writeU32(0);   // patched on close
     }
     QFile   file_;
-    quint32 dataBytes_ = 0;
+    quint32 dataBytes_   = 0;
+    quint32 lastPatched_ = 0;
     bool    ok_ = false;
 };
 } // namespace
@@ -3718,7 +4564,18 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             cwMonoBuf_.assign(static_cast<size_t>(nframes), 0.0f);
         for (int f = 0; f < nframes; ++f)
             cwMonoBuf_[static_cast<size_t>(f)] = static_cast<float>(audio[2 * f]);
-        cwDecoder_.process(cwMonoBuf_.data(), nframes);
+        // Route to the selected engine.  Neural is only reachable after its model
+        // is fully loaded (see setCwDecodeEngine), so it is safe to call here.
+        // Auto (2) fans out to BOTH; the arbiter picks who drives the display.
+        const int eng = cwEngine_.load(std::memory_order_relaxed);
+        if (eng == 2) {
+            cwDecoder_.process(cwMonoBuf_.data(), nframes);
+            neuralCw_.process(cwMonoBuf_.data(), nframes);
+        } else if (eng == 1) {
+            neuralCw_.process(cwMonoBuf_.data(), nframes);
+        } else {
+            cwDecoder_.process(cwMonoBuf_.data(), nframes);
+        }
 
         // #187 — optional capture of the EXACT decoder input to a WAV for
         // offline filter tuning.  Armed by LYRA_CW_WAV=<path>; passive, the
@@ -3729,14 +4586,21 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
                                       static_cast<quint32>(cfg_.outRate));
             cwWav.write(cwMonoBuf_.data(), nframes);
         }
+
+        // Phase 2 harvest: parallel decimate into the capture ring (opt-in).
+        if (cwCaptureOn_.load(std::memory_order_relaxed)) {
+            cwHarvestTmp_.clear();
+            cwHarvestDecim_->process(cwMonoBuf_.data(), nframes, cwHarvestTmp_);
+            if (!cwHarvestTmp_.empty())
+                cwHarvestRing_->push(cwHarvestTmp_.data(),
+                                     static_cast<int>(cwHarvestTmp_.size()));
+        }
     }
 
-    // #59 RX EQ — shape the post-RXA receive audio (mono-dup L==R) BEFORE all
-    // tees (jack / PC sink / TCI / VAC), the way the reference EQs inside RXA.
-    // `audio` is const + feeds every consumer, so EQ a mutable copy and
-    // repoint the local pointer at it.  Gated: engine present, operator not
-    // bypassing (the panel ON/OFF, any mode), and not a digital mode
-    // (DIGU/DIGL stay flat for the decoders).  Analyzer fed pre/post (panel).
+    // #59 RX EQ — shape post-RXA audio BEFORE tees.  Single-RX is
+    // mono-dup (L==R); SUB has RX1 on L and RX2 on R — EQ those
+    // independently.  processMonoDup copies L onto R and would wipe RX2.
+    const bool subMix = subMixActive_.load(std::memory_order_relaxed);
     if (auto *rxeq = rxEq_.load(std::memory_order_acquire);
         rxeq && nframes > 0 && !rxeq->bypassed() &&
         !rxEqModeBypass_.load(std::memory_order_relaxed)) {
@@ -3750,8 +4614,13 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             thread_local double preBuf[kRxEqMaxBlk];
             for (int k = 0; k < nframes; ++k)
                 preBuf[k] = rxEqBuf_[static_cast<size_t>(2 * k)];
-            rxeq->processMonoDup(rxEqBuf_.data(), nframes);
+            if (subMix)
+                rxeq->processStereoIndependent(rxEqBuf_.data(), nframes);
+            else
+                rxeq->processMonoDup(rxEqBuf_.data(), nframes);
             rxan->feed(preBuf, rxEqBuf_.data(), nframes);
+        } else if (subMix) {
+            rxeq->processStereoIndependent(rxEqBuf_.data(), nframes);
         } else {
             rxeq->processMonoDup(rxEqBuf_.data(), nframes);
         }
@@ -3838,18 +4707,23 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
     // keeps VAC level-independent of the monitor volume — WRONG; tester A/B vs
     // the reference disproved it, #161.)  The VAC RX gain (SetIVACrxscale)
     // stays the independent cable trim on top.
-    // Gated by vac1Active_ (cheap relaxed read on the hot path); the
-    // xvacOUT itself runs under vacMtx_ so a main-thread teardown can't
+    // Gated by vac_[0].active_ (cheap relaxed read on the hot path); the
+    // xvacOUT itself runs under vac_[0].mtx_ so a main-thread teardown can't
     // destroy_ivac the rmatchOUT ring mid-call.  The size guard matches
     // the AAMix insize (audio_size == outSize_); a mismatched block is
     // skipped rather than fed wrong-sized into xMixAudio.
     const double vacVolGain = posToGain(volume_.load(std::memory_order_relaxed));
     const bool   vacMuted   = muted_.load(std::memory_order_relaxed) &&
-                              muteWillMuteVac_.load(std::memory_order_relaxed);
+                              vac_[0].muteWillMuteVac_.load(std::memory_order_relaxed);
     const double vacGain    = vacMuted ? 0.0 : vacVolGain;
-    if (vac1Active_.load(std::memory_order_relaxed)) {
-        std::lock_guard<std::mutex> lk(vacMtx_);
-        if (vac1Active_.load(std::memory_order_relaxed) &&
+    const bool vacMuteVac = vac_[0].muteWillMuteVac_.load(std::memory_order_relaxed);
+    const double vacGainRx2 = (mutedRx2_.load(std::memory_order_relaxed)
+                               && vacMuteVac)
+        ? 0.0
+        : posToGain(volumeRx2_.load(std::memory_order_relaxed));
+    if (vac_[0].active_.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lk(vac_[0].mtx_);
+        if (vac_[0].active_.load(std::memory_order_relaxed) &&
             nframes == outSize_) {
             // The IVAC mixer is a 2-input AAMix (active=3): its mix_main
             // WaitForMultipleObjects(…, TRUE) won't produce a block until
@@ -3859,13 +4733,22 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             // RX audio is scaled by the monitor volume/mute into a reusable
             // buffer so the sink loop below still gets the raw `audio`.
             const int vacN2 = 2 * nframes;
-            if (static_cast<int>(vacRxScaled_.size()) != vacN2) {
-                vacRxScaled_.assign(static_cast<size_t>(vacN2), 0.0);
+            if (static_cast<int>(vac_[0].rxScaled_.size()) != vacN2) {
+                vac_[0].rxScaled_.assign(static_cast<size_t>(vacN2), 0.0);
             }
-            for (int i = 0; i < vacN2; ++i) {
-                vacRxScaled_[static_cast<size_t>(i)] = audio[i] * vacGain;
+            if (subMix) {
+                for (int f = 0; f < nframes; ++f) {
+                    vac_[0].rxScaled_[static_cast<size_t>(2 * f + 0)] =
+                        audio[2 * f + 0] * vacGain;
+                    vac_[0].rxScaled_[static_cast<size_t>(2 * f + 1)] =
+                        audio[2 * f + 1] * vacGainRx2;
+                }
+            } else {
+                for (int i = 0; i < vacN2; ++i) {
+                    vac_[0].rxScaled_[static_cast<size_t>(i)] = audio[i] * vacGain;
+                }
             }
-            lyra::wire::xvacOUT(kVac1Id, /*stream*/1, vacRxScaled_.data());
+            lyra::wire::xvacOUT(kVac1Id, /*stream*/1, vac_[0].rxScaled_.data());
             // #90 Route 2 — feed the TX monitor into VAC stream-2 (mixer
             // input 1) when monitoring; else silence so the 2-input mixer
             // never starves.  Unscaled: SetIVACmonVol applies the Monitor
@@ -3884,6 +4767,42 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
                 lyra::wire::xvacOUT(kVac1Id, /*stream*/2, vacMonStereo_.data());
             } else if (static_cast<int>(vacMonSilence_.size()) == 2 * nframes) {
                 lyra::wire::xvacOUT(kVac1Id, /*stream*/2,
+                                    vacMonSilence_.data());
+            }
+        }
+    }
+
+    // VAC2 RX-out tee — RX2 only (SUB right).  SUB off: cable stays open
+    // but silent so a second app does not lose the device.  Monitor stays
+    // on VAC1 (stream 2 = silence here).
+    if (vac_[kVac2Id].active_.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lk(vac_[kVac2Id].mtx_);
+        if (vac_[kVac2Id].active_.load(std::memory_order_relaxed) &&
+            nframes == outSize_) {
+            const int vacN2 = 2 * nframes;
+            if (static_cast<int>(vac_[kVac2Id].rxScaled_.size()) != vacN2) {
+                vac_[kVac2Id].rxScaled_.assign(static_cast<size_t>(vacN2), 0.0);
+            }
+            const bool muteVac2 =
+                vac_[kVac2Id].muteWillMuteVac_.load(std::memory_order_relaxed);
+            const double g2 = (mutedRx2_.load(std::memory_order_relaxed)
+                               && muteVac2)
+                ? 0.0
+                : posToGain(volumeRx2_.load(std::memory_order_relaxed));
+            if (subMix) {
+                for (int f = 0; f < nframes; ++f) {
+                    const double s = audio[2 * f + 1] * g2;
+                    vac_[kVac2Id].rxScaled_[static_cast<size_t>(2 * f + 0)] = s;
+                    vac_[kVac2Id].rxScaled_[static_cast<size_t>(2 * f + 1)] = s;
+                }
+            } else {
+                std::fill(vac_[kVac2Id].rxScaled_.begin(),
+                          vac_[kVac2Id].rxScaled_.end(), 0.0);
+            }
+            lyra::wire::xvacOUT(kVac2Id, /*stream*/1,
+                                vac_[kVac2Id].rxScaled_.data());
+            if (static_cast<int>(vacMonSilence_.size()) == 2 * nframes) {
+                lyra::wire::xvacOUT(kVac2Id, /*stream*/2,
                                     vacMonSilence_.data());
             }
         }
@@ -3926,6 +4845,19 @@ void WdspEngine::dispatchAudioFrame(const double *audio, int nframes)
             const double m = monScratch_[static_cast<size_t>(f)] * monGain;
             l = m;
             r = m;
+        } else if (subMix) {
+            // SUB: L = RX1, R = RX2.  Per-RX Vol/Mute, then Bal pans 1 vs 2.
+            // Skip BIN (that is a single-RX Hilbert nicety).
+            const bool m2 = mutedRx2_.load(std::memory_order_relaxed);
+            const double gL = (m_manual || m_tx)
+                ? 0.0
+                : posToGain(volume_.load(std::memory_order_relaxed));
+            const double gR = (m2 || m_tx)
+                ? 0.0
+                : posToGain(volumeRx2_.load(std::memory_order_relaxed));
+            const double hl2 = hl2Out_ ? kHl2OutAtten : 1.0;
+            l = audio[static_cast<size_t>(2 * f + 0)] * gL * hl2 * lBal;
+            r = audio[static_cast<size_t>(2 * f + 1)] * gR * hl2 * rBal;
         } else {
             l = audio[static_cast<size_t>(2 * f + 0)] * gain;
             r = audio[static_cast<size_t>(2 * f + 1)] * gain;
@@ -4126,6 +5058,37 @@ void WdspEngine::feedIq(const double *iq, int nframes)
         }
         const double db = (peak > 0.0) ? 20.0 * std::log10(peak) : -200.0;
         audioDbFs_.store(db, std::memory_order_relaxed);
+
+        // SUB stereo: RX1 stays left; RX2's demod (L of its stereo pair)
+        // becomes the right channel.  Per-RX volume is applied later in
+        // dispatchAudioFrame.  Lock order: channelMtx_ (held here) then
+        // rx2Mtx_.  SUB-off: haveRx2_ is false → this is a no-op.
+        if (haveRx2_.load(std::memory_order_acquire) &&
+            !txMuted_.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lk(rx2Mtx_);
+            if (rx2Opened_ &&
+                rx2OutBuf_.size() >= static_cast<size_t>(2 * outSize_)) {
+                for (int i = 0; i < outSize_; ++i)
+                    outBuf_[static_cast<size_t>(2 * i + 1)] =
+                        rx2OutBuf_[static_cast<size_t>(2 * i + 0)];
+                double rPeak = 0.0;
+                for (int i = 0; i < outSize_; ++i) {
+                    const double a = std::fabs(
+                        rx2OutBuf_[static_cast<size_t>(2 * i + 0)]);
+                    if (a > rPeak) rPeak = a;
+                }
+                static thread_local qint64 s_lastRx2LogMs = 0;
+                const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                if (now - s_lastRx2LogMs >= 1000) {
+                    s_lastRx2LogMs = now;
+                    const double rdb =
+                        (rPeak > 0.0) ? 20.0 * std::log10(rPeak) : -200.0;
+                    emitLog(QStringLiteral(
+                        "[wdsp] RX2 audio peak %1 dBFS (right ear / Vol2)")
+                                .arg(rdb, 0, 'f', 1));
+                }
+            }
+        }
 
         // TCI audio stream tap MOVED to dispatchAudioFrame (#90 Route 3) so
         // all monitor routes drain the one ring on one thread.  The

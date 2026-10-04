@@ -103,10 +103,16 @@ using fn_SetRXAAGCThresh_t     = void (*)(int channel, double thresh,
                                           double size, double rate);
 using fn_SetRXAAGCSlope_t      = void (*)(int channel, int slope);
 using fn_SetRXAPanelGain1_t    = void (*)(int channel, double gain);
+using fn_SetRXAPanelPan_t      = void (*)(int channel, double pan);
 // RX meter read-back: GetRXAMeter(channel, meterType) → value.
 // meterType 0 = RXA_S_PK (peak signal strength, dBm-ish), 1 = RXA_S_AV.
 // The in-passband S-meter source standard HF SDR apps read.
 using fn_GetRXAMeter_t         = double (*)(int channel, int meterType);
+// AGC max-gain read-back (out-param via pointer, WDSP convention).  This is
+// the ceiling SetRXAAGCThresh derived from (thresh, size, rate) + slope — the
+// number the reference shows on its AGC-T display (clamped -20..120 there).
+// The Auto AGC-T knee sets the thresh; this is the resulting max-gain.
+using fn_GetRXAAGCTop_t        = void (*)(int channel, double *max_agc);
 // RX noise reduction (EMNR / "NR2") — the operator NR-mode surface.
 // gainMethod 0..3 = Lyra NR Mode 1..4 (Wiener+SPP / Wiener / MMSE-LSA /
 // trained); npeMethod 0=OSMS 1=MCRA; aeRun = AEPF anti-musical-noise
@@ -416,7 +422,9 @@ struct WdspApi {
     fn_SetRXAAGCThresh_t     SetRXAAGCThresh     = nullptr;
     fn_SetRXAAGCSlope_t      SetRXAAGCSlope      = nullptr;
     fn_SetRXAPanelGain1_t    SetRXAPanelGain1    = nullptr;
+    fn_SetRXAPanelPan_t      SetRXAPanelPan      = nullptr;
     fn_GetRXAMeter_t         GetRXAMeter         = nullptr;
+    fn_GetRXAAGCTop_t        GetRXAAGCTop        = nullptr;
     fn_SetRXAEMNRRun_t        SetRXAEMNRRun        = nullptr;
     fn_SetRXAEMNRgainMethod_t SetRXAEMNRgainMethod = nullptr;
     fn_SetRXAEMNRnpeMethod_t  SetRXAEMNRnpeMethod  = nullptr;

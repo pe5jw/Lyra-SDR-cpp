@@ -31,17 +31,32 @@ RadioCapabilities capabilitiesFor(RadioFamily family) {
         c.txPower.ratedMaxW   = 5.0;    // nominal ~5 W; operator power cal is authoritative
         c.txPower.driveSteps  = 16;     // top-nibble of the drive byte = 16 coarse steps
         c.puresignalRequiresMod = true; // HL2 PS needs the hardware mod
+        c.nRx                   = 2;    // DDC0 RX1 + DDC1 RX2 (SUB); one ADC
+        c.independentBand       = false;
+        c.diversityCapable      = false;
+        c.psDdcReserved         = true; // DDC2/DDC3 stay PureSignal
+        c.psDdcFirst            = 2;
+        c.psDdcCount            = 2;
         break;
 
     case RadioFamily::BrickP2:
-        // BrickSDR2 — Protocol 2, 14-bit, ~ANAN-10E-class.  Full values
-        // (receiver count, LNA span, power model) land with the P2 engine.
+        // BrickSDR2 — Hermes-class Protocol 2, 14-bit, one ADC / one
+        // antenna. deskHPSDR still runs two VFOs (RECEIVERS=2, DDC0+DDC1
+        // both on ADC 0). independentBand stays false (not dual-ADC /
+        // diversity). SUB/RX2 is the second VFO on that one ADC.
         c.familyName          = QStringLiteral("BrickSDR2");
         c.protocol            = 2;
+        c.maxReceivers        = 4;
         c.adcBits             = 14;
         c.hasOnboardAudioIO   = true;   // physical mic + audio I/O on the unit
         c.defaultAudioPath    = AudioPath::RadioJack;
         c.puresignalRequiresMod = false;
+        c.nRx                   = 2;
+        c.independentBand       = false;
+        c.diversityCapable      = false;
+        c.psDdcReserved         = true; // leave a P2 feedback DDC free
+        c.psDdcFirst            = 2;
+        c.psDdcCount            = 2;
         break;
 
     case RadioFamily::AnanP2:
@@ -51,6 +66,12 @@ RadioCapabilities capabilitiesFor(RadioFamily family) {
         c.hasOnboardAudioIO   = true;
         c.defaultAudioPath    = AudioPath::RadioJack;
         c.puresignalRequiresMod = false;
+        c.nRx                   = 2;
+        c.independentBand       = true;  // dual-ADC path later; not this SUB slice
+        c.diversityCapable      = true;
+        c.psDdcReserved         = true;
+        c.psDdcFirst            = 2;
+        c.psDdcCount            = 2;
         break;
 
     case RadioFamily::AnanP1:
@@ -72,8 +93,13 @@ RadioCapabilities capabilitiesFor(RadioFamily family) {
 RadioFamily familyForBoardId(int boardId) {
     switch (boardId) {
     case 6:            return RadioFamily::Hl2;      // HermesLite (HL2 / HL2+)
-    case 5:            // Orion
-    case 10:           return RadioFamily::AnanP1;   // OrionMKII (ANAN, P1)
+    case 0:            // Atlas
+    case 1:            // Hermes (ANAN-10 / 100)
+    case 2:            // HermesII (ANAN-10E / 100B)
+    case 3:            // Angelia (ANAN-100D)
+    case 4:            // Orion (ANAN-200D)
+    case 5:            // Orion (alt)
+    case 10:           return RadioFamily::AnanP1;   // OrionMKII / Saturn P1
     default:           return RadioFamily::Unknown;
     }
 }

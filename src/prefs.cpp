@@ -16,10 +16,13 @@
 namespace lyra::ui {
 
 namespace {
-// Multi-rig Stage 4d: per-rig scope for the panadapter dB-SCALE keys only
-// (RX+TX spectrum & waterfall floor/ceiling).  The rest of panadapter/ is
-// UI prefs (palette, peak, glow, zoom…) that stay shared, so we wrap the
-// specific scaling keys at their read/write sites, not the whole group.
+// Multi-rig Stage 4d: per-rig scope for the specific keys that must differ
+// per radio — the panadapter dB-SCALE keys (RX+TX spectrum & waterfall
+// floor/ceiling) and the TX mic source (a jack-less Brick uses PC/VAC, the
+// HL2 uses its codec jack).  The rest of panadapter/ is shared UI prefs
+// (palette, peak, glow, zoom…), so we wrap the specific keys at their
+// read/write sites, not the whole group.  One-shot flat→scoped migration
+// for these keys runs in main.cpp before the first prefs autoload.
 // Returns rig/<activeId>/<flatKey> (or the flat key when no rig active).
 QString scaledKey(const char *flatKey) {
     return lyra::rig::scope::rigKey(QLatin1String(flatKey));
@@ -52,6 +55,8 @@ constexpr auto kCwDecColor = "cw/decodeColor";
 constexpr auto kCwDecFont  = "cw/decodeFontSize";
 constexpr auto kCwDecBw     = "cw/decodeBandwidth";
 constexpr auto kCwDecSpeed  = "cw/decodeSpeed";
+constexpr auto kCwDecEngine = "cw/decodeEngine";
+constexpr auto kCwBlankPen  = "cw/blankPenalty";
 constexpr auto kCwDecTrack  = "cw/decodeTracking";
 constexpr auto kCwDecMfilt  = "cw/decodeMatchedFilter";
 constexpr auto kCwDecSqlOn  = "cw/decodeSquelchOn";
@@ -85,7 +90,9 @@ constexpr auto kDspGrouped = "visuals/dspPanelsGrouped";
 constexpr auto kOptGrouped = "visuals/optionsPanelsGrouped";
 constexpr auto kZoom   = "panadapter/zoom";
 constexpr auto kRxMode = "modefilter/mode";
+constexpr auto kRxModeRx2 = "modefilter/modeRx2";
 constexpr auto kBwPrefix = "modefilter/bw/";   // + <MODE>
+constexpr auto kBwPrefixRx2 = "modefilter/bw_rx2/";   // + <FAMILY>
 // TX Component 8c — per-mode TX bandwidth + the lock flag.  Prefix
 // mirrors kBwPrefix so a future Settings sweep can read both with
 // one wildcard.
@@ -109,6 +116,7 @@ constexpr auto kBpTxWarn   = "band_plan/tx_warn";
 constexpr auto kBpColorPfx = "band_plan/color_";   // + <kind>
 constexpr auto kCbBand     = "bands/cb_enabled";
 constexpr auto kPanStep    = "panadapter/scroll_step_hz";
+constexpr auto kSplitShift = "tx/splitShiftHz/";   // + MODE
 constexpr auto kPanRound   = "panadapter/round_100hz";
 constexpr auto kDebugLog   = "debug/logging";
 // Task #36 — Hardware PTT input opt-in (default OFF per §10 Q#1).
@@ -214,6 +222,8 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // tracking on, matched filter off, squelch off (+ metric threshold).
     cwDecodeBandwidth_     = std::clamp(s.value(kCwDecBw, 150).toInt(), 50, 3000);
     cwDecodeSpeed_         = std::clamp(s.value(kCwDecSpeed, 18).toInt(), 5, 50);
+    cwDecodeEngine_        = std::clamp(s.value(kCwDecEngine, 0).toInt(), 0, 2);
+    cwBlankPenalty_        = std::clamp(s.value(kCwBlankPen, 0.0).toDouble(), -1.0, 1.0);
     cwDecodeTracking_      = s.value(kCwDecTrack, true).toBool();
     cwDecodeMatchedFilter_ = s.value(kCwDecMfilt, false).toBool();
     cwDecodeSquelchOn_     = s.value(kCwDecSqlOn, false).toBool();
@@ -247,6 +257,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     optionsPanelsGrouped_ = s.value(kOptGrouped, false).toBool();
     zoom_             = std::clamp(s.value(kZoom, 1.0).toDouble(), 1.0, 32.0);
     mode_             = s.value(kRxMode, QStringLiteral("USB")).toString();
+    modeRx2_          = s.value(kRxModeRx2, QStringLiteral("USB")).toString();
     // Per-FAMILY RX bandwidth (bwFamilyKey): USB/LSB share "SSB", etc.
     // Load the family key; if absent, migrate a legacy per-exact-mode
     // value (older installs stored "<prefix>USB" / "LSB" / …).  Families
@@ -257,6 +268,13 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
         QVariant v = s.value(QString(kBwPrefix) + fam);   // new family key
         if (!v.isValid()) v = s.value(QString(kBwPrefix) + m);  // legacy exact-mode
         if (v.isValid()) bwByMode_.insert(fam, v.toInt());
+    }
+    for (const QString &m : kModes) {
+        const QString fam = bwFamilyKey(m);
+        if (bwByModeRx2_.contains(fam)) continue;
+        QVariant v = s.value(QString(kBwPrefixRx2) + fam);
+        if (!v.isValid()) v = s.value(QString(kBwPrefixRx2) + m);
+        if (v.isValid()) bwByModeRx2_.insert(fam, v.toInt());
     }
     // TX Component 8c — per-family TX bandwidth, same family-collapse +
     // legacy migration as RX BW.
@@ -299,6 +317,11 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     }
     cbBandEnabled_ = s.value(kCbBand, false).toBool();
     panScrollStepHz_ = s.value(kPanStep, 1000).toInt();
+    for (const QString &m : kModes) {
+        const QVariant v = s.value(QString(kSplitShift) + m);
+        if (v.isValid())
+            splitShiftHz_.insert(m, v.toInt());
+    }
     panRound100_ = s.value(kPanRound, false).toBool();
     debugLogging_ = s.value(kDebugLog, false).toBool();
     // Task #36 — HW PTT opt-in.  Default false (operator must explicitly
@@ -326,7 +349,7 @@ Prefs::Prefs(QObject *parent) : QObject(parent) {
     // falls back to "mic1" so we never autoload into an inactive
     // source path.
     {
-        const QString tok = s.value(kMicSource, QStringLiteral("mic1")).toString();
+        const QString tok = s.value(scaledKey(kMicSource), QStringLiteral("mic1")).toString();
         micSource_ = micSourceTokens().contains(tok) ? tok
                                                      : QStringLiteral("mic1");
     }
@@ -616,6 +639,24 @@ void Prefs::setCwDecodeSpeed(int wpm) {
         cwDecodeSpeed_ = wpm;
         QSettings().setValue(kCwDecSpeed, wpm);
         emit cwDecodeSpeedChanged();
+    }
+}
+
+void Prefs::setCwDecodeEngine(int engine) {
+    engine = std::clamp(engine, 0, 2);
+    if (engine != cwDecodeEngine_) {
+        cwDecodeEngine_ = engine;
+        QSettings().setValue(kCwDecEngine, engine);
+        emit cwDecodeEngineChanged();
+    }
+}
+
+void Prefs::setCwBlankPenalty(double p) {
+    p = std::clamp(p, -1.0, 1.0);
+    if (std::abs(p - cwBlankPenalty_) > 1e-9) {
+        cwBlankPenalty_ = p;
+        QSettings().setValue(kCwBlankPen, p);
+        emit cwBlankPenaltyChanged();
     }
 }
 
@@ -995,6 +1036,31 @@ void Prefs::setMode(const QString &m) {
     emit txBandwidthChanged();
 }
 
+void Prefs::setModeRx2(const QString &m) {
+    if (m.isEmpty() || m == modeRx2_) {
+        return;
+    }
+    modeRx2_ = m;
+    QSettings().setValue(kRxModeRx2, m);
+    emit modeRx2Changed();
+    emit rx2BandwidthChanged();
+}
+
+int Prefs::rx2Bandwidth() const {
+    return bwByModeRx2_.value(bwFamilyKey(modeRx2_),
+                              defaultBandwidthFor(modeRx2_));
+}
+
+void Prefs::setRx2Bandwidth(int hz) {
+    if (hz <= 0 || hz == rx2Bandwidth()) {
+        return;
+    }
+    const QString key = bwFamilyKey(modeRx2_);
+    bwByModeRx2_.insert(key, hz);
+    QSettings().setValue(QString(kBwPrefixRx2) + key, hz);
+    emit rx2BandwidthChanged();
+}
+
 void Prefs::setRxBandwidth(int hz) {
     if (hz <= 0 || hz == rxBandwidth()) {
         return;
@@ -1250,6 +1316,25 @@ void Prefs::setCbBandEnabled(bool v) {
     }
 }
 
+int Prefs::splitShiftHz(const QString &mode) const {
+    const QString m = mode.toUpper();
+    if (splitShiftHz_.contains(m))
+        return splitShiftHz_.value(m);
+    if (m.startsWith(QLatin1String("CW")))
+        return 1000;
+    return 5000;
+}
+
+void Prefs::setSplitShiftHz(const QString &mode, int hz) {
+    const QString m = mode.toUpper();
+    if (m.isEmpty())
+        return;
+    if (splitShiftHz_.contains(m) && splitShiftHz_.value(m) == hz)
+        return;
+    splitShiftHz_.insert(m, hz);
+    QSettings().setValue(QString(kSplitShift) + m, hz);
+}
+
 void Prefs::setPanScrollStepHz(int hz) {
     if (hz > 0 && hz != panScrollStepHz_) {
         panScrollStepHz_ = hz;
@@ -1342,7 +1427,7 @@ void Prefs::setMicSource(const QString &token) {
                                                   : QStringLiteral("mic1");
     if (t != micSource_) {
         micSource_ = t;
-        QSettings().setValue(kMicSource, t);
+        QSettings().setValue(scaledKey(kMicSource), t);
         emit micSourceChanged();
     }
 }
@@ -1375,7 +1460,7 @@ QString Prefs::micSourceLabel(const QString &token) {
     if (token == QLatin1String("mic1"))   return QStringLiteral("Mic In");
     if (token == QLatin1String("tci"))    return QStringLiteral("TCI (digital modes)");
     if (token == QLatin1String("micpc"))  return QStringLiteral("PC Soundcard (VAC1)");
-    if (token == QLatin1String("micpc2")) return QStringLiteral("VAC2");
+    if (token == QLatin1String("micpc2")) return QStringLiteral("PC Soundcard (VAC2)");
     return token;
 }
 
@@ -1386,8 +1471,9 @@ QString Prefs::micSourceLabel(const QString &token) {
 bool Prefs::micSourceEnabled(const QString &token) {
     if (token == QLatin1String("mic1"))  return true;
     if (token == QLatin1String("tci"))   return true;
-    if (token == QLatin1String("micpc")) return true;   // #158 Stage 4 — VAC1 in
-    return false;   // micpc2 (VAC2) — future v0.2.x
+    if (token == QLatin1String("micpc"))  return true;
+    if (token == QLatin1String("micpc2")) return true;
+    return false;
 }
 
 QString Prefs::micSourceTooltip(const QString &token) {
@@ -1407,7 +1493,9 @@ QString Prefs::micSourceTooltip(const QString &token) {
             "captured audio to the transmitter (your codec mic is bypassed).");
     if (token == QLatin1String("micpc2"))
         return QStringLiteral(
-            "Second host PC audio capture device (VAC2) — pending v0.2.x.");
+            "PC audio in via VAC2 — RX2's virtual cable.  Set VAC2 Input "
+            "device + TX gain in Settings → Audio; enable SUB so VAC2 has "
+            "RX2 audio.  Mutually exclusive with VAC1 TX and with TCI audio.");
     return QString();
 }
 

@@ -1,11 +1,24 @@
 # lyra-cpp — Remaining Work
 
+> **Historical snapshot, frozen at v0.7.0 (2026-06-29).** Several items below
+> have since shipped (VOX, voice keyer, CW TX, BrickSDR2 Protocol 2 RX+TX,
+> 2-tone, per-band PA including 11m). For the live operator picture use
+> [Feature Status](wiki/Feature-Status.md), [Roadmap](wiki/Roadmap.md), and
+> [KNOWN_ISSUES.md](../KNOWN_ISSUES.md). Tree version is **v0.24.5**.
+>
+> **Still actually open (2026-09):** PureSignal · Linux / macOS ·
+> ANAN family as first-class P2 radios · other P1 boards that need a
+> tester. (SUB / RX2 + SPLIT are live on HL2 Protocol 1 and BrickSDR2;
+> N2ADR follows RX1 — cross-band SUB is weaker. VAC1 + VAC2 cables
+> are live — VAC2 enable/gains/latency store in TX profiles (schema 6).)
+
 What's still open as of **v0.7.0** (2026-06-29). The list keeps shrinking —
 the big TX bring-up, the native DSP rack, CW transmit + decoder, Profiles,
 VAC, the panadapter/tuning UI, Spots, the Tuner memory, and the FM transmit
-refinements are all **shipped and on-air-confirmed**. What's left is mostly
-two large arcs (RX2/Split and PureSignal) plus a handful of smaller TX and
-CW follow-ons.
+refinements are all **shipped and on-air-confirmed**. **RX2 / SUB + SPLIT**
+later shipped on HL2 Protocol 1 and BrickSDR2 (same ADC; N2ADR follows RX1).
+What's left from this snapshot is mostly **PureSignal** plus smaller TX and
+CW follow-ons. The #96–#101 list below is historical.
 
 ---
 
@@ -59,8 +72,11 @@ CW follow-ons.
 
 ## Audio / routing
 
-- **VAC2** (#103) — second-channel host-audio bridge (e.g. a logger on a
-  device independent of the digital-mode app).
+- **VAC2 profile fields** (#103 V2-4) — **shipped**: `vac2Enabled` /
+  autoDigital / gains / latency / buffer size ride in operator profiles
+  (schema v6). Devices stay Settings-global. Pre-v6 profiles load VAC2
+  off. Remaining VAC2: V2-5 Brent/Timmy enable/disable crash-surface
+  re-bench on both cables.
 
 ## Platform
 

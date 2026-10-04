@@ -133,6 +133,12 @@ class Prefs : public QObject {
                NOTIFY cwDecodeBandwidthChanged)
     Q_PROPERTY(int cwDecodeSpeed READ cwDecodeSpeed WRITE setCwDecodeSpeed
                NOTIFY cwDecodeSpeedChanged)
+    // DeepFist — persisted CW decode engine (0=Classic fldigi, 1=Neural).
+    Q_PROPERTY(int cwDecodeEngine READ cwDecodeEngine WRITE setCwDecodeEngine
+               NOTIFY cwDecodeEngineChanged)
+    // DeepFist — persisted CTC blank-logit penalty (0..5) for the neural engine.
+    Q_PROPERTY(double cwBlankPenalty READ cwBlankPenalty WRITE setCwBlankPenalty
+               NOTIFY cwBlankPenaltyChanged)
     Q_PROPERTY(bool cwDecodeTracking READ cwDecodeTracking WRITE setCwDecodeTracking
                NOTIFY cwDecodeTrackingChanged)
     Q_PROPERTY(bool cwDecodeMatchedFilter READ cwDecodeMatchedFilter WRITE setCwDecodeMatchedFilter
@@ -220,6 +226,12 @@ class Prefs : public QObject {
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(int rxBandwidth READ rxBandwidth WRITE setRxBandwidth
                NOTIFY rxBandwidthChanged)
+    // Second receiver (SUB). Independent of Prefs.mode / rxBandwidth —
+    // those stay RX1 and TX. RX2 BW never mirrors to TX.
+    Q_PROPERTY(QString modeRx2 READ modeRx2 WRITE setModeRx2
+               NOTIFY modeRx2Changed)
+    Q_PROPERTY(int rx2Bandwidth READ rx2Bandwidth WRITE setRx2Bandwidth
+               NOTIFY rx2BandwidthChanged)
     // TX Component 8c — TX filter bandwidth (Hz) for the CURRENT mode.
     // Per-mode just like rxBandwidth.  For SSB the value is the high
     // edge (low fixed at 200 Hz via TxChannel::open() default until a
@@ -370,8 +382,8 @@ class Prefs : public QObject {
     // Recognised tokens:
     //   "mic1"    — HL2/HL2+ codec mic input (Hl2Ep6MicSource)
     //   "tci"     — inbound TCI v2 TX_AUDIO_STREAM (TciMicSource)
-    //   "micpc"   — host PC audio capture (future v0.2.x VAC1)
-    //   "micpc2"  — second host PC capture device (future VAC2)
+    //   "micpc"   — host PC audio capture (VAC1)
+    //   "micpc2"  — host PC audio capture (VAC2 / RX2 cable)
     //
     // Unknown tokens fall back to "mic1" (safety: never end up
     // routing to an inactive source).
@@ -402,6 +414,12 @@ public:
     // Palette display names (presets + "Custom color…") for QML pickers
     // — index-aligned with the palette/waterfallPalette int values.
     Q_INVOKABLE QStringList paletteNames() const;
+
+    // SPLIT pile-up: last per-mode TX shift (Hz, signed).  Default +5 kHz
+    // (SSB/DIG) or +1 kHz (CW) until the operator picks from the SPLIT
+    // right-click menu.
+    Q_INVOKABLE int  splitShiftHz(const QString &mode) const;
+    Q_INVOKABLE void setSplitShiftHz(const QString &mode, int hz);
 
     // Fire-and-forget "clear the peak-hold buffer" request from the
     // Display panel's Clear button — the panadapter (a different dock)
@@ -492,6 +510,10 @@ public:
     void    setCwDecodeBandwidth(int hz);
     int     cwDecodeSpeed() const { return cwDecodeSpeed_; }
     void    setCwDecodeSpeed(int wpm);
+    int     cwDecodeEngine() const { return cwDecodeEngine_; }
+    void    setCwDecodeEngine(int engine);
+    double  cwBlankPenalty() const { return cwBlankPenalty_; }
+    void    setCwBlankPenalty(double p);
     bool    cwDecodeTracking() const { return cwDecodeTracking_; }
     void    setCwDecodeTracking(bool on);
     bool    cwDecodeMatchedFilter() const { return cwDecodeMatchedFilter_; }
@@ -567,6 +589,10 @@ public:
     void    setMode(const QString &m);
     int  rxBandwidth() const;            // bandwidth for the current mode
     void setRxBandwidth(int hz);
+    QString modeRx2() const { return modeRx2_; }
+    void    setModeRx2(const QString &m);
+    int  rx2Bandwidth() const;
+    void setRx2Bandwidth(int hz);
     // TX Component 8c — current-mode TX bandwidth, mirroring rxBandwidth.
     int  txBandwidth() const;
     void setTxBandwidth(int hz);
@@ -696,6 +722,8 @@ signals:
     void cwDecodeFontSizeChanged();
     void cwDecodeBandwidthChanged();
     void cwDecodeSpeedChanged();
+    void cwDecodeEngineChanged();
+    void cwBlankPenaltyChanged();
     void cwDecodeTrackingChanged();
     void cwDecodeMatchedFilterChanged();
     void cwDecodeSquelchOnChanged();
@@ -726,6 +754,8 @@ signals:
     void zoomChanged();
     void modeChanged();
     void rxBandwidthChanged();
+    void modeRx2Changed();
+    void rx2BandwidthChanged();
     void txBandwidthChanged();
     void bwLockedChanged();
     void filterLowChanged();
@@ -801,6 +831,8 @@ private:
     int     cwDecodeFontSize_;
     int     cwDecodeBandwidth_;
     int     cwDecodeSpeed_;
+    int     cwDecodeEngine_;
+    double  cwBlankPenalty_;
     bool    cwDecodeTracking_;
     bool    cwDecodeMatchedFilter_;
     bool    cwDecodeSquelchOn_;
@@ -839,11 +871,13 @@ private:
     bool    optionsPanelsGrouped_ = false;
     double  zoom_;
     QString mode_;
+    QString modeRx2_;
     // Bandwidth memory keyed by mode FAMILY (bwFamilyKey): USB/LSB share
     // one "SSB" slot, CWU/CWL "CW", DIGU/DIGL "Digital" (AM/SAM/DSB/FM
     // stand alone).  A sideband flip changes no remembered bandwidth.
     // (Hash name kept for churn; the KEY is now the family, not the mode.)
     QHash<QString, int> bwByMode_;   // per-family RX bandwidth memory
+    QHash<QString, int> bwByModeRx2_;
     // TX Component 8c — per-family TX bandwidth memory + the RX↔TX
     // lock flag.  Defaults come from defaultBandwidthFor() if the
     // operator hasn't picked a TX BW for that family yet (fresh install).
@@ -885,6 +919,7 @@ private:
     // dedicated-digital setups keep "stays on TCI" behaviour unchanged.
     bool    tciRestoreMicSource_ = false;
     bool    tooltipsEnabled_ = true;   // Settings → Visuals; ui/tooltips_enabled
+    QHash<QString, int> splitShiftHz_;
 };
 
 } // namespace lyra::ui

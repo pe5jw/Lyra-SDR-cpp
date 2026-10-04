@@ -24,13 +24,22 @@
 #pragma once
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QObject>
 #include <QSharedMemory>
 #include <QString>
+#include <QThread>
 
 #include <functional>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
 
 namespace lyra::ui {
 
@@ -55,11 +64,24 @@ inline bool acquireSingleInstance(int argc, char **argv,
                                   const QString &instanceId,
                                   QString *serverNameOut) {
     // Escape hatch: an explicit second copy (deliberate, e.g. testing).
+    // --await-primary: a DELIBERATE restart of the SAME config (e.g. the
+    // rig-switch "Restart now" flow) relaunches itself while the outgoing
+    // instance is still tearing down and therefore still holds the lock.
+    // A plain launch would see AlreadyExists, ping the dying primary, and
+    // exit — so the restart silently never happens.  With this flag the new
+    // process instead WAITS for the outgoing one to exit (which OS-refcount-
+    // releases the segment) and then takes over as primary — one radio, no
+    // TCI-port collision (the old instance frees its ports during teardown,
+    // before process exit, i.e. before the lock frees).
+    bool awaitPrimary = false;
     for (int i = 1; i < argc; ++i) {
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--new-instance")) {
+        const QString a = QString::fromLocal8Bit(argv[i]);
+        if (a == QStringLiteral("--new-instance")) {
             if (serverNameOut) serverNameOut->clear();
             return true;
         }
+        if (a == QStringLiteral("--await-primary"))
+            awaitPrimary = true;
     }
 
     const QString key = singleInstanceKey(instanceId);
@@ -69,19 +91,40 @@ inline bool acquireSingleInstance(int argc, char **argv,
     // create() fails with AlreadyExists → it is the duplicate.  Any OTHER
     // create() failure (permissions, kernel object limit, …) must NOT lock
     // the operator out — fall through and run as primary in that case.
-    auto *lock = new QSharedMemory(key);
-    if (lock->create(1)) {
-        return true;   // primary — leak `lock` to hold the guard for our life
+    //
+    // Under --await-primary, an AlreadyExists means "the instance I am
+    // replacing hasn't finished exiting yet": poll until the segment frees
+    // (or a safety deadline elapses, well past the outgoing instance's ~10 s
+    // teardown watchdog), then take over as primary.
+    QElapsedTimer awaitTimer;
+    awaitTimer.start();
+    constexpr qint64 kAwaitDeadlineMs = 20000;
+    for (;;) {
+        auto *lock = new QSharedMemory(key);
+        if (lock->create(1)) {
+            return true;   // primary — leak `lock` to hold the guard for our life
+        }
+        if (lock->error() != QSharedMemory::AlreadyExists) {
+            return true;   // not a real duplicate — start anyway (never lock out)
+        }
+        delete lock;
+        if (awaitPrimary && awaitTimer.elapsed() < kAwaitDeadlineMs) {
+            QThread::msleep(150);   // outgoing instance still holds the lock
+            continue;
+        }
+        break;   // genuine duplicate (or the await deadline elapsed)
     }
-    if (lock->error() != QSharedMemory::AlreadyExists) {
-        return true;   // not a real duplicate — start anyway (never lock out)
-    }
-    delete lock;
 
     // Duplicate launch: ping the primary to bring its window forward, then
     // tell the caller to exit.  A minimal, short-lived QCoreApplication gives
     // QLocalSocket its event dispatcher; we exit before any QApplication is
     // built, so there is never a second QCoreApplication in the real run.
+    //
+    // If the lock exists but the raise pipe does not answer, this is NOT a
+    // live primary — typical cases: a leftover lock from a Run-as-admin
+    // copy the standard user cannot talk to, or a TX-zombie process with
+    // no UI.  Exiting silently looks like "Lyra only launches as
+    // Administrator".  Start anyway.
     QCoreApplication ping(argc, argv);
     QLocalSocket sock;
     sock.connectToServer(key);
@@ -90,8 +133,18 @@ inline bool acquireSingleInstance(int argc, char **argv,
         sock.flush();
         sock.waitForBytesWritten(400);
         sock.disconnectFromServer();
+#ifdef _WIN32
+        MessageBoxW(nullptr,
+                    L"Lyra is already running. That window has been brought "
+                    L"to the front.\n\nIf you do not see it, check the taskbar "
+                    L"or Task Manager for lyra.exe (including a leftover "
+                    L"copy started as Administrator).",
+                    L"Lyra",
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+#endif
+        return false;
     }
-    return false;
+    return true;
 }
 
 // Primary-side: listen for future launches' "raise" pings and run `onRaise`

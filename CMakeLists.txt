@@ -18,8 +18,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Lyra
-    VERSION 0.21.1
-
+    VERSION 0.24.5
     DESCRIPTION "Lyra — Hermes Lite 2/2+ SDR transceiver (C++23 / Qt6 rebuild)"
     LANGUAGES CXX)
 
@@ -62,6 +61,21 @@ set(PA_BUILD_TESTS       OFF CACHE BOOL "" FORCE)
 set(PA_BUILD_EXAMPLES    OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/portaudio EXCLUDE_FROM_ALL)
 
+# --- ONNX Runtime (DeepFist neural CW decoder) ------------------------
+# Prebuilt CPU ONNX Runtime (MIT, Microsoft) vendored under
+# third_party/onnxruntime.  Only the API headers + license are committed;
+# the ~11 MB DLL + import lib live in lib/ (git-ignored, repopulated per
+# third_party/onnxruntime/README.md).  Imported as a SHARED lib: link the
+# import lib, ship onnxruntime.dll next to lyra.exe.  Used by
+# src/dsp/deepfist/ to run the DeepFist CNN+CTC CW model (DeepFist is MIT,
+# © Brent Crier — permissive inside Lyra's GPLv3).
+set(ORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime)
+add_library(onnxruntime SHARED IMPORTED)
+set_target_properties(onnxruntime PROPERTIES
+    IMPORTED_IMPLIB               ${ORT_DIR}/lib/onnxruntime.lib
+    IMPORTED_LOCATION             ${ORT_DIR}/lib/onnxruntime.dll
+    INTERFACE_INCLUDE_DIRECTORIES ${ORT_DIR}/include)
+
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(lyra
@@ -74,8 +88,21 @@ qt_add_executable(lyra
     src/wdsp_native.cpp
     src/wdsp_engine.h
     src/wdsp_engine.cpp
+    src/wdsp_engine_rx2.cpp
     src/mic_source.h
     src/mic_source.cpp
+    src/win_perf.cpp
+    # Multi-rig Stage 1 — per-family capability descriptor (inert
+    # scaffolding; see docs/architecture/multi_rig_design.md).
+    src/rig/RadioCapabilities.h
+    src/rig/RadioCapabilities.cpp
+    # Multi-rig Stage 2 — rig registry + identity (inert; seeded/routed
+    # in Stage 3).
+    src/rig/RigRegistry.h
+    src/rig/RigRegistry.cpp
+    # Multi-rig Stage 3 — active-rig key routing + snapshot-gated migration.
+    src/rig/RigScope.h
+    src/rig/RigScope.cpp
     # TX-rip Phase 1 step 1c-a — wire/ empty skeletons.  Populated
     # in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §3 / §5.4 / §8.
     src/wire/RadioNet.h
@@ -165,6 +192,21 @@ qt_add_executable(lyra
     src/wire/MetisFrame.cpp
     src/wire/ForceCandC.h
     src/wire/ForceCandC.cpp
+    # P2 TX: fail-closed safety, packet encoders, paced writer and bounded
+    # CMaster-to-session IQ FIFO. The writer is not started by production
+    # code, so MOX/drive/PA/transmit remain RF-inert.
+    src/wire/P2TxSafety.h
+    src/wire/P2TxSafety.cpp
+    src/wire/P2TxPackets.h
+    src/wire/P2TxPackets.cpp
+    src/wire/P2TxFifo.h
+    src/wire/P2TxFifo.cpp
+    src/wire/P2TxCmaster.h
+    src/wire/P2TxCmaster.cpp
+    src/wire/P2TxPump.h
+    src/wire/P2TxPump.cpp
+    src/wire/P2TxWriter.h
+    src/wire/P2TxWriter.cpp
     # Protocol 2 (Saturn / ANAN G2) Phase B — control-plane session
     # (general packet + HP run-bit keepalive + status stream parse).
     # WIRE-INERT in the app today: compiled so it tracks the tree, but
@@ -186,6 +228,8 @@ qt_add_executable(lyra
     # the Thetis model strings.  See docs/P2_HARDWARE_PROFILES_PLAN.md.
     src/hardware/HardwareCatalog.h
     src/hardware/HardwareCatalog.cpp
+    src/hardware/ActiveFrontEndModel.h
+    src/hardware/ActiveFrontEndModel.cpp
     # (src/radioprofile/{RadioProfile.h,RadioProfileStore.{h,cpp}}
     # RETIRED 2026-07-20 — the identity-layer fold agreed with N8SDR:
     # hardwareModelKey/trxAntenna/audioRoute/firstSeen/lastSeen moved
@@ -198,7 +242,6 @@ qt_add_executable(lyra
     # verbatim create_xmtr in src/wire/CMaster.cpp opens the WDSP
     # TXA channel itself through the wire/wdspcalls.h seam; the
     # runtime-DLL RAII carve-out the class existed for is gone.)
-    src/wdsp/TxaCffi.h
     src/wdsp/ChannelLifecycle.h
     # (Stage B src/wdsp/AAMix.{h,cpp} + src/wdsp/Resample.h RETIRED
     # 2026-06-11 — replaced by the P0.c verbatim direct port at
@@ -245,6 +288,38 @@ qt_add_executable(lyra
     src/dsp/cw_fldigi/fldigi_cw.cpp
     src/dsp/FreqCalMeasure.h
     src/dsp/FreqCalMeasure.cpp
+    # DeepFist neural CW decoder (second, selectable CW engine)
+    src/dsp/deepfist/DeepFistResampler.h
+    src/dsp/deepfist/DeepFistResampler.cpp
+    src/dsp/deepfist/DeepFistSpectrogram.h
+    src/dsp/deepfist/DeepFistSpectrogram.cpp
+    src/dsp/deepfist/DeepFistConditioner.h
+    src/dsp/deepfist/DeepFistConditioner.cpp
+    src/dsp/deepfist/DeepFistCtc.h
+    src/dsp/deepfist/DeepFistCtc.cpp
+    src/dsp/deepfist/DeepFistScp.h
+    src/dsp/deepfist/DeepFistScp.cpp
+    src/dsp/deepfist/DeepFistRescore.h
+    src/dsp/deepfist/DeepFistRescore.cpp
+    src/dsp/deepfist/DeepFistModel.h
+    src/dsp/deepfist/DeepFistModel.cpp
+    src/dsp/deepfist/NeuralCwDecoder.h
+    src/dsp/deepfist/NeuralCwDecoder.cpp
+    # Phase 3 — RBN-confirmed local callsign list (WdspEngine::ensureCwScpLocal /
+    # cwNoteConfirmedCall).
+    src/dsp/deepfist/ScpLocal.h
+    src/dsp/deepfist/ScpLocal.cpp
+    # Phase 2 — opt-in CW training-harvest capture (WdspEngine::setCwCaptureEnabled).
+    src/dsp/deepfist/CwHarvestRing.h
+    src/dsp/deepfist/CwHarvestIo.h
+    src/dsp/deepfist/CwHarvestIo.cpp
+    src/dsp/deepfist/CwCaptureHarvester.h
+    src/dsp/deepfist/CwCaptureHarvester.cpp
+    # CW Auto arbiter — engine-agnostic ownership state machine (Phase 1).
+    src/dsp/CwArbiter.h
+    src/dsp/CwArbiter.cpp
+    src/dsp/ZeroBeat.h
+    src/dsp/ZeroBeat.cpp
     # (Stage 7.1 TxIqRing RETIRED 2026-06-09 — wrong-architecture
     # post-TXA placement per audit Agent F; replaced by the Thetis-
     # faithful pre-TXA CMB ring + cm_main pump thread at src/wire/
@@ -282,6 +357,15 @@ qt_add_executable(lyra
     src/tx/VoiceKeyer.cpp
     src/tx/ClipRecorder.h
     src/tx/ClipRecorder.cpp
+    # Session Recorder (#201) — RX/TX audio + timed pan/waterfall snapshots.
+    # Headless engine (RT-safe ring + writer thread) + streaming WAV writer;
+    # UI panel/status-chip + Settings tab + offline MP4 export land on top.
+    src/recorder/WavStreamWriter.h
+    src/recorder/WavStreamWriter.cpp
+    src/recorder/RecorderEngine.h
+    src/recorder/RecorderEngine.cpp
+    src/recorder/SessionConverter.h
+    src/recorder/SessionConverter.cpp
     # TX-rip Phase 1 step 1c-e — tci/ empty skeletons (4 NEW
     # components; TciServer.{h,cpp} stays at top level and is
     # rewritten in-place in Phase 2 per §10.2 / §7).  Populated
@@ -321,13 +405,10 @@ qt_add_executable(lyra
     # present from v0.2 but empty/inert; v0.3 PureSignal fills).
     # Populated in Phase 2 per docs/TX_ARCHITECTURAL_MAPPING.md §9.
     src/ps/CalcCffi.h
-    src/ps/IqcCffi.h
     src/ps/PsCalcThread.h
     src/ps/PsCalcThread.cpp
     src/ps/PsFsm.h
     src/ps/PsFsm.cpp
-    src/ps/IqcLifecycle.h
-    src/ps/IqcLifecycle.cpp
     src/iqstft.h
     src/iqstft.cpp
     src/capturedprofile.h
@@ -346,23 +427,7 @@ qt_add_executable(lyra
     src/dockdragcontroller.h
     src/dockdragcontroller.cpp
     src/panelrack.h
-    src/win_perf.h
-    src/win_perf.cpp
-    src/rig/RadioCapabilities.h
-    src/rig/RadioCapabilities.cpp
-    src/rig/RigRegistry.h
-    src/rig/RigRegistry.cpp
-    src/rig/RigScope.h
-    src/rig/RigScope.cpp
     src/panelrack.cpp
-    src/dsp/ZeroBeat.h
-    src/dsp/ZeroBeat.cpp
-    src/recorder/RecorderEngine.h
-    src/recorder/RecorderEngine.cpp
-    src/recorder/SessionConverter.h
-    src/recorder/SessionConverter.cpp
-    src/recorder/WavStreamWriter.h
-    src/recorder/WavStreamWriter.cpp
     src/prefs.h
     src/prefs.cpp
     src/settingsdialog.h
@@ -467,6 +532,7 @@ qt_add_qml_module(lyra
         src/qml/CwDecoderPanel.qml
         src/qml/CalibrationPanel.qml
         src/qml/VoiceKeyerPanel.qml
+        src/qml/RecorderPanel.qml
         src/qml/TrashCan.qml
         src/qml/CombinatorPanel.qml
         src/qml/PlatePanel.qml
@@ -531,6 +597,8 @@ target_link_libraries(lyra PRIVATE
     # Windows host-API system libs (winmm/ole32/uuid/setupapi) as
     # transitive static-link deps.
     portaudio
+    # DeepFist neural CW decoder — ONNX Runtime (prebuilt CPU, MIT).
+    onnxruntime
 )
 
 # TX-rip Phase 1 step 1c — put `src/` on the include path so the
@@ -573,26 +641,6 @@ if(WIN32)
     target_link_libraries(lyra PRIVATE ws2_32 winmm iphlpapi)
 endif()
 
-# pe5jw linux-compat
-if(NOT WIN32)
-    target_include_directories(lyra PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/compat")
-    find_package(Threads REQUIRED)
-    target_link_libraries(lyra PRIVATE Threads::Threads dl)
-    set_target_properties(lyra PROPERTIES
-        INSTALL_RPATH "$ORIGIN/_native"
-        BUILD_RPATH   "$ORIGIN/_native")
-endif()
-if(UNIX AND NOT APPLE)
-    set(_native_linux "${CMAKE_CURRENT_SOURCE_DIR}/_native_linux")
-    if(EXISTS "${_native_linux}")
-        add_custom_command(TARGET lyra POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${_native_linux}" "$<TARGET_FILE_DIR:lyra>/_native"
-            COMMENT "Bundling Linux WDSP .so files" VERBATIM)
-    endif()
-endif()
-
 # Step 3a: bundle the WDSP DSP engine DLLs (`wdsp.dll` +
 # `libfftw3-3.dll` + `libfftw3f-3.dll` + `rnnoise.dll` +
 # `specbleach.dll`) into a `_native/` subdirectory next to
@@ -618,6 +666,45 @@ add_custom_command(TARGET lyra POST_BUILD
     COMMENT "Bundling WDSP DLLs into _native/"
     VERBATIM)
 
+# DeepFist neural CW decoder — ship onnxruntime.dll next to lyra.exe (a
+# load-time import, so it must sit beside the exe, not in _native/) and copy
+# the trained model into models/ next to the exe.  The model is git-ignored;
+# if it isn't present locally the copy is skipped and the neural engine simply
+# reports "model not found" at runtime (classic decoder unaffected).
+if(WIN32)
+    add_custom_command(TARGET lyra POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ORT_DIR}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:lyra>"
+        COMMENT "Bundling onnxruntime.dll next to lyra.exe"
+        VERBATIM)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/deepfist.onnx")
+    add_custom_command(TARGET lyra POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:lyra>/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/models/deepfist.onnx"
+            "$<TARGET_FILE_DIR:lyra>/models/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/models/deepfist.onnx.json"
+            "$<TARGET_FILE_DIR:lyra>/models/"
+        COMMENT "Bundling DeepFist model into models/"
+        VERBATIM)
+else()
+    message(WARNING "DeepFist model not found at models/deepfist.onnx — the "
+                    "neural CW decoder will be disabled at runtime. See models/README.md.")
+endif()
+# MASTER.SCP callsign DB for the CTC-lattice rescorer (optional; rescorer is a
+# no-op without it, so no warning when absent).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/MASTER.SCP")
+    add_custom_command(TARGET lyra POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:lyra>/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/models/MASTER.SCP"
+            "$<TARGET_FILE_DIR:lyra>/models/"
+        COMMENT "Bundling MASTER.SCP into models/"
+        VERBATIM)
+endif()
+
 # Auto-deploy the Qt runtime DLLs next to lyra.exe after every build.
 # Without this, adding/changing Qt modules (e.g. Widgets +
 # QuickWidgets for the dock shell) leaves the .exe unable to find a
@@ -634,12 +721,23 @@ if(WIN32)
     if(WINDEPLOYQT_EXE)
         add_custom_command(TARGET lyra POST_BUILD
             COMMAND "${WINDEPLOYQT_EXE}"
-                --no-translations --no-compiler-runtime
+                --no-translations --compiler-runtime
+                --skip-plugin-types qmltooling
                 --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/src/qml"
                 "$<TARGET_FILE:lyra>"
-            COMMENT "windeployqt: bundling Qt runtime DLLs next to lyra.exe"
+            COMMENT "windeployqt: bundling Qt + MSVC runtime DLLs next to lyra.exe"
             VERBATIM)
     endif()
+    # Qt 6.11 windeployqt --compiler-runtime often no-ops on VS 2026 (VC145)
+    # CRT layout.  Copy the redistributable CRT next to lyra.exe so a clean
+    # PC without a system VC++ install can still launch.  Needs vcvars
+    # (VCToolsRedistDir) at build time.
+    add_custom_command(TARGET lyra POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DDEST_DIR=$<TARGET_FILE_DIR:lyra>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_msvc_crt.cmake"
+        COMMENT "Bundling app-local MSVC CRT next to lyra.exe"
+        VERBATIM)
 endif()
 
 # MSVC: enable /utf-8 (sane source encoding) and the standards-
@@ -696,11 +794,69 @@ add_executable(test_p2_session EXCLUDE_FROM_ALL
     scratch/test_p2_session.cpp
     src/wire/P2Session.h
     src/wire/P2Session.cpp
+    src/wire/P2TxSafety.h
+    src/wire/P2TxSafety.cpp
+    src/wire/P2TxPackets.h
+    src/wire/P2TxPackets.cpp
+    src/wire/P2TxFifo.h
+    src/wire/P2TxFifo.cpp
+    src/wire/P2TxPump.h
+    src/wire/P2TxPump.cpp
+    src/wire/P2TxWriter.h
+    src/wire/P2TxWriter.cpp
 )
 target_include_directories(test_p2_session PRIVATE src)
 target_link_libraries(test_p2_session PRIVATE Qt6::Core Qt6::Network)
 if(MSVC)
     target_compile_options(test_p2_session PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# G2 hardware-profile golden packets: model selection, Alex input/filter/
+# antenna words, DDC ADC source and HP ADC attenuation bytes.
+add_executable(test_p2_g2_profile EXCLUDE_FROM_ALL
+    scratch/test_p2_g2_profile.cpp
+    src/wire/P2Session.h
+    src/wire/P2Session.cpp
+    src/wire/P2TxSafety.h
+    src/wire/P2TxSafety.cpp
+    src/wire/P2TxPackets.h
+    src/wire/P2TxPackets.cpp
+    src/wire/P2TxFifo.h
+    src/wire/P2TxFifo.cpp
+    src/wire/P2TxPump.h
+    src/wire/P2TxPump.cpp
+    src/wire/P2TxWriter.h
+    src/wire/P2TxWriter.cpp
+    scratch/p2_tx_cmaster_test_stubs.cpp
+)
+target_include_directories(test_p2_g2_profile PRIVATE src)
+target_link_libraries(test_p2_g2_profile PRIVATE Qt6::Core Qt6::Network)
+if(MSVC)
+    target_compile_options(test_p2_g2_profile PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# P2 TX Phase A: safety prerequisites plus byte-for-byte DUC-specific and
+# 240-sample TX-IQ packet encoders. Pure/inert: no UDP send or radio keying.
+add_executable(test_p2_tx_packets EXCLUDE_FROM_ALL
+    scratch/test_p2_tx_packets.cpp
+    src/wire/P2Session.h
+    src/wire/P2Session.cpp
+    src/wire/P2TxSafety.h
+    src/wire/P2TxSafety.cpp
+    src/wire/P2TxPackets.h
+    src/wire/P2TxPackets.cpp
+    src/wire/P2TxFifo.h
+    src/wire/P2TxFifo.cpp
+    src/wire/P2TxPump.h
+    src/wire/P2TxPump.cpp
+    src/wire/P2TxWriter.h
+    src/wire/P2TxWriter.cpp
+    scratch/p2_tx_cmaster_test_stubs.cpp
+)
+target_include_directories(test_p2_tx_packets PRIVATE src)
+target_link_libraries(test_p2_tx_packets PRIVATE Qt6::Core Qt6::Network)
+if(MSVC)
+    target_compile_options(test_p2_tx_packets PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #199 OC Control Stage 1 — pure compute() + change-gate unit test.
@@ -770,6 +926,23 @@ add_executable(test_wav_io EXCLUDE_FROM_ALL
 target_include_directories(test_wav_io PRIVATE src)
 if(MSVC)
     target_compile_options(test_wav_io PRIVATE /utf-8 /Zc:preprocessor)
+endif()
+
+# Session Recorder (#201) Stage 1 — engine + streaming WAV writer unit test.
+# Qt Core only (QSettings isolated to a temp INI); EXCLUDE_FROM_ALL.
+# Build + run:  cmake --build build --target test_recorder
+add_executable(test_recorder EXCLUDE_FROM_ALL
+    scratch/test_recorder.cpp
+    src/recorder/WavStreamWriter.h
+    src/recorder/WavStreamWriter.cpp
+    src/recorder/RecorderEngine.h
+    src/recorder/RecorderEngine.cpp
+)
+target_include_directories(test_recorder PRIVATE src)
+target_link_libraries(test_recorder PRIVATE Qt6::Core)
+set_target_properties(test_recorder PROPERTIES AUTOMOC ON)   # RecorderEngine Q_OBJECT
+if(MSVC)
+    target_compile_options(test_recorder PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 
 # #89 Stage C — recorder capture-core unit test (ClipRecorder).  Qt-free;
